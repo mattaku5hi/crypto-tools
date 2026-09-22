@@ -2468,6 +2468,7 @@ dependencies = [
 name = "scout-app"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "clap",
  "csv",
  "scout-core",
