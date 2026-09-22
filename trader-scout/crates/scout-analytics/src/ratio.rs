@@ -1,7 +1,7 @@
 //! Win rate & profit factor. See ADR-004: statuses are a typed enum, not
 //! float sentinels (no Infinity/NaN/999 surrogate) — ACCEPTANCE D06.
 
-use scout_core::Money;
+use scout_core::{Money, ScoutError};
 
 use crate::episode::EpisodeCohort;
 
@@ -33,9 +33,7 @@ pub fn win_rate(cohort: &EpisodeCohort) -> RatioStatus<Money> {
     }
     let positive_count = valid
         .iter()
-        .filter(|e| {
-            e.realized_pnl.is_negative().then_some(()).is_none() && !e.realized_pnl.is_zero()
-        })
+        .filter(|e| e.realized_pnl.is_positive())
         .count();
     // Represent win rate as a Money-scaled fraction (0..=1 at MONEY_SCALE)
     // so it goes through the same checked-integer path as everything
@@ -53,8 +51,11 @@ pub fn win_rate(cohort: &EpisodeCohort) -> RatioStatus<Money> {
 /// pnl))`. Breakeven episodes are excluded from both sums (ACCEPTANCE
 /// §10: "Breakeven episode входит в denominator win rate, но не в
 /// positive/negative sums profit factor").
-#[must_use]
-pub fn profit_factor(cohort: &EpisodeCohort) -> RatioStatus<Money> {
+///
+/// Returns a typed `ScoutError::ArithmeticOverflow` if summing episode
+/// PnLs overflows `Money` — per ADR-001, overflow is never silently
+/// swallowed or masked as if the offending episode contributed zero.
+pub fn profit_factor(cohort: &EpisodeCohort) -> Result<RatioStatus<Money>, ScoutError> {
     let valid = cohort.valid_closed_episodes();
     let mut positive_sum = Money::ZERO;
     let mut negative_sum_abs = Money::ZERO;
@@ -65,32 +66,32 @@ pub fn profit_factor(cohort: &EpisodeCohort) -> RatioStatus<Money> {
         if episode.realized_pnl.is_negative() {
             // Money has no public negate; reconstruct the absolute value
             // via ZERO - value, which is exact for our fixed-point type.
-            if let Ok(abs) = Money::ZERO.checked_sub(&episode.realized_pnl) {
-                negative_sum_abs = negative_sum_abs
-                    .checked_add(&abs)
-                    .unwrap_or(negative_sum_abs);
-            }
-        } else if let Ok(sum) = positive_sum.checked_add(&episode.realized_pnl) {
-            positive_sum = sum;
+            let abs = Money::ZERO.checked_sub(&episode.realized_pnl)?;
+            negative_sum_abs = negative_sum_abs.checked_add(&abs)?;
+        } else {
+            positive_sum = positive_sum.checked_add(&episode.realized_pnl)?;
         }
     }
 
     if negative_sum_abs.is_zero() && positive_sum.is_zero() {
-        return RatioStatus::Undefined;
+        return Ok(RatioStatus::Undefined);
     }
     if negative_sum_abs.is_zero() {
-        return RatioStatus::NoObservedLosses;
+        return Ok(RatioStatus::NoObservedLosses);
     }
 
     let scale = 10i128.pow(scout_core::MONEY_SCALE);
     let numerator = positive_sum.scaled_units();
     let denominator = negative_sum_abs.scaled_units();
-    let scaled = numerator
-        .saturating_mul(scale)
-        .div_euclid(denominator.max(1));
-    RatioStatus::Value {
+    let product = numerator
+        .checked_mul(scale)
+        .ok_or(ScoutError::ArithmeticOverflow {
+            context: "profit_factor: numerator * scale overflow",
+        })?;
+    let scaled = product.div_euclid(denominator);
+    Ok(RatioStatus::Value {
         value: Money::from_scaled_units(scaled),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -123,7 +124,7 @@ mod tests {
             episodes: vec![closed_episode(100), closed_episode(200)],
         };
         assert_eq!(
-            profit_factor(&cohort),
+            profit_factor(&cohort).unwrap(),
             RatioStatus::<Money>::NoObservedLosses
         );
     }
@@ -131,7 +132,10 @@ mod tests {
     #[test]
     fn no_episodes_at_all_gives_undefined_status() {
         let cohort = EpisodeCohort { episodes: vec![] };
-        assert_eq!(profit_factor(&cohort), RatioStatus::<Money>::Undefined);
+        assert_eq!(
+            profit_factor(&cohort).unwrap(),
+            RatioStatus::<Money>::Undefined
+        );
     }
 
     #[test]
@@ -151,7 +155,7 @@ mod tests {
         }
         // PF: only the positive episode counts; no negatives observed.
         assert_eq!(
-            profit_factor(&cohort),
+            profit_factor(&cohort).unwrap(),
             RatioStatus::<Money>::NoObservedLosses
         );
     }
@@ -161,7 +165,7 @@ mod tests {
         let cohort = EpisodeCohort {
             episodes: vec![closed_episode(300), closed_episode(-100)],
         };
-        match profit_factor(&cohort) {
+        match profit_factor(&cohort).unwrap() {
             RatioStatus::Value { value } => {
                 // 300 / 100 = 3.0
                 assert_eq!(value, Money::from_scaled_units(3 * 10i128.pow(8)));

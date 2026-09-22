@@ -8,9 +8,7 @@
 use std::collections::BTreeMap;
 use std::io::BufRead;
 
-use scout_core::{
-    AddressBytes, ChainFamily, ChainKey, ChainResolution, GenesisIdentity, NetworkId,
-};
+use scout_core::{AddressBytes, ChainFamily, ChainKey, ChainResolution};
 
 /// Which structured format the input is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,16 +413,9 @@ pub fn resolve_chain(_address: &AddressBytes, enabled_chains: &[ChainKey]) -> Ch
         .filter(|c| c.family == ChainFamily::Evm)
         .cloned()
         .collect();
-    match evm_candidates.len() {
-        0 => ChainResolution::NotFoundOrUnobserved,
-        1 => ChainResolution::Resolved(evm_candidates.into_iter().next().unwrap_or(
-            // unreachable given len()==1, but avoid unwrap per lint policy
-            ChainKey {
-                family: ChainFamily::Evm,
-                network_id: NetworkId::EvmChainId(0),
-                genesis_identity: GenesisIdentity::Unverified,
-            },
-        )),
+    match evm_candidates.as_slice() {
+        [] => ChainResolution::NotFoundOrUnobserved,
+        [single] => ChainResolution::Resolved(single.clone()),
         _ => ChainResolution::Ambiguous(evm_candidates),
     }
 }
@@ -436,16 +427,16 @@ mod tests {
     fn base_chain() -> ChainKey {
         ChainKey {
             family: ChainFamily::Evm,
-            network_id: NetworkId::EvmChainId(8453),
-            genesis_identity: GenesisIdentity::Verified("base-genesis".to_string()),
+            network_id: scout_core::NetworkId::EvmChainId(8453),
+            genesis_identity: scout_core::GenesisIdentity::Verified("base-genesis".to_string()),
         }
     }
 
     fn bsc_chain() -> ChainKey {
         ChainKey {
             family: ChainFamily::Evm,
-            network_id: NetworkId::EvmChainId(56),
-            genesis_identity: GenesisIdentity::Verified("bsc-genesis".to_string()),
+            network_id: scout_core::NetworkId::EvmChainId(56),
+            genesis_identity: scout_core::GenesisIdentity::Verified("bsc-genesis".to_string()),
         }
     }
 

@@ -180,6 +180,11 @@ impl Money {
     }
 
     #[must_use]
+    pub fn is_positive(&self) -> bool {
+        self.0 > 0
+    }
+
+    #[must_use]
     pub fn is_zero(&self) -> bool {
         self.0 == 0
     }
@@ -188,16 +193,18 @@ impl Money {
 impl fmt::Display for Money {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Integer-only formatting: split scaled units into whole/fractional
-        // parts without any floating-point conversion. `div_euclid`/
-        // `rem_euclid` are used explicitly (not `/`/`%`) to satisfy the
-        // workspace's `integer_division` lint while keeping exact integer
-        // semantics — no precision is lost, unlike the lint's default
-        // float-based suggestion.
+        // parts without any floating-point conversion. Sign is handled
+        // separately from the magnitude — mixing div_euclid/rem_euclid on
+        // a negative value directly would print "-1.50000000" for -0.5
+        // instead of "-0.50000000".
         let scale: i128 = 10i128.pow(MONEY_SCALE);
-        let whole = self.0.div_euclid(scale);
-        let frac = self.0.rem_euclid(scale);
+        let negative = self.0 < 0;
+        let magnitude = self.0.unsigned_abs();
+        let whole = magnitude.div_euclid(scale.unsigned_abs());
+        let frac = magnitude.rem_euclid(scale.unsigned_abs());
         let width = usize::try_from(MONEY_SCALE).unwrap_or(8);
-        write!(f, "{whole}.{frac:0width$}")
+        let sign = if negative { "-" } else { "" };
+        write!(f, "{sign}{whole}.{frac:0width$}")
     }
 }
 
@@ -249,6 +256,18 @@ mod tests {
         // consideration=1000, fee=10 -> scaled units at 8dp.
         let consideration = Money::from_scaled_units(1000 * 10i128.pow(MONEY_SCALE));
         assert_eq!(consideration.to_string(), "1000.00000000");
+    }
+
+    #[test]
+    fn money_display_is_correct_for_negative_values() {
+        // Regression test: naive div_euclid/rem_euclid directly on a
+        // negative i128 prints "-1.50000000" for -0.5 instead of
+        // "-0.50000000". Sign must be split from magnitude first.
+        let half_negative = Money::from_scaled_units(-50_000_000);
+        assert_eq!(half_negative.to_string(), "-0.50000000");
+
+        let large_negative = Money::from_scaled_units(-100_000_000_001);
+        assert_eq!(large_negative.to_string(), "-1000.00000001");
     }
 
     #[test]

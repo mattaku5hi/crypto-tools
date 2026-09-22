@@ -37,7 +37,7 @@ jobs:
       - name: cargo test
         working-directory: trader-scout
         # Offline CI does not depend on paid RPCs or live-chain state
-        # (AGENTS.md \$"CI и сдача"). Every test in this workspace so far
+        # (AGENTS.md §"CI и сдача"). Every test in this workspace so far
         # runs against synthetic in-memory fixtures only.
         run: cargo test --workspace --all-features
 

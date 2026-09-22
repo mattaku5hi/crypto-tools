@@ -1,5 +1,5 @@
 //! scout-dex-evm: EVM DEX protocol decoders. See workspace
-//! docs/ARCHITECTURE.md \$5 ("Матрица DEX") — no decoder here claims
+//! docs/ARCHITECTURE.md §5 ("Матрица DEX") — no decoder here claims
 //! support for a real deployment; `docs/p0/deployment-registry.md` is
 //! empty (P0.2 not yet done), so this crate currently only proves the
 //! decode *mechanism* against a synthetic fixture (AGENTS.md invariant
