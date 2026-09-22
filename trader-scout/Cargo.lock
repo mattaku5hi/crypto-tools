@@ -2481,6 +2481,8 @@ dependencies = [
 name = "scout-core"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "bs58",
  "serde",
  "serde_json",
  "thiserror",

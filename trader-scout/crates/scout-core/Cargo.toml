@@ -13,3 +13,5 @@ workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+alloy-primitives.workspace = true
+bs58.workspace = true
