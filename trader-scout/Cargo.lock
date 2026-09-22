@@ -2505,6 +2505,7 @@ dependencies = [
 name = "scout-dex-evm"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "scout-core",
  "scout-evm",
  "serde",
