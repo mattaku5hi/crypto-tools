@@ -1,4 +1,5 @@
-//! scout-ledger: see workspace docs/ARCHITECTURE.md for this crate's contract.
+//! scout-ledger: FIFO cost basis, fee allocation, lot lineage.
+//! See ADR-004 for the full contract this crate implements.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     test,
@@ -9,3 +10,9 @@
         clippy::indexing_slicing
     )
 )]
+
+mod fifo;
+mod lot;
+
+pub use fifo::{DisposalResult, Ledger};
+pub use lot::{BasisStatus, Lot};

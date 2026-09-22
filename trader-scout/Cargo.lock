@@ -2550,6 +2550,7 @@ dependencies = [
 name = "scout-ledger"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "scout-core",
  "serde",
  "thiserror",
