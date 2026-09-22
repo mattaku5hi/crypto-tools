@@ -1,4 +1,5 @@
-//! scout-providers: see workspace docs/ARCHITECTURE.md for this crate's contract.
+//! scout-providers: HistoryProvider port and its baseline implementations.
+//! See ADR-006 for the taxonomy and contract this crate implements.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     test,
@@ -9,3 +10,13 @@
         clippy::indexing_slicing
     )
 )]
+
+mod capability;
+mod fixture;
+mod port;
+mod unconfigured;
+
+pub use capability::{CapabilityStatus, SourceCapabilities};
+pub use fixture::{Fixture, FixtureProvenance, FixtureProvider};
+pub use port::{HistoryProvider, ScanEnvelope, ScanPlan, ScanRequest, ScanTask};
+pub use unconfigured::UnconfiguredProvider;

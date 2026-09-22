@@ -14,7 +14,12 @@ scout-core.workspace = true
 scout-scan.workspace = true
 scout-evm.workspace = true
 scout-solana.workspace = true
+async-trait.workspace = true
 futures.workspace = true
+tokio-util.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
