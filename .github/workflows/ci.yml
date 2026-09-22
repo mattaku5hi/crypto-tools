@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  fmt-clippy-test:
+    name: fmt, clippy, test (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            trader-scout/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('trader-scout/Cargo.lock') }}
+
+      - name: cargo fmt --check
+        working-directory: trader-scout
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (deny warnings)
+        working-directory: trader-scout
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        working-directory: trader-scout
+        # Offline CI does not depend on paid RPCs or live-chain state
+        # (AGENTS.md \$"CI и сдача"). Every test in this workspace so far
+        # runs against synthetic in-memory fixtures only.
+        run: cargo test --workspace --all-features
+
+  secret-scan:
+    name: gitleaks secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-check:
+    name: cargo audit (advisory/license scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: cargo audit
+        working-directory: trader-scout
+        run: cargo audit

@@ -1,0 +1,27 @@
+name: Live smoke (opt-in)
+
+# Per AGENTS.md's CI clause: "Offline CI не зависит от платных RPC или
+# нестабильного live-chain состояния. Live smoke tests — отдельный
+# opt-in workflow, без секретов в публичных логах."
+#
+# This workflow does nothing useful yet — no live-backed HistoryProvider
+# implementation exists in this workspace (only UnconfiguredProvider and
+# FixtureProvider, per ADR-006). It is checked in now as the designated
+# home for live smoke tests once real provider credentials and a real
+# transport implementation land, so that step never gets silently folded
+# into the offline `ci.yml` gate.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  placeholder:
+    name: no live provider implemented yet
+    runs-on: ubuntu-latest
+    steps:
+      - name: explain the current state
+        run: |
+          echo "No live-backed HistoryProvider exists yet (ADR-006)."
+          echo "This workflow is a placeholder until real transport + credentials land."
+          echo "When it does: add real API keys as repo secrets, never echo them,"
+          echo "and keep this workflow_dispatch-only (never on: push/pull_request)."
