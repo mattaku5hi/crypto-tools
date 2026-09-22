@@ -1,0 +1,17 @@
+[package]
+name = "scout-evm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+scout-core.workspace = true
+alloy-primitives.workspace = true
+alloy-rpc-types-eth.workspace = true
+serde.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,84 @@
+[workspace]
+resolver = "3"
+members = [
+    "bins/buyer-intersect",
+    "bins/wallet-rank",
+    "bins/wallet-stats",
+    "crates/scout-core",
+    "crates/scout-scan",
+    "crates/scout-rpc",
+    "crates/scout-evm",
+    "crates/scout-solana",
+    "crates/scout-providers",
+    "crates/scout-dex-evm",
+    "crates/scout-dex-solana",
+    "crates/scout-normalize",
+    "crates/scout-pricing",
+    "crates/scout-ledger",
+    "crates/scout-analytics",
+    "crates/scout-storage",
+    "crates/scout-engine",
+    "crates/scout-sdk",
+    "crates/scout-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "UNLICENSED"
+publish = false
+repository = "https://github.com/mattaku5hi/crypto-tools"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+rust_2024_incompatible_pat = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+float_arithmetic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "warn"
+as_conversions = "warn"
+integer_division = "warn"
+
+[workspace.dependencies]
+# internal crates
+scout-core = { path = "crates/scout-core" }
+scout-scan = { path = "crates/scout-scan" }
+scout-rpc = { path = "crates/scout-rpc" }
+scout-evm = { path = "crates/scout-evm" }
+scout-solana = { path = "crates/scout-solana" }
+scout-providers = { path = "crates/scout-providers" }
+scout-dex-evm = { path = "crates/scout-dex-evm" }
+scout-dex-solana = { path = "crates/scout-dex-solana" }
+scout-normalize = { path = "crates/scout-normalize" }
+scout-pricing = { path = "crates/scout-pricing" }
+scout-ledger = { path = "crates/scout-ledger" }
+scout-analytics = { path = "crates/scout-analytics" }
+scout-storage = { path = "crates/scout-storage" }
+scout-engine = { path = "crates/scout-engine" }
+scout-sdk = { path = "crates/scout-sdk" }
+scout-app = { path = "crates/scout-app" }
+
+# external
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
+tokio-util = "0.7"
+futures = "0.3"
+bs58 = "0.5"
+rusqlite = { version = "0.40", features = ["bundled"] }
+proptest = "1.5"
+alloy-primitives = "1"
+alloy-json-rpc = "2"
+alloy-rpc-types-eth = "2"
+csv = "1"

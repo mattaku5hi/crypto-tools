@@ -1,0 +1,22 @@
+[package]
+name = "scout-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+scout-core.workspace = true
+scout-scan.workspace = true
+scout-normalize.workspace = true
+scout-ledger.workspace = true
+scout-analytics.workspace = true
+scout-storage.workspace = true
+scout-engine.workspace = true
+scout-providers.workspace = true
+scout-evm.workspace = true
+scout-solana.workspace = true
