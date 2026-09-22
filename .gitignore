@@ -1,0 +1,12 @@
+/target/
+**/target/
+.scout-data/
+*.env
+.env
+.env.*
+!*.env.example
+Cargo.lock.bak
+*.log
+/.idea/
+/.vscode/
+*.orig

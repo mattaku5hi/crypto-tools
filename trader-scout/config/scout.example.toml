@@ -1,0 +1,100 @@
+# Предлагаемый формат будущего загрузчика конфигурации.
+# Это не действующая конфигурация существующего продукта.
+# Numeric limits — стартовые настройки для измерений, не обещание провайдерских квот.
+
+[analysis]
+period = "30d"
+finality = "finalized"
+cost_basis = "fifo-v1"
+rank_by = "realized-net-pnl"
+profile = "quality"
+top = 20
+quote_currency = "USD"
+max_backfill_days = 365
+identity = "chain-address"
+
+[quality]
+min_closed_episodes = 20
+min_active_days = 7
+require_declared_scope_complete = true
+require_known_ranking_critical_basis = true
+require_verified_ranking_critical_ownership = true
+require_ranking_critical_prices = true
+require_resolved_open_exposure = true
+# Любая materiality/dust policy должна отдельно фиксировать raw-unit thresholds.
+# Отсутствующий threshold не разрешает молча отбрасывать неизвестные остатки.
+
+[scan]
+backend = "hybrid"
+global_max_inflight = 128
+default_endpoint_max_inflight = 16
+request_timeout_ms = 15000
+max_attempts = 5
+queue_max_batches = 32
+queue_max_bytes = 67108864
+max_response_bytes = 33554432
+memory_budget_mib = 2048
+decode_workers = "auto"
+reorder_spill = true
+
+[storage]
+backend = "embedded"
+path = "./.scout-data"
+metadata = "sqlite-wal"
+raw = "compressed-segments"
+writer_batch_rows = 1000
+writer_flush_ms = 100
+busy_timeout_ms = 5000
+
+[chains.solana]
+enabled = true
+family = "solana"
+network = "mainnet"
+verify_genesis_identity = true
+rpc_url_env = "SCOUT_SOLANA_RPC_URL"
+# Token/owner-aware indexed capabilities конфигурируются после P0.
+
+[chains.bsc]
+enabled = true
+family = "evm"
+chain_id = 56
+verify_genesis_identity = true
+rpc_url_env = "SCOUT_BSC_RPC_URL"
+fee_policy = "bsc-versioned"
+
+[chains.base]
+enabled = true
+family = "evm"
+chain_id = 8453
+verify_genesis_identity = true
+rpc_url_env = "SCOUT_BASE_RPC_URL"
+fee_policy = "base-versioned"
+
+[chains.robinhood]
+enabled = true
+family = "evm"
+chain_id = 4663
+verify_genesis_identity = true
+rpc_url_env = "SCOUT_ROBINHOOD_RPC_URL"
+fee_policy = "robinhood-versioned"
+
+[providers.solana_history]
+adapter = "helius-history"
+api_key_env = "SCOUT_HELIUS_API_KEY"
+quota_group = "helius-account"
+# Возможности/ретеншн здесь не считаются доказанными: preflight + P0 fixtures.
+
+[providers.evm_history]
+adapter = "configured-after-p0"
+api_key_env = "SCOUT_EVM_HISTORY_API_KEY"
+# Этот placeholder ДОЛЖЕН давать CONFIGURATION_REQUIRED, а не fake empty history.
+
+[quotas]
+# Заполнить реальные contract limits по каждой quota_group перед live scanning.
+require_explicit_provider_limits = true
+
+[output]
+format = "table"
+progress = "stderr"
+color = "auto"
+redact_secrets = true
