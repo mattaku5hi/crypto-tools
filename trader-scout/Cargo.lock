@@ -2472,6 +2472,7 @@ dependencies = [
  "scout-core",
  "scout-ledger",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

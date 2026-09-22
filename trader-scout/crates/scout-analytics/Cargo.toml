@@ -14,3 +14,6 @@ scout-core.workspace = true
 scout-ledger.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

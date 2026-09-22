@@ -1,4 +1,6 @@
-//! scout-analytics: see workspace docs/ARCHITECTURE.md for this crate's contract.
+//! scout-analytics: episode cohorts, win rate, profit factor. See
+//! ADR-004 for the RatioStatus contract (no float sentinels for
+//! Infinity/NaN/undefined).
 #![forbid(unsafe_code)]
 #![cfg_attr(
     test,
@@ -9,3 +11,9 @@
         clippy::indexing_slicing
     )
 )]
+
+mod episode;
+mod ratio;
+
+pub use episode::{Episode, EpisodeCohort};
+pub use ratio::{RatioStatus, profit_factor, win_rate};
