@@ -1,5 +1,7 @@
-//! scout-app: shared input/config/output layer for the three CLI binaries.
-//! See workspace docs/CLI.md for the full contract this crate implements.
+//! Config loader for `config/scout.example.toml`'s schema. See
+//! docs/ARCHITECTURE.md and the example file's own comments for the
+//! full contract — this module only owns parsing and the typed
+//! representation, not policy decisions about what a value should be.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     test,
@@ -11,13 +13,9 @@
     )
 )]
 
-mod config;
-mod input;
+mod schema;
 
-pub use config::{
+pub use schema::{
     AnalysisConfig, ChainConfig, ConfigError, OutputConfig, ProviderConfig, QualityConfig,
     ScanConfig, ScoutConfig, StorageConfig,
-};
-pub use input::{
-    IdentityKind, IdentityRecord, InputError, InputFormat, ParsedInput, parse_input, resolve_chain,
 };
