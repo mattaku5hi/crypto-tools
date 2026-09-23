@@ -9,14 +9,21 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["scan"]
+scan = ["dep:scout-scan", "dep:scout-evm", "dep:scout-solana", "dep:scout-providers"]
+ledger = ["scan", "dep:scout-normalize", "dep:scout-ledger"]
+analytics = ["ledger", "dep:scout-analytics"]
+full = ["analytics", "dep:scout-storage", "dep:scout-engine"]
+
 [dependencies]
 scout-core.workspace = true
-scout-scan.workspace = true
-scout-normalize.workspace = true
-scout-ledger.workspace = true
-scout-analytics.workspace = true
-scout-storage.workspace = true
-scout-engine.workspace = true
-scout-providers.workspace = true
-scout-evm.workspace = true
-scout-solana.workspace = true
+scout-scan = { workspace = true, optional = true }
+scout-evm = { workspace = true, optional = true }
+scout-solana = { workspace = true, optional = true }
+scout-providers = { workspace = true, optional = true }
+scout-normalize = { workspace = true, optional = true }
+scout-ledger = { workspace = true, optional = true }
+scout-analytics = { workspace = true, optional = true }
+scout-storage = { workspace = true, optional = true }
+scout-engine = { workspace = true, optional = true }
