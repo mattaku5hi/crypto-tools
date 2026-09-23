@@ -10,6 +10,12 @@
 //! actually link against. Instead, derive their paths from this test
 //! binary's own location: all three binaries land in the same
 //! `target/<profile>/` directory.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -156,8 +162,9 @@ fn buyer_intersect_accepts_file_path_input() {
     )
     .expect("write temp file");
 
+    let file_path_str = file_path.to_string_lossy().to_string();
     let output = Command::new(bin)
-        .args(["--input", file_path.to_str().unwrap()])
+        .args(["--input", &file_path_str])
         .output()
         .expect("failed to run binary");
 

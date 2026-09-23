@@ -6,6 +6,15 @@
 //! currently exits 4 (`ConfigurationRequired`), which is the honest
 //! outcome, not a stub message.
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 
 use std::io::{self, BufRead, IsTerminal, Read};
 use std::process::ExitCode;
