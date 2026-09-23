@@ -25,11 +25,16 @@ pub enum RatioStatus<T> {
 /// Win rate: `positive_closed_episodes / all_valid_closed_episodes`.
 /// Breakeven (zero-PnL) episodes count in the denominator but are never
 /// positive (ACCEPTANCE D04).
-#[must_use]
-pub fn win_rate(cohort: &EpisodeCohort) -> RatioStatus<Money> {
+///
+/// Returns a typed `ScoutError::ArithmeticOverflow` on overflow, for
+/// consistency with `profit_factor` — in practice `positive_count`/
+/// `valid.len()` both come from `usize` and cannot realistically
+/// overflow `i128`, but silently saturating here while `profit_factor`
+/// errors would be an inconsistent policy within the same module.
+pub fn win_rate(cohort: &EpisodeCohort) -> Result<RatioStatus<Money>, ScoutError> {
     let valid = cohort.valid_closed_episodes();
     if valid.is_empty() {
-        return RatioStatus::Undefined;
+        return Ok(RatioStatus::Undefined);
     }
     let positive_count = valid
         .iter()
@@ -39,12 +44,23 @@ pub fn win_rate(cohort: &EpisodeCohort) -> RatioStatus<Money> {
     // so it goes through the same checked-integer path as everything
     // else, rather than introducing a bare f64 here.
     let scale = 10i128.pow(scout_core::MONEY_SCALE);
-    let numerator = i128::try_from(positive_count).unwrap_or(0);
-    let denominator = i128::try_from(valid.len()).unwrap_or(1).max(1);
-    let scaled = numerator.saturating_mul(scale).div_euclid(denominator);
-    RatioStatus::Value {
+    let numerator = i128::try_from(positive_count).map_err(|_| ScoutError::ArithmeticOverflow {
+        context: "win_rate: positive_count exceeds i128",
+    })?;
+    let denominator_usize = valid.len();
+    let denominator =
+        i128::try_from(denominator_usize).map_err(|_| ScoutError::ArithmeticOverflow {
+            context: "win_rate: denominator exceeds i128",
+        })?;
+    let product = numerator
+        .checked_mul(scale)
+        .ok_or(ScoutError::ArithmeticOverflow {
+            context: "win_rate: numerator * scale overflow",
+        })?;
+    let scaled = product.div_euclid(denominator);
+    Ok(RatioStatus::Value {
         value: Money::from_scaled_units(scaled),
-    }
+    })
 }
 
 /// Profit factor: `sum(positive episode pnl) / abs(sum(negative episode
@@ -147,7 +163,7 @@ mod tests {
             episodes: vec![closed_episode(0), closed_episode(100)],
         };
         // Win rate: 1 positive out of 2 valid closed episodes = 50%.
-        match win_rate(&cohort) {
+        match win_rate(&cohort).unwrap() {
             RatioStatus::Value { value } => {
                 assert_eq!(value, Money::from_scaled_units(50_000_000)); // 0.5 at 8dp
             }
@@ -191,6 +207,6 @@ mod tests {
         let cohort = EpisodeCohort {
             episodes: vec![unresolved],
         };
-        assert_eq!(win_rate(&cohort), RatioStatus::<Money>::Undefined);
+        assert_eq!(win_rate(&cohort).unwrap(), RatioStatus::<Money>::Undefined);
     }
 }
