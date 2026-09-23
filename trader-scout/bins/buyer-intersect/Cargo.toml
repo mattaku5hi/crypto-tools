@@ -16,3 +16,11 @@ scout-engine.workspace = true
 scout-providers.workspace = true
 clap.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+# Only needed so integration tests in tests/cli.rs can invoke the other
+# two binaries via env!("CARGO_BIN_EXE_...") — Cargo requires the
+# workspace member to be a build-time dependency for that macro to see
+# its binary path.
+wallet-rank = { path = "../wallet-rank" }
+wallet-stats = { path = "../wallet-stats" }

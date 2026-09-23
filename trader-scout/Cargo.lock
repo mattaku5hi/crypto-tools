@@ -852,6 +852,8 @@ dependencies = [
  "scout-engine",
  "scout-providers",
  "tokio",
+ "wallet-rank",
+ "wallet-stats",
 ]
 
 [[package]]
