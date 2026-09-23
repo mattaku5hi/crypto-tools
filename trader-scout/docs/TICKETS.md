@@ -10,7 +10,7 @@ Legend: `done` | `in-progress` | `blocked` | `todo`
 
 | ID | Task | Status | Blocked by | Notes |
 |---|---|---|---|---|
-| P0.1 | Source capability matrix | done | — | `docs/p0/source-capability-matrix.md`, all `documented`/`unknown` (no credentials) |
+| P0.1 | Source capability matrix | in-progress | — | `docs/p0/source-capability-matrix.md`: added provider category taxonomy (raw RPC / indexed history / aggregated market data — only first two feed the ledger) and per-network measurement candidates. Still no live credentials; nothing may become `live_verified` until measured |
 | P0.2 | Deployment registry | done | — | `docs/p0/deployment-registry.md`, intentionally empty pending research |
 | P0.3 | Ground-truth corpus (30+ hand-checked scenarios) | blocked | credentials | Cannot capture real mainnet samples without provider keys; synthetic-only fixtures can proceed independently |
 | P0.4 | ADR-001..006 | done | — | `docs/adr/`, committed in `07f066b` |
@@ -49,7 +49,19 @@ descriptions this graph will expand into.
 
 ## Current frontier (tasks ready to start right now, no credentials needed)
 
-- `scout-providers`: `HistoryProvider` trait + `UnconfiguredProvider` + `FixtureProvider` (ADR-006)
-- `scout-ledger`: FIFO lots, fee allocation, property tests (ADR-004)
-- `scout-normalize`: net-delta buy classification (ADR-003), against synthetic fixtures only
-- P1.4 JSON Schema, once jsonl input/output shape is fixed together
+- `scout-storage`: SQLite WAL embedded store (P2.3), independent of credentials
+- Config loader for `config/scout.example.toml`
+- Output/JSONL envelope (P1.4), once shape is fixed
+- CLI wiring for the three binaries over the existing SDK layer
+- `scout-engine` orchestration skeleton (bounded channels design, no live transport yet)
+- Solana decoder mechanism on synthetic fixture, mirroring `scout-dex-evm`
+- `examples/embedded_scanner.rs` (P8.1)
+
+## When credentials arrive (P0.1 measurement pass)
+
+Per the updated `docs/p0/source-capability-matrix.md`, before selecting any vendor: register 2-3
+free-tier candidates per network (Solana: Helius, Shyft; BSC: BscScan/Etherscan V2 for indexed
+history, plus any of Ankr/Chainstack/dRPC/GetBlock for raw `eth_getLogs`) and run the measurement
+checklist in that file's "What to measure" section against each. No row may be promoted to
+`live_verified` without a dated, actual successful call recorded per ADR-006. Do not pick a single
+vendor from marketing claims alone — this is exactly the failure mode P0.1 exists to prevent.
