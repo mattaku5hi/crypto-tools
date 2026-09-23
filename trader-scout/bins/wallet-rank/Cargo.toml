@@ -12,4 +12,5 @@ workspace = true
 [dependencies]
 scout-app.workspace = true
 scout-core.workspace = true
+scout-providers.workspace = true
 clap.workspace = true

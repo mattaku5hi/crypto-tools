@@ -23,5 +23,5 @@ pub use amount::{MONEY_SCALE, Money, RawAmount, SignedAmount};
 pub use error::ScoutError;
 pub use identity::{
     AddressBytes, AssetKey, ChainFamily, ChainKey, ChainResolution, GenesisIdentity, NetworkId,
-    WalletKey,
+    SolanaCluster, WalletKey,
 };

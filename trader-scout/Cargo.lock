@@ -834,6 +834,9 @@ dependencies = [
  "clap",
  "scout-app",
  "scout-core",
+ "scout-engine",
+ "scout-providers",
+ "tokio",
 ]
 
 [[package]]
@@ -3252,6 +3255,7 @@ dependencies = [
  "clap",
  "scout-app",
  "scout-core",
+ "scout-providers",
 ]
 
 [[package]]
@@ -3261,6 +3265,7 @@ dependencies = [
  "clap",
  "scout-app",
  "scout-core",
+ "scout-providers",
 ]
 
 [[package]]

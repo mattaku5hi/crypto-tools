@@ -13,6 +13,7 @@
 
 mod config;
 mod input;
+mod output;
 
 pub use config::{
     AnalysisConfig, ChainConfig, ConfigError, OutputConfig, ProviderConfig, QualityConfig,
@@ -20,4 +21,7 @@ pub use config::{
 };
 pub use input::{
     IdentityKind, IdentityRecord, InputError, InputFormat, ParsedInput, parse_input, resolve_chain,
+};
+pub use output::{
+    JsonlRecord, RunStatus, SCHEMA_VERSION, Window, WriteOutcome, write_lines_to_stdout,
 };
