@@ -13,9 +13,14 @@ workspace = true
 scout-core.workspace = true
 scout-scan.workspace = true
 scout-normalize.workspace = true
+scout-providers.workspace = true
 scout-ledger.workspace = true
 scout-storage.workspace = true
 futures.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+alloy-primitives.workspace = true

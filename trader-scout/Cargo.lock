@@ -2527,14 +2527,17 @@ dependencies = [
 name = "scout-engine"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "futures",
  "scout-core",
  "scout-ledger",
  "scout-normalize",
+ "scout-providers",
  "scout-scan",
  "scout-storage",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
