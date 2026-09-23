@@ -27,3 +27,14 @@ scout-ledger = { workspace = true, optional = true }
 scout-analytics = { workspace = true, optional = true }
 scout-storage = { workspace = true, optional = true }
 scout-engine = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Only for examples/embedded_scanner.rs, which proves the scan-feature
+# surface embeds into an existing Tokio application (ROADMAP.md P8.1,
+# ACCEPTANCE F07) — never part of the library's own public dependency
+# graph, per AGENTS.md invariant #15 (SDK does not create its own
+# runtime for library consumers; the example's #[tokio::main] stands in
+# for a HOST application's runtime, not scout-sdk's).
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-util.workspace = true
+futures.workspace = true

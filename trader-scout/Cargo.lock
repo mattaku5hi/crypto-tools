@@ -2708,6 +2708,7 @@ dependencies = [
 name = "scout-sdk"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "scout-analytics",
  "scout-core",
  "scout-engine",
@@ -2718,6 +2719,8 @@ dependencies = [
  "scout-scan",
  "scout-solana",
  "scout-storage",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
