@@ -14,6 +14,8 @@ Legend: `done` | `in-progress` | `blocked` | `todo`
 | P0.2 | Deployment registry | done | — | `docs/p0/deployment-registry.md`, intentionally empty pending research |
 | P0.3 | Ground-truth corpus (30+ hand-checked scenarios) | blocked | credentials | Cannot capture real mainnet samples without provider keys; synthetic-only fixtures can proceed independently |
 | P0.4 | ADR-001..006 | done | — | `docs/adr/`, committed in `07f066b` |
+| P0.5 | ADR-008: Tier 1/Tier 2 extensibility (scout-api, TxDecoder, NormalizedActivitySource) | done | — | `56a0c2c`..`fc93928` (S0-S5). `docs/TIER-PLAN.md`, `docs/PROVIDERS.md` |
+| P0.6 | `scout-probe`: CLI to run the P0.1 measurement checklist against a live provider and record dated results | todo | credentials | Scope: hit each candidate vendor's actual endpoints, record retention/coverage/CU-cost per `docs/p0/source-capability-matrix.md`'s "What to measure" section. Do not build before credentials exist — nothing to measure yet |
 
 ## P1 — Workspace, domain contracts, input/output
 
