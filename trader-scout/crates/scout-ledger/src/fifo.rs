@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use scout_core::{AssetKey, Money, RawAmount, ScoutError};
 
-use crate::lot::{BasisStatus, Lot};
+use crate::lot::{BasisStatus, Lot, LotProvenance};
 
 /// Result of consuming lots to cover a disposal (sale).
 #[derive(Debug, Clone)]
@@ -67,6 +67,42 @@ impl Ledger {
                 original_basis: basis,
                 remaining_basis: basis,
                 basis_status,
+                provenance: LotProvenance::Verified,
+            },
+        );
+        sequence
+    }
+
+    /// Record a new acquisition lot from Tier 2 (unverified) data.
+    /// Requires an `ExternalDataOptIn` token — the same unforgeable
+    /// proof `scout-api::ExternalActivity::from_claim` requires — so
+    /// this entry point cannot be reached without an explicit,
+    /// justified caller decision (ADR-008). The lot's `BasisStatus` is
+    /// forced to `Unknown` regardless of what `basis` is passed in:
+    /// unverified numbers never produce a `Known`-basis lot, which
+    /// means any disposal touching this lot gets `realized_trade_pnl:
+    /// None` (AGENTS.md invariant #6), never a PnL computed from
+    /// external, unverified data.
+    pub fn acquire_unverified(
+        &mut self,
+        asset: AssetKey,
+        amount: RawAmount,
+        basis: Money,
+        _opt_in: &scout_core::ExternalDataOptIn,
+    ) -> u64 {
+        let sequence = self.next_sequence;
+        self.next_sequence += 1;
+        self.lots.insert(
+            sequence,
+            Lot {
+                asset,
+                acquisition_sequence: sequence,
+                original_amount: amount,
+                remaining_amount: amount,
+                original_basis: basis,
+                remaining_basis: basis,
+                basis_status: BasisStatus::unverified(),
+                provenance: LotProvenance::Unverified,
             },
         );
         sequence
@@ -347,6 +383,48 @@ mod tests {
         ledger_b.dispose(raw(40), money(500), Money::ZERO).unwrap();
 
         assert_eq!(ledger_a.open_amount(), ledger_b.open_amount());
+    }
+
+    #[test]
+    fn acquire_unverified_forces_unknown_basis_and_none_pnl() {
+        // ADR-008: Tier 2 data can never produce a Known-basis lot,
+        // regardless of what basis value is passed in. A disposal
+        // touching it must get realized_trade_pnl: None, matching
+        // AGENTS.md invariant #6's existing unknown-basis behavior.
+        let opt_in = scout_core::ExternalDataOptIn::acknowledge(
+            scout_core::ExternalDataAcknowledgement::ExploratoryUse {
+                description: "test".to_string(),
+            },
+        );
+        let mut ledger = Ledger::new();
+        // Even a "confident-looking" basis value must not become Known.
+        ledger.acquire_unverified(test_asset(), raw(100), money(1000), &opt_in);
+
+        let result = ledger.dispose(raw(100), money(1500), Money::ZERO).unwrap();
+        assert_eq!(result.realized_trade_pnl, None);
+        assert!(!result.all_basis_known);
+    }
+
+    #[test]
+    fn acquire_unverified_lot_is_tagged_unverified_provenance() {
+        let opt_in = scout_core::ExternalDataOptIn::acknowledge(
+            scout_core::ExternalDataAcknowledgement::ExploratoryUse {
+                description: "test".to_string(),
+            },
+        );
+        let mut ledger = Ledger::new();
+        let sequence = ledger.acquire_unverified(test_asset(), raw(50), money(500), &opt_in);
+        let lot = ledger.lots.get(&sequence).unwrap();
+        assert_eq!(lot.provenance, LotProvenance::Unverified);
+        assert!(matches!(lot.basis_status, BasisStatus::Unknown { .. }));
+    }
+
+    #[test]
+    fn acquire_verified_lot_is_tagged_verified_provenance() {
+        let mut ledger = Ledger::new();
+        let sequence = ledger.acquire(test_asset(), raw(50), money(500), BasisStatus::Known);
+        let lot = ledger.lots.get(&sequence).unwrap();
+        assert_eq!(lot.provenance, LotProvenance::Verified);
     }
 
     #[test]

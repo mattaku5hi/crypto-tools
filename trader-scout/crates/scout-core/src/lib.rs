@@ -19,6 +19,7 @@ mod amount;
 mod error;
 mod identity;
 mod raw_payload;
+mod trust;
 
 pub use amount::{MONEY_SCALE, Money, RawAmount, SignedAmount};
 pub use error::ScoutError;
@@ -30,3 +31,4 @@ pub use raw_payload::{
     RawEvmLog, RawEvmTransaction, RawPayload, RawSolanaInstruction, RawSolanaTransaction,
     SolanaPubkey,
 };
+pub use trust::{ExternalDataAcknowledgement, ExternalDataOptIn, TrustLevel};

@@ -42,4 +42,14 @@ pub enum ScoutError {
     /// never a silent wraparound or panic.
     #[error("arithmetic overflow: {context}")]
     ArithmeticOverflow { context: &'static str },
+
+    /// A strict ledger operation was asked to record Tier 2
+    /// (`TrustLevel::ExternalUnverified`) data. Per ADR-008, the strict
+    /// path never silently downgrades or accepts unverified data —
+    /// callers who intend to accept it must use the ledger's explicit
+    /// `apply_unverified` entry point, which requires the same
+    /// `ExternalDataOptIn` token and marks the resulting lot's basis
+    /// `Unknown` rather than computing a PnL from unverified numbers.
+    #[error("strict ledger path rejected unverified (Tier 2) data for port `{port}`")]
+    UnverifiedDataRejected { port: String },
 }

@@ -2727,6 +2727,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "scout-analytics",
+ "scout-api",
  "scout-core",
  "scout-engine",
  "scout-evm",

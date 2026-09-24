@@ -1,14 +1,51 @@
 //! Lot model. See ADR-004.
 
-use scout_core::{AssetKey, Money, RawAmount};
+use scout_core::{AssetKey, Money, RawAmount, TrustLevel};
 
 /// Whether a lot's acquisition cost is known or must be treated as
-/// unknown (e.g. an external transfer with no provable lineage).
+/// unknown (e.g. an external transfer with no provable lineage, or
+/// Tier 2 unverified data admitted via `Ledger::acquire_unverified`).
 /// Per AGENTS.md invariant #6, unknown basis is never treated as zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BasisStatus {
     Known,
     Unknown { reason: String },
+}
+
+impl BasisStatus {
+    /// The forced status for any lot acquired through the Tier 2 path
+    /// (ADR-008): unverified data can never produce a `Known` basis,
+    /// regardless of what a `NormalizedActivitySource` claims.
+    #[must_use]
+    pub fn unverified() -> Self {
+        BasisStatus::Unknown {
+            reason: "acquired via Tier 2 (ExternalUnverified) source".to_string(),
+        }
+    }
+}
+
+/// Which lot-acquisition path recorded a lot: verified (Tier 1, our own
+/// decode) or unverified (Tier 2, `NormalizedActivitySource`). Kept
+/// separate from `BasisStatus` because a `Known`-looking amount from an
+/// external source is still not the same as an amount we decoded
+/// ourselves — `Ledger::dispose` never has to inspect this field's
+/// origin to decide `realized_trade_pnl`, `BasisStatus` alone already
+/// carries that decision (see `BasisStatus::unverified`), but it is
+/// exposed on `Lot` for reporting/audit trails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LotProvenance {
+    Verified,
+    Unverified,
+}
+
+impl From<&TrustLevel> for LotProvenance {
+    fn from(trust: &TrustLevel) -> Self {
+        if trust.is_verified() {
+            LotProvenance::Verified
+        } else {
+            LotProvenance::Unverified
+        }
+    }
 }
 
 /// One FIFO acquisition lot. Consumed strictly in acquisition order;
@@ -29,6 +66,7 @@ pub struct Lot {
     /// Portion of `original_basis` not yet consumed by disposals.
     pub remaining_basis: Money,
     pub basis_status: BasisStatus,
+    pub provenance: LotProvenance,
 }
 
 impl Lot {

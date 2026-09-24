@@ -15,6 +15,12 @@ scan = ["dep:scout-scan", "dep:scout-evm", "dep:scout-solana", "dep:scout-provid
 ledger = ["scan", "dep:scout-normalize", "dep:scout-ledger"]
 analytics = ["ledger", "dep:scout-analytics"]
 full = ["analytics", "dep:scout-storage", "dep:scout-engine"]
+# ADR-008: Tier 2 (NormalizedActivitySource / ExternalDataOptIn) is a
+# second, independent barrier alongside the ExternalDataOptIn token
+# itself. Off by default — a consumer must explicitly opt in at the
+# Cargo.toml level before scout-sdk::external_data even compiles,
+# regardless of whether the composition root later constructs a token.
+external-data = ["dep:scout-api"]
 
 [dependencies]
 scout-core.workspace = true
@@ -27,6 +33,7 @@ scout-ledger = { workspace = true, optional = true }
 scout-analytics = { workspace = true, optional = true }
 scout-storage = { workspace = true, optional = true }
 scout-engine = { workspace = true, optional = true }
+scout-api = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Only for examples/embedded_scanner.rs, which proves the scan-feature

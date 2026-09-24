@@ -16,7 +16,7 @@
     )
 )]
 
-use std::io::{self, BufRead, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -92,13 +92,37 @@ fn main() -> ExitCode {
         args.min_token_hits,
     ));
 
+    // ADR-005 exit code 4 (InfrastructureUnavailable) covers
+    // "credentials, storage, capability gap" -- every current
+    // ProviderError variant is exactly that: ConfigurationRequired
+    // (credentials), RateLimited (provider quota/infra), Unsupported
+    // (capability gap), Transport/Other (infra failure). All map to 4.
+    // Listed explicitly (not a blind catch-all) so a reviewer can see
+    // the mapping was a decision, not an oversight; the wildcard arm
+    // exists only because ProviderError is #[non_exhaustive] (ADR-008)
+    // and a future variant must still degrade safely to 4, not panic.
     match result {
         Ok(report) => emit_report(&report, &args.format),
         Err(ProviderError::ConfigurationRequired { port, detail }) => {
             eprintln!("buyer-intersect: configuration required for provider `{port}`: {detail}");
             ExitCode::from(4)
         }
+        Err(ProviderError::RateLimited { retry_after }) => {
+            eprintln!("buyer-intersect: provider rate limited (retry_after={retry_after:?})");
+            ExitCode::from(4)
+        }
+        Err(ProviderError::Unsupported { capability }) => {
+            eprintln!("buyer-intersect: provider does not support capability `{capability}`");
+            ExitCode::from(4)
+        }
+        Err(err @ ProviderError::Transport(_)) => {
+            eprintln!("buyer-intersect: {err}");
+            ExitCode::from(4)
+        }
         Err(err) => {
+            // Non-exhaustive fallback: ProviderError::Other today, any
+            // future #[non_exhaustive] variant tomorrow. Still infra
+            // unavailable (exit 4), never mistaken for exit 2/3.
             eprintln!("buyer-intersect: {err}");
             ExitCode::from(4)
         }
@@ -163,6 +187,3 @@ fn read_stdin_to_string() -> Result<String, String> {
         .map_err(|e| format!("could not read stdin: {e}"))?;
     Ok(buf)
 }
-
-#[allow(dead_code)]
-fn unused_bufread_import_anchor<R: BufRead>(_r: R) {}

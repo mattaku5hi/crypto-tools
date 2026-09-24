@@ -21,10 +21,15 @@
 mod decoder;
 mod error;
 mod history_provider;
+mod normalized_source;
 
 pub use decoder::{BlockOrSlot, DecodeOutcome, DeploymentScope, TxDecoder};
 pub use error::ProviderError;
 pub use history_provider::{
     CapabilityStatus, HistoryProvider, ScanEnvelope, ScanPlan, ScanRequest, ScanTask,
     SourceCapabilities,
+};
+pub use normalized_source::{
+    ExternalActivity, ExternalActivityClaim, ExternalDataAcknowledgement, ExternalDataOptIn,
+    NormalizedActivitySource, TrustLevel,
 };
