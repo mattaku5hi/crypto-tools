@@ -18,10 +18,15 @@
 mod amount;
 mod error;
 mod identity;
+mod raw_payload;
 
 pub use amount::{MONEY_SCALE, Money, RawAmount, SignedAmount};
 pub use error::ScoutError;
 pub use identity::{
     AddressBytes, AssetKey, ChainFamily, ChainKey, ChainResolution, GenesisIdentity, NetworkId,
     SolanaCluster, WalletKey,
+};
+pub use raw_payload::{
+    RawEvmLog, RawEvmTransaction, RawPayload, RawSolanaInstruction, RawSolanaTransaction,
+    SolanaPubkey,
 };
