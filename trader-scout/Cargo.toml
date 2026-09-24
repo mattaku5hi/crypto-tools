@@ -9,6 +9,7 @@ members = [
     "crates/scout-rpc",
     "crates/scout-evm",
     "crates/scout-solana",
+    "crates/scout-api",
     "crates/scout-providers",
     "crates/scout-dex-evm",
     "crates/scout-dex-solana",
@@ -53,6 +54,7 @@ scout-scan = { path = "crates/scout-scan" }
 scout-rpc = { path = "crates/scout-rpc" }
 scout-evm = { path = "crates/scout-evm" }
 scout-solana = { path = "crates/scout-solana" }
+scout-api = { path = "crates/scout-api" }
 scout-providers = { path = "crates/scout-providers" }
 scout-dex-evm = { path = "crates/scout-dex-evm" }
 scout-dex-solana = { path = "crates/scout-dex-solana" }

@@ -2560,6 +2560,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "scout-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "scout-core",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "scout-app"
 version = "0.1.0"
 dependencies = [
