@@ -12,8 +12,16 @@
 //! module proves the decode *mechanism* (raw instruction -> typed buy)
 //! against a synthetic fixture, mirroring what scout-dex-evm's
 //! v2_swap.rs does for the EVM vertical slice.
+//!
+//! Implements `scout_api::TxDecoder` (ADR-008 S4). `DecodeOutcome::NotMine`
+//! for an instruction with a different discriminator (normal — a
+//! registry trying several decoders against one instruction sees this
+//! from every non-matching decoder); `DecodeOutcome::Malformed` for an
+//! instruction that matches the discriminator but has a broken account
+//! count or data length (invariant #18: never silently skipped).
 
-use scout_solana::{RawSolanaInstruction, SolanaPubkey};
+use scout_api::{DecodeOutcome, DeploymentScope, TxDecoder};
+use scout_core::{RawSolanaInstruction, SolanaPubkey};
 
 /// This module's own 8-byte discriminator constant for the synthetic
 /// "buy" instruction shape it decodes. A real deployment's actual
@@ -39,80 +47,104 @@ pub struct DecodedBondingCurveBuy {
     pub instruction_index: u32,
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum DexDecodeError {
-    #[error("instruction does not match the buy discriminator")]
-    DiscriminatorMismatch,
-    #[error(
-        "instruction has {actual} accounts, expected 4 (buyer, bonding_curve, mint, buyer_token_account)"
-    )]
-    WrongAccountCount { actual: usize },
-    #[error("instruction data has {actual} bytes, expected 24 (8-byte discriminator + 2x u64)")]
-    WrongDataLength { actual: usize },
+/// A `TxDecoder` for the bonding-curve buy instruction shape, scoped to
+/// one `DeploymentScope` (AGENTS.md invariant #16: mandatory at
+/// registration, never a blanket claim across chains/programs).
+#[derive(Debug, Clone)]
+pub struct BondingCurveBuyDecoder {
+    scope: DeploymentScope,
 }
 
-/// Decode a raw instruction as a bonding-curve-shape buy. Returns a
-/// typed error for anything that does not match this specific shape —
-/// never a best-effort guess (AGENTS.md invariant #18).
+impl BondingCurveBuyDecoder {
+    #[must_use]
+    pub fn new(scope: DeploymentScope) -> Self {
+        Self { scope }
+    }
+}
+
+impl TxDecoder<RawSolanaInstruction, DecodedBondingCurveBuy> for BondingCurveBuyDecoder {
+    fn scope(&self) -> &DeploymentScope {
+        &self.scope
+    }
+
+    fn decode(&self, instruction: &RawSolanaInstruction) -> DecodeOutcome<DecodedBondingCurveBuy> {
+        // Position (slot/tx index) is not known to a decoder in
+        // isolation — the caller (engine/registry) attaches it from the
+        // transaction context. This trait-based entry point decodes the
+        // instruction shape only; use decode_bonding_curve_buy directly
+        // when slot/transaction_index are available.
+        decode_bonding_curve_buy(instruction, 0, 0)
+    }
+}
+
+/// Decode a raw instruction as a bonding-curve-shape buy.
+///
+/// `DecodeOutcome::NotMine` for an instruction with a different
+/// discriminator — the expected, common case when scanning a
+/// transaction's mixed instructions. `DecodeOutcome::Malformed` for an
+/// instruction that matches the discriminator but has a broken account
+/// count or data length (AGENTS.md invariant #18).
+#[must_use]
 pub fn decode_bonding_curve_buy(
     instruction: &RawSolanaInstruction,
     slot: u64,
     transaction_index: u64,
-) -> Result<DecodedBondingCurveBuy, DexDecodeError> {
-    if instruction.data.len() != 24 {
-        return Err(DexDecodeError::WrongDataLength {
-            actual: instruction.data.len(),
-        });
+) -> DecodeOutcome<DecodedBondingCurveBuy> {
+    if instruction.data.len() < 8 {
+        // Too short to even contain a discriminator: this cannot be
+        // determined to be "mine" or not, so it's simply not mine.
+        return DecodeOutcome::NotMine;
     }
-    let discriminator = instruction
-        .data
-        .get(0..8)
-        .ok_or(DexDecodeError::WrongDataLength {
-            actual: instruction.data.len(),
-        })?;
+    let Some(discriminator) = instruction.data.get(0..8) else {
+        return DecodeOutcome::NotMine;
+    };
     if discriminator != BUY_INSTRUCTION_DISCRIMINATOR {
-        return Err(DexDecodeError::DiscriminatorMismatch);
+        return DecodeOutcome::NotMine;
+    }
+
+    if instruction.data.len() != 24 {
+        return DecodeOutcome::Malformed(format!(
+            "instruction matches buy discriminator but data has {} bytes, expected 24 (8-byte discriminator + 2x u64)",
+            instruction.data.len()
+        ));
     }
     if instruction.accounts.len() != 4 {
-        return Err(DexDecodeError::WrongAccountCount {
-            actual: instruction.accounts.len(),
-        });
+        return DecodeOutcome::Malformed(format!(
+            "instruction matches buy discriminator but has {} accounts, expected 4 (buyer, bonding_curve, mint, buyer_token_account)",
+            instruction.accounts.len()
+        ));
     }
 
-    let sol_in = read_u64_le(&instruction.data, 8)?;
-    let min_tokens_out = read_u64_le(&instruction.data, 16)?;
+    let Some(sol_in) = read_u64_le(&instruction.data, 8) else {
+        return DecodeOutcome::Malformed(
+            "instruction matches buy discriminator but sol_in field is unreadable".to_string(),
+        );
+    };
+    let Some(min_tokens_out) = read_u64_le(&instruction.data, 16) else {
+        return DecodeOutcome::Malformed(
+            "instruction matches buy discriminator but min_tokens_out field is unreadable"
+                .to_string(),
+        );
+    };
 
-    let buyer = *instruction
-        .accounts
-        .first()
-        .ok_or(DexDecodeError::WrongAccountCount {
-            actual: instruction.accounts.len(),
-        })?;
-    let bonding_curve = *instruction
-        .accounts
-        .get(1)
-        .ok_or(DexDecodeError::WrongAccountCount {
-            actual: instruction.accounts.len(),
-        })?;
-    let mint = *instruction
-        .accounts
-        .get(2)
-        .ok_or(DexDecodeError::WrongAccountCount {
-            actual: instruction.accounts.len(),
-        })?;
-    let buyer_token_account =
-        *instruction
-            .accounts
-            .get(3)
-            .ok_or(DexDecodeError::WrongAccountCount {
-                actual: instruction.accounts.len(),
-            })?;
+    let (Some(buyer), Some(bonding_curve), Some(mint), Some(buyer_token_account)) = (
+        instruction.accounts.first(),
+        instruction.accounts.get(1),
+        instruction.accounts.get(2),
+        instruction.accounts.get(3),
+    ) else {
+        // Unreachable given the accounts.len() == 4 check above, but
+        // avoid indexing_slicing per workspace lint policy.
+        return DecodeOutcome::Malformed(
+            "instruction matches buy discriminator but accounts are missing".to_string(),
+        );
+    };
 
-    Ok(DecodedBondingCurveBuy {
-        buyer,
-        bonding_curve,
-        mint,
-        buyer_token_account,
+    DecodeOutcome::Decoded(DecodedBondingCurveBuy {
+        buyer: *buyer,
+        bonding_curve: *bonding_curve,
+        mint: *mint,
+        buyer_token_account: *buyer_token_account,
         sol_in,
         min_tokens_out,
         slot,
@@ -121,14 +153,10 @@ pub fn decode_bonding_curve_buy(
     })
 }
 
-fn read_u64_le(data: &[u8], offset: usize) -> Result<u64, DexDecodeError> {
-    let slice = data
-        .get(offset..offset + 8)
-        .ok_or(DexDecodeError::WrongDataLength { actual: data.len() })?;
-    let array: [u8; 8] = slice
-        .try_into()
-        .map_err(|_| DexDecodeError::WrongDataLength { actual: data.len() })?;
-    Ok(u64::from_le_bytes(array))
+fn read_u64_le(data: &[u8], offset: usize) -> Option<u64> {
+    let slice = data.get(offset..offset + 8)?;
+    let array: [u8; 8] = slice.try_into().ok()?;
+    Some(u64::from_le_bytes(array))
 }
 
 #[cfg(test)]
@@ -156,7 +184,9 @@ mod tests {
     #[test]
     fn decodes_a_well_formed_buy_instruction() {
         let instruction = synthetic_buy_instruction(1_000_000_000, 500_000);
-        let decoded = decode_bonding_curve_buy(&instruction, 12_345, 3).unwrap();
+        let decoded = decode_bonding_curve_buy(&instruction, 12_345, 3)
+            .decoded()
+            .unwrap();
         assert_eq!(decoded.sol_in, 1_000_000_000);
         assert_eq!(decoded.min_tokens_out, 500_000);
         assert_eq!(decoded.buyer, [0x11; 32]);
@@ -169,29 +199,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_instruction_with_wrong_discriminator() {
+    fn wrong_discriminator_is_not_mine_not_an_error() {
+        // The same fix as scout-dex-evm's v2_swap.rs: an instruction
+        // belonging to a different program/instruction shape must be
+        // NotMine, not conflated with Malformed.
         let mut instruction = synthetic_buy_instruction(1, 1);
         instruction.data[0] = 0xFF;
-        let result = decode_bonding_curve_buy(&instruction, 1, 0);
-        assert_eq!(result, Err(DexDecodeError::DiscriminatorMismatch));
+        let outcome = decode_bonding_curve_buy(&instruction, 1, 0);
+        assert_eq!(outcome, DecodeOutcome::NotMine);
     }
 
     #[test]
-    fn rejects_instruction_with_wrong_account_count() {
-        // AGENTS.md invariant #18: unfamiliar shape is a typed error,
-        // never a silent skip or guess.
+    fn matching_discriminator_with_wrong_account_count_is_malformed() {
+        // AGENTS.md invariant #18: unfamiliar shape is surfaced, never
+        // silently skipped or conflated with "not my instruction."
         let mut instruction = synthetic_buy_instruction(1, 1);
         instruction.accounts.pop();
-        let result = decode_bonding_curve_buy(&instruction, 1, 0);
-        assert_eq!(result, Err(DexDecodeError::WrongAccountCount { actual: 3 }));
+        let outcome = decode_bonding_curve_buy(&instruction, 1, 0);
+        assert!(outcome.is_malformed());
+        assert!(!outcome.is_not_mine());
     }
 
     #[test]
-    fn rejects_instruction_with_wrong_data_length() {
+    fn matching_discriminator_with_wrong_data_length_is_malformed() {
         let mut instruction = synthetic_buy_instruction(1, 1);
         instruction.data.push(0x00);
-        let result = decode_bonding_curve_buy(&instruction, 1, 0);
-        assert_eq!(result, Err(DexDecodeError::WrongDataLength { actual: 25 }));
+        let outcome = decode_bonding_curve_buy(&instruction, 1, 0);
+        assert!(outcome.is_malformed());
     }
 
     #[test]
@@ -199,7 +233,9 @@ mod tests {
         // ADR-002/ADR-004: slot + transaction_index + instruction_index
         // must survive decoding unmodified for downstream FIFO ordering.
         let instruction = synthetic_buy_instruction(1, 1);
-        let decoded = decode_bonding_curve_buy(&instruction, 999, 5).unwrap();
+        let decoded = decode_bonding_curve_buy(&instruction, 999, 5)
+            .decoded()
+            .unwrap();
         assert_eq!(decoded.slot, 999);
         assert_eq!(decoded.transaction_index, 5);
         assert_eq!(decoded.instruction_index, 1);
@@ -208,8 +244,42 @@ mod tests {
     #[test]
     fn max_u64_amounts_do_not_overflow_or_truncate() {
         let instruction = synthetic_buy_instruction(u64::MAX, u64::MAX);
-        let decoded = decode_bonding_curve_buy(&instruction, 1, 0).unwrap();
+        let decoded = decode_bonding_curve_buy(&instruction, 1, 0)
+            .decoded()
+            .unwrap();
         assert_eq!(decoded.sol_in, u64::MAX);
         assert_eq!(decoded.min_tokens_out, u64::MAX);
+    }
+
+    #[test]
+    fn too_short_instruction_data_is_not_mine() {
+        let instruction = RawSolanaInstruction {
+            program_id: [0xAA; 32],
+            accounts: vec![],
+            data: vec![0x01, 0x02],
+            instruction_index: 0,
+        };
+        let outcome = decode_bonding_curve_buy(&instruction, 1, 0);
+        assert_eq!(outcome, DecodeOutcome::NotMine);
+    }
+
+    #[test]
+    fn bonding_curve_buy_decoder_implements_tx_decoder_trait() {
+        let scope = DeploymentScope {
+            chain: scout_core::ChainKey {
+                family: scout_core::ChainFamily::Solana,
+                network_id: scout_core::NetworkId::SolanaCluster(
+                    scout_core::SolanaCluster::Mainnet,
+                ),
+                genesis_identity: scout_core::GenesisIdentity::Unverified,
+            },
+            contract_addresses: vec![scout_core::AddressBytes::Solana([0xAA; 32])],
+            active_from: 0,
+            active_until: None,
+        };
+        let decoder = BondingCurveBuyDecoder::new(scope);
+        let instruction = synthetic_buy_instruction(1, 1);
+        let outcome = decoder.decode(&instruction);
+        assert!(matches!(outcome, DecodeOutcome::Decoded(_)));
     }
 }

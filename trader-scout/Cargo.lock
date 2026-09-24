@@ -2602,6 +2602,7 @@ name = "scout-dex-evm"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "scout-api",
  "scout-core",
  "scout-evm",
  "serde",
@@ -2612,6 +2613,7 @@ dependencies = [
 name = "scout-dex-solana"
 version = "0.1.0"
 dependencies = [
+ "scout-api",
  "scout-core",
  "scout-solana",
  "serde",

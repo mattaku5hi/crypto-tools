@@ -6,12 +6,22 @@
 //! support for any specific deployment — `docs/p0/deployment-registry.md`
 //! has zero confirmed entries as of this writing. This module exists to
 //! prove the decode *mechanism* end-to-end (raw log -> typed swap) against
-//! a synthetic fixture, satisfying ARCHITECTURE.md \$1's "первым рабочим
+//! a synthetic fixture, satisfying ARCHITECTURE.md §1's "первым рабочим
 //! slice делаем один подтвержденный EVM DEX" groundwork before a real
 //! deployment is confirmed and wired in.
+//!
+//! Implements `scout_api::TxDecoder` (ADR-008 S4). The `Ok(None)`/`Err`
+//! split from the pre-S4 free-function version is now
+//! `DecodeOutcome::NotMine`/`DecodeOutcome::Malformed` — a log with a
+//! different event signature is `NotMine` (normal: a registry trying
+//! several decoders against one log sees this from every non-matching
+//! decoder), never conflated with "matched this decoder's signature but
+//! its structure is broken" (`Malformed`, invariant #18: never silently
+//! skipped).
 
 use alloy_primitives::{Address, B256, U256};
-use scout_evm::RawEvmLog;
+use scout_api::{DecodeOutcome, DeploymentScope, TxDecoder};
+use scout_core::RawEvmLog;
 
 /// The well-known Uniswap-v2-style `Swap` event signature hash:
 /// `keccak256("Swap(address,uint256,uint256,uint256,uint256,address)")`.
@@ -41,42 +51,67 @@ pub struct DecodedSwap {
     pub log_index: u64,
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum DexDecodeError {
-    #[error("log does not match the v2 Swap event signature")]
-    SignatureMismatch,
-    #[error("log has {actual} topics, expected 3 (signature + sender + to)")]
-    WrongTopicCount { actual: usize },
-    #[error("log data has {actual} bytes, expected 128 (4x uint256)")]
-    WrongDataLength { actual: usize },
+/// A `TxDecoder` for the v2-style `Swap` event shape, scoped to one
+/// `DeploymentScope` (AGENTS.md invariant #16: mandatory at
+/// registration, never a blanket claim across chains/addresses).
+#[derive(Debug, Clone)]
+pub struct V2SwapDecoder {
+    scope: DeploymentScope,
 }
 
-/// Decode a raw log as a Uniswap-v2-shape `Swap` event. Returns a typed
-/// error for anything that does not match this specific event shape —
-/// never a best-effort guess, per AGENTS.md invariant #18 ("Незнакомый
-/// формат... не пропускается молча").
-pub fn decode_v2_style_swap(log: &RawEvmLog) -> Result<DecodedSwap, DexDecodeError> {
-    let signature = log.topics.first().copied();
-    if signature != Some(V2_SWAP_EVENT_SIGNATURE) {
-        return Err(DexDecodeError::SignatureMismatch);
+impl V2SwapDecoder {
+    #[must_use]
+    pub fn new(scope: DeploymentScope) -> Self {
+        Self { scope }
     }
-    if log.topics.len() != 3 {
-        return Err(DexDecodeError::WrongTopicCount {
-            actual: log.topics.len(),
-        });
-    }
-    if log.data.len() != 128 {
-        return Err(DexDecodeError::WrongDataLength {
-            actual: log.data.len(),
-        });
+}
+
+impl TxDecoder<RawEvmLog, DecodedSwap> for V2SwapDecoder {
+    fn scope(&self) -> &DeploymentScope {
+        &self.scope
     }
 
-    let sender_topic = log.topics.get(1).ok_or(DexDecodeError::WrongTopicCount {
-        actual: log.topics.len(),
-    })?;
-    let to_topic = log.topics.get(2).ok_or(DexDecodeError::WrongTopicCount {
-        actual: log.topics.len(),
-    })?;
+    fn decode(&self, log: &RawEvmLog) -> DecodeOutcome<DecodedSwap> {
+        decode_v2_style_swap(log)
+    }
+}
+
+/// Decode a raw log as a Uniswap-v2-shape `Swap` event.
+///
+/// `DecodeOutcome::NotMine` for a log with a different event signature —
+/// this is the expected, common case when scanning a block's mixed logs
+/// and is never treated as an error. `DecodeOutcome::Malformed` for a log
+/// that *does* match the signature but has a broken topic count or data
+/// length — real evidence of an unfamiliar/corrupted format that must
+/// surface (AGENTS.md invariant #18: "Незнакомый формат... не
+/// пропускается молча").
+#[must_use]
+pub fn decode_v2_style_swap(log: &RawEvmLog) -> DecodeOutcome<DecodedSwap> {
+    let signature = log.topics.first().copied();
+    if signature != Some(V2_SWAP_EVENT_SIGNATURE) {
+        return DecodeOutcome::NotMine;
+    }
+    if log.topics.len() != 3 {
+        return DecodeOutcome::Malformed(format!(
+            "log matches v2 Swap signature but has {} topics, expected 3 (signature + sender + to)",
+            log.topics.len()
+        ));
+    }
+    if log.data.len() != 128 {
+        return DecodeOutcome::Malformed(format!(
+            "log matches v2 Swap signature but data has {} bytes, expected 128 (4x uint256)",
+            log.data.len()
+        ));
+    }
+
+    let (Some(sender_topic), Some(to_topic)) = (log.topics.get(1), log.topics.get(2)) else {
+        // Unreachable given the topics.len() == 3 check above, but
+        // avoid indexing_slicing per workspace lint policy rather than
+        // asserting an invariant that's already been checked.
+        return DecodeOutcome::Malformed(
+            "log matches v2 Swap signature but sender/to topics are missing".to_string(),
+        );
+    };
     let sender = address_from_topic(sender_topic);
     let to = address_from_topic(to_topic);
 
@@ -85,7 +120,7 @@ pub fn decode_v2_style_swap(log: &RawEvmLog) -> Result<DecodedSwap, DexDecodeErr
     let amount0_out = u256_from_data_slice(&log.data, 64);
     let amount1_out = u256_from_data_slice(&log.data, 96);
 
-    Ok(DecodedSwap {
+    DecodeOutcome::Decoded(DecodedSwap {
         pool_address: log.address,
         sender,
         amount0_in,
@@ -166,7 +201,8 @@ mod tests {
     #[test]
     fn decodes_a_well_formed_v2_swap_log() {
         let log = synthetic_v2_swap_log(1_000, 0, 0, 950);
-        let decoded = decode_v2_style_swap(&log).unwrap();
+        let outcome = decode_v2_style_swap(&log);
+        let decoded = outcome.decoded().unwrap();
         assert_eq!(decoded.amount0_in, U256::from(1_000_u64));
         assert_eq!(decoded.amount1_out, U256::from(950_u64));
         assert_eq!(decoded.pool_address, Address::from([0xAA; 20]));
@@ -176,29 +212,36 @@ mod tests {
     }
 
     #[test]
-    fn rejects_log_with_wrong_signature() {
+    fn wrong_signature_is_not_mine_not_an_error() {
+        // The actual bug this migration fixes: a log belonging to a
+        // different event must be NotMine, not conflated with
+        // Malformed. A registry scanning a block's mixed logs against
+        // several decoders relies on this distinction to avoid
+        // reporting every non-matching log as a decode failure.
         let mut log = synthetic_v2_swap_log(1, 0, 0, 1);
         log.topics[0] = B256::ZERO;
-        let result = decode_v2_style_swap(&log);
-        assert_eq!(result, Err(DexDecodeError::SignatureMismatch));
+        let outcome = decode_v2_style_swap(&log);
+        assert_eq!(outcome, DecodeOutcome::NotMine);
     }
 
     #[test]
-    fn rejects_log_with_wrong_topic_count() {
-        // AGENTS.md invariant #18: unfamiliar shape must not be silently
-        // skipped or guessed at — it must be a typed error.
+    fn matching_signature_with_wrong_topic_count_is_malformed_not_not_mine() {
+        // AGENTS.md invariant #18: a log that DOES match this decoder's
+        // signature but has a broken structure must surface as
+        // Malformed, never silently treated the same as "not my event."
         let mut log = synthetic_v2_swap_log(1, 0, 0, 1);
         log.topics.pop();
-        let result = decode_v2_style_swap(&log);
-        assert_eq!(result, Err(DexDecodeError::WrongTopicCount { actual: 2 }));
+        let outcome = decode_v2_style_swap(&log);
+        assert!(outcome.is_malformed());
+        assert!(!outcome.is_not_mine());
     }
 
     #[test]
-    fn rejects_log_with_wrong_data_length() {
+    fn matching_signature_with_wrong_data_length_is_malformed() {
         let mut log = synthetic_v2_swap_log(1, 0, 0, 1);
         log.data = alloy_primitives::Bytes::from(vec![0u8; 64]);
-        let result = decode_v2_style_swap(&log);
-        assert_eq!(result, Err(DexDecodeError::WrongDataLength { actual: 64 }));
+        let outcome = decode_v2_style_swap(&log);
+        assert!(outcome.is_malformed());
     }
 
     #[test]
@@ -207,7 +250,7 @@ mod tests {
         // here as the finer-grained action path) must survive decoding
         // unmodified, since the ledger's FIFO ordering depends on them.
         let log = synthetic_v2_swap_log(1, 0, 0, 1);
-        let decoded = decode_v2_style_swap(&log).unwrap();
+        let decoded = decode_v2_style_swap(&log).decoded().unwrap();
         assert_eq!(decoded.block_number, 12_345);
         assert_eq!(decoded.transaction_index, 7);
         assert_eq!(decoded.log_index, 2);
@@ -233,7 +276,26 @@ mod tests {
             transaction_index: 0,
             log_index: 0,
         };
-        let decoded = decode_v2_style_swap(&log).unwrap();
+        let decoded = decode_v2_style_swap(&log).decoded().unwrap();
         assert_eq!(decoded.amount0_in, U256::MAX);
+    }
+
+    #[test]
+    fn v2_swap_decoder_implements_tx_decoder_trait() {
+        // Proves the trait wiring, not just the free function.
+        let scope = DeploymentScope {
+            chain: scout_core::ChainKey {
+                family: scout_core::ChainFamily::Evm,
+                network_id: scout_core::NetworkId::EvmChainId(8453),
+                genesis_identity: scout_core::GenesisIdentity::Unverified,
+            },
+            contract_addresses: vec![scout_core::AddressBytes::Evm([0xAA; 20])],
+            active_from: 0,
+            active_until: None,
+        };
+        let decoder = V2SwapDecoder::new(scope);
+        let log = synthetic_v2_swap_log(1, 0, 0, 1);
+        let outcome = decoder.decode(&log);
+        assert!(matches!(outcome, DecodeOutcome::Decoded(_)));
     }
 }

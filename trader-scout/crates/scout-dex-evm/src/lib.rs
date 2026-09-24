@@ -18,4 +18,4 @@
 
 mod v2_swap;
 
-pub use v2_swap::{DecodedSwap, DexDecodeError, decode_v2_style_swap};
+pub use v2_swap::{DecodedSwap, V2SwapDecoder, decode_v2_style_swap};

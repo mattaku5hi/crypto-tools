@@ -18,9 +18,11 @@
     )
 )]
 
+mod decoder;
 mod error;
 mod history_provider;
 
+pub use decoder::{BlockOrSlot, DecodeOutcome, DeploymentScope, TxDecoder};
 pub use error::ProviderError;
 pub use history_provider::{
     CapabilityStatus, HistoryProvider, ScanEnvelope, ScanPlan, ScanRequest, ScanTask,

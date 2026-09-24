@@ -18,4 +18,6 @@
 
 mod bonding_curve_buy;
 
-pub use bonding_curve_buy::{DecodedBondingCurveBuy, DexDecodeError, decode_bonding_curve_buy};
+pub use bonding_curve_buy::{
+    BondingCurveBuyDecoder, DecodedBondingCurveBuy, decode_bonding_curve_buy,
+};
