@@ -20,8 +20,8 @@ use std::io::{self, BufRead, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Parser;
+use scout_api::ProviderError;
 use scout_app::{InputFormat, JsonlRecord, WriteOutcome, write_lines_to_stdout};
-use scout_core::ScoutError;
 use scout_engine::run_buyer_intersect;
 use scout_providers::UnconfiguredProvider;
 
@@ -94,10 +94,8 @@ fn main() -> ExitCode {
 
     match result {
         Ok(report) => emit_report(&report, &args.format),
-        Err(ScoutError::ConfigurationRequired { port, env_var }) => {
-            eprintln!(
-                "buyer-intersect: configuration required for provider `{port}` (set {env_var})"
-            );
+        Err(ProviderError::ConfigurationRequired { port, detail }) => {
+            eprintln!("buyer-intersect: configuration required for provider `{port}`: {detail}");
             ExitCode::from(4)
         }
         Err(err) => {

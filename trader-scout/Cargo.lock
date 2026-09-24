@@ -847,6 +847,7 @@ name = "buyer-intersect"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "scout-api",
  "scout-app",
  "scout-core",
  "scout-engine",
@@ -2623,6 +2624,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "futures",
+ "scout-api",
  "scout-core",
  "scout-ledger",
  "scout-normalize",
@@ -2680,8 +2682,10 @@ dependencies = [
 name = "scout-providers"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "async-trait",
  "futures",
+ "scout-api",
  "scout-core",
  "scout-evm",
  "scout-scan",

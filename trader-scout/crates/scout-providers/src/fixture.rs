@@ -1,16 +1,18 @@
 //! `FixtureProvider`: reads from `tests/fixtures/` for offline acceptance
 //! tests. See ADR-006 for the mandatory `provenance` block that keeps
 //! synthetic fixtures from being mistaken for real mainnet data
-//! (AGENTS.md's explicit ban on that).
+//! (AGENTS.md's explicit ban on that). Implements
+//! `scout_api::HistoryProvider` (ADR-008 S3).
 
 use std::collections::BTreeMap;
 
 use futures::stream::{self, BoxStream};
-use scout_core::ScoutError;
+use scout_api::{
+    CapabilityStatus, HistoryProvider, ProviderError, ScanEnvelope, ScanPlan, ScanRequest,
+    ScanTask, SourceCapabilities,
+};
+use scout_core::{RawEvmLog, RawPayload};
 use tokio_util::sync::CancellationToken;
-
-use crate::capability::{CapabilityStatus, SourceCapabilities};
-use crate::port::{HistoryProvider, ScanEnvelope, ScanPlan, ScanRequest, ScanTask};
 
 /// Provenance of a fixture. `kind: Mainnet` requires all of
 /// `chain`/`block_or_slot`/`tx`/`captured_at`/`source` to be populated —
@@ -126,7 +128,7 @@ impl HistoryProvider for FixtureProvider {
         caps
     }
 
-    async fn plan(&self, request: &ScanRequest) -> Result<ScanPlan, ScoutError> {
+    async fn plan(&self, request: &ScanRequest) -> Result<ScanPlan, ProviderError> {
         Ok(ScanPlan {
             request_echo: format!("{request:?}"),
             capabilities: self.capabilities(),
@@ -137,18 +139,48 @@ impl HistoryProvider for FixtureProvider {
         &self,
         _task: ScanTask,
         _cancel: CancellationToken,
-    ) -> BoxStream<'_, Result<ScanEnvelope, ScoutError>> {
+    ) -> BoxStream<'_, Result<ScanEnvelope, ProviderError>> {
+        // Placeholder payload until real fixture-backed raw logs exist
+        // (P0.3's ground-truth corpus, blocked on credentials per
+        // ADR-006). Each fixture currently maps to an empty synthetic
+        // EVM log carrying only the fixture's own id in its address
+        // bytes — enough to prove the ScanEnvelope->RawPayload wiring
+        // end to end without claiming any real payload content.
         let envelopes: Vec<_> = self
             .fixtures
             .values()
             .map(|f| {
                 Ok(ScanEnvelope {
-                    raw_payload_description: f.id.clone(),
+                    payload: RawPayload::EvmLog(placeholder_log_for_fixture(&f.id)),
                 })
             })
             .collect();
         Box::pin(stream::iter(envelopes))
     }
+}
+
+/// Builds a syntactically-valid but semantically-empty `RawEvmLog` that
+/// encodes a fixture's id into its address bytes, purely so
+/// `FixtureProvider::scan` has a real `RawPayload` to hand back. Real
+/// fixture-backed payloads (raw captured logs/instructions) land with
+/// P0.3's ground-truth corpus.
+fn placeholder_log_for_fixture(fixture_id: &str) -> RawEvmLog {
+    let mut address_bytes = [0u8; 20];
+    for (slot, byte) in address_bytes.iter_mut().zip(fixture_id.bytes()) {
+        *slot = byte;
+    }
+    RawEvmLog {
+        address: alloy_primitives_address(address_bytes),
+        topics: Vec::new(),
+        data: Vec::new().into(),
+        block_number: 0,
+        transaction_index: 0,
+        log_index: 0,
+    }
+}
+
+fn alloy_primitives_address(bytes: [u8; 20]) -> alloy_primitives::Address {
+    alloy_primitives::Address::from(bytes)
 }
 
 #[cfg(test)]

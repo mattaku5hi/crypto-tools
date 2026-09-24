@@ -19,8 +19,10 @@
 //! `scout-engine` at all (ADR-007).
 
 use futures::StreamExt;
-use scout_sdk::providers::{FixtureProvider, HistoryProvider, ScanRequest, ScanTask};
-use scout_sdk::{AddressBytes, AssetKey, ChainFamily, ChainKey, GenesisIdentity, NetworkId};
+use scout_sdk::providers::{FixtureProvider, HistoryProvider, ScanEnvelope, ScanRequest, ScanTask};
+use scout_sdk::{
+    AddressBytes, AssetKey, ChainFamily, ChainKey, GenesisIdentity, NetworkId, RawPayload,
+};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -88,7 +90,8 @@ async fn main() {
     while let Some(item) = stream.next().await {
         match item {
             Ok(envelope) => {
-                println!("received envelope: {}", envelope.raw_payload_description);
+                let payload_label = describe_payload(&envelope);
+                println!("received envelope: {payload_label}");
                 consumed += 1;
             }
             Err(err) => {
@@ -111,4 +114,20 @@ async fn main() {
     // library call returns — the library did not take over the
     // process.
     println!("embedded_scanner example: host application continues after scan.");
+}
+
+/// A minimal, human-readable label for whatever `RawPayload` variant a
+/// `HistoryProvider` returned — this example only needs to prove the
+/// envelope carries real decodable data, not implement a full decoder.
+fn describe_payload(envelope: &ScanEnvelope) -> String {
+    match &envelope.payload {
+        RawPayload::EvmLog(log) => format!("EvmLog(address={:?})", log.address),
+        RawPayload::EvmTransaction(tx) => format!("EvmTransaction(hash={:?})", tx.hash),
+        RawPayload::SolanaInstruction(ix) => {
+            format!("SolanaInstruction(program_id={:?})", ix.program_id)
+        }
+        RawPayload::SolanaTransaction(tx) => {
+            format!("SolanaTransaction(slot={})", tx.slot)
+        }
+    }
 }

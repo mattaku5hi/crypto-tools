@@ -16,9 +16,9 @@
 use std::collections::BTreeMap;
 
 use futures::StreamExt as _;
-use scout_core::{AssetKey, ScoutError, WalletKey};
+use scout_api::{HistoryProvider, ProviderError, ScanRequest, ScanTask};
+use scout_core::{AssetKey, WalletKey};
 use scout_normalize::{NetDeltaInput, classify_buy};
-use scout_providers::{HistoryProvider, ScanRequest, ScanTask};
 use tokio_util::sync::CancellationToken;
 
 /// One wallet's qualifying hit count against the input token set.
@@ -56,7 +56,7 @@ pub async fn run_buyer_intersect(
     wallet_token_flows: &BTreeMap<WalletKey, BTreeMap<AssetKey, NetDeltaInput>>,
     input_tokens: &[AssetKey],
     min_token_hits: usize,
-) -> Result<BuyerIntersectReport, ScoutError> {
+) -> Result<BuyerIntersectReport, ProviderError> {
     // Exercise the provider's plan() so an unconfigured provider (per
     // ADR-006's UnconfiguredProvider) surfaces ConfigurationRequired
     // here, exactly as a live run would — this function is not
