@@ -1,0 +1,8 @@
+[package]
+name = "trading-dashboard"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+description = "Read-only HTML status view for separately hosted trading systems"
+
+[dependencies]
