@@ -1,0 +1,14 @@
+/target
+/**/target
+Cargo.lock.bak
+
+# Secrets — provider API keys never get committed. See docs/PROVIDERS.md
+# for the env var names each CLI/probe reads.
+.env
+.env.*
+!.env.example
+*.local
+
+# Local scratch / probe output that may embed response bodies
+/.scout-data
+/tmp
