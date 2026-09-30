@@ -66,6 +66,20 @@ closed-ATA coverage before either is selected — neither is currently `live_ver
 
 ## BSC mainnet (chain_id 56)
 
+**Blockscout does not cover BSC.** Verified 2026-09-27: direct registry lookup
+`https://chains.blockscout.com/api/chains/56` returns `{"error":"Chain not found"}`;
+a full dump of Blockscout's 712-chain registry contains zero matches for
+"bnb"/"bsc"/"binance smart" in any chain name; both plausible subdomains
+(`bsc.blockscout.com`, `bnb.blockscout.com`) return HTTP 404. BNB Chain's
+canonical explorer is BscScan (Etherscan family), which is why Blockscout —
+despite covering 117+ chains including Base and Robinhood — never added it.
+This means **there is currently no free indexed per-address history provider
+for BSC** in this workspace's candidate list; only the raw-RPC path
+(`eth_getLogs` via dRPC/Ankr/Chainstack/GetBlock) remains, with the chunking
+constraints already documented below. This is a real capability gap, not a
+vendor preference — record it as such in P0.1, don't paper over it by
+assuming Blockscout parity with Base/Robinhood.
+
 Key fact: base EVM JSON-RPC has **no per-address history method at all** (S05) — the only mechanism is
 `eth_getLogs` over a block range, filtered by topics. Public BSC endpoints disable this method entirely
 (S03), which blocks *transport*, not a specific vendor's feature — **any** private RPC endpoint
@@ -91,8 +105,15 @@ call).
 | Provenance | documented | S03 | dated 2026-09-21 |
 
 **Candidates to measure in P0.1** (unverified): BscScan/Etherscan V2 API for `WalletActivity` via
-`account/txlist`+`tokentx` (free tier, per user's research); any of Ankr/Chainstack/dRPC/GetBlock for
-raw `eth_getLogs`-based `TokenMarketActivity` and verification of the indexed history's completeness.
+`account/txlist`+`tokentx` — **Etherscan closed free access to BSC (and Base/OP/Avalanche)** as of
+late 2026 per its own pricing page (`etherscan.io/api/pricing`: free tier is now "selected chains,
+90% coverage", BSC/Base require the paid Lite tier at $49/mo+); this workspace has not paid for it
+and treats it as unavailable on free tier until re-verified. Blockscout does not cover BSC (see
+above, verified 2026-09-27) — it is not a substitute here the way it is for Base/Robinhood. Remaining
+candidates for raw `eth_getLogs`-based `TokenMarketActivity`: any of Ankr/Chainstack/dRPC/GetBlock.
+No free indexed-history candidate for BSC `WalletActivity` currently exists in this matrix; finding
+one (or building a fallback from chunked `eth_getLogs` + address-mention filtering) is an open P0.1
+gap, not a solved-but-unmeasured row.
 Alchemy's actual BSC support on its free tier is itself unverified and should not be assumed — its
 distinguishing EVM feature (`alchemy_getAssetTransfers`) has a free BscScan/Etherscan-equivalent, so it
 carries no assumed advantage over the other raw-RPC candidates here pending measurement.

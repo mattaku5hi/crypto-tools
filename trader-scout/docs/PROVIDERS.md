@@ -12,20 +12,25 @@ write time, not a guarantee this workspace has measured.
 
 ## Order to register in (cheapest -> most useful first)
 
-### 1. Etherscan V2 — one key, all EVM chains including BSC
+### 1. Blockscout PRO API — one key, Base + Robinhood Chain (NOT BSC)
 
-- Register: https://etherscan.io/register, then https://etherscan.io/myapikey
-- One API key works across every EVM chain Etherscan V2 supports (BSC,
-  Base, mainnet, ...) via a `chainid` query param — this is what closes
-  the `eth_getLogs`-retention gap that no RPC-only vendor solves cheaply.
-- Env var: `SCOUT_ETHERSCAN_API_KEY` (not yet wired into
-  `config/scout.example.toml` — P0.1 follow-up; today the EVM history
-  port only has the RPC-side env var below).
-- What it unlocks: `txlist`/`tokentx`-style indexed per-address history
-  for BSC/Base, which `docs/p0/source-capability-matrix.md` identifies
-  as the actual bottleneck (not raw RPC access).
+- Register: https://dev.blockscout.com (free API key)
+- Covers Base (`chain_id=8453`) and Robinhood Chain (`chain_id=4663`) on one
+  key, 100K credits/day, 5 RPS free tier — Etherscan-compatible
+  `module=account&action=txlist`/`tokentx` shape.
+- **Does not cover BSC.** Verified 2026-09-27 against Blockscout's own chain
+  registry (`chains.blockscout.com/api/chains`) — BSC/BNB is absent from all
+  712 listed chains. Etherscan V2 also no longer offers free BSC/Base access
+  (its free tier moved to "selected chains" only in late 2026) — do not
+  register there expecting free BSC coverage; see `docs/p0/source-capability-matrix.md`
+  BSC section for the current state of that gap.
+- Env var: `SCOUT_EVM_HISTORY_API_KEY` (shared across EVM history providers
+  today — see the mapping table below; a per-chain split may be needed once
+  a BSC-specific vendor is chosen).
+- Robinhood Chain caveat: `txlistinternal` and `eth_getLogs` are capped at
+  1,000 records per call — paginate backfills in batches of 1,000 or fewer.
 
-### 2. One EVM RPC provider — dRPC or Ankr (raw `eth_getLogs`)
+### 2. One EVM RPC provider — dRPC or Ankr (raw `eth_getLogs`, all three EVM chains)
 
 - dRPC: https://drpc.org (sign up, create a project, copy the HTTPS
   endpoint for the chain you need).

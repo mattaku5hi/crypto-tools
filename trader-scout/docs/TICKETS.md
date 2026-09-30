@@ -49,6 +49,23 @@ Legend: `done` | `in-progress` | `blocked` | `todo`
 Deferred until P0-P3 gates are met; not yet broken into sub-tasks. See ROADMAP.md for the phase
 descriptions this graph will expand into.
 
+## Cohort pipeline gaps surfaced 2026-09-27 (insider redefinition)
+
+Restricting "insider" to buyers entering before a pump on an *already* high-cap/graduated token
+(not the launch segment) is a real improvement — it removes the bot/sniper noise floor. It also
+surfaces two structural gaps that must be closed before this cohort can produce output, not just
+configured around:
+
+| ID | Task | Status | Blocked by | Notes |
+|---|---|---|---|---|
+| P4.1 | Solana AMM swap decoder (Raydium/Meteora/Orca) | todo | credentials, P0.2 | The only existing Solana decoder is a synthetic bonding-curve *buy*. A pump on an already-migrated token happens on an AMM pool, not the bonding curve — this decoder does not exist yet and nothing currently reads AMM swaps |
+| P4.2 | Pump-leg detection from own decoded swap reserves | todo | P4.1 | "Before the pump" requires a price/liquidity time series derived from our own reserve deltas (invariant #16: never from an aggregator). No such series exists; depends on P4.1's output |
+| P4.3 | Per-cohort quality gate overrides | todo | scout-analytics | `config/scout.example.toml`'s global `min_closed_episodes = 20` would reject most real insiders (5-10 episodes is typical for a concentrated inserter). Quality gates must become per-cohort-profile, not one global threshold, or the pipeline structurally cannot surface this cohort |
+| P4.4 | CEX/bridge hot-wallet exclusion list (Solana) | todo | credentials | Funder-clustering for Sybil linkage is not usable without first excluding known exchange/bridge funding addresses — without it, most wallets cluster into one blob via a shared CEX hot wallet, producing false positive linkage, not true Sybil detection |
+| P4.5 | Live polling `HistoryProvider`-adjacent port + watermark resume | todo | P2.3 (done) | `HistoryProvider::scan()` is a bounded, terminating scan, not a subscription with reconnect/resume. A distinct trait is needed for continuous watchlist polling, built on the durable watermark primitive `scout-storage` already provides |
+| P4.6 | Honor `ProviderError::RateLimited { retry_after }` | todo | — | The type exists (`scout-api::error::ProviderError`) but nothing in `scout-engine`/CLI callers reads it yet — no backoff currently happens on 429 |
+| P4.7 | Per-provider budget guard (`ProviderError::BudgetExhausted`) | todo | P0.6 (measured costs) | Free-tier credit ceilings must be enforced before a call, not discovered via a failed request mid-run; new typed error mapping to exit 4, same honest-refusal pattern as `ConfigurationRequired` |
+
 ## Current frontier (tasks ready to start right now, no credentials needed)
 
 - `scout-storage`: SQLite WAL embedded store (P2.3), independent of credentials
