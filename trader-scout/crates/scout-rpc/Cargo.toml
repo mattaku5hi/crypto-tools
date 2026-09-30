@@ -11,7 +11,13 @@ workspace = true
 
 [dependencies]
 scout-core.workspace = true
+scout-api.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
