@@ -3260,10 +3260,12 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "async-trait",
+ "bs58",
  "futures",
  "scout-api",
  "scout-core",
  "scout-evm",
+ "scout-rpc",
  "scout-scan",
  "scout-solana",
  "serde",
@@ -3271,6 +3273,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "wiremock",
 ]
 
 [[package]]

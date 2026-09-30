@@ -3,9 +3,11 @@
 Status: living document, re-verify whenever a dependency/endpoint/claim changes (per SOURCES.md's
 closing note and ADR-006).
 
-Verified on 2026-09-22. **This workspace currently has zero provider API credentials configured.**
+Verified on 2026-09-22. Live provider measurements added 2026-09-27 — see
+`docs/p0/measurements/2026-09-27-helius-blockscout.md` for full request/response
+detail behind every `live_verified` row below.
 Per ADR-006, no row below may claim `live_verified` until an actual successful call against a live
-endpoint is made and dated. Everything is `documented` (read from official docs) or `unknown`
+endpoint is made and dated. Everything else is `documented` (read from official docs) or `unknown`
 (not yet investigated).
 
 Legend: `documented` | `fixture_verified` | `live_verified` | `unsupported` | `unknown`
@@ -49,14 +51,16 @@ provider's raw-history completeness and retention matter far more here than its 
 | TokenMarketActivity (token → historical buyers) | unknown | — | Requires pool/launch discovery across bonding-curve + AMM migrations; no provider chosen yet |
 | WalletActivity (wallet → trading history) | unknown | — | Candidates to measure: Helius (free tier), Shyft ($0/unlimited credits per user's research, 10 RPS). Decisive factor is retention depth + closed-ATA coverage, not parsed-tx convenience (see above) |
 | Raw transactions/receipts | documented | S06 getSignaturesForAddress, S07 getTransaction | Standard RPC; `getSignaturesForAddress` is account-key mention search, not a full mint index |
+| Historical data extraction (per-address, batched) | **live_verified** (2026-09-27) | Helius `getTransactionsForAddress` | Confirmed working on free tier, both `signatures` and `full` detail modes — full mode returns complete tx data in one call at 10 credits/100 tx (vs. 1 credit/tx for `getTransaction`), a 10x cost reduction for backfill. See measurements file |
 | Historical state | unknown | — | Not needed for v1 spot-swap scope beyond tx-level data |
 | Native/internal flows | documented | S07 getTransaction | pre/post native balances in tx meta |
 | Historical token-account ownership | unknown | — | Current `getTokenAccountsByOwner` does not recover closed/reassigned accounts; needs token/pool index or historical owner-aware indexer |
 | Prices (historical) | unknown | — | No price source selected yet; aggregators (Birdeye/GeckoTerminal) are cross-check candidates only, never a basis-price source of truth |
 | Finality | documented | Solana docs (commitment levels) | finalized vs confirmed; slot timestamp nullable |
-| Earliest retained history | unknown | — | **This is the deciding measurement for provider choice** — must be measured per candidate, not assumed from a pricing page |
+| Earliest retained history | **live_verified (partial)** (2026-09-27) | Helius `getBlock` at slot 1,000,000 | Real block (blockhash present) returned at slot 1M (~March 2020, early mainnet). Confirms free tier is not shallow-cut at this depth — does **not** by itself prove full genesis-to-present retention; only this one point was tested |
 | Paging | documented | S06/S07 | signature-based pagination |
-| Rate limits / billing | unknown | — | No provider account exists yet; free-tier RPS/credit numbers from third-party comparisons are unverified until measured directly |
+| Rate limits / billing | unknown | — | Actual credit consumption at scale not independently metered; documented per-method costs used as-is (10 credits/100 full tx via `getTransactionsForAddress`) |
+| Webhooks (management endpoint) | **live_verified** (2026-09-27) | Helius `GET /v0/webhooks` | `200 OK`, empty list (not an auth/plan error) — endpoint live on free tier. Webhook *creation* (address-count limits, churn cost) not tested — deprioritized while watchlist monitoring is on hold |
 | Provenance | documented | S06-S10 | citations dated 2026-09-21 in SOURCES.md |
 
 **Candidates to measure in P0.1** (unverified, from user research, not yet confirmed against live
@@ -118,32 +122,50 @@ Alchemy's actual BSC support on its free tier is itself unverified and should no
 distinguishing EVM feature (`alchemy_getAssetTransfers`) has a free BscScan/Etherscan-equivalent, so it
 carries no assumed advantage over the other raw-RPC candidates here pending measurement.
 
+**Live-verified 2026-09-27**: Blockscout PRO API `chain_id=56` returns an explicit
+`{"error":"Network not supported","source":"internal"}` — confirmed **unsupported**, a hard
+rejection, not a timeout or ambiguous failure. This row is now `unsupported` for Blockscout
+specifically, not merely `unknown`; the broader BSC `WalletActivity` gap (no free indexed-history
+candidate at all) remains open.
+
 ## Base mainnet (chain_id 8453)
 
 | Capability | Status | Source | Notes |
 |---|---|---|---|
 | TokenMarketActivity | unknown | — | No confirmed DEX deployment registry entry yet (P0.2) |
-| WalletActivity | unknown | — | No indexed wallet-history provider configured |
-| Raw transactions/receipts/logs | documented | S04, S05 | Public `mainnet.base.org` documented as connectable; log-scan capability at scale unverified |
+| WalletActivity (indexed) | **live_verified** (2026-09-27) | Blockscout PRO API, `chain_id=8453` | `200 OK` real balance returned. Free fallback also confirmed: public `base.blockscout.com/api` (no key required, same Etherscan-compatible shape) — same integration code if PRO's announced Oct 1 free-tier cutoff for Base takes effect |
+| Raw transactions/receipts/logs | **live_verified** (2026-09-27) | `eth_getLogs` on public `mainnet.base.org` | Real USDC Transfer logs returned for latest block, no key required — confirms point-indexing (scan a specific pool/token's logs, not a full chain index) works today on the free public RPC |
 | Historical state (archive) | unknown | — | Not verified against any specific endpoint |
 | Fees | documented | S15 | L2 execution + L1 fee components documented; adapter not yet implemented |
 | Prices | unknown | — | No source selected |
 | Finality | documented | Base docs (via S04) | OP-stack-style finality; not yet detailed here |
 | Rate limits / billing | unknown | — | Public endpoint only; no paid provider configured |
-| Provenance | documented | S04, S15 | dated 2026-09-21 |
+| Provenance | documented | S04, S15; live probes 2026-09-27 | dated 2026-09-21 (docs) / 2026-09-27 (live) |
 
 ## Robinhood Chain mainnet (chain_id 4663)
 
 | Capability | Status | Source | Notes |
 |---|---|---|---|
 | TokenMarketActivity | unknown | — | No confirmed DEX deployment on this chain as of this writing; likely remains `unknown`/`unsupported` through P0 given the chain's youth (ARCHITECTURE.md §5 anticipates this) |
-| WalletActivity | unknown | — | No indexed provider identified |
+| WalletActivity (indexed) | **live_verified** (2026-09-27) | Blockscout PRO API, `chain_id=4663` | `200 OK` real balance returned for a valid 40-hex-char address |
 | Raw transactions/receipts | documented | S01, S02 | Arbitrum-compatible L2 infra documented; no independent capability verification done |
 | Fees | documented | S16 | Separate fee model documented; must not copy Base's formula without verification |
 | Finality | unknown | — | Not yet detailed |
 | Testnet identity (chain_id 46630) | documented | S01 | Must never be conflated with mainnet 4663 in any scan or report |
-| Rate limits / billing | unknown | — | Public endpoint only |
-| Provenance | documented | S01, S02, S16 | dated 2026-09-21 |
+| Rate limits / billing | unknown | — | `txlistinternal`/`eth_getLogs` capped at 1,000 records/call per Blockscout's own docs — paginate backfills accordingly |
+| Provenance | documented | S01, S02, S16; live probe 2026-09-27 | dated 2026-09-21 (docs) / 2026-09-27 (live) |
+
+## Cross-network discovery layer — Codex (`graph.codex.io`)
+
+Not a `HistoryProvider` candidate (Tier 2 by this matrix's own taxonomy — pre-computed
+market data, never a ledger source of truth per invariant #16). Measured 2026-09-27 for
+its usefulness as a discovery-candidate generator only.
+
+| Capability | Status | Source | Notes |
+|---|---|---|---|
+| Network coverage (all 4 target chains) | **live_verified** (2026-09-27) | Codex `getNetworks` | Confirmed present: Solana (`1399811149`), BNB (`56`), Base (`8453`), **Robinhood (`4663`)** — the highest-uncertainty one, resolved cleanly |
+| `filterTokens` (token discovery/screening) | **live_verified, with caveats** (2026-09-27) | Codex `filterTokens` | Works, but: (1) raw `marketCap` can be wildly wrong for zero-liquidity tokens (one result showed a $2.17 trillion MC on zero liquidity) — always pair with `liquidity: {gte: ...}`; (2) result-level `createdAt` is the token's **current top pair's** creation time, not the token's own creation — a stale token with a fresh pool can false-positive into an "age" filter; (3) `limit` caps at 200 per call, but the connection's `count` field reflects the true filtered total independent of `limit`, so volume can be measured without paginating the full result set |
+| `tokenTopTraders` (per-token trader list) | **unsupported on free tier** (2026-09-27) | Codex schema (`docs.codex.io/api-reference/queries/tokentoptraders.md`) | Confirmed via the published schema: `# Requires a Growth or Enterprise plan.` — not reachable on the "Almost free" tier by any query shape. Per-wallet candidate extraction from a token still requires our own decode path, not Codex |
 
 ## Cross-cutting notes
 

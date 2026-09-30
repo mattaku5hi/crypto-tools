@@ -14,9 +14,11 @@
 )]
 
 mod fixture;
+mod helius;
 mod unconfigured;
 
 pub use fixture::{Fixture, FixtureProvenance, FixtureProvider};
+pub use helius::HeliusProvider;
 pub use scout_api::{
     CapabilityStatus, HistoryProvider, ProviderError, ScanEnvelope, ScanPlan, ScanRequest,
     ScanTask, SourceCapabilities,
