@@ -646,18 +646,17 @@ mod tests {
     }
 
     // Real transaction (signature 5XpoGEhyuhQPcSMc8qJ6vw83LrGpLkKuEeXZcn48Q7tJsho1c92cgxqhMVNsuGiU51UT3yFGMT5SVKa9YoXjZfiA,
-    // slot 452025725) with 11 static accountKeys and 5
-    // addressTableLookups (15 writable + 22 readonly = 37 ALT-resolved
-    // addresses, 48 total). Captured in
+    // slot 452025725, transactionIndex 1105, blockTime 1790787664) captured
+    // live via HeliusProvider and saved at
     // docs/p0/measurements/fixtures/pump_mint1_full.json (data[2]).
-    // Top-level instruction[4] (program 58PMEdU...) references account
-    // index 29, which is only valid in the concatenated
-    // static+writable+readonly space (static alone has 11 entries,
-    // 0..10) -- this specific index was chosen because it sits inside
-    // the ALT-resolved range, so decoding it correctly only works if
-    // account_keys actually gets extended with loadedAddresses. A test
-    // built on an index still inside 0..10 would pass even with the
-    // pre-ALT-fix code, silently proving nothing.
+    // TRIMMED EXCERPT, not a verbatim capture: only 1 of 6 top-level
+    // instructions is retained (instruction[4], the one whose accounts
+    // reach into the ALT range), and `meta` is reduced to just
+    // `loadedAddresses` (the only field this test exercises). The
+    // `addressTableLookups` array below IS copied verbatim from the
+    // real record -- its indices sum to exactly 15 writable + 22
+    // readonly, matching `loadedAddresses` below byte-for-byte; a
+    // fabricated lookup table would not satisfy that invariant.
     fn alt_transaction_body() -> serde_json::Value {
         json!({
             "jsonrpc": "2.0",
@@ -684,7 +683,31 @@ mod tests {
                                 {"programIdIndex": 6, "accounts": [0, 0, 8, 29, 30, 14, 13], "data": "3"}
                             ],
                             "addressTableLookups": [
-                                {"accountKey": "3vwxVdZD5vQHxQkRoNvbS4XZbSqwBUmU3GQyuPNysca7", "writableIndexes": [1], "readonlyIndexes": []}
+                                {
+                                    "accountKey": "3vwxVdZD5vQHxQkRoNvbS4XZbSqwBUmU3GQyuPNysca7",
+                                    "writableIndexes": [183, 249, 176, 92, 216],
+                                    "readonlyIndexes": [208, 95, 134, 50, 51, 108, 55, 173, 186, 139, 187, 94, 88, 185]
+                                },
+                                {
+                                    "accountKey": "8sfehAX22hJh9tk4c19Jmni8yMJYK7M7XfoWAGzBNstE",
+                                    "writableIndexes": [18, 10, 17],
+                                    "readonlyIndexes": []
+                                },
+                                {
+                                    "accountKey": "9AKCoNoAGYLW71TwTHY9e7KrZUWWL3c7VtHKb66NT3EV",
+                                    "writableIndexes": [223, 23, 219],
+                                    "readonlyIndexes": [225, 22]
+                                },
+                                {
+                                    "accountKey": "9rVP9Ly5RC1nix3WDm5QgkoWJbxV7Kteth1KHtYk5hT9",
+                                    "writableIndexes": [],
+                                    "readonlyIndexes": [173, 10, 172]
+                                },
+                                {
+                                    "accountKey": "FJ9UStVLv75bt3C3NxnVWREkEeqJij4N8bfx6VNv55oj",
+                                    "writableIndexes": [160, 157, 168, 164],
+                                    "readonlyIndexes": [175, 132, 173]
+                                }
                             ]
                         }
                     },
@@ -736,7 +759,7 @@ mod tests {
                     "version": 0,
                     "slot": 452025725,
                     "transactionIndex": 1105,
-                    "blockTime": 1790800000
+                    "blockTime": 1790787664
                 }],
                 "paginationToken": null,
             }

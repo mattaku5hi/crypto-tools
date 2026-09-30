@@ -1,33 +1,64 @@
 //! Generic bonding-curve-shape "buy" instruction decoder.
 //!
-//! Scope note (AGENTS.md invariant #16): this decodes a generic
+//! Scope note (AGENTS.md invariant #16): this decodes a **synthetic**
 //! bonding-curve buy instruction shape — an 8-byte discriminator
-//! (Anchor-style) followed by a little-endian u64 SOL-in amount and a
-//! little-endian u64 minimum-tokens-out amount, with accounts
+//! followed by a little-endian u64 "sol_in" amount and a little-endian
+//! u64 "min_tokens_out" amount, with accounts
 //! [buyer, bonding_curve, mint, buyer_token_account] in that positional
-//! order. This mirrors the publicly documented shape of Solana
-//! launch-style bonding-curve programs (S13 in SOURCES.md) but does
-//! **not** claim support for any specific deployed program —
+//! order. **This shape has not been confirmed against a live pump.fun
+//! bonding-curve transaction.** A live census of 10 real transactions
+//! (docs/p0/deployment-registry.md, "Solana census findings") found:
+//!
+//! - The bonding-curve program (`6EF8rr...`) never appeared in the
+//!   sample — both sampled mints had already migrated to AMM trading,
+//!   so this module's actual target instruction shape remains unseen
+//!   in live data.
+//! - The real pump.fun `buy` instruction (per public IDL/decompiled
+//!   sources referenced during that census, not re-verified here)
+//!   takes `token_amount` then `max_sol_cost` — the **inverse** order
+//!   and inverse semantics of this module's `sol_in`/`min_tokens_out`.
+//! - `accounts[0]` in a real pump.fun-family instruction is commonly
+//!   the fee payer/signer, not the buyer. No positional buyer slot has
+//!   been verified for any real deployment; the only method
+//!   demonstrated so far is matching `postTokenBalances[].owner` for
+//!   the account whose balance increased for the target mint.
+//!
 //! `docs/p0/deployment-registry.md` has zero confirmed entries. This
 //! module proves the decode *mechanism* (raw instruction -> typed buy)
-//! against a synthetic fixture, mirroring what scout-dex-evm's
-//! v2_swap.rs does for the EVM vertical slice.
+//! against a synthetic fixture only, mirroring what scout-dex-evm's
+//! v2_swap.rs does for the EVM vertical slice — it does not claim to
+//! decode any specific deployed program's actual `buy` instruction.
 //!
 //! Implements `scout_api::TxDecoder` (ADR-008 S4). `DecodeOutcome::NotMine`
-//! for an instruction with a different discriminator (normal — a
-//! registry trying several decoders against one instruction sees this
-//! from every non-matching decoder); `DecodeOutcome::Malformed` for an
-//! instruction that matches the discriminator but has a broken account
-//! count or data length (invariant #18: never silently skipped).
+//! for an instruction with a different discriminator, OR for an
+//! instruction whose `program_id` is not in this decoder's
+//! `DeploymentScope::contract_addresses` (see the false-positive
+//! regression test below — this gate is load-bearing, not cosmetic).
+//! `DecodeOutcome::Malformed` for an instruction that matches both
+//! gates but has a broken account count or data length (invariant #18:
+//! never silently skipped).
 
 use scout_api::{DecodeOutcome, DeploymentScope, TxDecoder};
 use scout_core::{RawSolanaInstruction, SolanaPubkey};
 
 /// This module's own 8-byte discriminator constant for the synthetic
-/// "buy" instruction shape it decodes. A real deployment's actual
-/// discriminator (derived from its IDL, e.g. Anchor's
-/// `sha256("global:buy")[..8]`) is a P0.2 concern — pinning a made-up
-/// constant here does not claim any specific program uses it.
+/// "buy" instruction shape it decodes. This is **not** an arbitrary
+/// made-up value: it is `sha256("global:buy")[..8]`, the standard
+/// Anchor instruction-discriminator derivation for a global `buy`
+/// instruction name, and would be the correct discriminator *if* a
+/// deployment used Anchor's default naming for its buy instruction.
+///
+/// However, a live census (docs/p0/deployment-registry.md) found this
+/// exact 8-byte value also heads an unrelated 24-byte Anchor
+/// `#[event_cpi]` self-invoked event log under the PumpSwap AMM
+/// program (`pAMMBay6...`) — a coincidental collision in the 8-byte
+/// discriminator space, carrying a balance-delta payload completely
+/// unrelated to a buy instruction's arguments. Discriminator match
+/// alone is therefore not sufficient to claim "Decoded" on real data;
+/// `decode()`'s program-id gate against `DeploymentScope` exists
+/// specifically to prevent this decoder from firing on that collision
+/// (or any other program that happens to share these 8 bytes) until a
+/// real deployment address is confirmed and registered.
 pub const BUY_INSTRUCTION_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
 
 /// A decoded bonding-curve buy: SOL paid in, minimum tokens expected
@@ -68,6 +99,22 @@ impl TxDecoder<RawSolanaInstruction, DecodedBondingCurveBuy> for BondingCurveBuy
     }
 
     fn decode(&self, instruction: &RawSolanaInstruction) -> DecodeOutcome<DecodedBondingCurveBuy> {
+        // Program-id gate (AGENTS.md invariant #16): without this, a
+        // matching discriminator alone would fire on ANY program,
+        // including an unrelated one that happens to collide on the
+        // same 8 bytes -- which is exactly what was observed in live
+        // data (see the false-positive regression test below). An
+        // empty `contract_addresses` (the honest state until P0.2 has
+        // a confirmed deployment) means NOTHING can ever decode here,
+        // by design.
+        let program_matches = self
+            .scope
+            .contract_addresses
+            .iter()
+            .any(|addr| matches!(addr, scout_core::AddressBytes::Solana(p) if *p == instruction.program_id));
+        if !program_matches {
+            return DecodeOutcome::NotMine;
+        }
         // Position (slot/tx index) is not known to a decoder in
         // isolation — the caller (engine/registry) attaches it from the
         // transaction context. This trait-based entry point decodes the
@@ -281,5 +328,140 @@ mod tests {
         let instruction = synthetic_buy_instruction(1, 1);
         let outcome = decoder.decode(&instruction);
         assert!(matches!(outcome, DecodeOutcome::Decoded(_)));
+    }
+
+    #[test]
+    fn decoder_rejects_matching_discriminator_from_an_unregistered_program() {
+        // Same discriminator, same well-formed instruction shape as the
+        // "Decoded" case above -- the only difference is program_id is
+        // NOT in the decoder's DeploymentScope. Must be NotMine. This
+        // is what actually proves the program-id gate exists: the
+        // "implements_tx_decoder_trait" test above uses a program_id
+        // that IS registered, so it would also pass with no gate at
+        // all.
+        let scope = DeploymentScope {
+            chain: scout_core::ChainKey {
+                family: scout_core::ChainFamily::Solana,
+                network_id: scout_core::NetworkId::SolanaCluster(
+                    scout_core::SolanaCluster::Mainnet,
+                ),
+                genesis_identity: scout_core::GenesisIdentity::Unverified,
+            },
+            contract_addresses: vec![scout_core::AddressBytes::Solana([0xAA; 32])],
+            active_from: 0,
+            active_until: None,
+        };
+        let decoder = BondingCurveBuyDecoder::new(scope);
+        let mut instruction = synthetic_buy_instruction(1, 1);
+        instruction.program_id = [0xBB; 32]; // not in contract_addresses
+        let outcome = decoder.decode(&instruction);
+        assert_eq!(outcome, DecodeOutcome::NotMine);
+    }
+
+    #[test]
+    fn real_pumpswap_event_cpi_payload_is_not_decoded_as_a_buy() {
+        // Regression test built from REAL bytes captured live (see
+        // docs/p0/deployment-registry.md, "Solana census findings").
+        // discriminator 66063d1201daebea == sha256("global:buy")[..8]
+        // -- exactly BUY_INSTRUCTION_DISCRIMINATOR -- but these 24
+        // bytes are an Anchor #[event_cpi] self-invoked event log
+        // emitted by the PumpSwap AMM program (pAMMBay6...), not a buy
+        // instruction. The trailing 16 bytes decode as two little-
+        // endian u64s (206321, 10) matching a token-balance delta
+        // observed in that same live transaction, not
+        // (sol_in, min_tokens_out).
+        //
+        // Without the program-id gate, this would incorrectly return
+        // DecodeOutcome::Decoded with fabricated economics (sol_in =
+        // 206321, min_tokens_out = 10) handed to the ledger as if it
+        // were a real buy. The gate must reject it because the AMM's
+        // program id is not this decoder's registered pump.fun
+        // bonding-curve deployment.
+        let scope = DeploymentScope {
+            chain: scout_core::ChainKey {
+                family: scout_core::ChainFamily::Solana,
+                network_id: scout_core::NetworkId::SolanaCluster(
+                    scout_core::SolanaCluster::Mainnet,
+                ),
+                genesis_identity: scout_core::GenesisIdentity::Unverified,
+            },
+            // Deliberately NOT the real PumpSwap AMM program id --
+            // this decoder has no confirmed deployment to register
+            // (docs/p0/deployment-registry.md has zero qualifying
+            // entries), so contract_addresses stays empty/placeholder,
+            // which alone is enough to prove the gate rejects this.
+            contract_addresses: vec![scout_core::AddressBytes::Solana([0xAA; 32])],
+            active_from: 0,
+            active_until: None,
+        };
+        let decoder = BondingCurveBuyDecoder::new(scope);
+        let mut data = Vec::with_capacity(24);
+        data.extend_from_slice(&BUY_INSTRUCTION_DISCRIMINATOR);
+        data.extend_from_slice(&hex_decode("f1250300000000000a00000000000000"));
+        let instruction = RawSolanaInstruction {
+            // Real PumpSwap AMM program id observed in the census.
+            program_id: decode_pubkey_for_test("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"),
+            accounts: vec![[0x11; 32], [0x22; 32], [0x33; 32], [0x44; 32]],
+            data,
+            instruction_index: 7,
+        };
+        let outcome = decoder.decode(&instruction);
+        assert_eq!(
+            outcome,
+            DecodeOutcome::NotMine,
+            "matching discriminator from an unregistered program must never be Decoded"
+        );
+    }
+
+    /// Minimal base58 decode for a Solana pubkey, test-only (avoids a
+    /// bs58 dev-dependency just for this one regression test). Uses
+    /// `u32::try_from`/`u8::try_from` throughout — workspace lint
+    /// policy denies `as` conversions even in test code.
+    fn decode_pubkey_for_test(s: &str) -> SolanaPubkey {
+        const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        let mut bytes = vec![0u8; 1];
+        for c in s.chars() {
+            let byte_value = u8::try_from(c).expect("test fixture pubkey must be ASCII base58");
+            let digit = u32::try_from(
+                ALPHABET
+                    .iter()
+                    .position(|&b| b == byte_value)
+                    .expect("test fixture pubkey must be valid base58"),
+            )
+            .expect("base58 alphabet index fits in u32");
+            let mut carry = digit;
+            for byte in bytes.iter_mut() {
+                carry += u32::from(*byte) * 58;
+                *byte = u8::try_from(carry & 0xFF).expect("masked byte fits in u8");
+                carry >>= 8;
+            }
+            while carry > 0 {
+                bytes.push(u8::try_from(carry & 0xFF).expect("masked byte fits in u8"));
+                carry >>= 8;
+            }
+        }
+        for c in s.chars() {
+            if c == '1' {
+                bytes.push(0);
+            } else {
+                break;
+            }
+        }
+        bytes.reverse();
+        while bytes.len() < 32 {
+            bytes.insert(0, 0);
+        }
+        let mut out = [0u8; 32];
+        let start = bytes.len().saturating_sub(32);
+        out.copy_from_slice(&bytes[start..]);
+        out
+    }
+
+    /// Minimal hex decode, test-only.
+    fn hex_decode(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("test fixture hex must be valid"))
+            .collect()
     }
 }

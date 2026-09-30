@@ -48,6 +48,21 @@ pub type SolanaPubkey = [u8; 32];
 /// transaction's account-keys table by the caller; this type holds the
 /// already-resolved pubkeys, not raw indices, so a decoder never needs
 /// its own copy of the account-keys table.
+///
+/// `accounts` are always fully resolved pubkeys, **never** raw
+/// `accountKeys`/`loadedAddresses` indices — a v0 transaction's
+/// Address Lookup Table resolution (concatenating static accountKeys
+/// with `meta.loadedAddresses.writable`/`.readonly`, per Solana's
+/// actual account-key space) is a *provider* responsibility, done once
+/// before this type is constructed (see `HeliusProvider`'s
+/// `decode_full_transaction_record`). A decoder must never assume
+/// position 0 (or any fixed position) is a particular role — a live
+/// census found `accounts[0]`-as-buyer to be false in general (see
+/// `docs/p0/deployment-registry.md`). The only verified way to
+/// identify an economic actor such as a buyer is
+/// `postTokenBalances[].owner` for the account whose balance increased
+/// for the relevant mint, which requires pre/post token balance data
+/// this type does not yet carry (see `docs/TICKETS.md` P0.11).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSolanaInstruction {
     pub program_id: SolanaPubkey,
