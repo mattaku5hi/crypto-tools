@@ -52,6 +52,28 @@ struct FullTransactionRecord {
 struct TransactionMeta {
     #[serde(default, rename = "innerInstructions")]
     inner_instructions: Vec<InnerInstructionGroup>,
+    // Address Lookup Table (ALT) resolved addresses for a v0
+    // transaction. Solana's canonical index space for
+    // `programIdIndex`/`accounts` is
+    // `message.accountKeys ++ loadedAddresses.writable ++
+    // loadedAddresses.readonly` — NOT `message.accountKeys` alone.
+    // Omitting this silently rejects most real AMM swaps: Jupiter and
+    // most current-generation AMM routes are v0 transactions that push
+    // the AMM/pool accounts into a lookup table specifically to fit
+    // more accounts than legacy transactions allow. A census of real
+    // pump.fun-minted tokens in this session showed ALT-using
+    // transactions are the norm, not the exception, for post-migration
+    // trading — this is not a rare edge case to defer.
+    #[serde(default, rename = "loadedAddresses")]
+    loaded_addresses: Option<LoadedAddresses>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoadedAddresses {
+    #[serde(default)]
+    writable: Vec<String>,
+    #[serde(default)]
+    readonly: Vec<String>,
 }
 
 /// One CPI group: `index` is the position (0-based) of the top-level
@@ -78,6 +100,14 @@ struct InnerMessage {
     #[serde(rename = "accountKeys")]
     account_keys: Vec<String>,
     instructions: Vec<InnerInstruction>,
+    // Non-empty only on v0 transactions using Address Lookup Tables.
+    // Its presence (independent of meta.loadedAddresses) is what tells
+    // us whether the transaction *needs* ALT resolution at all — a
+    // legacy transaction or a v0 transaction with zero lookups never
+    // has indices beyond account_keys.len(), so absence of this field
+    // safely means "nothing to resolve," not "we don't know."
+    #[serde(default, rename = "addressTableLookups")]
+    address_table_lookups: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,13 +220,48 @@ fn decode_full_transaction_record(
     record: FullTransactionRecord,
 ) -> Result<RawSolanaTransaction, ProviderError> {
     let signature = decode_signature(&record.transaction.signatures)?;
-    let account_keys = record
+
+    // Canonical index space per Solana's own resolution order: static
+    // accountKeys first, then ALT writable, then ALT readonly. Any
+    // programIdIndex/account index in this transaction's instructions
+    // refers into this concatenated list, never into accountKeys alone
+    // once addressTableLookups is non-empty.
+    let has_alt_lookups = !record.transaction.message.address_table_lookups.is_empty();
+    let mut account_keys = record
         .transaction
         .message
         .account_keys
         .iter()
         .map(|key| decode_pubkey(key))
         .collect::<Result<Vec<_>, _>>()?;
+
+    match (&record.meta, has_alt_lookups) {
+        (Some(meta), _) => {
+            if let Some(loaded) = &meta.loaded_addresses {
+                for key in &loaded.writable {
+                    account_keys.push(decode_pubkey(key)?);
+                }
+                for key in &loaded.readonly {
+                    account_keys.push(decode_pubkey(key)?);
+                }
+            } else if has_alt_lookups {
+                // v0 transaction that declares lookups but meta carries
+                // no resolved addresses for them -- cannot honestly
+                // resolve any index that lands in the ALT-loaded range.
+                // Surfacing this explicitly, not guessing and not
+                // silently truncating account_keys to the static set.
+                return Err(malformed(
+                    "transaction uses address lookup tables but meta.loadedAddresses is absent",
+                ));
+            }
+        }
+        (None, true) => {
+            return Err(malformed(
+                "transaction uses address lookup tables but no meta was returned to resolve them",
+            ));
+        }
+        (None, false) => {}
+    }
 
     let mut inner_by_top_level_index: std::collections::BTreeMap<u32, Vec<InnerInstruction>> =
         std::collections::BTreeMap::new();
@@ -578,6 +643,141 @@ mod tests {
         };
         let result = decode_instruction(instruction, &account_keys, 0);
         assert!(result.is_err());
+    }
+
+    // Real transaction (signature 5XpoGEhyuhQPcSMc8qJ6vw83LrGpLkKuEeXZcn48Q7tJsho1c92cgxqhMVNsuGiU51UT3yFGMT5SVKa9YoXjZfiA,
+    // slot 452025725) with 11 static accountKeys and 5
+    // addressTableLookups (15 writable + 22 readonly = 37 ALT-resolved
+    // addresses, 48 total). Captured in
+    // docs/p0/measurements/fixtures/pump_mint1_full.json (data[2]).
+    // Top-level instruction[4] (program 58PMEdU...) references account
+    // index 29, which is only valid in the concatenated
+    // static+writable+readonly space (static alone has 11 entries,
+    // 0..10) -- this specific index was chosen because it sits inside
+    // the ALT-resolved range, so decoding it correctly only works if
+    // account_keys actually gets extended with loadedAddresses. A test
+    // built on an index still inside 0..10 would pass even with the
+    // pre-ALT-fix code, silently proving nothing.
+    fn alt_transaction_body() -> serde_json::Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "data": [{
+                    "transaction": {
+                        "signatures": ["5XpoGEhyuhQPcSMc8qJ6vw83LrGpLkKuEeXZcn48Q7tJsho1c92cgxqhMVNsuGiU51UT3yFGMT5SVKa9YoXjZfiA"],
+                        "message": {
+                            "accountKeys": [
+                                "7JCe3GHwkEr3feHgtLXnmuJ1yB3A7coSeyynxTBgdG8k",
+                                "3nGwiYU8foQk1SGWEjC7WW9t2EFhzn5ytik9KL1NmmS4",
+                                "AAnzozhdS8oYSfEMfwbX5F9NPtw3EhM9CNCUnKLRf6dW",
+                                "AN1wvW6VnjH8A7TKK8LK1BsUsPaBDZ7er9qUEJAUv4e8",
+                                "11111111111111111111111111111111",
+                                "ComputeBudget111111111111111111111111111111",
+                                "58PMEdUAwvLytNNwCbzrYyhLoh3jpsNV4fW9dT9ibuRc",
+                                "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+                                "BVsVzWfjxVQc1Zdveoj9HyqoQW2wMRixspbnF7WdGtNa",
+                                "DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH",
+                                "EvtwrQSszv1qqr8U4GKjfcvjN43Yyf1isnzXJzva3GRv"
+                            ],
+                            "instructions": [
+                                {"programIdIndex": 6, "accounts": [0, 0, 8, 29, 30, 14, 13], "data": "3"}
+                            ],
+                            "addressTableLookups": [
+                                {"accountKey": "3vwxVdZD5vQHxQkRoNvbS4XZbSqwBUmU3GQyuPNysca7", "writableIndexes": [1], "readonlyIndexes": []}
+                            ]
+                        }
+                    },
+                    "meta": {
+                        "loadedAddresses": {
+                            "writable": [
+                                "7xQYoUjUJF1Kg6WVczoTAkaNhn5syQYcbvjmFrhjWpx",
+                                "3XCBmEGtot44VFAoBXWoDoBDii7tCaVdQXA5pVV26qfo",
+                                "CU3RGMeZVagD3Son8ytvbumtvwvHkwwhAbPBVB9cPvQE",
+                                "CrSD3RV8CgxQiraRmgpKBjtTXjStdVBVFNQ8DqW4T659",
+                                "GAFuhgcd328SkkBYHpfadzmef9hTGAFRCi9QoCnsZQug",
+                                "2Y7HATmn9aJBcxCskE5V2U2epmjvkZmB51zTJBbhj4cU",
+                                "8FnX3xo2yYw3EUE6w3nQA4GfXGS9wpK6oj3veJpbFzLo",
+                                "ATRsNGv2nDw7hSMfkUTBoVUDsFDwN7po7KbecyiGWNB4",
+                                "5pVN5XZB8cYBjNLFrsBCPWkCQBan5K5Mq2dWGzwPgGJV",
+                                "9t4P5wMwfFkyn92Z7hf463qYKEZf8ERVZsGBEPNp8uJx",
+                                "FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n",
+                                "2FHsHW8LFBKaw79NFFNs1msdAU4K8xsqBPxw5R2kPmMP",
+                                "7DfuFARLQHn6y7bKd928Unz2gcQS6taVYf3UzjxNdK3y",
+                                "AfkcFeEqwuQVjNbwfj6kg7CDkcCayfNuBSNv19sY2LMh",
+                                "HvAmVQJP1TH75Sfdf5gyXzs3su6z5E5JV7joPEAwRDvG"
+                            ],
+                            "readonly": [
+                                "9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7",
+                                "So11111111111111111111111111111111111111112",
+                                "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
+                                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                                "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+                                "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+                                "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+                                "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx",
+                                "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw",
+                                "BiSoNHVpsVZW2F7rx2eQ59yQwKxzU5NvBcmKshCSUypi",
+                                "C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw",
+                                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                "FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz",
+                                "GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR",
+                                "Sysvar1nstructions1111111111111111111111111",
+                                "8ekCy2jHHUbW2yeNGFWYJT9Hm9FW7SvZcZK66dSZCDiF",
+                                "4cG31VNF9TzFinNc7BmnjhFvGjxkY3sCETVMtMgbrhPs",
+                                "8xeaWCsJYxRoudEZGJWURdfrtFhLYZz9b4iHJnW5tb3d",
+                                "BAT1Ndpu5gbLTp2AZkSXP79LJBZfCH4B3zGhi6LtvdhK",
+                                "NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump",
+                                "3pZTGDAAeBGZBtcGriK4jnz4nxNidXP1J7S1sH4QFcZb",
+                                "7u5bUML1gHyFNofNrkHdy9kC4BUhUuvPPfXbcqeRhenB"
+                            ]
+                        }
+                    },
+                    "version": 0,
+                    "slot": 452025725,
+                    "transactionIndex": 1105,
+                    "blockTime": 1790800000
+                }],
+                "paginationToken": null,
+            }
+        })
+    }
+
+    #[test]
+    fn decode_resolves_program_id_from_address_lookup_table_range() {
+        // account index 29 falls outside static accountKeys (0..10) --
+        // only resolvable via loadedAddresses.readonly[3]
+        // (TokenkegQfeZ...), proving the concatenated index space is
+        // actually used, not just static keys.
+        let body = alt_transaction_body();
+        let result: TransactionsForAddressResult =
+            serde_json::from_value(body["result"].clone()).unwrap();
+        let record = result.data.into_iter().next().unwrap();
+        let tx = decode_full_transaction_record(record).unwrap();
+
+        assert_eq!(tx.instructions.len(), 1);
+        let resolved_account = tx.instructions[0].accounts[3]; // account[29] -> Token program
+        let expected = decode_pubkey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap();
+        assert_eq!(resolved_account, expected);
+    }
+
+    #[test]
+    fn decode_rejects_alt_lookups_with_no_resolved_addresses() {
+        // A v0 transaction declaring addressTableLookups but whose
+        // response carries no meta.loadedAddresses cannot be honestly
+        // decoded -- any index beyond the static range is unresolvable.
+        // Must be a typed error, never a silent truncation to the
+        // static-only account list (which would misattribute every
+        // ALT-range index to the wrong account).
+        let mut body = alt_transaction_body();
+        body["result"]["data"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("meta");
+        let result: TransactionsForAddressResult =
+            serde_json::from_value(body["result"].clone()).unwrap();
+        let record = result.data.into_iter().next().unwrap();
+        assert!(decode_full_transaction_record(record).is_err());
     }
 
     #[tokio::test]
