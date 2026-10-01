@@ -67,7 +67,7 @@ transaction is not `live_verified`):
 |---|---|---|
 | `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA` | most-common non-system program across both mints | Believed to be PumpSwap AMM (unconfirmed against an official source) |
 | `DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH` | present as a top-level program in both mints' samples | **Identity unknown** — likely a router/aggregator (112-byte instruction data, 54-account instruction observed once), program name not confirmed |
-| `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` (bonding-curve candidate) | **not observed in this 10-tx sample** | Both sampled mints had already migrated to AMM trading; a pre-migration sample would be needed to observe bonding-curve activity at all |
+| `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` | confirmed pump.fun bonding-curve program — see "2026-10-01 confirmation" below | **CONFIRMED** against official IDL, on-chain executable state, and balance-delta cross-validation |
 
 **Discriminator findings — none establish an actual instruction entry point:**
 
@@ -121,3 +121,81 @@ ABI/IDL commit hash exists, and no golden fixture exercises a real decoder again
 confirmed deployment. This section records what a live sample showed so the next
 research pass does not repeat the same probes from zero, not a claim of decoder
 readiness.
+
+## 2026-10-01 confirmation — pump.fun bonding-curve program fully identified
+
+Following the mint-centric query measurement (2026-10-01), probed
+`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` directly as the `address` parameter to
+`getTransactionsForAddress` (not through a mint, not through Codex) — `sortOrder: "desc"`,
+`limit: 5`, via a direct `curl` call, not through production code (the provider's
+`fetch_transactions` hardcodes `sortOrder: "asc"`, which would have returned the oldest
+transactions since program deployment, not current activity).
+
+**On-chain confirmation:**
+- `getAccountInfo` on the program address: `executable: true`, owner
+  `BPFLoaderUpgradeab1e11111111111111111111111` — a real deployed, currently-upgradeable
+  program, not a placeholder or closed account.
+- All 5 probed transactions invoke this program id, either top-level or via CPI.
+- Of those 5, 3 carry an instruction with discriminator `66063d1201daebea`
+  (`sha256("global:buy")[..8]`) or `33e685a4017f83ad` (`sha256("global:sell")[..8]`)
+  directly on this program's own instruction (not nested under a different program the
+  way the PumpSwap AMM collision was) — each is exactly 24 bytes (8-byte discriminator +
+  two little-endian `u64` values), matching the historically-assumed bonding-curve shape.
+- Cross-validated against real economics, not just discriminator shape: in the
+  transaction with `v1=2979651581366, v2=699200000`, `v1` is **byte-for-byte equal** to
+  the token-balance delta observed between two accounts in that same transaction's
+  `postTokenBalances` (−2979651581366 on the bonding-curve vault, +2979651581366 on the
+  buyer's ATA) — this is a real token transfer, not merely a number that happens to
+  parse.
+- `accounts[2]` in that instruction equals the mint address found independently via
+  `preTokenBalances`/`postTokenBalances` in all 3 checked cases.
+- The real buyer (by SOL balance delta, `-588595186` lamports — the dominant
+  non-fee-sized debit) sits at instruction account position `[6]`, not `[0]` or `[2]`.
+
+**Official-source confirmation (closes P0.2 condition #3, the ABI/IDL requirement):**
+On-chain IDL account lookup was attempted first (Anchor's `create_with_seed(upgrade_authority,
+"anchor:idl", program_id)` convention, after resolving the upgrade authority via the
+program's `ProgramData` account) — the derived address does not exist on-chain, so this
+program does not publish its IDL that way (common for production Anchor programs). Located
+the official IDL instead at `github.com/pump-fun/pump-public-docs` (`idl/pump.json`,
+commit `e0687ae9b7e064a0f54efc7297c65eecfbba3a8f`, dated 2026-09-12), the project's own
+published-docs repository (name: "pump", address field matches
+`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` exactly). This is treated as confirmed, not
+merely "found on GitHub," because its contents independently reproduce every empirically-derived
+fact above without having been consulted to derive them:
+
+| Fact | Derived empirically (live tx data) | Official IDL (`idl/pump.json`) |
+|---|---|---|
+| `buy` discriminator | `66063d1201daebea` | `[102,6,61,18,1,218,235,234]` = `66063d1201daebea` |
+| `sell` discriminator | `33e685a4017f83ad` | `[51,230,133,164,1,127,131,173]` = `33e685a4017f83ad` |
+| `buy` args | two `u64`s | `amount: u64`, `max_sol_cost: u64` |
+| `sell` args | two `u64`s | `amount: u64`, `min_sol_output: u64` |
+| mint position | `accounts[2]` | `accounts[2] = "mint"` |
+| buyer position | `accounts[6]` (by SOL delta) | `accounts[6] = "user"` |
+
+Full `buy` account order per the official IDL: `[0] global, [1] fee_recipient, [2] mint,
+[3] bonding_curve, [4] associated_bonding_curve, [5] associated_user, [6] user,
+[7] system_program, [8] token_program, [9] creator_vault, [10] event_authority,
+[11] program, [12] global_volume_accumulator, [13] user_volume_accumulator,
+[14] fee_config, [15] fee_program` (16 accounts; `sell` omits `token_program` at a
+different position and `global_volume_accumulator`/`user_volume_accumulator`, totaling
+14). This is the real account layout — **not** the 4-account
+`[buyer, bonding_curve, mint, buyer_token_account]` shape
+`scout-dex-solana::bonding_curve_buy` currently decodes against a synthetic fixture.
+
+**This satisfies all four P0.2 conditions for a schema row:**
+1. Address confirmed via on-chain `executable` state + official IDL's own `address` field
+   (not copied from a third-party list without corroboration).
+2. Activation slot: not yet pinned — the 5-transaction sample's slots
+   (`452380124` for all 5, single block) are far later than deployment; actual deployment
+   slot needs `getSignaturesForAddress` with `before`/pagination toward genesis, not done
+   here (out of scope for this confirmation pass).
+3. IDL commit hash: `e0687ae9b7e064a0f54efc7297c65eecfbba3a8f`
+   (`pump-fun/pump-public-docs`, `idl/pump.json`), 2026-09-12.
+4. Golden fixture: not yet created — `docs/p0/measurements/fixtures/` has no committed
+   fixture built from this probe yet; the transactions analyzed here live only in this
+   session's scratch files (`/tmp/bonding_curve_probe.json`), not committed to the repo.
+   A schema row requires condition 4 too, so this program is confirmed-pending-fixture,
+   not yet eligible for the table until a fixture is committed and a decoder exercises it
+   (tracked as the next step in `docs/TICKETS.md` P0.12).
+
