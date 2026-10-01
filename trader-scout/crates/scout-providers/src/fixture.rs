@@ -248,6 +248,16 @@ mod tests {
         );
         let mut stream = provider.scan(
             ScanTask {
+                request: ScanRequest::WalletActivity {
+                    wallet: scout_core::WalletKey {
+                        chain: scout_core::ChainKey {
+                            family: scout_core::ChainFamily::Evm,
+                            network_id: scout_core::NetworkId::EvmChainId(8453),
+                            genesis_identity: scout_core::GenesisIdentity::Unverified,
+                        },
+                        address: scout_core::AddressBytes::Evm([0x11; 20]),
+                    },
+                },
                 description: "test".to_string(),
             },
             CancellationToken::new(),

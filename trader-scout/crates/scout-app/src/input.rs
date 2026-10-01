@@ -420,6 +420,88 @@ pub fn resolve_chain(_address: &AddressBytes, enabled_chains: &[ChainKey]) -> Ch
     }
 }
 
+/// Maps a textual chain tag to its documented network identity
+/// (ARCHITECTURE.md §1: Solana mainnet, BSC mainnet chain_id 56, Base
+/// mainnet chain_id 8453, Robinhood Chain mainnet chain_id 4663;
+/// mirrors `config/scout.example.toml`'s `[chains.*]` tables).
+/// `genesis_identity` is always `Unverified` here -- no live genesis
+/// preflight exists yet (ADR-002/P2.1); this function never fabricates
+/// a verified fingerprint just to satisfy `ChainKey`'s shape.
+fn chain_key_for_tag(tag: ChainTag) -> ChainKey {
+    match tag {
+        ChainTag::Solana => ChainKey {
+            family: ChainFamily::Solana,
+            network_id: scout_core::NetworkId::SolanaCluster(scout_core::SolanaCluster::Mainnet),
+            genesis_identity: scout_core::GenesisIdentity::Unverified,
+        },
+        ChainTag::Bsc => ChainKey {
+            family: ChainFamily::Evm,
+            network_id: scout_core::NetworkId::EvmChainId(56),
+            genesis_identity: scout_core::GenesisIdentity::Unverified,
+        },
+        ChainTag::Base => ChainKey {
+            family: ChainFamily::Evm,
+            network_id: scout_core::NetworkId::EvmChainId(8453),
+            genesis_identity: scout_core::GenesisIdentity::Unverified,
+        },
+        ChainTag::Robinhood => ChainKey {
+            family: ChainFamily::Evm,
+            network_id: scout_core::NetworkId::EvmChainId(4663),
+            genesis_identity: scout_core::GenesisIdentity::Unverified,
+        },
+    }
+}
+
+/// Converts parsed input identities into `AssetKey`s for a token-input
+/// binary (`buyer-intersect`: CLI.md §1 "Token input — contract/mint
+/// address"). A `Bare` record is a typed error here, never a guess --
+/// this workspace has no `--chain` flag wired into any binary yet
+/// (CLI.md §1's "bare addresses allowed with `--chain base`" case), so
+/// silently picking a chain for a bare address would fabricate network
+/// identity ADR-002 explicitly forbids guessing.
+pub fn resolve_token_assets(parsed: &ParsedInput) -> Result<Vec<scout_core::AssetKey>, InputError> {
+    parsed
+        .records
+        .iter()
+        .map(|record| match &record.kind {
+            IdentityKind::Explicit(tag) => Ok(scout_core::AssetKey::Token(
+                chain_key_for_tag(*tag),
+                record.canonical.clone(),
+            )),
+            IdentityKind::Bare => Err(InputError::InvalidAddress {
+                line: record.line_number,
+                reason: "bare address requires an explicit chain prefix \
+                         (solana:/bsc:/base:/robinhood:) -- --chain flag \
+                         resolution is not implemented in this binary yet"
+                    .to_string(),
+            }),
+        })
+        .collect()
+}
+
+/// Same resolution as [`resolve_token_assets`], producing `WalletKey`s
+/// for a wallet-input binary (`wallet-rank`/`wallet-stats`: CLI.md §1
+/// "Wallet input — public address").
+pub fn resolve_wallet_keys(parsed: &ParsedInput) -> Result<Vec<scout_core::WalletKey>, InputError> {
+    parsed
+        .records
+        .iter()
+        .map(|record| match &record.kind {
+            IdentityKind::Explicit(tag) => Ok(scout_core::WalletKey {
+                chain: chain_key_for_tag(*tag),
+                address: record.canonical.clone(),
+            }),
+            IdentityKind::Bare => Err(InputError::InvalidAddress {
+                line: record.line_number,
+                reason: "bare address requires an explicit chain prefix \
+                         (solana:/bsc:/base:/robinhood:) -- --chain flag \
+                         resolution is not implemented in this binary yet"
+                    .to_string(),
+            }),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

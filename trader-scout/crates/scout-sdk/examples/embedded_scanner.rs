@@ -77,6 +77,9 @@ async fn main() {
     let cancel = CancellationToken::new();
     let mut stream = provider.scan(
         ScanTask {
+            request: ScanRequest::TokenMarketActivity {
+                asset: asset.clone(),
+            },
             description: "embedded_scanner example: token market activity".to_string(),
         },
         cancel.clone(),

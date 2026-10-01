@@ -69,10 +69,14 @@ pub struct ScanPlan {
     pub capabilities: SourceCapabilities,
 }
 
-/// One unit of scanning work, as scheduled by the engine. Left minimal
-/// here — cursors/batching land with the real scheduler.
+/// One unit of scanning work, as scheduled by the engine. `request` is
+/// the already-validated `ScanRequest` a caller passed to `plan()` —
+/// `scan()` must dispatch on this typed value, never re-parse a prefix
+/// out of `description`. `description` remains for logging/diagnostics
+/// only (e.g. "buyer-intersect: scanning token X for wallet Y").
 #[derive(Debug, Clone)]
 pub struct ScanTask {
+    pub request: ScanRequest,
     pub description: String,
 }
 

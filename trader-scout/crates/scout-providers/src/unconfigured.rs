@@ -107,6 +107,9 @@ mod tests {
         let provider = UnconfiguredProvider::new("evm_history", "SCOUT_EVM_HISTORY_API_KEY");
         let mut stream = provider.scan(
             ScanTask {
+                request: ScanRequest::WalletActivity {
+                    wallet: test_wallet(),
+                },
                 description: "test".to_string(),
             },
             CancellationToken::new(),

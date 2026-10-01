@@ -57,37 +57,45 @@ pub async fn run_buyer_intersect(
     input_tokens: &[AssetKey],
     min_token_hits: usize,
 ) -> Result<BuyerIntersectReport, ProviderError> {
-    // Exercise the provider's plan() so an unconfigured provider (per
-    // ADR-006's UnconfiguredProvider) surfaces ConfigurationRequired
+    // Exercise the provider's plan()/scan() so an unconfigured provider
+    // (per ADR-006's UnconfiguredProvider) surfaces ConfigurationRequired
     // here, exactly as a live run would — this function is not
     // reachable purely through in-memory data without ever consulting
-    // the declared provider.
+    // the declared provider. Both calls are gated on input_tokens being
+    // non-empty: with zero declared tokens there is no ScanRequest to
+    // build (TokenMarketActivity requires a concrete AssetKey), and an
+    // empty-input run has nothing to exercise the provider against in
+    // the first place.
     if let Some(first_token) = input_tokens.first() {
         provider
             .plan(&ScanRequest::TokenMarketActivity {
                 asset: first_token.clone(),
             })
             .await?;
-    }
 
-    // A provider that reports zero capability for every input is not
-    // itself an error here (see ADR-005: operational status vs. per-
-    // record eligibility are distinct axes) — the caller of this
-    // function is expected to inspect capabilities via a separate
-    // pre-flight and decide the run's IncompleteCoverage/exit-3 status.
-    // This function focuses on the classification math once inputs are
-    // available.
-    let mut scan_stream = provider.scan(
-        ScanTask {
-            description: "buyer-intersect: exercised for capability/config surfacing".to_string(),
-        },
-        CancellationToken::new(),
-    );
-    while let Some(item) = scan_stream.next().await {
-        // A ConfigurationRequired error from scan() must surface exactly
-        // as it would from plan() — this loop lets it propagate via `?`
-        // rather than being silently dropped as an unused stream.
-        item?;
+        // A provider that reports zero capability for every input is not
+        // itself an error here (see ADR-005: operational status vs. per-
+        // record eligibility are distinct axes) — the caller of this
+        // function is expected to inspect capabilities via a separate
+        // pre-flight and decide the run's IncompleteCoverage/exit-3 status.
+        // This function focuses on the classification math once inputs are
+        // available.
+        let mut scan_stream = provider.scan(
+            ScanTask {
+                request: ScanRequest::TokenMarketActivity {
+                    asset: first_token.clone(),
+                },
+                description: "buyer-intersect: exercised for capability/config surfacing"
+                    .to_string(),
+            },
+            CancellationToken::new(),
+        );
+        while let Some(item) = scan_stream.next().await {
+            // A ConfigurationRequired error from scan() must surface exactly
+            // as it would from plan() — this loop lets it propagate via `?`
+            // rather than being silently dropped as an unused stream.
+            item?;
+        }
     }
 
     let mut matches = Vec::new();

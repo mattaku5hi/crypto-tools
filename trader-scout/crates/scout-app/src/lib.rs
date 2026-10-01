@@ -21,6 +21,7 @@ pub use config::{
 };
 pub use input::{
     IdentityKind, IdentityRecord, InputError, InputFormat, ParsedInput, parse_input, resolve_chain,
+    resolve_token_assets, resolve_wallet_keys,
 };
 pub use output::{
     JsonlRecord, RunStatus, SCHEMA_VERSION, Window, WriteOutcome, write_lines_to_stdout,

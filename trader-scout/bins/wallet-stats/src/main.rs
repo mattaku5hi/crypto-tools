@@ -38,9 +38,17 @@ fn main() -> ExitCode {
         }
     };
 
+    let wallets = match scout_app::resolve_wallet_keys(&parsed) {
+        Ok(wallets) => wallets,
+        Err(err) => {
+            eprintln!("wallet-stats: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
     eprintln!(
         "wallet-stats: {} wallet(s) parsed; no history provider configured (set SCOUT_EVM_HISTORY_API_KEY / SCOUT_HELIUS_API_KEY)",
-        parsed.records.len()
+        wallets.len()
     );
     ExitCode::from(4)
 }

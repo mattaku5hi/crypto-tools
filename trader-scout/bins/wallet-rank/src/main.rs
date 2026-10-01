@@ -42,13 +42,21 @@ fn main() -> ExitCode {
         }
     };
 
+    let wallets = match scout_app::resolve_wallet_keys(&parsed) {
+        Ok(wallets) => wallets,
+        Err(err) => {
+            eprintln!("wallet-rank: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
     // Per ADR-006: no live-backed HistoryProvider exists yet. Every
     // wallet requires WalletActivity from a configured provider to rank
     // — with zero configured, the honest outcome is
     // InfrastructureUnavailable (exit 4), not a fabricated top-N.
     eprintln!(
         "wallet-rank: {} wallet(s) parsed, top={}; no history provider configured (set SCOUT_EVM_HISTORY_API_KEY / SCOUT_HELIUS_API_KEY)",
-        parsed.records.len(),
+        wallets.len(),
         args.top
     );
     ExitCode::from(4)

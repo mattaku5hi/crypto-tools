@@ -533,18 +533,30 @@ impl HistoryProvider for HeliusProvider {
         task: ScanTask,
         _cancel: CancellationToken,
     ) -> BoxStream<'_, Result<ScanEnvelope, ProviderError>> {
-        // Wallet address is threaded through ScanTask.description today
-        // (ScanTask is deliberately minimal per scout-api's own docs,
-        // pending the real scheduler) — parsed back out here rather
-        // than widening ScanTask's shape for one provider's needs.
-        let Some(address) = task.description.strip_prefix("wallet:") else {
-            let error = ProviderError::Other(Box::new(std::io::Error::other(
-                "HeliusProvider::scan requires a ScanTask::description of the form \
-                 'wallet:<base58-address>'",
-            )));
-            return Box::pin(stream::once(async move { Err(error) }));
+        // Dispatch on the typed ScanRequest plan() already validated --
+        // never re-parse a string prefix out of `description` (that was
+        // this method's old behavior, and exactly the stringly-typed
+        // dispatch that silently misroutes on a typo or a new variant).
+        let address = match &task.request {
+            ScanRequest::WalletActivity { wallet } => wallet.address.to_string(),
+            ScanRequest::TokenMarketActivity { .. } => {
+                // See plan()'s match: TokenMarketActivity is handled
+                // separately below once the mint-centric query path is
+                // wired. Until then this mirrors plan()'s Unsupported
+                // answer rather than silently falling through to the
+                // wallet path with a mint address.
+                let error = ProviderError::Unsupported {
+                    capability: "token_market_activity".to_string(),
+                };
+                return Box::pin(stream::once(async move { Err(error) }));
+            }
+            _ => {
+                let error = ProviderError::Unsupported {
+                    capability: format!("{:?}", task.request),
+                };
+                return Box::pin(stream::once(async move { Err(error) }));
+            }
         };
-        let address = address.to_string();
 
         // One page (up to MAX_TRANSACTIONS_PER_SCAN transactions) per
         // scan() call for this P0 vertical slice — pagination via the
@@ -946,6 +958,10 @@ mod tests {
 
         let mut stream = provider.scan(
             ScanTask {
+                request: ScanRequest::WalletActivity {
+                    wallet: parse_solana_wallet("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")
+                        .unwrap(),
+                },
                 description: "wallet:5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1".to_string(),
             },
             CancellationToken::new(),

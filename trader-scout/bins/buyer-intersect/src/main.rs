@@ -68,6 +68,14 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    let input_tokens = match scout_app::resolve_token_assets(&parsed) {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            eprintln!("buyer-intersect: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(err) => {
@@ -83,7 +91,6 @@ fn main() -> ExitCode {
     // output) is real and exercised; only the transport is missing.
     let provider = UnconfiguredProvider::new("evm_history", "SCOUT_EVM_HISTORY_API_KEY");
     let flows = std::collections::BTreeMap::new();
-    let input_tokens: Vec<_> = Vec::new();
 
     let result = rt.block_on(run_buyer_intersect(
         &provider,
