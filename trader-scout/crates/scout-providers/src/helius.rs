@@ -7,12 +7,17 @@
 //! transactions, a 10x reduction over calling `getTransaction` once per
 //! signature (1 credit each).
 //!
-//! Scope: this provider satisfies `ScanRequest::WalletActivity` only.
-//! `TokenMarketActivity` (token -> historical buyers) is not something
-//! `getTransactionsForAddress` can answer directly — it is address-
-//! centric, not mint-centric — so that request variant returns
-//! `ProviderError::Unsupported` here rather than a wrong or partial
-//! answer (AGENTS.md invariant #18: an unfamiliar/unsupported shape is
+//! Scope: `ScanRequest::WalletActivity` and
+//! `ScanRequest::TokenMarketActivity { asset: AssetKey::Token(..) }`.
+//! Per `docs/p0/measurements/2026-10-01-helius-mint-centric-query.md`,
+//! `getTransactionsForAddress` was confirmed live to also accept an SPL
+//! mint address (not just a wallet) and return transactions touching
+//! it — this was measured on 2 mints x 5 transactions each, not a
+//! systematic completeness/pagination check, so `capabilities()` notes
+//! that caveat rather than claiming a fully general guarantee.
+//! `AssetKey::Native(..)` (a chain's native currency, not an SPL mint)
+//! has no mint address to query and returns `ProviderError::Unsupported`
+//! (AGENTS.md invariant #18: an unfamiliar/unsupported shape is
 //! surfaced, never silently degraded).
 
 use futures::stream::{self, BoxStream, StreamExt};
@@ -20,7 +25,7 @@ use scout_api::{
     CapabilityStatus, HistoryProvider, ProviderError, ScanEnvelope, ScanPlan, ScanRequest,
     ScanTask, SourceCapabilities,
 };
-use scout_core::{RawPayload, RawSolanaInstruction, RawSolanaTransaction, WalletKey};
+use scout_core::{RawPayload, RawSolanaInstruction, RawSolanaTransaction};
 use scout_rpc::RpcClient;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -204,7 +209,9 @@ impl HeliusProvider {
         Ok(Self { client })
     }
 
-    /// Fetch up to `limit` full transactions for a wallet, oldest-first
+    /// Fetch up to `limit` full transactions for a Solana account
+    /// (wallet or SPL mint — Helius's `getTransactionsForAddress`
+    /// accepts either, see this module's doc comment), oldest-first
     /// (`sortOrder: "asc"`) so canonical ordering (ADR-002: slot +
     /// transaction_index, never fetch order) is easy for a caller to
     /// preserve downstream — this method does not itself sort, it
@@ -212,10 +219,9 @@ impl HeliusProvider {
     /// `(slot, transaction_index)` through unchanged either way.
     async fn fetch_transactions(
         &self,
-        wallet: &WalletKey,
+        address: &str,
         limit: u32,
     ) -> Result<Vec<RawSolanaTransaction>, ProviderError> {
-        let address = wallet.address.to_string();
         let params = serde_json::json!([
             address,
             {
@@ -492,10 +498,18 @@ fn malformed(detail: &str) -> ProviderError {
 #[async_trait::async_trait]
 impl HistoryProvider for HeliusProvider {
     fn capabilities(&self) -> SourceCapabilities {
-        // LiveVerified per docs/p0/measurements/2026-09-27-helius-blockscout.md
-        // (dated, actual successful call — ADR-006). TokenMarketActivity
-        // is Unsupported, not Unknown: we have checked, and
-        // getTransactionsForAddress cannot answer a mint-centric query.
+        // wallet_activity: LiveVerified per
+        // docs/p0/measurements/2026-09-27-helius-blockscout.md (dated,
+        // actual successful call — ADR-006).
+        //
+        // token_market_activity: LiveVerified per
+        // docs/p0/measurements/2026-10-01-helius-mint-centric-query.md
+        // -- getTransactionsForAddress was confirmed live to accept an
+        // SPL mint address and return transactions touching it (2
+        // mints x 5 transactions each). This is NOT a claim of full
+        // completeness/pagination correctness for arbitrary mints --
+        // that measurement's own "What this does NOT establish"
+        // section is the honest boundary of what was actually checked.
         let mut caps = SourceCapabilities::empty();
         caps.by_capability.insert(
             "wallet_activity".to_string(),
@@ -503,7 +517,7 @@ impl HistoryProvider for HeliusProvider {
         );
         caps.by_capability.insert(
             "token_market_activity".to_string(),
-            CapabilityStatus::Unsupported,
+            CapabilityStatus::LiveVerified,
         );
         caps
     }
@@ -514,9 +528,20 @@ impl HistoryProvider for HeliusProvider {
                 request_echo: format!("{request:?}"),
                 capabilities: self.capabilities(),
             }),
-            ScanRequest::TokenMarketActivity { .. } => Err(ProviderError::Unsupported {
-                capability: "token_market_activity".to_string(),
-            }),
+            ScanRequest::TokenMarketActivity { asset } => match asset {
+                scout_core::AssetKey::Token(..) => Ok(ScanPlan {
+                    request_echo: format!("{request:?}"),
+                    capabilities: self.capabilities(),
+                }),
+                // A chain's native currency has no SPL mint address to
+                // query -- getTransactionsForAddress has nothing to
+                // call here, so this is honestly Unsupported, not a
+                // silently-empty plan.
+                scout_core::AssetKey::Native(_) => Err(ProviderError::Unsupported {
+                    capability: "token_market_activity (native asset has no mint address)"
+                        .to_string(),
+                }),
+            },
             // ScanRequest is #[non_exhaustive] (ADR-008: more request
             // variants may be added later without breaking existing
             // providers) — any future variant this provider doesn't
@@ -539,14 +564,15 @@ impl HistoryProvider for HeliusProvider {
         // dispatch that silently misroutes on a typo or a new variant).
         let address = match &task.request {
             ScanRequest::WalletActivity { wallet } => wallet.address.to_string(),
-            ScanRequest::TokenMarketActivity { .. } => {
-                // See plan()'s match: TokenMarketActivity is handled
-                // separately below once the mint-centric query path is
-                // wired. Until then this mirrors plan()'s Unsupported
-                // answer rather than silently falling through to the
-                // wallet path with a mint address.
+            ScanRequest::TokenMarketActivity {
+                asset: scout_core::AssetKey::Token(_, mint_address),
+            } => mint_address.to_string(),
+            ScanRequest::TokenMarketActivity {
+                asset: scout_core::AssetKey::Native(_),
+            } => {
                 let error = ProviderError::Unsupported {
-                    capability: "token_market_activity".to_string(),
+                    capability: "token_market_activity (native asset has no mint address)"
+                        .to_string(),
                 };
                 return Box::pin(stream::once(async move { Err(error) }));
             }
@@ -582,8 +608,7 @@ impl HeliusProvider {
         &self,
         address: String,
     ) -> Result<Vec<RawSolanaTransaction>, ProviderError> {
-        let wallet = parse_solana_wallet(&address)?;
-        self.fetch_transactions(&wallet, MAX_TRANSACTIONS_PER_SCAN)
+        self.fetch_transactions(&address, MAX_TRANSACTIONS_PER_SCAN)
             .await
     }
 }
@@ -614,7 +639,8 @@ fn stream_results(
 /// pass, not a measured budget number (that's P0.6/P0.8).
 const MAX_TRANSACTIONS_PER_SCAN: u32 = 100;
 
-fn parse_solana_wallet(address: &str) -> Result<WalletKey, ProviderError> {
+#[cfg(test)]
+fn parse_solana_wallet(address: &str) -> Result<scout_core::WalletKey, ProviderError> {
     let bytes = bs58::decode(address).into_vec().map_err(|_| {
         ProviderError::Other(Box::new(std::io::Error::other(
             "wallet address is not valid base58",
@@ -625,7 +651,7 @@ fn parse_solana_wallet(address: &str) -> Result<WalletKey, ProviderError> {
             "wallet address is not 32 bytes",
         )))
     })?;
-    Ok(WalletKey {
+    Ok(scout_core::WalletKey {
         chain: scout_core::ChainKey {
             family: scout_core::ChainFamily::Solana,
             network_id: scout_core::NetworkId::SolanaCluster(scout_core::SolanaCluster::Mainnet),
@@ -713,7 +739,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plan_rejects_token_market_activity_but_accepts_wallet_activity() {
+    async fn plan_rejects_native_asset_token_market_activity_but_accepts_wallet_activity() {
+        // Native assets have no SPL mint address to query -- this
+        // remains Unsupported even though AssetKey::Token is now
+        // supported (see plan_accepts_token_asset_token_market_activity
+        // below).
         let provider = HeliusProvider::new_with_endpoint(
             scout_rpc::RpcEndpoint::new("http://127.0.0.1:0"),
             5_000,
@@ -739,6 +769,41 @@ mod tests {
             wallet: parse_solana_wallet("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1").unwrap(),
         };
         assert!(provider.plan(&wallet_request).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn plan_accepts_token_asset_token_market_activity() {
+        // Per docs/p0/measurements/2026-10-01-helius-mint-centric-query.md:
+        // getTransactionsForAddress was confirmed live to accept an SPL
+        // mint address, so AssetKey::Token must plan successfully, not
+        // Unsupported.
+        let provider = HeliusProvider::new_with_endpoint(
+            scout_rpc::RpcEndpoint::new("http://127.0.0.1:0"),
+            5_000,
+            1,
+        )
+        .unwrap();
+
+        let mint = scout_core::AddressBytes::Solana(
+            decode_pubkey("NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump").unwrap(),
+        );
+        let token_request = ScanRequest::TokenMarketActivity {
+            asset: scout_core::AssetKey::Token(
+                scout_core::ChainKey {
+                    family: scout_core::ChainFamily::Solana,
+                    network_id: scout_core::NetworkId::SolanaCluster(
+                        scout_core::SolanaCluster::Mainnet,
+                    ),
+                    genesis_identity: scout_core::GenesisIdentity::Unverified,
+                },
+                mint,
+            ),
+        };
+        let plan = provider.plan(&token_request).await.unwrap();
+        assert_eq!(
+            plan.capabilities.status_for("token_market_activity"),
+            CapabilityStatus::LiveVerified
+        );
     }
 
     #[test]
@@ -974,6 +1039,91 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn scan_accepts_a_mint_address_for_token_market_activity() {
+        // Per docs/p0/measurements/2026-10-01-helius-mint-centric-query.md:
+        // getTransactionsForAddress accepts an SPL mint, not just a
+        // wallet. This proves scan() actually sends the mint string
+        // (not silently falling back to some wallet-shaped request) --
+        // the wiremock server only matches on method/path, so this
+        // doesn't independently verify the request BODY contains the
+        // mint, but combined with the dispatch match in scan() (which
+        // reads ScanRequest::TokenMarketActivity's AssetKey::Token
+        // address directly, no re-parsing), this is the integration
+        // point that would break if that wiring regressed.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "data": [full_mode_body(None)["result"]["data"][0].clone()],
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let provider =
+            HeliusProvider::new_with_endpoint(scout_rpc::RpcEndpoint::new(server.uri()), 5_000, 1)
+                .unwrap();
+
+        let mint = scout_core::AddressBytes::Solana(
+            decode_pubkey("NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump").unwrap(),
+        );
+        let chain = scout_core::ChainKey {
+            family: scout_core::ChainFamily::Solana,
+            network_id: scout_core::NetworkId::SolanaCluster(scout_core::SolanaCluster::Mainnet),
+            genesis_identity: scout_core::GenesisIdentity::Unverified,
+        };
+        let mut stream = provider.scan(
+            ScanTask {
+                request: ScanRequest::TokenMarketActivity {
+                    asset: scout_core::AssetKey::Token(chain, mint),
+                },
+                description: "token:NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump".to_string(),
+            },
+            CancellationToken::new(),
+        );
+
+        let first = stream.next().await;
+        assert!(
+            matches!(first, Some(Ok(_))),
+            "expected a decoded envelope, got {first:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_rejects_native_asset_for_token_market_activity() {
+        let provider = HeliusProvider::new_with_endpoint(
+            scout_rpc::RpcEndpoint::new("http://127.0.0.1:0"),
+            5_000,
+            1,
+        )
+        .unwrap();
+
+        let chain = scout_core::ChainKey {
+            family: scout_core::ChainFamily::Solana,
+            network_id: scout_core::NetworkId::SolanaCluster(scout_core::SolanaCluster::Mainnet),
+            genesis_identity: scout_core::GenesisIdentity::Unverified,
+        };
+        let mut stream = provider.scan(
+            ScanTask {
+                request: ScanRequest::TokenMarketActivity {
+                    asset: scout_core::AssetKey::Native(chain),
+                },
+                description: "native asset has no mint".to_string(),
+            },
+            CancellationToken::new(),
+        );
+
+        let first = stream.next().await;
+        assert!(matches!(
+            first,
+            Some(Err(ProviderError::Unsupported { .. }))
+        ));
     }
 
     /// Returns the SAME real transaction used for the ALT regression
