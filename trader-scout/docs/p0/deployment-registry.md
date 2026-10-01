@@ -91,13 +91,29 @@ transaction is not `live_verified`):
 
 **Buyer identification method (correcting an earlier same-session claim that a buyer's account
 position was index 4 in a static account list — that was wrong):** the buyer is not reliably
-identifiable by position in `accounts`/`accountKeys`. In the one worked example checked closely,
-`accountIndex=4` in `postTokenBalances` referred to the buyer's **associated token account**
-(a distinct address from the buyer's wallet), and the actual buyer is that ATA's `owner` field.
-Separately, the transaction's static `accountKeys[0]` (fee payer/signer) happened to equal that
-same owner in this specific transaction — coincidental to this transaction, not a general rule.
-**The only reliable method demonstrated so far: match `postTokenBalances[].owner` for the entry
-whose token balance increased for the target mint.** No positional shortcut has been verified.
+identifiable by position in `accounts`/`accountKeys`. Two separate worked examples from this
+census both confirm the same method but are NOT the same transaction — do not conflate their
+numbers:
+
+- An early exploratory probe (not committed as a test fixture) found `accountIndex=4` in
+  `postTokenBalances` referring to the buyer's **associated token account**, with the actual
+  buyer being that ATA's `owner` field, and a balance delta of `206,321` base units. That
+  transaction's static `accountKeys[0]` (fee payer/signer) happened to equal the same owner —
+  coincidental to that specific transaction, not a general rule.
+- The implementation landed in `2c80cda` is tested against a different, committed real
+  transaction: `docs/p0/measurements/fixtures/pump_mint1_full.json` data[2] (signature
+  `5XpoGEhyuhQPcSMc8qJ6vw83LrGpLkKuEeXZcn48Q7tJsho1c92cgxqhMVNsuGiU51UT3yFGMT5SVKa9YoXjZfiA`),
+  where owner `EvtwrQSszv1qqr8U4GKjfcvjN43Yyf1isnzXJzva3GRv`'s tracked balance for the mint
+  moved from `41,636,451` to `181,714,920,688` (delta `181,673,284,237`) — see
+  `crates/scout-providers/src/helius.rs`'s
+  `token_balance_changes_identify_the_buyer_by_owner_not_position` test for the exact assertion.
+  (An earlier draft of that test mistakenly asserted the `206,321` figure from the first probe
+  above against this second transaction's data; `cargo test` caught the mismatch before it was
+  committed.)
+
+**The only reliable method demonstrated so far, confirmed independently in both examples: match
+`postTokenBalances[].owner` for the entry whose token balance increased for the target mint.** No
+positional shortcut has been verified in either case.
 
 None of the above is sufficient to add a row to the Schema table above — no contract
 address is confirmed from an official source, no activation slot is pinned, no
