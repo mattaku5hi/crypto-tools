@@ -81,12 +81,52 @@ pub struct RawSolanaInstruction {
 /// Minimal transaction context a decoder needs: canonical position
 /// (slot, transaction index — ADR-002's ordering contract, never
 /// wall-clock/fetch order) plus the instructions it contains.
+///
+/// `token_balance_changes` carries the pre/post SPL token balance
+/// observations this transaction's `meta.preTokenBalances`/
+/// `postTokenBalances` reported — the only verified way to identify an
+/// economic actor (e.g. a buyer) per `RawSolanaInstruction`'s own doc
+/// comment and `docs/p0/deployment-registry.md`'s census notes.
+/// Deliberately **does not** attempt to resolve the SOL (lamports)
+/// side of a trade: `preBalances`/`postBalances` deltas are
+/// contaminated by transaction fees, rent for newly-created accounts,
+/// WSOL wrap/unwrap, and intermediate router hops (a live census found
+/// exactly this: a router program forwarding through multiple
+/// accounts before reaching the AMM) — attributing "how much SOL the
+/// buyer paid" from those deltas would produce a plausible-looking but
+/// wrong number. That is explicitly out of scope here; see
+/// `docs/TICKETS.md` for the follow-up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSolanaTransaction {
     pub signature: [u8; 64],
     pub slot: u64,
     pub transaction_index: u64,
     pub instructions: Vec<RawSolanaInstruction>,
+    pub token_balance_changes: Vec<SolanaTokenBalanceChange>,
+}
+
+/// One SPL token account's balance change within a transaction, in raw
+/// integer base units (never a floating-point `uiAmount` — AGENTS.md
+/// invariant #7). `decimals` is carried only for output formatting; it
+/// must never participate in arithmetic.
+///
+/// `owner` is `None` when the provider's response omitted it (observed
+/// on some older/Token-2022 account shapes) — callers must treat a
+/// missing owner as "cannot attribute," never guess or fall back to a
+/// positional account. `pre_amount` is `None` when the account did not
+/// exist yet before this transaction (e.g. its associated token
+/// account was created within this same transaction, which a live
+/// census found to be the case for the buyer side of a real pump.fun-
+/// adjacent swap) — this is a normal, expected state, not malformed
+/// data; callers must treat a missing `pre_amount` as zero, not as an
+/// error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolanaTokenBalanceChange {
+    pub mint: SolanaPubkey,
+    pub owner: Option<SolanaPubkey>,
+    pub decimals: u8,
+    pub pre_amount: Option<u64>,
+    pub post_amount: u64,
 }
 
 /// The full set of raw payload shapes a `HistoryProvider` (Tier 1) may

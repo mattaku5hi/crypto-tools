@@ -66,6 +66,44 @@ struct TransactionMeta {
     // trading — this is not a rare edge case to defer.
     #[serde(default, rename = "loadedAddresses")]
     loaded_addresses: Option<LoadedAddresses>,
+    // Per-account SPL token balance snapshots before/after this
+    // transaction executed. `accountIndex` indexes into the SAME
+    // concatenated static+ALT account-key space built for
+    // instructions -- never message.accountKeys alone. This is the
+    // only verified source for identifying an economic actor (e.g. a
+    // buyer): see RawSolanaInstruction's doc comment and
+    // docs/p0/deployment-registry.md's census notes, which disproved
+    // every positional shortcut tried (accounts[0], a fixed index).
+    #[serde(default, rename = "preTokenBalances")]
+    pre_token_balances: Vec<TokenBalanceEntry>,
+    #[serde(default, rename = "postTokenBalances")]
+    post_token_balances: Vec<TokenBalanceEntry>,
+}
+
+/// One entry from `preTokenBalances`/`postTokenBalances`. `owner` is
+/// `Option` because Helius's response schema does not guarantee it
+/// (older account shapes, some Token-2022 cases) -- never defaulted or
+/// guessed when absent.
+#[derive(Debug, Deserialize)]
+struct TokenBalanceEntry {
+    #[serde(rename = "accountIndex")]
+    account_index: u32,
+    mint: String,
+    owner: Option<String>,
+    #[serde(rename = "uiTokenAmount")]
+    ui_token_amount: UiTokenAmount,
+}
+
+/// Only `amount` (the raw integer string in base units) and `decimals`
+/// are modeled. `uiAmount` (an `f64`) and `uiAmountString` (an
+/// already-scaled decimal string) are deliberately NOT fields here --
+/// AGENTS.md invariant #7 forbids floats for amounts, and the scaled
+/// string is redundant with `amount`/`decimals` plus an extra
+/// opportunity to use the wrong one by accident.
+#[derive(Debug, Deserialize)]
+struct UiTokenAmount {
+    amount: String,
+    decimals: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,10 +303,16 @@ fn decode_full_transaction_record(
 
     let mut inner_by_top_level_index: std::collections::BTreeMap<u32, Vec<InnerInstruction>> =
         std::collections::BTreeMap::new();
+    let mut token_balance_changes = Vec::new();
     if let Some(meta) = record.meta {
         for group in meta.inner_instructions {
             inner_by_top_level_index.insert(group.index, group.instructions);
         }
+        token_balance_changes = decode_token_balance_changes(
+            &meta.pre_token_balances,
+            &meta.post_token_balances,
+            &account_keys,
+        )?;
     }
 
     let mut instructions = Vec::new();
@@ -310,7 +354,81 @@ fn decode_full_transaction_record(
         slot: record.slot,
         transaction_index: record.transaction_index,
         instructions,
+        token_balance_changes,
     })
+}
+
+/// Builds `SolanaTokenBalanceChange` entries from a transaction's
+/// `preTokenBalances`/`postTokenBalances`. `account_keys` is the SAME
+/// concatenated static+ALT key space `decode_full_transaction_record`
+/// already built for instructions -- `accountIndex` here indexes into
+/// that identical space, never a second independently-built list.
+///
+/// A mint/account present in `postTokenBalances` but absent from
+/// `preTokenBalances` is NOT an error: it means the token account
+/// (commonly an ATA) did not exist before this transaction, which a
+/// live census found to be the normal case for a buyer's first
+/// purchase of a mint. Its pre-amount is honestly `None` (meaning
+/// zero), not a decode failure.
+fn decode_token_balance_changes(
+    pre: &[TokenBalanceEntry],
+    post: &[TokenBalanceEntry],
+    account_keys: &[[u8; 32]],
+) -> Result<Vec<scout_core::SolanaTokenBalanceChange>, ProviderError> {
+    let pre_by_index: std::collections::BTreeMap<u32, &TokenBalanceEntry> = pre
+        .iter()
+        .map(|entry| (entry.account_index, entry))
+        .collect();
+
+    let mut changes = Vec::with_capacity(post.len());
+    for entry in post {
+        let mint = decode_pubkey(&entry.mint)?;
+        let owner = entry.owner.as_deref().map(decode_pubkey).transpose()?;
+        let post_amount: u64 = entry
+            .ui_token_amount
+            .amount
+            .parse()
+            .map_err(|_| malformed("postTokenBalances amount is not a valid u64"))?;
+
+        let pre_amount = match pre_by_index.get(&entry.account_index) {
+            Some(pre_entry) => {
+                let amount: u64 = pre_entry
+                    .ui_token_amount
+                    .amount
+                    .parse()
+                    .map_err(|_| malformed("preTokenBalances amount is not a valid u64"))?;
+                Some(amount)
+            }
+            // Absent from preTokenBalances: the account did not exist
+            // before this transaction (e.g. ATA created within it).
+            // Honestly None (= zero), not an error.
+            None => None,
+        };
+
+        // Sanity check, not a correctness requirement: accountIndex
+        // should resolve within the shared account-key space this
+        // transaction already built. A failure here means Helius
+        // returned an index this provider's ALT resolution did not
+        // anticipate -- surface it rather than silently accept an
+        // unverifiable index.
+        let index = usize::try_from(entry.account_index)
+            .map_err(|_| malformed("token balance accountIndex exceeds usize"))?;
+        if account_keys.get(index).is_none() {
+            return Err(malformed(
+                "token balance accountIndex out of range of the transaction's account-key space",
+            ));
+        }
+
+        changes.push(scout_core::SolanaTokenBalanceChange {
+            mint,
+            owner,
+            decimals: entry.ui_token_amount.decimals,
+            pre_amount,
+            post_amount,
+        });
+    }
+
+    Ok(changes)
 }
 
 fn decode_instruction(
@@ -839,5 +957,143 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 2);
+    }
+
+    /// Returns the SAME real transaction used for the ALT regression
+    /// tests above (data[2] of pump_mint1_full.json) -- it conveniently
+    /// also has real preTokenBalances/postTokenBalances for the mint
+    /// this session's census focused on, making it a genuine one-shot
+    /// fixture for both concerns rather than two disconnected ones.
+    fn token_balance_transaction_body() -> serde_json::Value {
+        let mut body = alt_transaction_body();
+        body["result"]["data"][0]["meta"]["preTokenBalances"] = json!([
+            {
+                "accountIndex": 1,
+                "mint": "NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump",
+                "owner": "EvtwrQSszv1qqr8U4GKjfcvjN43Yyf1isnzXJzva3GRv",
+                "uiTokenAmount": {"amount": "41636451", "decimals": 6, "uiAmount": 41.636451, "uiAmountString": "41.636451"}
+            },
+            {
+                "accountIndex": 22,
+                "mint": "NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump",
+                "owner": "7DfuFARLQHn6y7bKd928Unz2gcQS6taVYf3UzjxNdK3y",
+                "uiTokenAmount": {"amount": "729570450161577", "decimals": 6, "uiAmount": 729570450.161577, "uiAmountString": "729570450.161577"}
+            }
+        ]);
+        body["result"]["data"][0]["meta"]["postTokenBalances"] = json!([
+            {
+                "accountIndex": 1,
+                "mint": "NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump",
+                "owner": "EvtwrQSszv1qqr8U4GKjfcvjN43Yyf1isnzXJzva3GRv",
+                "uiTokenAmount": {"amount": "181714920688", "decimals": 6, "uiAmount": 181714.920688, "uiAmountString": "181714.920688"}
+            },
+            {
+                "accountIndex": 3,
+                "mint": "NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump",
+                "owner": "7JCe3GHwkEr3feHgtLXnmuJ1yB3A7coSeyynxTBgdG8k",
+                "uiTokenAmount": {"amount": "0", "decimals": 6, "uiAmount": null, "uiAmountString": "0"}
+            },
+            {
+                "accountIndex": 22,
+                "mint": "NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump",
+                "owner": "7DfuFARLQHn6y7bKd928Unz2gcQS6taVYf3UzjxNdK3y",
+                "uiTokenAmount": {"amount": "729388776877340", "decimals": 6, "uiAmount": 729388776.87734, "uiAmountString": "729388776.87734"}
+            }
+        ]);
+        body
+    }
+
+    #[test]
+    fn token_balance_changes_identify_the_buyer_by_owner_not_position() {
+        // Real data: this exact transaction (signature
+        // 5XpoGEhyuhQPcSMc8qJ6vw83LrGpLkKuEeXZcn48Q7tJsho1c92cgxqhMVNsuGiU51UT3yFGMT5SVKa9YoXjZfiA,
+        // docs/p0/measurements/fixtures/pump_mint1_full.json data[2]).
+        // Owner EvtwrQSszv1qqr8U4GKjfcvjN43Yyf1isnzXJzva3GRv's tracked
+        // balance for this mint went from 41,636,451 to
+        // 181,714,920,688 base units -- verified directly against the
+        // committed fixture, not recalled from a different probe. This
+        // is a DIFFERENT real transaction from the one used in
+        // scout-dex-solana's event-CPI false-positive regression test
+        // (that one's 206321 delta belongs to an unrelated
+        // signature/owner from a separate probe) -- no cross-fixture
+        // numeric connectivity is claimed here, only this transaction's
+        // own numbers.
+        let body = token_balance_transaction_body();
+        let result: TransactionsForAddressResult =
+            serde_json::from_value(body["result"].clone()).unwrap();
+        let record = result.data.into_iter().next().unwrap();
+        let tx = decode_full_transaction_record(record).unwrap();
+
+        let target_mint = decode_pubkey("NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump").unwrap();
+        let buyer_owner = decode_pubkey("EvtwrQSszv1qqr8U4GKjfcvjN43Yyf1isnzXJzva3GRv").unwrap();
+
+        let buyer_change = tx
+            .token_balance_changes
+            .iter()
+            .find(|c| c.mint == target_mint && c.owner == Some(buyer_owner))
+            .expect("buyer's token balance change must be present");
+
+        assert_eq!(buyer_change.pre_amount, Some(41_636_451));
+        assert_eq!(buyer_change.post_amount, 181_714_920_688);
+        assert_eq!(buyer_change.decimals, 6);
+        assert_eq!(
+            buyer_change.post_amount - buyer_change.pre_amount.unwrap(),
+            181_673_284_237
+        );
+    }
+
+    #[test]
+    fn pool_account_with_equal_opposite_delta_is_not_mistaken_for_the_buyer() {
+        // The pool (7DfuFARLQHn6y7bKd928Unz2gcQS6taVYf3UzjxNdK3y) lost
+        // exactly the same 206321 units the buyer gained -- a decoder
+        // that picked "the account with the right magnitude" instead
+        // of "the account whose balance increased" would misattribute
+        // the pool as a second buyer. Confirms both appear as distinct
+        // owners with opposite-signed deltas, never merged or deduped.
+        let body = token_balance_transaction_body();
+        let result: TransactionsForAddressResult =
+            serde_json::from_value(body["result"].clone()).unwrap();
+        let record = result.data.into_iter().next().unwrap();
+        let tx = decode_full_transaction_record(record).unwrap();
+
+        let target_mint = decode_pubkey("NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump").unwrap();
+        let pool_owner = decode_pubkey("7DfuFARLQHn6y7bKd928Unz2gcQS6taVYf3UzjxNdK3y").unwrap();
+
+        let pool_change = tx
+            .token_balance_changes
+            .iter()
+            .find(|c| c.mint == target_mint && c.owner == Some(pool_owner))
+            .expect("pool's token balance change must be present");
+
+        assert_eq!(pool_change.pre_amount, Some(729_570_450_161_577));
+        assert_eq!(pool_change.post_amount, 729_388_776_877_340);
+        assert!(pool_change.post_amount < pool_change.pre_amount.unwrap());
+    }
+
+    #[test]
+    fn account_absent_from_pre_token_balances_has_none_not_an_error() {
+        // accountIndex=3 (7JCe3GHwkEr3feHgtLXnmuJ1yB3A7coSeyynxTBgdG8k)
+        // appears only in postTokenBalances in this real fixture -- its
+        // associated token account did not exist before this
+        // transaction. Must decode to pre_amount=None (meaning zero),
+        // never a decode error or a fabricated Some(0) that looks
+        // identical to "we observed a zero balance."
+        let body = token_balance_transaction_body();
+        let result: TransactionsForAddressResult =
+            serde_json::from_value(body["result"].clone()).unwrap();
+        let record = result.data.into_iter().next().unwrap();
+        let tx = decode_full_transaction_record(record).unwrap();
+
+        let target_mint = decode_pubkey("NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump").unwrap();
+        let new_ata_owner = decode_pubkey("7JCe3GHwkEr3feHgtLXnmuJ1yB3A7coSeyynxTBgdG8k").unwrap();
+
+        let new_account_change = tx
+            .token_balance_changes
+            .iter()
+            .find(|c| c.mint == target_mint && c.owner == Some(new_ata_owner))
+            .expect("newly-created ATA's token balance change must be present");
+
+        assert_eq!(new_account_change.pre_amount, None);
+        assert_eq!(new_account_change.post_amount, 0);
     }
 }
