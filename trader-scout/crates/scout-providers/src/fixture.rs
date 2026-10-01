@@ -152,6 +152,7 @@ impl HistoryProvider for FixtureProvider {
             .map(|f| {
                 Ok(ScanEnvelope {
                     payload: RawPayload::EvmLog(placeholder_log_for_fixture(&f.id)),
+                    truncated: false,
                 })
             })
             .collect();

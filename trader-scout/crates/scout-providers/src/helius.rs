@@ -586,6 +586,7 @@ fn stream_results(
                 .map(|tx| {
                     Ok(ScanEnvelope {
                         payload: RawPayload::SolanaTransaction(tx),
+                        truncated: false,
                     })
                 })
                 .collect();

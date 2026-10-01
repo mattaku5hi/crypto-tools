@@ -84,6 +84,15 @@ pub struct ScanTask {
 #[derive(Debug, Clone)]
 pub struct ScanEnvelope {
     pub payload: RawPayload,
+    /// `true` when the provider knows more data exists beyond this
+    /// envelope (e.g. an unconsumed `pagination_token`) but did not
+    /// fetch it in this `scan()` call. Per ARCHITECTURE.md §4, a
+    /// provider declaring the end of a range is not itself a durable
+    /// checkpoint — this field is that declaration surfaced to the
+    /// caller, not a promise the caller has seen everything.
+    /// `false` does not itself prove completeness; it only means this
+    /// provider found no further-page signal for this particular call.
+    pub truncated: bool,
 }
 
 /// Port every Tier 1 history/discovery source implements — ours and
