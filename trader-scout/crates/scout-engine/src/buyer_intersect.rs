@@ -38,6 +38,14 @@ pub struct BuyerIntersectReport {
     pub matches: Vec<BuyerMatch>,
     pub input_token_count: usize,
     pub min_token_hits: usize,
+    /// `true` if any provider envelope observed during this run
+    /// reported `ScanEnvelope.truncated` (an unconsumed pagination
+    /// cursor) -- per ADR-005, this must push the run's operational
+    /// status to `IncompleteCoverage` (exit 3), never silently
+    /// `Complete` (exit 0). This field only reports the raw signal;
+    /// the CLI binary maps it to the actual exit code, since this
+    /// engine function has no exit-code concept of its own.
+    pub coverage_truncated: bool,
 }
 
 /// Run the full offline `buyer-intersect` pipeline against a single
@@ -57,6 +65,8 @@ pub async fn run_buyer_intersect(
     input_tokens: &[AssetKey],
     min_token_hits: usize,
 ) -> Result<BuyerIntersectReport, ProviderError> {
+    let mut coverage_truncated = false;
+
     // Exercise the provider's plan()/scan() so an unconfigured provider
     // (per ADR-006's UnconfiguredProvider) surfaces ConfigurationRequired
     // here, exactly as a live run would — this function is not
@@ -94,7 +104,13 @@ pub async fn run_buyer_intersect(
             // A ConfigurationRequired error from scan() must surface exactly
             // as it would from plan() — this loop lets it propagate via `?`
             // rather than being silently dropped as an unused stream.
-            item?;
+            let envelope = item?;
+            // ADR-005: an unconsumed pagination cursor on even one
+            // envelope means this run did not see the provider's full
+            // declared range -- latched true for the whole run, never
+            // reset by a later envelope reporting false (a later page
+            // being "not truncated" does not undo an earlier gap).
+            coverage_truncated = coverage_truncated || envelope.truncated;
         }
     }
 
@@ -140,6 +156,7 @@ pub async fn run_buyer_intersect(
         matches,
         input_token_count: input_tokens.len(),
         min_token_hits,
+        coverage_truncated,
     })
 }
 

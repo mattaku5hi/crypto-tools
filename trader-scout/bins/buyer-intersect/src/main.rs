@@ -99,6 +99,24 @@ fn main() -> ExitCode {
         args.min_token_hits,
     ));
 
+    // ADR-005 exit code 3 (IncompleteCoverage) covers a run that
+    // completed successfully but did not see the provider's full
+    // declared range -- an unconsumed pagination cursor on any
+    // envelope means this run's shortlist may be missing real matches,
+    // not just that it happened to be short (D07's "legitimately empty
+    // shortlist is exit 0" does not apply once coverage is known
+    // incomplete). Checked before the ProviderError match below since
+    // it only applies to the Ok(report) branch.
+    if let Ok(report) = &result
+        && report.coverage_truncated
+    {
+        eprintln!(
+            "buyer-intersect: provider reported an unconsumed pagination cursor; \
+             results may be incomplete (ADR-005 IncompleteCoverage)"
+        );
+        return ExitCode::from(3);
+    }
+
     // ADR-005 exit code 4 (InfrastructureUnavailable) covers
     // "credentials, storage, capability gap" -- every current
     // ProviderError variant is exactly that: ConfigurationRequired

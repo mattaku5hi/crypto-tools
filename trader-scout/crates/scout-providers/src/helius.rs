@@ -38,7 +38,6 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Deserialize)]
 struct TransactionsForAddressResult {
     data: Vec<FullTransactionRecord>,
-    #[allow(dead_code)] // kept for a future paginated scan(), not read yet
     #[serde(default, rename = "paginationToken")]
     pagination_token: Option<String>,
 }
@@ -207,40 +206,6 @@ impl HeliusProvider {
     ) -> Result<Self, ProviderError> {
         let client = RpcClient::new(endpoint, request_timeout_ms, max_attempts)?;
         Ok(Self { client })
-    }
-
-    /// Fetch up to `limit` full transactions for a Solana account
-    /// (wallet or SPL mint — Helius's `getTransactionsForAddress`
-    /// accepts either, see this module's doc comment), oldest-first
-    /// (`sortOrder: "asc"`) so canonical ordering (ADR-002: slot +
-    /// transaction_index, never fetch order) is easy for a caller to
-    /// preserve downstream — this method does not itself sort, it
-    /// relies on Helius honoring the requested order and passes
-    /// `(slot, transaction_index)` through unchanged either way.
-    async fn fetch_transactions(
-        &self,
-        address: &str,
-        limit: u32,
-    ) -> Result<Vec<RawSolanaTransaction>, ProviderError> {
-        let params = serde_json::json!([
-            address,
-            {
-                "transactionDetails": "full",
-                "sortOrder": "asc",
-                "limit": limit,
-            }
-        ]);
-
-        let result: TransactionsForAddressResult = self
-            .client
-            .call("getTransactionsForAddress", params)
-            .await?;
-
-        result
-            .data
-            .into_iter()
-            .map(decode_full_transaction_record)
-            .collect()
     }
 }
 
@@ -607,23 +572,59 @@ impl HeliusProvider {
     async fn fetch_page(
         &self,
         address: String,
-    ) -> Result<Vec<RawSolanaTransaction>, ProviderError> {
-        self.fetch_transactions(&address, MAX_TRANSACTIONS_PER_SCAN)
+    ) -> Result<(Vec<RawSolanaTransaction>, bool), ProviderError> {
+        self.fetch_transactions_page(&address, MAX_TRANSACTIONS_PER_SCAN)
             .await
+    }
+
+    /// Like `fetch_transactions`, but also reports whether the response
+    /// carried an unconsumed `paginationToken` -- that signal is the
+    /// provider-level fact `ScanEnvelope.truncated` exists to surface
+    /// (ARCHITECTURE.md §4: a provider declaring the end of a range is
+    /// not itself a durable checkpoint). This is a separate method
+    /// rather than widening `fetch_transactions`'s own return type,
+    /// since that method's existing callers (none currently outside
+    /// this crate) have no need for the pagination signal.
+    async fn fetch_transactions_page(
+        &self,
+        address: &str,
+        limit: u32,
+    ) -> Result<(Vec<RawSolanaTransaction>, bool), ProviderError> {
+        let params = serde_json::json!([
+            address,
+            {
+                "transactionDetails": "full",
+                "sortOrder": "asc",
+                "limit": limit,
+            }
+        ]);
+
+        let result: TransactionsForAddressResult = self
+            .client
+            .call("getTransactionsForAddress", params)
+            .await?;
+
+        let truncated = result.pagination_token.is_some();
+        let transactions = result
+            .data
+            .into_iter()
+            .map(decode_full_transaction_record)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((transactions, truncated))
     }
 }
 
 fn stream_results(
-    result: Result<Vec<RawSolanaTransaction>, ProviderError>,
+    result: Result<(Vec<RawSolanaTransaction>, bool), ProviderError>,
 ) -> BoxStream<'static, Result<ScanEnvelope, ProviderError>> {
     match result {
-        Ok(transactions) => {
+        Ok((transactions, truncated)) => {
             let envelopes: Vec<_> = transactions
                 .into_iter()
                 .map(|tx| {
                     Ok(ScanEnvelope {
                         payload: RawPayload::SolanaTransaction(tx),
-                        truncated: false,
+                        truncated,
                     })
                 })
                 .collect();
