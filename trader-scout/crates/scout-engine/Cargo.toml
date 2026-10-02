@@ -16,12 +16,18 @@ scout-scan.workspace = true
 scout-normalize.workspace = true
 scout-providers.workspace = true
 scout-ledger.workspace = true
+scout-dex-solana.workspace = true
 scout-storage.workspace = true
 futures.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+alloy-primitives.workspace = true
+bs58.workspace = true
 
 [dev-dependencies]
-alloy-primitives.workspace = true
+async-trait.workspace = true
+scout-rpc.workspace = true
+serde_json.workspace = true
+wiremock.workspace = true

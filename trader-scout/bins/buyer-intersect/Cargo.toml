@@ -17,6 +17,7 @@ scout-engine.workspace = true
 scout-providers.workspace = true
 clap.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 # Only needed so integration tests in tests/cli.rs can invoke the other

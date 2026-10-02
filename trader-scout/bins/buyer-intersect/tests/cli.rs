@@ -174,3 +174,32 @@ fn buyer_intersect_accepts_file_path_input() {
     // stdin input for identical content (CLI.md §1: file/stdin parity).
     assert_eq!(output.status.code(), Some(4));
 }
+
+#[test]
+fn buyer_intersect_solana_input_without_helius_key_is_exit_4() {
+    // ADR-005/ADR-006: Solana input with no SCOUT_HELIUS_API_KEY is
+    // CONFIGURATION_REQUIRED (exit 4), never a fabricated empty success.
+    let bin = env!("CARGO_BIN_EXE_buyer-intersect");
+    let input = "solana:AB48pUATr4vEsxdAp54X9pvqyae2whMR2B52rEuJpump\n\
+                 solana:NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump\n";
+    let mut child = Command::new(bin)
+        .args(["--input", "-"])
+        .env_remove("SCOUT_HELIUS_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn binary");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(4), "stderr: {stderr}");
+    assert!(stderr.contains("configuration required"));
+    assert!(stderr.contains("SCOUT_HELIUS_API_KEY"));
+    assert!(output.stdout.is_empty());
+}

@@ -48,6 +48,36 @@ pub struct BuyerIntersectReport {
     pub coverage_truncated: bool,
 }
 
+/// Shared final step of every `buyer-intersect` path: keep wallets whose
+/// distinct matched-asset count reaches `min_token_hits`, then apply the
+/// deterministic order.
+///
+/// Deterministic ordering: hit_count desc, then canonical WalletKey asc
+/// as an explicit tiebreaker (CLI.md §3: "Сортировка: hit_count desc,
+/// canonical wallet/group key asc") — never relying on insertion order
+/// or an unstable sort's incidental behavior for equal keys (ACCEPTANCE
+/// F01: concurrency-independent output).
+pub(crate) fn threshold_and_sort_matches(
+    candidates: impl IntoIterator<Item = (WalletKey, Vec<AssetKey>)>,
+    min_token_hits: usize,
+) -> Vec<BuyerMatch> {
+    let mut matches: Vec<BuyerMatch> = candidates
+        .into_iter()
+        .filter(|(_, assets)| assets.len() >= min_token_hits)
+        .map(|(wallet, matched_assets)| BuyerMatch {
+            wallet,
+            hit_count: matched_assets.len(),
+            matched_assets,
+        })
+        .collect();
+    matches.sort_by(|a, b| {
+        b.hit_count
+            .cmp(&a.hit_count)
+            .then_with(|| a.wallet.cmp(&b.wallet))
+    });
+    matches
+}
+
 /// Run the full offline `buyer-intersect` pipeline against a single
 /// history provider for one wallet's net-delta input per token.
 ///
@@ -114,7 +144,7 @@ pub async fn run_buyer_intersect(
         }
     }
 
-    let mut matches = Vec::new();
+    let mut candidates: Vec<(WalletKey, Vec<AssetKey>)> = Vec::new();
     for (wallet, token_flows) in wallet_token_flows {
         let mut combined = NetDeltaInput::default();
         for flows in token_flows.values() {
@@ -131,26 +161,9 @@ pub async fn run_buyer_intersect(
             .into_iter()
             .filter(|asset| input_tokens.contains(asset))
             .collect();
-
-        if matched_assets.len() >= min_token_hits {
-            matches.push(BuyerMatch {
-                wallet: wallet.clone(),
-                hit_count: matched_assets.len(),
-                matched_assets,
-            });
-        }
+        candidates.push((wallet.clone(), matched_assets));
     }
-
-    // Deterministic ordering: hit_count desc, then canonical WalletKey
-    // asc as an explicit tiebreaker (CLI.md §3: "Сортировка: hit_count
-    // desc, canonical wallet/group key asc") — never relying on
-    // insertion order or an unstable sort's incidental behavior for
-    // equal keys (ACCEPTANCE F01: concurrency-independent output).
-    matches.sort_by(|a, b| {
-        b.hit_count
-            .cmp(&a.hit_count)
-            .then_with(|| a.wallet.cmp(&b.wallet))
-    });
+    let matches = threshold_and_sort_matches(candidates, min_token_hits);
 
     Ok(BuyerIntersectReport {
         matches,
