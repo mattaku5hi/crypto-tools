@@ -21,8 +21,9 @@ pub use config::{
     ScanConfig, ScoutConfig, StorageConfig,
 };
 pub use input::{
-    IdentityKind, IdentityRecord, InputError, InputFormat, ParsedInput, chain_profile_name,
-    parse_input, resolve_chain, resolve_token_assets, resolve_wallet_keys,
+    IdentityKind, IdentityRecord, InputError, InputFormat, ParsedInput, UpstreamInfo,
+    chain_profile_name, parse_input, parse_jsonl_with_upstream, resolve_chain,
+    resolve_token_assets, resolve_wallet_keys,
 };
 pub use output::{
     JsonlRecord, RunStatus, SCHEMA_VERSION, Window, WriteOutcome, write_lines_to_stdout,

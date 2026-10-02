@@ -80,7 +80,7 @@ buyer-intersect \
 
 Покупатель, который позже все продал, остается историческим покупателем. Чистый получатель airdrop не становится покупателем. При неполном сканировании токена N не уменьшается. Строгий финальный shortlist не объявляется полным; JSONL содержит status=partial, а plain wallets требует явного `--allow-partial` плюс `--manifest`, чтобы потеря completeness metadata была осознанной.
 
-### Реализовано сегодня (2026-10-02)
+### Текущее состояние реализации (2026-10-02)
 
 Реализован только срез Solana pump.fun bonding-curve (все входные токены — `solana:<mint>`, нужен `SCOUT_HELIUS_API_KEY`). EVM-вход и вход без ключа завершаются кодом 4. Охват и ограничения печатаются в stderr; stdout содержит только выбранный формат.
 
@@ -146,6 +146,12 @@ Fees                     allocated / overhead / unallocated
 Concentration            largest positive-PnL token share
 Data quality             scope, gaps, unknown basis, attribution
 ```
+
+### Текущее состояние реализации (2026-10-02)
+
+Только срез Solana pump.fun bonding-curve, SOL-леджер в лампортах (ADR-010); нужен `SCOUT_HELIUS_API_KEY`. EVM/смешанный вход и вход без ключа — exit 4 (кошельки не отбрасываются молча). Флаги: `--input`, `--input-format lines|jsonl`, `--format table|jsonl`, `--detail summary|full`, `--sort input|realized-net-pnl`, `--max-pages-per-wallet N` (1..=200, по умолчанию 10). `--since/--until/--period` отклоняются с exit 2 ("not supported yet"): провайдер не умеет точное временное окно.
+
+Скан идет newest-first с бюджетом страниц на кошелек: `truncated` = более старая история не просмотрена, начальный инвентарь неизвестен, кошелек получает `status=incomplete` и exit 3. Статусы карточки: `ok`, `no_activity` (0 транзакций), `no_pump_activity`, `incomplete`, `error` (сбой провайдера на этом кошельке; остальные кошельки продолжаются). Все кошельки `error` — exit 4; часть — exit 3. Unknown PnL / unknown-basis — легитимный N/A, не причина для exit 3. Деньги в JSONL — строки (лампорты и SOL с 9 знаками). JSONL: `run_meta`, `wallet_stats` на кошелек, `run_summary`. JSONL-вход принимает `buyer_match`/`wallet_ref`/`wallet_stats`; при наличии `run_meta` без `run_summary status=complete` запуск завершается кодом 3.
 
 ## 6. Композиция через stdout/stdin
 

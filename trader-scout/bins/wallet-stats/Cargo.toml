@@ -10,7 +10,15 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+scout-analytics.workspace = true
+scout-api.workspace = true
 scout-app.workspace = true
+scout-engine.workspace = true
 scout-core.workspace = true
 scout-providers.workspace = true
 clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bs58.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true

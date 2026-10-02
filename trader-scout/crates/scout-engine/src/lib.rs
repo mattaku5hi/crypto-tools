@@ -28,6 +28,7 @@ mod buyer_intersect;
 mod solana_buy_qualification;
 mod solana_buyer_intersect;
 mod solana_wallet_ledger;
+mod solana_wallet_stats;
 
 pub use buyer_intersect::{BuyerIntersectReport, BuyerMatch, run_buyer_intersect};
 pub use scout_dex_solana::{PumpTradeVariant, VariantVerification};
@@ -47,4 +48,8 @@ pub use solana_wallet_ledger::{
     SOLANA_WALLET_LEDGER_VERSION, SolanaWalletLedgerError, SolanaWalletLedgerReport, TradeCounts,
     UnknownReason, WSOL_MINT, allocate_fee_proportionally, build_solana_wallet_ledger,
     lamports_to_money, money_to_lamports_trunc,
+};
+pub use solana_wallet_stats::{
+    SolanaWalletStats, SolanaWalletStatsReport, WalletScanStatus, format_scaled_decimal,
+    lamports_to_sol_string, rational_to_decimal_string, run_solana_wallet_stats,
 };

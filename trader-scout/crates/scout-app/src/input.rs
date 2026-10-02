@@ -384,17 +384,139 @@ fn shift_csv_line_number(err: InputError) -> InputError {
 }
 
 fn parse_jsonl<R: BufRead>(
-    _reader: R,
-    _cli_chain: Option<ChainTag>,
+    reader: R,
+    cli_chain: Option<ChainTag>,
 ) -> Result<ParsedInput, InputError> {
-    // JSONL adapter parses prior CLI output records (run_meta/wallet_ref/
-    // buyer_match/...), not raw addresses — deferred to when the JSONL
-    // envelope schema (CLI.md §7) is implemented alongside output
-    // formatting, so both sides share one schema definition.
-    Err(InputError::InvalidAddress {
-        line: 0,
-        reason: "jsonl input format not yet implemented".to_string(),
-    })
+    parse_jsonl_with_upstream(reader, cli_chain).map(|(parsed, _)| parsed)
+}
+
+/// What an upstream CLI's JSONL stream said about its own completion
+/// (CLI.md §6: downstream must check the terminal `run_summary`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpstreamInfo {
+    /// A `run_meta` record was present (the stream claims a run envelope).
+    pub has_run_meta: bool,
+    /// `status` of the `run_summary` record, if one was present.
+    pub summary_status: Option<String>,
+}
+
+impl UpstreamInfo {
+    /// `false` when a run envelope exists but its footer is missing or
+    /// not `complete`: the candidate universe may be partial. A bare
+    /// stream of identity records (no `run_meta`) makes no claim.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.has_run_meta || self.summary_status.as_deref() == Some("complete")
+    }
+}
+
+/// Parse JSONL produced by another trader-scout CLI. Identities come
+/// from `buyer_match`, `wallet_ref` and `wallet_stats` records (CLI.md
+/// §7: `wallet.chain` profile name + `wallet.address` string);
+/// `run_meta`/`run_summary` are envelope records; any other kind is a
+/// hard error (e.g. `wallet_excluded` never becomes an identity
+/// automatically). Strict: malformed JSON, missing fields or an
+/// unsupported `schema_version` fail with the 1-indexed line number.
+pub fn parse_jsonl_with_upstream<R: BufRead>(
+    reader: R,
+    cli_chain: Option<ChainTag>,
+) -> Result<(ParsedInput, UpstreamInfo), InputError> {
+    let mut records = Vec::new();
+    let mut seen: BTreeMap<AddressBytes, usize> = BTreeMap::new();
+    let mut duplicate_count = 0usize;
+    let mut upstream = UpstreamInfo::default();
+
+    for (idx, line_result) in reader.lines().enumerate() {
+        let line = idx + 1;
+        let err = |reason: String| InputError::InvalidAddress { line, reason };
+        let raw = line_result.map_err(|_| err("could not read line".to_string()))?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(trimmed).map_err(|e| err(format!("invalid JSON: {e}")))?;
+        if value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+        {
+            return Err(err(
+                "missing or unsupported schema_version (expected 1)".to_string()
+            ));
+        }
+        let kind = value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| err("missing `kind`".to_string()))?;
+        match kind {
+            "run_meta" => upstream.has_run_meta = true,
+            "run_summary" => {
+                upstream.summary_status = Some(
+                    value
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| err("run_summary without `status`".to_string()))?
+                        .to_string(),
+                );
+            }
+            "buyer_match" | "wallet_ref" | "wallet_stats" => {
+                let wallet = value
+                    .get("wallet")
+                    .ok_or_else(|| err(format!("{kind} without `wallet`")))?;
+                let chain_text = wallet
+                    .get("chain")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| err("wallet.chain must be a string".to_string()))?;
+                let address_text = wallet
+                    .get("address")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| err("wallet.address must be a string".to_string()))?;
+                let tag = ChainTag::parse(chain_text).ok_or(InputError::UnknownChainTag {
+                    line,
+                    tag: chain_text.to_string(),
+                })?;
+                if let Some(cli) = cli_chain
+                    && cli != tag
+                {
+                    return Err(InputError::ChainConflict {
+                        line,
+                        line_chain: chain_text.to_string(),
+                        cli_chain: format!("{cli:?}"),
+                    });
+                }
+                let canonical = canonicalize_address(address_text, tag.family(), line)?;
+                if seen.contains_key(&canonical) {
+                    duplicate_count += 1;
+                    continue;
+                }
+                seen.insert(canonical.clone(), line);
+                records.push(IdentityRecord {
+                    line_number: line,
+                    kind: IdentityKind::Explicit(tag),
+                    address_text: address_text.to_string(),
+                    canonical,
+                });
+            }
+            other => {
+                return Err(err(format!(
+                    "unsupported record kind `{other}` for identity input \
+                     (expected buyer_match, wallet_ref or wallet_stats)"
+                )));
+            }
+        }
+    }
+
+    if records.is_empty() {
+        return Err(InputError::EmptyInput);
+    }
+    Ok((
+        ParsedInput {
+            records,
+            duplicate_count,
+        },
+        upstream,
+    ))
 }
 
 /// Resolve a bare address's chain against the set of enabled EVM chains.
@@ -645,5 +767,71 @@ mod tests {
             parsed.records[0].canonical,
             AddressBytes::Solana(_)
         ));
+    }
+
+    const SOL_A: &str = "HgwBZM6kQE8qpYBdM2aXDxaEs5GTpDryNxuREeVP8f8B";
+
+    fn jl(kind_line: &str) -> String {
+        format!("{{\"schema_version\":1,{kind_line}}}\n")
+    }
+
+    #[test]
+    fn jsonl_reads_buyer_intersect_records_and_upstream_status() {
+        let input = format!(
+            "{}{}{}{}",
+            jl("\"kind\":\"run_meta\",\"run_id\":\"r\""),
+            jl(&format!(
+                "\"kind\":\"buyer_match\",\"wallet\":{{\"chain\":\"solana\",\"address\":\"{SOL_A}\"}},\"hit_count\":2,\"matched_assets\":[]"
+            )),
+            jl(&format!(
+                "\"kind\":\"wallet_ref\",\"wallet\":{{\"chain\":\"solana\",\"address\":\"{SOL_A}\"}}"
+            )),
+            jl("\"kind\":\"run_summary\",\"status\":\"partial\",\"records\":1"),
+        );
+        let (parsed, up) = parse_jsonl_with_upstream(input.as_bytes(), None).unwrap();
+        assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.duplicate_count, 1);
+        assert_eq!(parsed.records[0].line_number, 2);
+        assert!(up.has_run_meta);
+        assert_eq!(up.summary_status.as_deref(), Some("partial"));
+        assert!(!up.is_complete());
+        // Via the generic entry point too.
+        assert!(parse_input(input.as_bytes(), InputFormat::Jsonl, None).is_ok());
+    }
+
+    #[test]
+    fn jsonl_missing_footer_is_not_complete_but_bare_refs_make_no_claim() {
+        let meta = jl("\"kind\":\"run_meta\"");
+        let r = jl(&format!(
+            "\"kind\":\"wallet_ref\",\"wallet\":{{\"chain\":\"solana\",\"address\":\"{SOL_A}\"}}"
+        ));
+        let (_, up) = parse_jsonl_with_upstream(format!("{meta}{r}").as_bytes(), None).unwrap();
+        assert!(!up.is_complete());
+        let (_, up) = parse_jsonl_with_upstream(r.as_bytes(), None).unwrap();
+        assert!(up.is_complete());
+    }
+
+    #[test]
+    fn jsonl_is_strict() {
+        let bad = |s: &str| parse_jsonl_with_upstream(s.as_bytes(), None).unwrap_err();
+        assert!(matches!(
+            bad("not json\n"),
+            InputError::InvalidAddress { line: 1, .. }
+        ));
+        assert!(matches!(
+            bad("{\"kind\":\"wallet_ref\"}\n"),
+            InputError::InvalidAddress { line: 1, .. }
+        ));
+        assert!(matches!(
+            bad(&jl("\"kind\":\"wallet_excluded\",\"wallet\":{}")),
+            InputError::InvalidAddress { line: 1, .. }
+        ));
+        assert!(matches!(
+            bad(&jl(
+                "\"kind\":\"wallet_ref\",\"wallet\":{\"chain\":\"dogecoin\",\"address\":\"x\"}"
+            )),
+            InputError::UnknownChainTag { line: 1, .. }
+        ));
+        assert_eq!(bad(&jl("\"kind\":\"run_meta\"")), InputError::EmptyInput);
     }
 }
