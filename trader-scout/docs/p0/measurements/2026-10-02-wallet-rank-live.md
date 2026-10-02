@@ -30,3 +30,19 @@ Observed in each wallet's newest 300 transactions (medians, min–max):
    are not decoded (P4.1). Bonding-curve-only PnL is a small, biased subset for that population.
 
 Raw JSONL/stderr were kept outside the repo (scratch); the numbers above are the full extract.
+
+## Re-run with the ADR-011 window (commit `35f1fac`)
+
+`wallet-rank --profile insider --period 3d --max-pages-per-wallet 5 --max-requests 250` over the
+GMGN K≥2 set: 163 requests, exit 3, 0 eligible. Window coverage is now reachable: **15/39 wallets
+complete for the window** (was 0/39 without a window). Primary exclusions: `incomplete_coverage`
+24, `unknown_basis` 11, `no_pump_activity` 3, `metric_unknown` 1; any-reason also
+`insufficient_closed_episodes` 11, `insufficient_active_days` 8, activity ceilings 3 (evidence on
+incomplete scans, ADR-011 §6).
+
+The 11 `unknown_basis` wallets (`wallet-stats --period 3d --detail full`, 2,646 tx in window):
+`continuity_breaks` 112, `unknown_disposals` 105 vs `known_disposals` 28,
+`out_of_scope_token_movements` 3,231. I.e. tokens bought on the bonding curve leave the wallet
+through an undecoded venue (PumpSwap after migration), and most token movement is on mints never
+traded on the bonding curve. The PumpSwap decoder (P4.1) is the binding constraint for this
+population, not the window or the gates.
