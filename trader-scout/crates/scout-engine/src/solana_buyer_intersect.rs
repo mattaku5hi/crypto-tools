@@ -131,9 +131,14 @@ impl SolanaProtocolScope {
                          IDL e0687ae9; buy, buy_exact_quote_in, sell; wSOL-quoted normal and \
                          reversed pools), each priced from its paired event; PumpSwap trades are \
                          attributed only when the wallet's own owner-keyed legs reconcile \
-                         (ADR-012); one FIFO per (wallet, mint) across both venues",
-            not_decoded: "Raydium, Meteora, Orca, Jupiter-only routes not ending in the two \
-                          programs above, PumpSwap liquidity/non-trade instructions and every \
+                         (ADR-012); route swaps (ADR-013: signer wallet, FixtureVerified pump \
+                         leg, one traded token vs one SOL/USDC/USDT quote asset, pass-through \
+                         leg users netting zero) are booked from the wallet's own deltas in the \
+                         quote's unit; PnL is per quote unit (SOL, USDC, USDT), never mixed; \
+                         one FIFO per (wallet, mint) across venues",
+            not_decoded: "Raydium, Meteora, Orca and Jupiter route hops themselves (a route \
+                          is recognized only through a FixtureVerified pump leg and the wallet's \
+                          own deltas), PumpSwap liquidity/non-trade instructions and every \
                           other venue; token movements there are continuity breaks (Unknown), \
                           never zero PnL; bot/platform fees stay outside trade PnL (ADR-010 §5)",
         }

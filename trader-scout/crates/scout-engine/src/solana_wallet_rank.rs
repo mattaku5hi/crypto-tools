@@ -4,6 +4,13 @@
 //! result"). No I/O, no clocks, no floats: every gate and every sort
 //! comparison is exact integer arithmetic (AGENTS invariant #7).
 //!
+//! # Quote unit (ADR-013 §5)
+//! [`RankPolicy::quote`] (`--quote sol|usdc|usdt`, default `sol`) selects
+//! the unit whose known closed episodes feed the PnL / ROI / profit-factor
+//! ranking metrics and the `min_closed_episodes` gate. Figures of other
+//! units are never mixed in; they stay visible on the report's
+//! `unit_blocks`. Unknown-basis gates stay wallet-wide (conservative).
+//!
 //! # Contract
 //! * Every input wallet lands in exactly one of [`WalletRankReport::ranked`]
 //!   or [`WalletRankReport::excluded`]; nothing is dropped silently.
@@ -72,14 +79,14 @@ use std::collections::BTreeMap;
 use scout_analytics::RatioStatus;
 use scout_core::{MONEY_SCALE, Money, SolanaPubkey};
 
-use crate::solana_wallet_ledger::{OpenPosition, SolanaWalletLedgerReport};
+use crate::solana_wallet_ledger::{OpenPosition, QuoteUnit, SolanaWalletLedgerReport};
 use crate::solana_wallet_stats::{SolanaWalletStats, WalletScanStatus};
 
 /// Default `--top`.
 pub const DEFAULT_TOP: usize = 20;
 
 /// Version tag of the ranking rules for report metadata.
-pub const SOLANA_WALLET_RANK_VERSION: &str = "solana-wallet-rank/1";
+pub const SOLANA_WALLET_RANK_VERSION: &str = "solana-wallet-rank/2 (ADR-013 --quote)";
 
 /// Ranking metric. `period-equity-pnl` needs a price source (P5.2) and is
 /// deliberately not representable.
@@ -143,6 +150,8 @@ pub struct RankPolicy {
     pub require_no_open: bool,
     /// Maximum number of ranked wallets (>= 1).
     pub top: usize,
+    /// ADR-013 §5: quote unit of the ranking metrics and the episode gate.
+    pub quote: QuoteUnit,
 }
 
 impl RankPolicy {
@@ -164,7 +173,15 @@ impl RankPolicy {
             exclude_unknown_basis: unknown,
             require_no_open: false,
             top: top.max(1),
+            quote: QuoteUnit::Lamports,
         }
+    }
+
+    /// The same policy ranking in `quote`.
+    #[must_use]
+    pub fn with_quote(mut self, quote: QuoteUnit) -> Self {
+        self.quote = quote;
+        self
     }
 }
 
@@ -349,10 +366,14 @@ pub struct WalletRankObservation {
     /// Present unless the scan failed.
     pub ledger: Option<SolanaWalletLedgerReport>,
     pub pnl_status: PnlStatus,
-    /// Realized net PnL (lamports) when known; `None` is N/A, not zero.
-    pub net_pnl_lamports: Option<i128>,
-    /// `realized_trade_pnl / consumed_acquisition_basis` (exact, lamport-scaled
-    /// `Money` units on both sides); `None` when undefined.
+    /// Quote unit of `net_pnl_raw`, `roi` and the closed-episode gate.
+    pub quote: QuoteUnit,
+    /// Realized net PnL in raw base units of `quote` (lamports for SOL,
+    /// 6-dp units for USDC/USDT; net of failed-trade fees for SOL only)
+    /// when known; `None` is N/A, not zero.
+    pub net_pnl_raw: Option<i128>,
+    /// `realized_trade_pnl / consumed_acquisition_basis` of `quote` (exact,
+    /// scaled `Money` units on both sides); `None` when undefined.
     pub roi: Option<Ratio>,
     pub open_exposure: OpenExposure,
 }
@@ -418,12 +439,26 @@ impl WalletRankReport {
     }
 }
 
-fn observe(w: &SolanaWalletStats) -> WalletRankObservation {
+/// Known closed episodes of `unit` (0 when the report has no block).
+fn unit_closed_known(l: &SolanaWalletLedgerReport, unit: QuoteUnit) -> u64 {
+    l.unit_block(unit).map_or(0, |b| b.closed_episodes_known)
+}
+
+fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
     let (pnl_status, net, roi, open) = match &w.ledger {
         None => (PnlStatus::NotAvailable, None, None, OpenExposure::None),
         Some(l) => {
-            let net = (l.closed_episodes_known > 0 || l.failed_trade_fees_lamports != 0)
-                .then_some(l.realized_net_pnl_lamports);
+            let block = l.unit_block(quote);
+            let closed = unit_closed_known(l, quote);
+            let net = if quote == QuoteUnit::Lamports {
+                // Failed-trade fees are SOL overhead (ADR-004): SOL only.
+                (closed > 0 || l.failed_trade_fees_lamports != 0)
+                    .then_some(l.realized_net_pnl_lamports)
+            } else {
+                block
+                    .filter(|_| closed > 0)
+                    .map(|b| b.realized_trade_pnl_raw)
+            };
             let status = match net {
                 None => PnlStatus::NotAvailable,
                 Some(_) if w.coverage_complete() && l.closed_episodes_unknown == 0 => {
@@ -431,14 +466,12 @@ fn observe(w: &SolanaWalletStats) -> WalletRankObservation {
                 }
                 Some(_) => PnlStatus::KnownSubset,
             };
-            let roi = if l.closed_episodes_known > 0 {
+            let roi = block.filter(|_| closed > 0).and_then(|b| {
                 Ratio::new(
-                    l.realized_trade_pnl_exact.scaled_units(),
-                    l.consumed_acquisition_basis_exact.scaled_units(),
+                    b.realized_trade_pnl_exact.scaled_units(),
+                    b.consumed_acquisition_basis_exact.scaled_units(),
                 )
-            } else {
-                None
-            };
+            });
             let open = if l.open_positions.is_empty() {
                 OpenExposure::None
             } else {
@@ -459,7 +492,8 @@ fn observe(w: &SolanaWalletStats) -> WalletRankObservation {
         incomplete_reasons: w.incomplete_reasons.clone(),
         ledger: w.ledger.clone(),
         pnl_status,
-        net_pnl_lamports: net,
+        quote,
+        net_pnl_raw: net,
         roi,
         open_exposure: open,
     }
@@ -483,8 +517,13 @@ enum PfKey {
     Unbounded,
 }
 
-fn pf_key(l: &SolanaWalletLedgerReport) -> Option<PfKey> {
-    match l.profit_factor {
+fn pf_key(l: &SolanaWalletLedgerReport, unit: QuoteUnit) -> Option<PfKey> {
+    let pf = if unit == QuoteUnit::Lamports {
+        l.profit_factor
+    } else {
+        l.unit_block(unit)?.profit_factor
+    };
+    match pf {
         RatioStatus::Value { value } => Some(PfKey::Finite(value.scaled_units())),
         RatioStatus::NoObservedLosses => Some(PfKey::Unbounded),
         RatioStatus::Undefined => None,
@@ -510,12 +549,14 @@ fn cmp_opt_roi(a: Option<Ratio>, b: Option<Ratio>) -> Ordering {
 }
 
 fn closed_known(o: &WalletRankObservation) -> u64 {
-    o.ledger.as_ref().map_or(0, |l| l.closed_episodes_known)
+    o.ledger
+        .as_ref()
+        .map_or(0, |l| unit_closed_known(l, o.quote))
 }
 
 /// Descending comparator (best first) for the chosen metric.
 fn cmp_best_first(by: RankBy, a: &WalletRankObservation, b: &WalletRankObservation) -> Ordering {
-    let net = |o: &WalletRankObservation| o.net_pnl_lamports;
+    let net = |o: &WalletRankObservation| o.net_pnl_raw;
     let by_net = || match (net(a), net(b)) {
         (Some(x), Some(y)) => y.cmp(&x),
         (Some(_), None) => Ordering::Less,
@@ -527,7 +568,8 @@ fn cmp_best_first(by: RankBy, a: &WalletRankObservation, b: &WalletRankObservati
         RankBy::RealizedNetPnl => by_net().then_with(by_roi),
         RankBy::RealizedCostRoi => by_roi().then_with(by_net),
         RankBy::ProfitFactor => {
-            let key = |o: &WalletRankObservation| o.ledger.as_ref().and_then(pf_key);
+            let key =
+                |o: &WalletRankObservation| o.ledger.as_ref().and_then(|l| pf_key(l, o.quote));
             let pf = match (key(a), key(b)) {
                 (Some(x), Some(y)) => cmp_pf(y, x),
                 (Some(_), None) => Ordering::Less,
@@ -544,9 +586,9 @@ fn cmp_best_first(by: RankBy, a: &WalletRankObservation, b: &WalletRankObservati
 
 fn metric_known(by: RankBy, o: &WalletRankObservation) -> bool {
     match by {
-        RankBy::RealizedNetPnl => o.net_pnl_lamports.is_some(),
+        RankBy::RealizedNetPnl => o.net_pnl_raw.is_some(),
         RankBy::RealizedCostRoi => o.roi.is_some(),
-        RankBy::ProfitFactor => o.ledger.as_ref().and_then(pf_key).is_some(),
+        RankBy::ProfitFactor => o.ledger.as_ref().and_then(|l| pf_key(l, o.quote)).is_some(),
     }
 }
 
@@ -608,7 +650,7 @@ fn gate_reasons(policy: &RankPolicy, o: &WalletRankObservation) -> Vec<Exclusion
     if !metric_known(policy.rank_by, o) {
         out.push(ExclusionReason::MetricUnknown);
     }
-    if l.closed_episodes_known < policy.min_closed_episodes {
+    if unit_closed_known(l, o.quote) < policy.min_closed_episodes {
         out.push(ExclusionReason::InsufficientClosedEpisodes);
     }
     let a = &l.activity;
@@ -645,7 +687,7 @@ pub fn rank_solana_wallets(wallets: &[SolanaWalletStats], policy: &RankPolicy) -
     // (input index, excluded) so the final list keeps input order.
     let mut excluded: Vec<(usize, ExcludedWallet)> = Vec::new();
     for (idx, w) in wallets.iter().enumerate() {
-        let obs = observe(w);
+        let obs = observe(w, policy.quote);
         let mut reasons = gate_reasons(policy, &obs);
         reasons.sort();
         reasons.dedup();

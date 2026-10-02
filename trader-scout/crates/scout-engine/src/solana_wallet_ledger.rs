@@ -31,6 +31,22 @@
 //! `(wallet, mint)`, episodes, continuity, left-censoring) is shared, so a
 //! curve buy followed by an AMM sell is one episode.
 //!
+//! # Route swaps and quote units (ADR-013)
+//! * Event pricing guard (§1): an event trade is priced from its paired
+//!   event only when the wallet's non-zero owner-keyed deltas involve no
+//!   asset other than the traded token(s) and SOL/wSOL and, for buys, the
+//!   wallet's SOL outflow is at least the event cost. Otherwise the event
+//!   is one hop of someone else's route and is not the wallet's price.
+//! * Route swap (§2): wallet is a signer, a FixtureVerified decoded leg
+//!   trades token `T`, the wallet's non-zero deltas are exactly `T` and one
+//!   quote asset `Q` (SOL, USDC, USDT) with opposite signs, and every other
+//!   leg `user` is a non-signing pass-through netting zero on every mint.
+//!   The trade is booked from the wallet's own deltas in `Q`'s unit.
+//! * Quote units (§3/§4): every lot carries its unit; one FIFO per
+//!   `(wallet, mint)`; a disposal against lots of another unit is
+//!   `Unknown { CrossQuoteUnit }`; PnL/basis/ROI/PF are per unit and never
+//!   summed across units.
+//!
 //! # Windowed mode (ADR-011)
 //! With [`LedgerOptions::left_censoring`] the input is assumed to be the
 //! wallet's transactions inside an analysis window `[since, until)`. A
@@ -67,11 +83,19 @@ use scout_normalize::{SolanaBalanceAggregationError, solana_owner_net_deltas};
 use crate::solana_buy_qualification::solana_mainnet_chain;
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
-pub const SOLANA_WALLET_LEDGER_VERSION: &str =
-    "solana-wallet-ledger/3 (ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM)";
+pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/4 (ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units)";
+
+/// Scope text for report metadata (invariant #10): allowed quote units and
+/// the route-swap rule of ADR-013.
+pub const SOLANA_WALLET_LEDGER_SCOPE: &str = "quote units: SOL (lamports, native+wSOL), USDC (6 dp raw), USDT (6 dp raw); no FX, per-unit PnL never summed; route swap = signer wallet, FixtureVerified decoded leg, exactly one traded token and one quote asset with opposite signs, other leg users non-signing zero-net pass-through (ADR-013 section 2)";
 
 /// Wrapped SOL, the only non-native quote asset treated as SOL (ADR-010 §3).
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
+/// USDC mint (ADR-013 §3).
+pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+/// USDT mint (ADR-013 §3).
+pub const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 
 /// Seconds in the activity "day" bucket (UTC, `ts.div_euclid(86_400)`).
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -89,16 +113,95 @@ pub enum SolanaWalletLedgerError {
     Balance(#[from] SolanaBalanceAggregationError),
     #[error("internal wSOL mint constant is invalid")]
     InvalidWsolConstant,
+    #[error("internal quote mint constant is invalid")]
+    InvalidQuoteMintConstant,
+    #[error("quote unit has no Solana base-unit scale: {0:?}")]
+    UnsupportedQuoteUnit(QuoteUnit),
 }
 
-/// P0.14 boundary: lamports -> `Money` (`lamports * 10^MONEY_SCALE`,
-/// exact, checked). THE only place this workspace converts a Solana base
-/// unit into `Money`; nothing else in this module scales by hand.
-pub fn lamports_to_money(lamports: i128) -> Result<Money, SolanaWalletLedgerError> {
-    let scaled = lamports
+/// Decimal places of one raw base unit of a Solana quote unit (SOL 9,
+/// USDC/USDT 6). `None` for `ReportCurrency`, which has no base unit.
+#[must_use]
+pub const fn quote_unit_decimals(unit: QuoteUnit) -> Option<u32> {
+    match unit {
+        QuoteUnit::Lamports => Some(9),
+        QuoteUnit::UsdcUnits | QuoteUnit::UsdtUnits => Some(6),
+        QuoteUnit::ReportCurrency => None,
+    }
+}
+
+/// Short label (`sol` / `usdc` / `usdt`) of a Solana quote unit.
+#[must_use]
+pub const fn quote_unit_label(unit: QuoteUnit) -> &'static str {
+    match unit {
+        QuoteUnit::Lamports => "sol",
+        QuoteUnit::UsdcUnits => "usdc",
+        QuoteUnit::UsdtUnits => "usdt",
+        QuoteUnit::ReportCurrency => "report_currency",
+    }
+}
+
+/// The Solana quote units in report order.
+pub const SOLANA_QUOTE_UNITS: [QuoteUnit; 3] = [
+    QuoteUnit::Lamports,
+    QuoteUnit::UsdcUnits,
+    QuoteUnit::UsdtUnits,
+];
+
+/// P0.14 boundary: raw base units of `unit` -> `Money`
+/// (`raw * 10^MONEY_SCALE`, exact, checked). THE only place this workspace
+/// converts a Solana quote base unit into `Money`; nothing else in this
+/// module scales by hand. The scaling is the same for every unit (the unit
+/// is a tag, ADR-013 §3: no FX), so ledgers of different units stay
+/// distinguishable only by their tag.
+pub fn quote_units_to_money(unit: QuoteUnit, raw: i128) -> Result<Money, SolanaWalletLedgerError> {
+    if quote_unit_decimals(unit).is_none() {
+        return Err(SolanaWalletLedgerError::UnsupportedQuoteUnit(unit));
+    }
+    let scaled = raw
         .checked_mul(10i128.pow(MONEY_SCALE))
-        .ok_or(SolanaWalletLedgerError::Overflow("lamports_to_money"))?;
+        .ok_or(SolanaWalletLedgerError::Overflow("quote_units_to_money"))?;
     Ok(Money::from_scaled_units(scaled))
+}
+
+/// P0.14 boundary, SOL flavour: lamports -> `Money`. Same boundary as
+/// [`quote_units_to_money`].
+pub fn lamports_to_money(lamports: i128) -> Result<Money, SolanaWalletLedgerError> {
+    quote_units_to_money(QuoteUnit::Lamports, lamports)
+}
+
+/// `Money` of a ledger of `unit` -> whole raw base units, truncating toward
+/// zero (the exact `Money` stays available next to every raw figure).
+#[must_use]
+pub fn money_to_quote_units_trunc(money: Money) -> i128 {
+    let scale = 10i128.pow(MONEY_SCALE);
+    let units = money.scaled_units();
+    let magnitude = units.unsigned_abs().div_euclid(scale.unsigned_abs());
+    let magnitude = i128::try_from(magnitude).unwrap_or(i128::MAX);
+    if units.is_negative() {
+        -magnitude
+    } else {
+        magnitude
+    }
+}
+
+/// Exact decimal string of `Money` of a ledger of `unit` (SOL 9 dp, USDC /
+/// USDT 6 dp). Sub-base-unit proration remainders (< 10^-8 base unit) are
+/// truncated toward zero. `None` for `ReportCurrency`.
+#[must_use]
+pub fn format_quote_money(unit: QuoteUnit, money: Money) -> Option<String> {
+    let decimals = quote_unit_decimals(unit)?;
+    let raw = money_to_quote_units_trunc(money);
+    let neg = raw.is_negative();
+    let mag = raw.unsigned_abs();
+    let div = 10u128.pow(decimals);
+    let whole = mag.div_euclid(div);
+    let frac = mag.rem_euclid(div);
+    let width = usize::try_from(decimals).unwrap_or(9);
+    Some(format!(
+        "{}{whole}.{frac:0width$}",
+        if neg { "-" } else { "" }
+    ))
 }
 
 /// `Money` of a lamport ledger -> whole lamports, truncating toward zero.
@@ -107,16 +210,7 @@ pub fn lamports_to_money(lamports: i128) -> Result<Money, SolanaWalletLedgerErro
 /// stays available in the report next to every lamport figure.
 #[must_use]
 pub fn money_to_lamports_trunc(money: Money) -> i128 {
-    let scale = 10i128.pow(MONEY_SCALE);
-    let units = money.scaled_units();
-    // `rem_euclid` of the magnitude keeps truncation toward zero.
-    let magnitude = units.unsigned_abs().div_euclid(scale.unsigned_abs());
-    let magnitude = i128::try_from(magnitude).unwrap_or(i128::MAX);
-    if units.is_negative() {
-        -magnitude
-    } else {
-        magnitude
-    }
+    money_to_quote_units_trunc(money)
 }
 
 /// Why a figure is `Unknown` (never serialized as zero, invariant #6/#10).
@@ -143,6 +237,12 @@ pub enum UnknownReason {
     /// quote leg is exactly zero: another account of the transaction paid
     /// (or received) the quote asset. Basis/proceeds unknown, never 0.
     QuoteFundedByAnotherAccount,
+    /// ADR-013 §4: a disposal consumed lots whose basis is in another quote
+    /// unit than its proceeds (or one episode realized in two units).
+    CrossQuoteUnit,
+    /// ADR-013 §1: the paired event is one hop of a route, not the wallet's
+    /// price, and the route rule did not apply. Never a partial-hop price.
+    RouteLegNotWalletPrice,
 }
 
 impl UnknownReason {
@@ -160,6 +260,8 @@ impl UnknownReason {
             Self::QuoteFundedByAnotherAccount => {
                 "quote leg settled by another account (funded/received elsewhere)"
             }
+            Self::CrossQuoteUnit => "basis and proceeds in different quote units",
+            Self::RouteLegNotWalletPrice => "event is a route leg, not the wallet's price",
         }
     }
 }
@@ -191,6 +293,8 @@ pub struct EpisodeRecord {
     pub holding_seconds: Option<i64>,
     /// Canonical location of the first acquisition: `(slot, transaction_index)`.
     pub opened_location: (u64, u64),
+    /// Quote unit of the episode's known disposals (`None` when it has none).
+    pub quote_unit: Option<QuoteUnit>,
     /// Reasons that made (or, while open, would make) the episode Unknown.
     pub unknown_reasons: BTreeSet<UnknownReason>,
     /// Known disposals inside the episode and their summed PnL.
@@ -219,6 +323,9 @@ pub struct OpenPosition {
 pub enum Venue {
     BondingCurve,
     PumpAmm,
+    /// ADR-013 route swap: booked from the wallet's own deltas; the decoded
+    /// pump legs are only evidence that the transaction is a swap.
+    Route,
 }
 
 impl Venue {
@@ -227,6 +334,7 @@ impl Venue {
         match self {
             Self::BondingCurve => "bonding_curve",
             Self::PumpAmm => "pump_amm",
+            Self::Route => "route",
         }
     }
 }
@@ -250,6 +358,56 @@ pub struct VariantTradeCount {
     pub trades: u64,
 }
 
+/// A counter per Solana quote unit (ADR-013 §3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuoteUnitCounts {
+    pub sol: u64,
+    pub usdc: u64,
+    pub usdt: u64,
+}
+
+impl QuoteUnitCounts {
+    fn bump(&mut self, unit: QuoteUnit) {
+        match unit {
+            QuoteUnit::Lamports => self.sol += 1,
+            QuoteUnit::UsdcUnits => self.usdc += 1,
+            QuoteUnit::UsdtUnits => self.usdt += 1,
+            QuoteUnit::ReportCurrency => {}
+        }
+    }
+
+    #[must_use]
+    pub fn get(&self, unit: QuoteUnit) -> u64 {
+        match unit {
+            QuoteUnit::Lamports => self.sol,
+            QuoteUnit::UsdcUnits => self.usdc,
+            QuoteUnit::UsdtUnits => self.usdt,
+            QuoteUnit::ReportCurrency => 0,
+        }
+    }
+}
+
+/// Why a transaction with decoded swap legs was NOT booked as a route swap
+/// (ADR-013 §2), counted instead of dropped. Each such transaction lands in
+/// the first failing bucket only; transactions where the wallet moved
+/// nothing are not counted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RouteRejections {
+    /// §2a: the wallet moved value but did not sign.
+    pub wallet_not_signer: u64,
+    /// §2c: more than one traded token / quote asset, an unsupported quote
+    /// asset, or a wallet event trade of another mint.
+    pub multi_asset: u64,
+    /// §2c: token and quote delta have the same sign.
+    pub not_opposite_signs: u64,
+    /// §2c: SOL-quoted candidate whose SOL (native+wSOL) delta is zero.
+    pub no_quote_leg: u64,
+    /// §2b: no FixtureVerified decoded leg trades the wallet's token.
+    pub no_verified_leg: u64,
+    /// §2d: another leg user signs or does not net zero on every mint.
+    pub passthrough_nonzero: u64,
+}
+
 /// Trade counters. Each decoded trade of the wallet in a successful
 /// transaction lands in exactly one of the consideration buckets
 /// (`priced`, `unpaired`, `mismatched`, `unsupported_quote`,
@@ -261,6 +419,14 @@ pub struct TradeCounts {
     pub sells: u64,
     pub bonding_curve: VenueSideCounts,
     pub pump_amm: VenueSideCounts,
+    /// ADR-013 route swaps booked from wallet deltas (also counted in `priced`).
+    pub route: VenueSideCounts,
+    /// ADR-013 §2: route swaps booked, in total and by quote unit.
+    pub route_swaps: u64,
+    pub route_swaps_by_quote: QuoteUnitCounts,
+    /// ADR-013 §1: event trades whose event is not the wallet's price and
+    /// that no route rule explained (Unknown consideration).
+    pub route_leg_not_wallet_price: u64,
     /// ADR-012 §3: wallet's quote leg was zero; Unknown basis/proceeds.
     pub quote_funded_elsewhere: u64,
     /// PumpSwap trade whose wallet base leg did not match the paired event
@@ -324,6 +490,8 @@ pub struct LedgerDiagnostics {
     /// delta (already net of the network fee when it paid it) plus its
     /// owner-keyed wSOL delta.
     pub atomic_round_trip_sol_lamports: i128,
+    /// ADR-013 §2 route-swap candidates that were not booked, by reason.
+    pub route_rejected: RouteRejections,
 }
 
 /// Program ids counted as swap venues by the atomic round-trip signal:
@@ -404,6 +572,13 @@ pub struct SolanaWalletLedgerReport {
     pub losses: u64,
     pub breakeven: u64,
     /// SUM A: realized PnL of KNOWN CLOSED episodes only (headline).
+    ///
+    /// ADR-013: the legacy figures below (`realized_*`, `consumed_*`,
+    /// `open_episode_known_disposal_pnl_lamports`, `profit_factor`) are the
+    /// SOL block's values (lamports); other units are in `unit_blocks`.
+    /// `closed_episodes_known`, `wins`, `losses`, `breakeven` and
+    /// `win_rate` are over ALL units (sign of each episode's PnL in its own
+    /// unit).
     pub realized_trade_pnl_lamports: i128,
     pub realized_trade_pnl_exact: Money,
     /// Σ basis of lots consumed by disposals inside KNOWN CLOSED episodes
@@ -444,6 +619,86 @@ pub struct SolanaWalletLedgerReport {
     /// Per active UTC day, ascending (ADR-011 §6 evidence on incomplete scans).
     pub daily_activity: Vec<DailyActivity>,
     pub diagnostics: LedgerDiagnostics,
+    /// ADR-013 §4: one block per Solana quote unit (SOL, USDC, USDT, in that
+    /// order). Figures of different blocks are never summed.
+    pub unit_blocks: Vec<QuoteUnitBlock>,
+    /// Booked route swaps in canonical order (ADR-013 audit trail).
+    pub route_swap_log: Vec<RouteSwapRecord>,
+}
+
+/// Audit record of one booked route swap (ADR-013 §2): the wallet's own
+/// deltas, exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouteSwapRecord {
+    pub signature: [u8; 64],
+    pub slot: u64,
+    pub transaction_index: u64,
+    pub mint: SolanaPubkey,
+    /// Side in token terms.
+    pub side: TradeSide,
+    pub unit: QuoteUnit,
+    /// `|ΔT|` raw token units.
+    pub token_amount: u64,
+    /// `|ΔQ|` raw units of `unit` (paid for a buy, received for a sell).
+    pub quote_amount: u64,
+}
+
+/// Realized figures of the known closed episodes of ONE quote unit
+/// (ADR-013 §4). `Money` fields are raw-base-unit-scaled (`raw * 10^8`);
+/// render with [`format_quote_money`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuoteUnitBlock {
+    pub unit: QuoteUnit,
+    pub closed_episodes_known: u64,
+    pub wins: u64,
+    pub losses: u64,
+    pub breakeven: u64,
+    pub realized_trade_pnl_exact: Money,
+    pub realized_trade_pnl_raw: i128,
+    pub consumed_acquisition_basis_exact: Money,
+    pub consumed_acquisition_basis_raw: i128,
+    /// PnL of known disposals inside still-open episodes of this unit.
+    pub open_episode_known_disposal_pnl_raw: i128,
+    pub open_episode_known_disposals: u64,
+    pub win_rate: RatioStatus<Money>,
+    pub profit_factor: RatioStatus<Money>,
+}
+
+impl QuoteUnitBlock {
+    /// ROI as the exact rational `(realized_pnl, consumed_basis)` in scaled
+    /// `Money` units; `None` without known closed episodes or a zero basis.
+    #[must_use]
+    pub fn roi_parts(&self) -> Option<(i128, i128)> {
+        let den = self.consumed_acquisition_basis_exact.scaled_units();
+        (self.closed_episodes_known > 0 && den != 0)
+            .then_some((self.realized_trade_pnl_exact.scaled_units(), den))
+    }
+
+    fn empty(unit: QuoteUnit) -> Self {
+        Self {
+            unit,
+            closed_episodes_known: 0,
+            wins: 0,
+            losses: 0,
+            breakeven: 0,
+            realized_trade_pnl_exact: Money::ZERO,
+            realized_trade_pnl_raw: 0,
+            consumed_acquisition_basis_exact: Money::ZERO,
+            consumed_acquisition_basis_raw: 0,
+            open_episode_known_disposal_pnl_raw: 0,
+            open_episode_known_disposals: 0,
+            win_rate: RatioStatus::Undefined,
+            profit_factor: RatioStatus::Undefined,
+        }
+    }
+}
+
+impl SolanaWalletLedgerReport {
+    /// The block of `unit`, if it is a Solana quote unit.
+    #[must_use]
+    pub fn unit_block(&self, unit: QuoteUnit) -> Option<&QuoteUnitBlock> {
+        self.unit_blocks.iter().find(|b| b.unit == unit)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -454,8 +709,14 @@ type Location = (u64, u64);
 
 #[derive(Debug, Clone, Copy)]
 enum Consideration {
-    /// Lamports: buy cost (`sol+fee+creator`) or sell proceeds (`sol-fee-creator`).
-    Verified { lamports: u64, token_amount: u64 },
+    /// Raw units of `unit`: for event pricing (always SOL) the buy cost
+    /// (`sol+fee+creator`) or sell proceeds (`sol-fee-creator`); for route
+    /// swaps the wallet's own quote delta magnitude.
+    Verified {
+        unit: QuoteUnit,
+        amount: u64,
+        token_amount: u64,
+    },
     Unknown {
         reason: UnknownReason,
         token_amount: Option<u64>,
@@ -485,7 +746,20 @@ struct WalletTrade {
     reversed_pool: bool,
 }
 
+/// One decoded swap leg of the transaction (any `user`), evidence for the
+/// ADR-013 route rule.
+struct LegInfo {
+    user: SolanaPubkey,
+    /// The traded (non-quote) token of the leg.
+    mint: SolanaPubkey,
+    fixture_verified: bool,
+    instruction_index: u32,
+    timestamp: Option<i64>,
+}
+
 struct EpisodeAcc {
+    /// Unit of the known disposals so far (ADR-013 §4).
+    unit: Option<QuoteUnit>,
     opened_at: Option<i64>,
     opened_location: Location,
     pnl: Money,
@@ -505,6 +779,8 @@ struct Builder {
     left_censoring: bool,
     left_censored_total: u128,
     chain_asset: fn(SolanaPubkey) -> AssetKey,
+    quote_mints: QuoteMints,
+    route_log: Vec<RouteSwapRecord>,
     mints: BTreeMap<SolanaPubkey, MintState>,
     records: Vec<EpisodeRecord>,
     diag: LedgerDiagnostics,
@@ -552,11 +828,13 @@ impl Builder {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn acquire(
         &mut self,
         mint: SolanaPubkey,
         amount: u64,
         basis: Option<Money>,
+        unit: QuoteUnit,
         reason: Option<UnknownReason>,
         ts: Option<i64>,
         loc: Location,
@@ -574,6 +852,7 @@ impl Builder {
         let state = self.state(mint);
         if state.episode.is_none() {
             state.episode = Some(EpisodeAcc {
+                unit: None,
                 opened_at: ts,
                 opened_location: loc,
                 pnl: Money::ZERO,
@@ -598,9 +877,13 @@ impl Builder {
                 }
             }
         };
-        state
-            .ledger
-            .acquire(asset, raw(amount), basis.unwrap_or(Money::ZERO), status);
+        state.ledger.acquire_in_unit(
+            asset,
+            raw(amount),
+            basis.unwrap_or(Money::ZERO),
+            status,
+            unit,
+        );
         Ok(())
     }
 
@@ -611,6 +894,7 @@ impl Builder {
         mint: SolanaPubkey,
         amount: u64,
         gross: Option<Money>,
+        unit: QuoteUnit,
         sale_fee: Money,
         unknown_reason: UnknownReason,
         ts: Option<i64>,
@@ -631,10 +915,18 @@ impl Builder {
                 self.diag.continuity_breaks += 1;
                 UnknownReason::InventoryNotObserved
             };
-            self.acquire(mint, shortfall, None, Some(reason), ts, loc)?;
+            self.acquire(mint, shortfall, None, unit, Some(reason), ts, loc)?;
         }
         let state = self.state(mint);
-        let (_, consumes_other_unknown) = consumed_unknown_kinds(&state.ledger, need)?;
+        let (_, consumes_other_unknown, cross_unit) =
+            consumed_unknown_kinds(&state.ledger, need, unit)?;
+        // ADR-013 §4: proceeds in one unit against basis in another has no
+        // PnL; the disposal is Unknown { CrossQuoteUnit }.
+        let (gross, unknown_reason) = if gross.is_some() && cross_unit {
+            (None, UnknownReason::CrossQuoteUnit)
+        } else {
+            (gross, unknown_reason)
+        };
         let result = state
             .ledger
             .dispose(raw(amount), gross.unwrap_or(Money::ZERO), sale_fee)?;
@@ -651,6 +943,14 @@ impl Builder {
             _ => None,
         };
         if let Some(pnl) = known_pnl {
+            match ep.unit {
+                None => ep.unit = Some(unit),
+                // One episode realized in two units has no single PnL.
+                Some(u) if u != unit => {
+                    ep.unknown.insert(UnknownReason::CrossQuoteUnit);
+                }
+                Some(_) => {}
+            }
             ep.pnl = money_add(ep.pnl, pnl)?;
             ep.consumed_basis = money_add(ep.consumed_basis, result.consumed_acquisition_basis)?;
             ep.known_disposals += 1;
@@ -677,14 +977,16 @@ impl Builder {
 }
 
 /// FIFO preview of a disposal of `need` units: `(consumes a LeftCensored
-/// lot, consumes any other Unknown-basis lot)`.
+/// lot, consumes any other Unknown-basis lot, consumes a Known-basis lot
+/// denominated in a unit other than `unit`)`.
 fn consumed_unknown_kinds(
     ledger: &Ledger,
     need: u128,
-) -> Result<(bool, bool), SolanaWalletLedgerError> {
+    unit: QuoteUnit,
+) -> Result<(bool, bool, bool), SolanaWalletLedgerError> {
     let censored_label = UnknownReason::LeftCensored.label();
     let mut left = need;
-    let (mut censored, mut other) = (false, false);
+    let (mut censored, mut other, mut cross) = (false, false, false);
     for lot in ledger.open_lots() {
         if left == 0 {
             break;
@@ -700,9 +1002,11 @@ fn consumed_unknown_kinds(
             } else {
                 other = true;
             }
+        } else if lot.quote_unit != unit {
+            cross = true;
         }
     }
-    Ok((censored, other))
+    Ok((censored, other, cross))
 }
 
 fn close_record(
@@ -733,6 +1037,7 @@ fn close_record(
         closed_at,
         holding_seconds,
         opened_location: ep.opened_location,
+        quote_unit: ep.unit,
         unknown_reasons: ep.unknown,
         known_disposals: ep.known_disposals,
         known_disposal_pnl: ep.pnl,
@@ -796,6 +1101,64 @@ struct TxWork<'a> {
     /// they become continuity candidates (their transfer to the wallet is
     /// an unexplained token movement of a venue mint, not "out of scope").
     forward_mints: BTreeSet<SolanaPubkey>,
+    /// Every decoded swap leg of the transaction, whatever its `user`.
+    legs: Vec<LegInfo>,
+    /// ADR-013 §2: why a route-swap candidate was not booked.
+    route_reject: Option<RouteReject>,
+}
+
+/// Quote-asset mints of ADR-013 §3 (decoded once per build).
+struct QuoteMints {
+    wsol: SolanaPubkey,
+    usdc: SolanaPubkey,
+    usdt: SolanaPubkey,
+}
+
+impl QuoteMints {
+    fn new() -> Result<Self, SolanaWalletLedgerError> {
+        let dec = |s: &str| {
+            bs58::decode(s)
+                .into_vec()
+                .ok()
+                .and_then(|v| SolanaPubkey::try_from(v).ok())
+                .ok_or(SolanaWalletLedgerError::InvalidQuoteMintConstant)
+        };
+        Ok(Self {
+            wsol: wsol_mint()?,
+            usdc: dec(USDC_MINT)?,
+            usdt: dec(USDT_MINT)?,
+        })
+    }
+
+    fn stable_unit(&self, mint: &SolanaPubkey) -> Option<QuoteUnit> {
+        if *mint == self.usdc {
+            Some(QuoteUnit::UsdcUnits)
+        } else if *mint == self.usdt {
+            Some(QuoteUnit::UsdtUnits)
+        } else {
+            None
+        }
+    }
+}
+
+/// Why a route-swap candidate was rejected (ADR-013 §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteReject {
+    NothingMoved,
+    NotSigner,
+    MultiAsset,
+    NotOppositeSigns,
+    NoQuoteLeg,
+    NoVerifiedLeg,
+    PassthroughNonzero,
+}
+
+/// An accepted route swap: the wallet's own token and quote deltas.
+struct RouteBooking {
+    unit: QuoteUnit,
+    mint: SolanaPubkey,
+    token_delta: i128,
+    quote_delta: i128,
 }
 
 /// Bonding-curve extractor (ADR-010 §2/§3), behaviour unchanged.
@@ -808,6 +1171,16 @@ fn extract_curve_trades(
 ) {
     let rep = pair_trades_with_events(decoder, &tx.instructions, tx.slot, tx.transaction_index);
     for p in &rep.trades {
+        work.legs.push(LegInfo {
+            user: p.trade.user,
+            mint: p.trade.mint,
+            fixture_verified: p.trade.verification() == VariantVerification::FixtureVerified,
+            instruction_index: p.trade.instruction_index,
+            timestamp: match &p.pairing {
+                TradeEventPairing::Paired(ev) => Some(ev.timestamp),
+                _ => None,
+            },
+        });
         if p.trade.user != *wallet {
             continue;
         }
@@ -844,7 +1217,8 @@ fn extract_curve_trades(
                     };
                     match lamports {
                         Some(lamports) => Consideration::Verified {
-                            lamports,
+                            unit: QuoteUnit::Lamports,
+                            amount: lamports,
                             token_amount: ev.token_amount,
                         },
                         None => Consideration::Unknown {
@@ -967,6 +1341,19 @@ fn extract_amm_trades(
     work.orphans = work
         .orphans
         .saturating_add(u64::try_from(rec.pairing.orphan_events.len()).unwrap_or(u64::MAX));
+    for p in &rec.pairing.trades {
+        let r = read_amm_trade(p);
+        work.legs.push(LegInfo {
+            user: p.trade.user,
+            mint: r.mint,
+            fixture_verified: p.trade.verification() == VariantVerification::FixtureVerified,
+            instruction_index: p.trade.instruction_index,
+            timestamp: match &p.pairing {
+                AmmTradeEventPairing::Paired(ev) => Some(amm_event_timestamp(ev)),
+                _ => None,
+            },
+        });
+    }
     let wallet_signed = tx.signers.contains(wallet);
     for u in &rec.users {
         if u.user != *wallet {
@@ -1051,7 +1438,8 @@ fn extract_amm_trades(
                             }
                             AmmAttribution::Exact | AmmAttribution::QuoteResidual => base(
                                 Consideration::Verified {
-                                    lamports,
+                                    unit: QuoteUnit::Lamports,
+                                    amount: lamports,
                                     token_amount,
                                 },
                                 ts,
@@ -1115,8 +1503,8 @@ fn classify_trades<'a>(
     tx: &'a RawSolanaTransaction,
     wallet: &SolanaPubkey,
     decoders: &LedgerDecoders<'_>,
-    wsol: &SolanaPubkey,
-) -> TxWork<'a> {
+    qm: &QuoteMints,
+) -> Result<TxWork<'a>, SolanaWalletLedgerError> {
     let mut work = TxWork {
         tx,
         trades: Vec::new(),
@@ -1125,15 +1513,216 @@ fn classify_trades<'a>(
         router_forwards: 0,
         qfe_unbooked: 0,
         forward_mints: BTreeSet::new(),
+        legs: Vec::new(),
+        route_reject: None,
     };
-    extract_curve_trades(tx, wallet, decoders.curve, wsol, &mut work);
+    extract_curve_trades(tx, wallet, decoders.curve, &qm.wsol, &mut work);
     if let Some(amm) = decoders.amm {
         extract_amm_trades(tx, wallet, amm, &mut work);
     }
     // Both extractors yield execution order; merge across venues by the
     // flattened instruction index.
     work.trades.sort_by_key(|t| t.instruction_index);
-    work
+    apply_route_rules(&mut work, wallet, qm)?;
+    Ok(work)
+}
+
+/// ADR-013 §1/§2: decide whether the wallet's event trades are its own
+/// price, and if not, whether the transaction is a route swap booked from
+/// the wallet's own deltas.
+fn apply_route_rules(
+    work: &mut TxWork<'_>,
+    wallet: &SolanaPubkey,
+    qm: &QuoteMints,
+) -> Result<(), SolanaWalletLedgerError> {
+    if work.legs.is_empty() {
+        return Ok(());
+    }
+    let tx = work.tx;
+    let deltas = solana_owner_net_deltas(&tx.token_balance_changes)?;
+    let mut tokens: BTreeMap<SolanaPubkey, i128> = BTreeMap::new();
+    for ((mint, owner), d) in &deltas.deltas {
+        if owner == wallet && *d != 0 {
+            tokens.insert(*mint, *d);
+        }
+    }
+    let wsol_delta = tokens.get(&qm.wsol).copied().unwrap_or(0);
+    let mut sol: i128 = tx
+        .native_balance_changes
+        .iter()
+        .filter(|c| c.account == *wallet)
+        .map(|c| c.delta())
+        .sum();
+    if tx.fee_payer == *wallet {
+        sol = checked_add_i(sol, i128::from(tx.fee_lamports), "route sol")?;
+    }
+    sol = checked_add_i(sol, wsol_delta, "route sol")?;
+
+    // §1: event pricing guard.
+    let all_verified = work
+        .trades
+        .iter()
+        .all(|t| matches!(t.consideration, Consideration::Verified { .. }));
+    let mut guard_failed = false;
+    if !work.trades.is_empty() {
+        let traded: BTreeSet<SolanaPubkey> = work.trades.iter().map(|t| t.mint).collect();
+        let other_asset = tokens.keys().any(|m| *m != qm.wsol && !traded.contains(m));
+        let (mut buy_cost, mut sell_proceeds) = (0i128, 0i128);
+        for t in &work.trades {
+            if let Consideration::Verified { amount, .. } = t.consideration {
+                match t.side {
+                    TradeSide::Buy => {
+                        buy_cost = checked_add_i(buy_cost, i128::from(amount), "guard cost")?;
+                    }
+                    TradeSide::Sell => {
+                        sell_proceeds =
+                            checked_add_i(sell_proceeds, i128::from(amount), "guard proceeds")?;
+                    }
+                }
+            }
+        }
+        // Wallet SOL outflow (net of same-tx sells) must cover the event
+        // cost; rent, tips and platform fees only add to it.
+        let outflow = sell_proceeds
+            .checked_sub(sol)
+            .ok_or(SolanaWalletLedgerError::Overflow("guard outflow"))?;
+        let cost_ok = buy_cost == 0 || outflow >= buy_cost;
+        guard_failed = other_asset || !cost_ok;
+        if all_verified && !guard_failed {
+            return Ok(());
+        }
+    }
+
+    match route_candidate(work, wallet, qm, &tokens, wsol_delta, sol, &deltas.deltas) {
+        Ok(book) => {
+            let token_amount = u64::try_from(book.token_delta.unsigned_abs())
+                .map_err(|_| SolanaWalletLedgerError::Overflow("route token amount"))?;
+            let amount = u64::try_from(book.quote_delta.unsigned_abs())
+                .map_err(|_| SolanaWalletLedgerError::Overflow("route quote amount"))?;
+            let mut mine: Vec<&LegInfo> =
+                work.legs.iter().filter(|l| l.mint == book.mint).collect();
+            mine.sort_by_key(|l| l.instruction_index);
+            let instruction_index = mine.first().map_or(0, |l| l.instruction_index);
+            let timestamp = mine.iter().find_map(|l| l.timestamp);
+            work.trades.clear();
+            work.router_forwards = 0;
+            work.qfe_unbooked = 0;
+            work.forward_mints.clear();
+            work.trades.push(WalletTrade {
+                venue: Venue::Route,
+                variant: "route_swap",
+                side: if book.token_delta > 0 {
+                    TradeSide::Buy
+                } else {
+                    TradeSide::Sell
+                },
+                mint: book.mint,
+                instruction_index,
+                consideration: Consideration::Verified {
+                    unit: book.unit,
+                    amount,
+                    token_amount,
+                },
+                timestamp,
+                verification: VariantVerification::FixtureVerified,
+                mismatched: false,
+                unreconciled: false,
+                reversed_pool: false,
+            });
+        }
+        Err(reject) => {
+            if reject != RouteReject::NothingMoved {
+                work.route_reject = Some(reject);
+            }
+            if guard_failed {
+                // §1: never a partial-hop price.
+                for t in &mut work.trades {
+                    if matches!(t.consideration, Consideration::Verified { .. }) {
+                        t.consideration = Consideration::Unknown {
+                            reason: UnknownReason::RouteLegNotWalletPrice,
+                            token_amount: None,
+                        };
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// ADR-013 §2 a-d. `tokens` are the wallet's non-zero owner-keyed token
+/// deltas (wSOL included), `sol` its SOL delta (native + wSOL, fee added
+/// back when it paid).
+fn route_candidate(
+    work: &TxWork<'_>,
+    wallet: &SolanaPubkey,
+    qm: &QuoteMints,
+    tokens: &BTreeMap<SolanaPubkey, i128>,
+    wsol_delta: i128,
+    sol: i128,
+    deltas: &BTreeMap<(SolanaPubkey, SolanaPubkey), i128>,
+) -> Result<RouteBooking, RouteReject> {
+    let tx = work.tx;
+    let moved: Vec<(SolanaPubkey, i128)> = tokens
+        .iter()
+        .filter(|(m, _)| **m != qm.wsol)
+        .map(|(m, d)| (*m, *d))
+        .collect();
+    if tokens.is_empty() || moved.is_empty() {
+        return Err(RouteReject::NothingMoved);
+    }
+    // a. the wallet signs.
+    if !tx.signers.contains(wallet) {
+        return Err(RouteReject::NotSigner);
+    }
+    // c. exactly one traded token and one quote asset, opposite signs.
+    let (mint, token_delta, unit, quote_delta) = match moved.as_slice() {
+        [(a, da)] if qm.stable_unit(a).is_none() => {
+            if sol == 0 {
+                return Err(RouteReject::NoQuoteLeg);
+            }
+            (*a, *da, QuoteUnit::Lamports, sol)
+        }
+        [(a, da), (b, db)] if wsol_delta == 0 => match (qm.stable_unit(a), qm.stable_unit(b)) {
+            (None, Some(u)) => (*a, *da, u, *db),
+            (Some(u), None) => (*b, *db, u, *da),
+            _ => return Err(RouteReject::MultiAsset),
+        },
+        _ => return Err(RouteReject::MultiAsset),
+    };
+    if work.trades.iter().any(|t| t.mint != mint) {
+        return Err(RouteReject::MultiAsset);
+    }
+    if (token_delta > 0) == (quote_delta > 0) {
+        return Err(RouteReject::NotOppositeSigns);
+    }
+    // b. a decoded, FixtureVerified leg trades the wallet's token.
+    if !work
+        .legs
+        .iter()
+        .any(|l| l.mint == mint && l.fixture_verified)
+    {
+        return Err(RouteReject::NoVerifiedLeg);
+    }
+    // d. every other leg user is a non-signing, zero-net pass-through.
+    for l in &work.legs {
+        if l.user == *wallet {
+            continue;
+        }
+        if tx.signers.contains(&l.user)
+            || deltas
+                .iter()
+                .any(|((_, owner), d)| *owner == l.user && *d != 0)
+        {
+            return Err(RouteReject::PassthroughNonzero);
+        }
+    }
+    Ok(RouteBooking {
+        unit,
+        mint,
+        token_delta,
+        quote_delta,
+    })
 }
 
 /// Build the report with default options (full history, no window),
@@ -1171,12 +1760,14 @@ pub fn build_solana_wallet_ledger_venues(
     decoders: &LedgerDecoders<'_>,
     options: LedgerOptions,
 ) -> Result<SolanaWalletLedgerReport, SolanaWalletLedgerError> {
-    let wsol = wsol_mint()?;
+    let qm = QuoteMints::new()?;
     let mut b = Builder {
         wallet: *wallet,
         left_censoring: options.left_censoring,
         left_censored_total: 0,
         chain_asset: asset_of,
+        quote_mints: QuoteMints::new()?,
+        route_log: Vec::new(),
         mints: BTreeMap::new(),
         records: Vec::new(),
         diag: LedgerDiagnostics::default(),
@@ -1229,7 +1820,7 @@ pub fn build_solana_wallet_ledger_venues(
                 }
             }
             SolanaExecutionStatus::Succeeded => {
-                let w = classify_trades(tx, wallet, decoders, &wsol);
+                let w = classify_trades(tx, wallet, decoders, &qm)?;
                 for t in &w.trades {
                     b.traded.insert(t.mint);
                 }
@@ -1255,23 +1846,43 @@ impl Builder {
         self.diag.orphan_trade_events += w.orphans;
         self.diag.router_forward_trades_not_attributed += w.router_forwards;
         self.diag.quote_funded_elsewhere_trades += w.qfe_unbooked;
+        if let Some(r) = w.route_reject {
+            let rr = &mut self.diag.route_rejected;
+            match r {
+                RouteReject::NothingMoved => {}
+                RouteReject::NotSigner => rr.wallet_not_signer += 1,
+                RouteReject::MultiAsset => rr.multi_asset += 1,
+                RouteReject::NotOppositeSigns => rr.not_opposite_signs += 1,
+                RouteReject::NoQuoteLeg => rr.no_quote_leg += 1,
+                RouteReject::NoVerifiedLeg => rr.no_verified_leg += 1,
+                RouteReject::PassthroughNonzero => rr.passthrough_nonzero += 1,
+            }
+        }
         let is_payer = tx.fee_payer == self.wallet;
         self.record_atomic_round_trip(w)?;
 
-        // §4 fee allocation over verified trades only (consideration known).
+        // §4 fee allocation over SOL-quoted verified trades only (the network
+        // fee is SOL; ADR-013 §2: never mixed into a USDC/USDT basis).
         let verified: Vec<usize> = w
             .trades
             .iter()
             .enumerate()
             .filter_map(|(i, t)| {
-                matches!(t.consideration, Consideration::Verified { .. }).then_some(i)
+                matches!(
+                    t.consideration,
+                    Consideration::Verified {
+                        unit: QuoteUnit::Lamports,
+                        ..
+                    }
+                )
+                .then_some(i)
             })
             .collect();
         let weights: Vec<u64> = verified
             .iter()
             .filter_map(|i| w.trades.get(*i))
             .map(|t| match t.consideration {
-                Consideration::Verified { lamports, .. } => lamports,
+                Consideration::Verified { amount, .. } => amount,
                 Consideration::Unknown { .. } => 0,
             })
             .collect();
@@ -1283,7 +1894,10 @@ impl Builder {
         let share_of: BTreeMap<usize, u64> = verified.iter().copied().zip(shares).collect();
 
         let mut explained: BTreeMap<SolanaPubkey, i128> = BTreeMap::new();
-        let mut unverified_mints: BTreeSet<SolanaPubkey> = BTreeSet::new();
+        // Quote mints moved by this transaction's route swaps (explained,
+        // not "out of scope").
+        let mut route_quote_mints: BTreeSet<SolanaPubkey> = BTreeSet::new();
+        let mut unverified_mints: BTreeMap<SolanaPubkey, UnknownReason> = BTreeMap::new();
         let mut tx_ts: Option<i64> = None;
         let mut buy_cost: i128 = 0;
         let mut sell_proceeds: i128 = 0;
@@ -1292,6 +1906,7 @@ impl Builder {
             let venue_counts = match t.venue {
                 Venue::BondingCurve => &mut self.counts.bonding_curve,
                 Venue::PumpAmm => &mut self.counts.pump_amm,
+                Venue::Route => &mut self.counts.route,
             };
             match t.side {
                 TradeSide::Buy => {
@@ -1322,44 +1937,75 @@ impl Builder {
             let fee_share = share_of.get(&i).copied().unwrap_or(0);
             match t.consideration {
                 Consideration::Verified {
-                    lamports,
+                    unit,
+                    amount,
                     token_amount,
                 } => {
                     self.counts.priced += 1;
+                    if t.venue == Venue::Route {
+                        self.counts.route_swaps += 1;
+                        self.counts.route_swaps_by_quote.bump(unit);
+                        self.route_log.push(RouteSwapRecord {
+                            signature: tx.signature,
+                            slot: tx.slot,
+                            transaction_index: tx.transaction_index,
+                            mint: t.mint,
+                            side: t.side,
+                            unit,
+                            token_amount,
+                            quote_amount: amount,
+                        });
+                        match unit {
+                            QuoteUnit::UsdcUnits => {
+                                route_quote_mints.insert(self.quote_mints.usdc);
+                            }
+                            QuoteUnit::UsdtUnits => {
+                                route_quote_mints.insert(self.quote_mints.usdt);
+                            }
+                            QuoteUnit::Lamports | QuoteUnit::ReportCurrency => {}
+                        }
+                    }
                     let signed = i128::from(token_amount);
+                    let is_sol = unit == QuoteUnit::Lamports;
                     match t.side {
                         TradeSide::Buy => {
                             let basis_l = checked_add_i(
-                                i128::from(lamports),
+                                i128::from(amount),
                                 i128::from(fee_share),
                                 "buy basis",
                             )?;
                             self.acquire(
                                 t.mint,
                                 token_amount,
-                                Some(lamports_to_money(basis_l)?),
+                                Some(quote_units_to_money(unit, basis_l)?),
+                                unit,
                                 None,
                                 t.timestamp,
                                 loc,
                             )?;
-                            buy_cost = checked_add_i(buy_cost, i128::from(lamports), "buy cost")?;
+                            if is_sol {
+                                buy_cost = checked_add_i(buy_cost, i128::from(amount), "buy cost")?;
+                            }
                             *explained.entry(t.mint).or_insert(0) += signed;
                         }
                         TradeSide::Sell => {
                             self.dispose(
                                 t.mint,
                                 token_amount,
-                                Some(lamports_to_money(i128::from(lamports))?),
-                                lamports_to_money(i128::from(fee_share))?,
+                                Some(quote_units_to_money(unit, i128::from(amount))?),
+                                unit,
+                                quote_units_to_money(unit, i128::from(fee_share))?,
                                 UnknownReason::ConsiderationUnverified,
                                 t.timestamp,
                                 loc,
                             )?;
-                            sell_proceeds = checked_add_i(
-                                sell_proceeds,
-                                i128::from(lamports),
-                                "sell proceeds",
-                            )?;
+                            if is_sol {
+                                sell_proceeds = checked_add_i(
+                                    sell_proceeds,
+                                    i128::from(amount),
+                                    "sell proceeds",
+                                )?;
+                            }
                             *explained.entry(t.mint).or_insert(0) -= signed;
                         }
                     }
@@ -1376,6 +2022,9 @@ impl Builder {
                         UnknownReason::QuoteFundedByAnotherAccount => {
                             self.counts.quote_funded_elsewhere += 1;
                             self.diag.quote_funded_elsewhere_trades += 1;
+                        }
+                        UnknownReason::RouteLegNotWalletPrice => {
+                            self.counts.route_leg_not_wallet_price += 1;
                         }
                         _ => {
                             if t.unreconciled {
@@ -1396,6 +2045,7 @@ impl Builder {
                                         t.mint,
                                         amount,
                                         None,
+                                        QuoteUnit::Lamports,
                                         Some(reason),
                                         t.timestamp,
                                         loc,
@@ -1407,6 +2057,7 @@ impl Builder {
                                         t.mint,
                                         amount,
                                         None,
+                                        QuoteUnit::Lamports,
                                         Money::ZERO,
                                         reason,
                                         t.timestamp,
@@ -1417,7 +2068,7 @@ impl Builder {
                             }
                         }
                         None => {
-                            unverified_mints.insert(t.mint);
+                            unverified_mints.insert(t.mint, reason);
                         }
                     }
                 }
@@ -1426,7 +2077,10 @@ impl Builder {
 
         // §6 inventory continuity.
         let deltas = solana_owner_net_deltas(&tx.token_balance_changes)?;
-        let has_amm_trade = w.trades.iter().any(|t| t.venue == Venue::PumpAmm);
+        let has_amm_trade = w
+            .trades
+            .iter()
+            .any(|t| matches!(t.venue, Venue::PumpAmm | Venue::Route));
         let mut candidates: BTreeSet<SolanaPubkey> = w.trades.iter().map(|t| t.mint).collect();
         for ((mint, owner), delta) in &deltas.deltas {
             if *owner != self.wallet || *delta == 0 {
@@ -1434,6 +2088,8 @@ impl Builder {
             }
             if self.traded.contains(mint) {
                 candidates.insert(*mint);
+            } else if route_quote_mints.contains(mint) {
+                // Quote asset of a booked route swap (ADR-013): explained.
             } else if *mint == WRAPPED_SOL_MINT && has_amm_trade {
                 // The quote asset of a PumpSwap trade; its flow is part of
                 // the native residual above, not an out-of-scope token.
@@ -1453,26 +2109,38 @@ impl Builder {
             if diff == 0 {
                 continue;
             }
-            let unverified = unverified_mints.contains(&mint);
+            let unverified_reason = unverified_mints.get(&mint).copied();
+            let unverified = unverified_reason.is_some();
             if !unverified {
                 self.diag.continuity_breaks += 1;
             }
             let amount = u64::try_from(diff.unsigned_abs())
                 .map_err(|_| SolanaWalletLedgerError::Overflow("continuity amount"))?;
             if diff > 0 {
-                let reason = if unverified {
-                    UnknownReason::ConsiderationUnverified
-                } else {
-                    UnknownReason::UnexplainedInboundTokenMovement
-                };
-                self.acquire(mint, amount, None, Some(reason), tx_ts, loc)?;
+                let reason =
+                    unverified_reason.unwrap_or(UnknownReason::UnexplainedInboundTokenMovement);
+                self.acquire(
+                    mint,
+                    amount,
+                    None,
+                    QuoteUnit::Lamports,
+                    Some(reason),
+                    tx_ts,
+                    loc,
+                )?;
             } else {
-                let reason = if unverified {
-                    UnknownReason::ConsiderationUnverified
-                } else {
-                    UnknownReason::UnexplainedOutboundTokenMovement
-                };
-                self.dispose(mint, amount, None, Money::ZERO, reason, tx_ts, loc)?;
+                let reason =
+                    unverified_reason.unwrap_or(UnknownReason::UnexplainedOutboundTokenMovement);
+                self.dispose(
+                    mint,
+                    amount,
+                    None,
+                    QuoteUnit::Lamports,
+                    Money::ZERO,
+                    reason,
+                    tx_ts,
+                    loc,
+                )?;
             }
         }
 
@@ -1487,7 +2155,7 @@ impl Builder {
         // transaction holds part of the SOL flow as a token delta. Only
         // transactions with a PumpSwap trade of the wallet include it, so
         // the bonding-curve residual stays exactly as before.
-        if w.trades.iter().any(|t| t.venue == Venue::PumpAmm) {
+        if has_amm_trade {
             wallet_delta = checked_add_i(
                 wallet_delta,
                 wsol_token_delta(&tx.token_balance_changes, &self.wallet),
@@ -1602,18 +2270,34 @@ impl Builder {
         let mut left_censored = 0u64;
         let mut open_eps = 0u64;
         let (mut wins, mut losses, mut breakeven) = (0u64, 0u64, 0u64);
-        let mut pnl_sum = Money::ZERO;
-        let mut basis_sum = Money::ZERO;
-        let mut open_pnl = Money::ZERO;
-        let mut open_known_disposals = 0u64;
+        let mut blocks: Vec<QuoteUnitBlock> = SOLANA_QUOTE_UNITS
+            .iter()
+            .map(|u| QuoteUnitBlock::empty(*u))
+            .collect();
+        let mut unit_cohorts: BTreeMap<QuoteUnit, EpisodeCohort> = BTreeMap::new();
+        let mut open_pnls: BTreeMap<QuoteUnit, Money> = BTreeMap::new();
         let mut cohort = EpisodeCohort::default();
         let mut holds: Vec<i64> = Vec::new();
         for r in &self.records {
             match r.outcome {
                 EpisodeOutcome::ClosedKnown { pnl } => {
                     closed_known += 1;
-                    pnl_sum = money_add(pnl_sum, pnl)?;
-                    basis_sum = money_add(basis_sum, r.known_disposal_consumed_basis)?;
+                    let unit = r.quote_unit.unwrap_or(QuoteUnit::Lamports);
+                    if let Some(b) = blocks.iter_mut().find(|b| b.unit == unit) {
+                        b.closed_episodes_known += 1;
+                        b.realized_trade_pnl_exact = money_add(b.realized_trade_pnl_exact, pnl)?;
+                        b.consumed_acquisition_basis_exact = money_add(
+                            b.consumed_acquisition_basis_exact,
+                            r.known_disposal_consumed_basis,
+                        )?;
+                        if pnl.is_positive() {
+                            b.wins += 1;
+                        } else if pnl.is_negative() {
+                            b.losses += 1;
+                        } else {
+                            b.breakeven += 1;
+                        }
+                    }
                     if pnl.is_positive() {
                         wins += 1;
                     } else if pnl.is_negative() {
@@ -1621,13 +2305,19 @@ impl Builder {
                     } else {
                         breakeven += 1;
                     }
-                    cohort.episodes.push(Episode {
+                    let ep = Episode {
                         asset: asset_of(r.mint),
                         realized_pnl: pnl,
                         is_closed_within_window: true,
                         opened_before_window: false,
                         has_unresolved_flows: false,
-                    });
+                    };
+                    unit_cohorts
+                        .entry(unit)
+                        .or_default()
+                        .episodes
+                        .push(ep.clone());
+                    cohort.episodes.push(ep);
                     if let Some(h) = r.holding_seconds {
                         holds.push(h);
                     }
@@ -1636,13 +2326,37 @@ impl Builder {
                 EpisodeOutcome::LeftCensored => left_censored += 1,
                 EpisodeOutcome::Open => {
                     open_eps += 1;
-                    open_pnl = money_add(open_pnl, r.known_disposal_pnl)?;
-                    open_known_disposals += r.known_disposals;
+                    // An open episode that mixed units has no single PnL.
+                    if !r.unknown_reasons.contains(&UnknownReason::CrossQuoteUnit) {
+                        let unit = r.quote_unit.unwrap_or(QuoteUnit::Lamports);
+                        let acc = open_pnls.entry(unit).or_insert(Money::ZERO);
+                        *acc = money_add(*acc, r.known_disposal_pnl)?;
+                        if let Some(b) = blocks.iter_mut().find(|b| b.unit == unit) {
+                            b.open_episode_known_disposals += r.known_disposals;
+                        }
+                    }
                 }
             }
         }
+        for b in &mut blocks {
+            b.realized_trade_pnl_raw = money_to_quote_units_trunc(b.realized_trade_pnl_exact);
+            b.consumed_acquisition_basis_raw =
+                money_to_quote_units_trunc(b.consumed_acquisition_basis_exact);
+            b.open_episode_known_disposal_pnl_raw =
+                money_to_quote_units_trunc(open_pnls.get(&b.unit).copied().unwrap_or(Money::ZERO));
+            let c = unit_cohorts.remove(&b.unit).unwrap_or_default();
+            b.win_rate = win_rate(&c)?;
+            b.profit_factor = profit_factor(&c)?;
+        }
         let win_rate = win_rate(&cohort)?;
-        let profit_factor = profit_factor(&cohort)?;
+        let sol = blocks
+            .iter()
+            .find(|b| b.unit == QuoteUnit::Lamports)
+            .cloned()
+            .unwrap_or_else(|| QuoteUnitBlock::empty(QuoteUnit::Lamports));
+        let pnl_sum = sol.realized_trade_pnl_exact;
+        let basis_sum = sol.consumed_acquisition_basis_exact;
+        let profit_factor = sol.profit_factor;
         holds.sort_unstable();
         let median_holding_seconds = median(&holds);
         let holding_time_samples = u64::try_from(holds.len()).unwrap_or(u64::MAX);
@@ -1692,8 +2406,8 @@ impl Builder {
             realized_trade_pnl_exact: pnl_sum,
             consumed_acquisition_basis_lamports: money_to_lamports_trunc(basis_sum),
             consumed_acquisition_basis_exact: basis_sum,
-            open_episode_known_disposal_pnl_lamports: money_to_lamports_trunc(open_pnl),
-            open_episode_known_disposals: open_known_disposals,
+            open_episode_known_disposal_pnl_lamports: sol.open_episode_known_disposal_pnl_raw,
+            open_episode_known_disposals: sol.open_episode_known_disposals,
             failed_trade_fees_lamports: self.failed_fees,
             failed_trade_fee_txs: self.failed_fee_txs,
             realized_net_pnl_lamports: money_to_lamports_trunc(net),
@@ -1710,6 +2424,8 @@ impl Builder {
             activity,
             daily_activity,
             diagnostics: self.diag,
+            unit_blocks: blocks,
+            route_swap_log: self.route_log,
         })
     }
 }

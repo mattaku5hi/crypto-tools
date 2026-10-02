@@ -10,10 +10,11 @@ use scout_app::SCHEMA_VERSION;
 use scout_core::MONEY_SCALE;
 use scout_core::Money;
 use scout_engine::{
-    AnalysisWindow, EpisodeOutcome, EpisodeRecord, OpenPosition, SOLANA_WALLET_LEDGER_VERSION,
-    ScanFailureKind, ScanStop, SolanaProtocolScope, SolanaWalletLedgerReport, SolanaWalletStats,
-    SolanaWalletStatsReport, format_scaled_decimal, lamports_to_sol_string,
-    rational_to_decimal_string,
+    AnalysisWindow, EpisodeOutcome, EpisodeRecord, OpenPosition, QuoteUnit, QuoteUnitBlock, Ratio,
+    SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION, ScanFailureKind, ScanStop,
+    SolanaProtocolScope, SolanaWalletLedgerReport, SolanaWalletStats, SolanaWalletStatsReport,
+    format_quote_money, format_scaled_decimal, lamports_to_sol_string, quote_unit_decimals,
+    quote_unit_label, rational_to_decimal_string,
 };
 use serde::Serialize;
 
@@ -59,7 +60,11 @@ pub fn pnl_view(w: &SolanaWalletStats) -> PnlView {
             }),
         };
     };
-    if l.closed_episodes_known == 0 && l.failed_trade_fees_lamports == 0 {
+    // ADR-013: the headline is the SOL block; other units are separate.
+    let sol_closed = l
+        .unit_block(QuoteUnit::Lamports)
+        .map_or(l.closed_episodes_known, |b| b.closed_episodes_known);
+    if sol_closed == 0 && l.failed_trade_fees_lamports == 0 {
         return PnlView {
             status: "n_a",
             lamports: None,
@@ -67,7 +72,7 @@ pub fn pnl_view(w: &SolanaWalletStats) -> PnlView {
                 if w.transactions_in_window.or(w.transactions_scanned) == Some(0) {
                     "no activity"
                 } else {
-                    "no known closed episodes"
+                    "no known closed SOL episodes"
                 },
             ),
         };
@@ -128,10 +133,13 @@ fn ratio_cell(r: &RatioStatus<Money>, what: &str) -> String {
 // Table
 // ---------------------------------------------------------------------
 
-const HEADER: [&str; 18] = [
+const HEADER: [&str; 21] = [
     "wallet",
     "status",
     "realized_net_pnl_sol",
+    "realized_pnl_usdc",
+    "realized_pnl_usdt",
+    "route_swaps",
     "closed_known/unknown",
     "left_censored",
     "open",
@@ -181,6 +189,10 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
             }
         }
         Some(l) => {
+            for unit in [QuoteUnit::UsdcUnits, QuoteUnit::UsdtUnits] {
+                cells.push(unit_pnl_cell(w, l, unit));
+            }
+            cells.push(l.trades.route_swaps.to_string());
             let ratios_ok = w.coverage_complete();
             cells.push(format!(
                 "{}/{}",
@@ -232,6 +244,22 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
     cells
 }
 
+/// Realized PnL cell of a non-SOL unit: exact decimal of the known closed
+/// episodes (labelled when the figure is a known subset), never 0 for none.
+fn unit_pnl_cell(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport, unit: QuoteUnit) -> String {
+    let label = quote_unit_label(unit);
+    let Some(b) = l.unit_block(unit).filter(|b| b.closed_episodes_known > 0) else {
+        return na(&format!("no known closed {label} episodes"));
+    };
+    let v =
+        format_quote_money(unit, b.realized_trade_pnl_exact).unwrap_or_else(|| "N/A".to_string());
+    if w.coverage_complete() && l.closed_episodes_unknown == 0 {
+        v
+    } else {
+        format!("N/A (known subset: {v})")
+    }
+}
+
 fn detail_lines(w: &SolanaWalletStats, out: &mut Vec<String>) {
     if let Some(err) = &w.error {
         out.push(format!("    error: {err}"));
@@ -250,11 +278,18 @@ fn detail_lines(w: &SolanaWalletStats, out: &mut Vec<String>) {
 
 fn episode_text(ep: &EpisodeRecord) -> String {
     let mint = bs58::encode(ep.mint).into_string();
-    let (kind, pnl) = outcome_parts(&ep.outcome);
-    let pnl = pnl.map_or_else(|| "N/A".to_string(), lamports_to_sol_string);
+    let (kind, _) = outcome_parts(&ep.outcome);
+    let unit = episode_unit(ep);
+    let pnl = match &ep.outcome {
+        EpisodeOutcome::ClosedKnown { pnl } => {
+            format_quote_money(unit, *pnl).unwrap_or_else(|| "N/A".to_string())
+        }
+        _ => "N/A".to_string(),
+    };
     let reasons: Vec<&str> = ep.unknown_reasons.iter().map(|r| r.label()).collect();
     format!(
-        "mint={mint} outcome={kind} pnl_sol={pnl} hold_s={} unknown_reasons=[{}]",
+        "mint={mint} outcome={kind} pnl_{}={pnl} hold_s={} unknown_reasons=[{}]",
+        quote_unit_label(unit),
         ep.holding_seconds
             .map_or_else(|| "N/A".to_string(), |s| s.to_string()),
         reasons.join("; ")
@@ -268,6 +303,11 @@ fn open_text(p: &OpenPosition) -> String {
         p.open_amount_raw,
         p.unknown_basis_amount_raw
     )
+}
+
+/// Quote unit of an episode's known figures (SOL when it has none).
+fn episode_unit(ep: &EpisodeRecord) -> QuoteUnit {
+    ep.quote_unit.unwrap_or(QuoteUnit::Lamports)
 }
 
 /// Pnl lamports (truncated from exact money) only for ClosedKnown.
@@ -422,7 +462,10 @@ pub struct RunMetaRecord {
     pub captured_at: String,
     pub scope: ScopeDto,
     pub ledger_version: &'static str,
+    /// Unit of the legacy SOL fields; per-unit figures are in `stats.quote_units`.
     pub quote_unit: &'static str,
+    /// Allowed quote units and the route-swap rule (ADR-013).
+    pub ledger_scope: &'static str,
     pub window: WindowDto,
     pub scan: ScanDto,
     pub detail: &'static str,
@@ -528,6 +571,8 @@ pub struct TradesDto {
     /// Per venue, side in token terms (ADR-012 §5).
     pub bonding_curve: VenueSidesDto,
     pub pump_amm: VenueSidesDto,
+    /// ADR-013 route swaps booked from wallet deltas (also in `priced`).
+    pub route: VenueSidesDto,
     /// Per `(venue, variant)` with its verification status.
     pub variants: Vec<VariantTradesDto>,
 }
@@ -577,10 +622,75 @@ pub struct DiagnosticsDto {
     pub reversed_pool_trades: u64,
 }
 
+/// Exact amount in raw base units and as an exact decimal string of its
+/// own unit (SOL 9 dp, USDC/USDT 6 dp). Units are never summed.
+#[derive(Debug, Serialize)]
+pub struct UnitAmountDto {
+    pub raw: String,
+    pub decimal: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RoiDto {
+    /// Exact `numerator / denominator` of the unit (decimal strings).
+    pub numerator_exact: String,
+    pub denominator_exact: String,
+    /// Presentation only: percent rounded half up to 2 places.
+    pub percent_2dp: Option<String>,
+}
+
+/// ADR-013 §4: figures of the known closed episodes of ONE quote unit.
+#[derive(Debug, Serialize)]
+pub struct QuoteUnitDto {
+    /// `sol`, `usdc` or `usdt`.
+    pub unit: &'static str,
+    pub decimals: u32,
+    /// `observed`, `known_subset` or `n_a` (no known closed episode in this unit).
+    pub status: &'static str,
+    pub closed_known: u64,
+    pub wins: u64,
+    pub losses: u64,
+    pub breakeven: u64,
+    /// `null` without a known closed episode (never zero).
+    pub realized_trade_pnl: Option<UnitAmountDto>,
+    pub consumed_acquisition_basis: Option<UnitAmountDto>,
+    pub realized_cost_roi: Option<RoiDto>,
+    pub win_rate: RatioDto,
+    pub profit_factor: RatioDto,
+    pub open_episode_known_disposal_pnl: UnitAmountDto,
+    pub open_episode_known_disposals: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuoteUnitCountsDto {
+    pub sol: u64,
+    pub usdc: u64,
+    pub usdt: u64,
+}
+
+/// ADR-013 §1/§2 counters.
+#[derive(Debug, Serialize)]
+pub struct RouteDto {
+    pub route_swaps: u64,
+    pub route_swaps_by_quote: QuoteUnitCountsDto,
+    pub route_leg_not_wallet_price: u64,
+    pub route_rejected_wallet_not_signer: u64,
+    pub route_rejected_multi_asset: u64,
+    pub route_rejected_not_opposite_signs: u64,
+    pub route_rejected_no_quote_leg: u64,
+    pub route_rejected_no_verified_leg: u64,
+    pub route_rejected_passthrough_nonzero: u64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct StatsDto {
     pub ledger_version: &'static str,
+    /// Unit of the legacy SOL fields below (`realized_*`, `profit_factor`,
+    /// `failed_trade_fees`, ...). Per-unit figures are in `quote_units`.
     pub quote_unit: &'static str,
+    /// ADR-013: one entry per quote unit (sol, usdc, usdt); never summed.
+    pub quote_units: Vec<QuoteUnitDto>,
+    pub route: RouteDto,
     pub realized_net_pnl: MoneyDto,
     /// SUM A: realized PnL of known closed episodes (before failed-tx fees).
     pub realized_trade_pnl: AmountDto,
@@ -590,6 +700,7 @@ pub struct StatsDto {
     /// SUM B (not in the headline).
     pub open_episode_known_disposal_pnl: AmountDto,
     pub open_episode_known_disposals: u64,
+    /// Over all quote units (each episode in its own unit).
     pub closed_episodes_known: u64,
     pub closed_episodes_unknown: u64,
     /// ADR-011: closed episodes whose inventory predates the window (never valued).
@@ -632,8 +743,15 @@ pub struct EpisodeDto {
     pub mint: String,
     /// `closed_known`, `closed_unknown`, `left_censored` or `open`.
     pub outcome: &'static str,
+    /// SOL episodes only (legacy); other units use `pnl_unit`/`pnl_decimal`.
     pub pnl: Option<AmountDto>,
     pub pnl_sol_exact: Option<String>,
+    /// ADR-013: unit of the episode's known figures (`sol`/`usdc`/`usdt`).
+    pub quote_unit: Option<&'static str>,
+    /// Raw base units of `quote_unit` (closed known only).
+    pub pnl_raw: Option<String>,
+    /// Exact decimal in `quote_unit` (SOL 9 dp, USDC/USDT 6 dp).
+    pub pnl_decimal: Option<String>,
     pub opened_at: Option<i64>,
     pub closed_at: Option<i64>,
     pub holding_seconds: Option<i64>,
@@ -641,7 +759,9 @@ pub struct EpisodeDto {
     pub opened_transaction_index: u64,
     pub unknown_reasons: Vec<&'static str>,
     pub known_disposals: u64,
-    pub known_disposal_pnl: AmountDto,
+    /// SOL episodes only; see `known_disposal_pnl_decimal` for other units.
+    pub known_disposal_pnl: Option<AmountDto>,
+    pub known_disposal_pnl_decimal: Option<String>,
     pub left_censored_amount_raw: String,
 }
 
@@ -728,6 +848,71 @@ fn ratio_dto(r: &RatioStatus<Money>, sample: u64) -> RatioDto {
     }
 }
 
+fn unit_amount(unit: QuoteUnit, raw: i128, exact: Money) -> UnitAmountDto {
+    UnitAmountDto {
+        raw: raw.to_string(),
+        decimal: format_quote_money(unit, exact).unwrap_or_default(),
+    }
+}
+
+fn quote_unit_dto(
+    w: &SolanaWalletStats,
+    l: &SolanaWalletLedgerReport,
+    b: &QuoteUnitBlock,
+) -> QuoteUnitDto {
+    let unit = b.unit;
+    let known = b.closed_episodes_known > 0;
+    let status = if !known {
+        "n_a"
+    } else if w.coverage_complete() && l.closed_episodes_unknown == 0 {
+        "observed"
+    } else {
+        "known_subset"
+    };
+    QuoteUnitDto {
+        unit: quote_unit_label(unit),
+        decimals: quote_unit_decimals(unit).unwrap_or(0),
+        status,
+        closed_known: b.closed_episodes_known,
+        wins: b.wins,
+        losses: b.losses,
+        breakeven: b.breakeven,
+        realized_trade_pnl: known
+            .then(|| unit_amount(unit, b.realized_trade_pnl_raw, b.realized_trade_pnl_exact)),
+        consumed_acquisition_basis: known.then(|| {
+            unit_amount(
+                unit,
+                b.consumed_acquisition_basis_raw,
+                b.consumed_acquisition_basis_exact,
+            )
+        }),
+        realized_cost_roi: b
+            .roi_parts()
+            .and_then(|(n, d)| Ratio::new(n, d))
+            .map(|r| RoiDto {
+                numerator_exact: format_quote_money(unit, b.realized_trade_pnl_exact)
+                    .unwrap_or_default(),
+                denominator_exact: format_quote_money(unit, b.consumed_acquisition_basis_exact)
+                    .unwrap_or_default(),
+                percent_2dp: r.percent_string(2),
+            }),
+        win_rate: ratio_dto(&b.win_rate, b.closed_episodes_known),
+        profit_factor: ratio_dto(&b.profit_factor, b.closed_episodes_known),
+        open_episode_known_disposal_pnl: UnitAmountDto {
+            raw: b.open_episode_known_disposal_pnl_raw.to_string(),
+            decimal: format_quote_money(
+                unit,
+                Money::from_scaled_units(
+                    b.open_episode_known_disposal_pnl_raw
+                        .saturating_mul(10i128.pow(MONEY_SCALE)),
+                ),
+            )
+            .unwrap_or_default(),
+        },
+        open_episode_known_disposals: b.open_episode_known_disposals,
+    }
+}
+
 fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
     let pnl = pnl_view(w);
     let d = &l.diagnostics;
@@ -736,6 +921,26 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
     StatsDto {
         ledger_version: l.ledger_version,
         quote_unit: "lamports",
+        quote_units: l
+            .unit_blocks
+            .iter()
+            .map(|b| quote_unit_dto(w, l, b))
+            .collect(),
+        route: RouteDto {
+            route_swaps: t.route_swaps,
+            route_swaps_by_quote: QuoteUnitCountsDto {
+                sol: t.route_swaps_by_quote.sol,
+                usdc: t.route_swaps_by_quote.usdc,
+                usdt: t.route_swaps_by_quote.usdt,
+            },
+            route_leg_not_wallet_price: t.route_leg_not_wallet_price,
+            route_rejected_wallet_not_signer: d.route_rejected.wallet_not_signer,
+            route_rejected_multi_asset: d.route_rejected.multi_asset,
+            route_rejected_not_opposite_signs: d.route_rejected.not_opposite_signs,
+            route_rejected_no_quote_leg: d.route_rejected.no_quote_leg,
+            route_rejected_no_verified_leg: d.route_rejected.no_verified_leg,
+            route_rejected_passthrough_nonzero: d.route_rejected.passthrough_nonzero,
+        },
         realized_net_pnl: MoneyDto {
             status: pnl.status,
             lamports: pnl.lamports.map(|v| v.to_string()),
@@ -781,6 +986,10 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
             pump_amm: VenueSidesDto {
                 buys: t.pump_amm.buys,
                 sells: t.pump_amm.sells,
+            },
+            route: VenueSidesDto {
+                buys: t.route.buys,
+                sells: t.route.sells,
             },
             variants: l
                 .variant_trades
@@ -834,15 +1043,24 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
 
 fn episode_dto(ep: &EpisodeRecord) -> EpisodeDto {
     let (outcome, pnl) = outcome_parts(&ep.outcome);
+    let unit = episode_unit(ep);
+    let is_sol = unit == QuoteUnit::Lamports;
     let exact = match &ep.outcome {
         EpisodeOutcome::ClosedKnown { pnl } => Some(money_exact_sol(*pnl)),
         _ => None,
     };
+    let known = matches!(ep.outcome, EpisodeOutcome::ClosedKnown { .. });
     EpisodeDto {
         mint: bs58::encode(ep.mint).into_string(),
         outcome,
-        pnl: pnl.map(amount),
-        pnl_sol_exact: exact,
+        pnl: pnl.filter(|_| is_sol).map(amount),
+        pnl_sol_exact: exact.filter(|_| is_sol),
+        quote_unit: known.then(|| quote_unit_label(unit)),
+        pnl_raw: pnl.filter(|_| known).map(|v| v.to_string()),
+        pnl_decimal: match &ep.outcome {
+            EpisodeOutcome::ClosedKnown { pnl } => format_quote_money(unit, *pnl),
+            _ => None,
+        },
         opened_at: ep.opened_at,
         closed_at: ep.closed_at,
         holding_seconds: ep.holding_seconds,
@@ -850,7 +1068,11 @@ fn episode_dto(ep: &EpisodeRecord) -> EpisodeDto {
         opened_transaction_index: ep.opened_location.1,
         unknown_reasons: ep.unknown_reasons.iter().map(|r| r.label()).collect(),
         known_disposals: ep.known_disposals,
-        known_disposal_pnl: amount(scout_engine::money_to_lamports_trunc(ep.known_disposal_pnl)),
+        known_disposal_pnl: is_sol
+            .then(|| amount(scout_engine::money_to_lamports_trunc(ep.known_disposal_pnl))),
+        known_disposal_pnl_decimal: ep
+            .quote_unit
+            .and_then(|u| format_quote_money(u, ep.known_disposal_pnl)),
         left_censored_amount_raw: ep.left_censored_amount_raw.to_string(),
     }
 }
@@ -944,6 +1166,7 @@ pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
         },
         ledger_version: SOLANA_WALLET_LEDGER_VERSION,
         quote_unit: "lamports",
+        ledger_scope: SOLANA_WALLET_LEDGER_SCOPE,
         window: window_dto(&m.window),
         scan: ScanDto {
             provider: "helius",
@@ -1053,6 +1276,7 @@ mod tests {
             .then(|| build_solana_wallet_ledger(&[b; 32], &[], &decoder).unwrap());
         if let (Some(l), Some(n)) = (ledger.as_mut(), net) {
             l.closed_episodes_known = 1;
+            l.unit_blocks[0].closed_episodes_known = 1;
             l.realized_net_pnl_lamports = n;
         }
         SolanaWalletStats {

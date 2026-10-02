@@ -80,6 +80,15 @@ impl Spec {
         l.realized_net_pnl_exact = lamports_to_money(self.pnl).unwrap();
         l.consumed_acquisition_basis_lamports = self.basis;
         l.consumed_acquisition_basis_exact = lamports_to_money(self.basis).unwrap();
+        // ADR-013: the SOL unit block is what the rank layer reads.
+        {
+            let b = &mut l.unit_blocks[0];
+            b.closed_episodes_known = self.closed;
+            b.realized_trade_pnl_raw = self.pnl;
+            b.realized_trade_pnl_exact = lamports_to_money(self.pnl).unwrap();
+            b.consumed_acquisition_basis_raw = self.basis;
+            b.consumed_acquisition_basis_exact = lamports_to_money(self.basis).unwrap();
+        }
         l.activity = ActivityMetrics {
             timestamped_trades: self.trades,
             active_utc_days: self.days,
@@ -347,6 +356,7 @@ fn profit_factor_unbounded_above_finite_and_undefined_excluded() {
     // A no_observed_losses wallet that fails a sample gate stays out.
     let mut small = mk(5, RatioStatus::NoObservedLosses);
     small.ledger.as_mut().unwrap().closed_episodes_known = 2;
+    small.ledger.as_mut().unwrap().unit_blocks[0].closed_episodes_known = 2;
     let rep = rank_solana_wallets(
         &[small],
         &policy(RankProfile::Quality, RankBy::ProfitFactor, 20),
@@ -596,7 +606,7 @@ async fn end_to_end_fixtures_stats_then_rank_accounts_for_every_wallet() {
                 .find(|w| w.wallet == r.observation.wallet)
                 .unwrap();
             assert_eq!(
-                r.observation.net_pnl_lamports,
+                r.observation.net_pnl_raw,
                 s.ledger.as_ref().map(|l| l.realized_net_pnl_lamports)
             );
         }
@@ -679,4 +689,29 @@ fn incomplete_wallet_carries_ceiling_evidence_from_fully_observed_days() {
         &policy(RankProfile::Quality, RankBy::RealizedNetPnl, 5),
     );
     assert_eq!(excluded_of(&rep, 4).reasons, vec![R::IncompleteCoverage]);
+}
+
+#[test]
+fn quote_unit_selects_the_ranking_unit_and_never_mixes() {
+    use scout_engine::QuoteUnit;
+    let mk = |b: u8, pnl: i128| {
+        let mut w = Spec::new(b).closed(0).build();
+        let l = w.ledger.as_mut().unwrap();
+        let u = &mut l.unit_blocks[1];
+        u.closed_episodes_known = 3;
+        u.realized_trade_pnl_raw = pnl;
+        u.realized_trade_pnl_exact = lamports_to_money(pnl).unwrap();
+        u.consumed_acquisition_basis_raw = 1_000;
+        u.consumed_acquisition_basis_exact = lamports_to_money(1_000).unwrap();
+        w
+    };
+    let wallets = vec![mk(1, 10), mk(2, 20)];
+    let none = policy(RankProfile::None, RankBy::RealizedNetPnl, 20);
+    let usdc = rank_solana_wallets(&wallets, &none.with_quote(QuoteUnit::UsdcUnits));
+    assert_eq!(ranked_ids(&usdc), vec![2, 1]);
+    assert_eq!(usdc.ranked[0].observation.net_pnl_raw, Some(20));
+    // Under SOL neither wallet has a known closed SOL episode.
+    let sol = rank_solana_wallets(&wallets, &none);
+    assert!(sol.ranked.is_empty());
+    assert_eq!(sol.excluded.len(), 2);
 }

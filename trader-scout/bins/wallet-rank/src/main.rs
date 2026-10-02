@@ -40,9 +40,10 @@ use scout_api::ProviderError;
 use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
 use scout_core::{AddressBytes, ChainFamily, SolanaPubkey, WalletKey};
 use scout_engine::{
-    AnalysisWindow, DEFAULT_TOP, LedgerDecoders, RankBy, RankPolicy, RankProfile, ScanStop,
-    SolanaWalletStatsReport, WalletRankReport, pump_amm_decoder, pump_bonding_curve_decoder,
-    rank_solana_wallets, run_solana_wallet_stats_windowed_venues, sanitize_provider_text,
+    AnalysisWindow, DEFAULT_TOP, LedgerDecoders, QuoteUnit, RankBy, RankPolicy, RankProfile,
+    ScanStop, SolanaWalletStatsReport, WalletRankReport, pump_amm_decoder,
+    pump_bonding_curve_decoder, rank_solana_wallets, run_solana_wallet_stats_windowed_venues,
+    sanitize_provider_text,
 };
 use scout_providers::{HeliusProvider, ScanOrder};
 use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
@@ -93,6 +94,12 @@ struct Args {
         value_parser = ["realized-net-pnl", "realized-cost-roi", "profit-factor", "period-equity-pnl"]
     )]
     rank_by: String,
+
+    /// Quote unit of the ranking metrics and the closed-episode gate
+    /// (ADR-013): `sol` (lamports, default), `usdc` or `usdt` (6-dp raw
+    /// units). Units are never mixed or converted; all units are shown.
+    #[arg(long, default_value = "sol", value_parser = ["sol", "usdc", "usdt"])]
+    quote: String,
 
     /// Gate profile: `quality` (20 closed episodes, 7 active days),
     /// `insider` (5 episodes, 3 days, <= 10 mints and <= 30 trades per
@@ -189,6 +196,11 @@ fn policy_from(args: &Args) -> Result<RankPolicy, String> {
         p.max_mints_per_day = Some(v);
     }
     p.require_no_open = args.require_no_open;
+    p.quote = match args.quote.as_str() {
+        "usdc" => QuoteUnit::UsdcUnits,
+        "usdt" => QuoteUnit::UsdtUnits,
+        _ => QuoteUnit::Lamports,
+    };
     Ok(p)
 }
 
@@ -544,10 +556,11 @@ fn print_diagnostics(
     }
     let opt = |v: Option<u64>| v.map_or_else(|| "none".to_string(), |n| n.to_string());
     eprintln!(
-        "  policy: rank_by={} profile={} min_closed_episodes={} min_active_days={} \
+        "  policy: rank_by={} quote={} profile={} min_closed_episodes={} min_active_days={} \
          max_trades_per_day={} max_mints_per_day={} exclude_unknown_basis={} require_no_open={} top={} \
          (research starting policy, not statistical guarantees)",
         p.rank_by.label(),
+        scout_engine::quote_unit_label(p.quote),
         p.profile.label(),
         p.min_closed_episodes,
         p.min_active_days,

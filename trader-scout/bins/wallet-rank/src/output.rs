@@ -11,10 +11,11 @@ use scout_analytics::RatioStatus;
 use scout_app::SCHEMA_VERSION;
 use scout_core::{MONEY_SCALE, Money};
 use scout_engine::{
-    AnalysisWindow, ExcludedWallet, OpenExposure, RankedWallet, SOLANA_WALLET_LEDGER_VERSION,
-    SOLANA_WALLET_RANK_VERSION, ScanStop, SolanaProtocolScope, WalletRankObservation,
-    WalletRankReport, format_scaled_decimal, lamports_to_sol_string, money_exact_sol_string,
-    rational_to_decimal_string,
+    AnalysisWindow, ExcludedWallet, OpenExposure, QuoteUnit, QuoteUnitBlock, RankedWallet, Ratio,
+    SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION, SOLANA_WALLET_RANK_VERSION, ScanStop,
+    SolanaProtocolScope, WalletRankObservation, WalletRankReport, format_quote_money,
+    format_scaled_decimal, lamports_to_sol_string, money_exact_sol_string, quote_unit_decimals,
+    quote_unit_label, quote_units_to_money, rational_to_decimal_string,
 };
 use serde::Serialize;
 
@@ -32,18 +33,31 @@ fn money_str(m: Money) -> String {
 // Table
 // ---------------------------------------------------------------------
 
-const HEADER: [&str; 10] = [
-    "rank",
-    "wallet",
-    "chain",
-    "realized_net_pnl_sol",
-    "realized_cost_roi",
-    "closed",
-    "win_rate",
-    "profit_factor",
-    "open_exposure",
-    "quality",
-];
+fn header(quote: QuoteUnit) -> [String; 10] {
+    [
+        "rank".to_string(),
+        "wallet".to_string(),
+        "chain".to_string(),
+        format!("realized_net_pnl_{}", quote_unit_label(quote)),
+        "realized_cost_roi".to_string(),
+        "closed".to_string(),
+        "win_rate".to_string(),
+        "profit_factor".to_string(),
+        "open_exposure".to_string(),
+        "quality".to_string(),
+    ]
+}
+
+/// Exact decimal of `raw` base units of `unit` (SOL 9 dp, USDC/USDT 6 dp).
+fn raw_decimal(unit: QuoteUnit, raw: i128) -> Option<String> {
+    let money = quote_units_to_money(unit, raw).ok()?;
+    format_quote_money(unit, money)
+}
+
+/// The block of the ranking unit.
+fn unit_block_of(o: &WalletRankObservation) -> Option<&QuoteUnitBlock> {
+    o.ledger.as_ref().and_then(|l| l.unit_block(o.quote))
+}
 
 fn rfc3339(unix: i64) -> String {
     scout_app::format_unix_utc(u64::try_from(unix).unwrap_or(0))
@@ -56,7 +70,7 @@ fn roi_cell(o: &WalletRankObservation) -> String {
 }
 
 fn win_rate_cell(o: &WalletRankObservation) -> String {
-    match o.ledger.as_ref().map(|l| &l.win_rate) {
+    match unit_block_of(o).map(|b| &b.win_rate) {
         Some(RatioStatus::Value { value }) => {
             // value is a fraction at MONEY_SCALE (8 digits); truncated for display.
             format!(
@@ -69,7 +83,12 @@ fn win_rate_cell(o: &WalletRankObservation) -> String {
 }
 
 fn pf_cell(o: &WalletRankObservation) -> String {
-    match o.ledger.as_ref().map(|l| &l.profit_factor) {
+    let pf = if o.quote == QuoteUnit::Lamports {
+        o.ledger.as_ref().map(|l| &l.profit_factor)
+    } else {
+        unit_block_of(o).map(|b| &b.profit_factor)
+    };
+    match pf {
         Some(RatioStatus::Value { value }) => money_str(*value),
         Some(RatioStatus::NoObservedLosses) => "no_observed_losses".to_string(),
         _ => "N/A".to_string(),
@@ -86,9 +105,10 @@ fn exposure_cell(o: &WalletRankObservation) -> String {
 fn row(r: &RankedWallet, profile: &str) -> Vec<String> {
     let o = &r.observation;
     let pnl = o
-        .net_pnl_lamports
-        .map_or_else(|| "N/A".to_string(), lamports_to_sol_string);
-    let closed = o.ledger.as_ref().map_or(0, |l| l.closed_episodes_known);
+        .net_pnl_raw
+        .and_then(|v| raw_decimal(o.quote, v))
+        .unwrap_or_else(|| "N/A".to_string());
+    let closed = unit_block_of(o).map_or(0, |b| b.closed_episodes_known);
     vec![
         r.rank.to_string(),
         addr(o),
@@ -139,7 +159,8 @@ pub fn table_lines(
 ) -> Vec<String> {
     let profile = report.policy.profile.label();
     let rows: Vec<Vec<String>> = report.ranked.iter().map(|r| row(r, profile)).collect();
-    let mut widths: Vec<usize> = HEADER.iter().map(|h| h.chars().count()).collect();
+    let header = header(report.policy.quote);
+    let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
     for cells in &rows {
         for (i, c) in cells.iter().enumerate() {
             if let Some(w) = widths.get_mut(i) {
@@ -158,7 +179,7 @@ pub fn table_lines(
         }
         line.trim_end().to_string()
     };
-    let head: Vec<String> = HEADER.iter().map(|s| (*s).to_string()).collect();
+    let head: Vec<String> = header.to_vec();
     let mut out = Vec::new();
     if let Some((since, until)) = window.bounds() {
         out.push(format!(
@@ -173,8 +194,9 @@ pub fn table_lines(
     out.extend(rows.iter().map(|c| fmt(c)));
     let p = &report.policy;
     out.push(format!(
-        "# rank_by={} profile={} top={} input={} eligible={} ranked={} excluded={} status={}",
+        "# rank_by={} quote={} profile={} top={} input={} eligible={} ranked={} excluded={} status={}",
         p.rank_by.label(),
+        quote_unit_label(p.quote),
         p.profile.label(),
         p.top,
         report.input_count,
@@ -269,7 +291,12 @@ pub struct RunMetaRecord {
     pub captured_at: String,
     pub rank_version: &'static str,
     pub ledger_version: &'static str,
+    /// Unit of the legacy SOL fields (`realized_trade_pnl`, ...).
     pub quote_unit: &'static str,
+    /// ADR-013 §5: unit of the ranking metrics and episode gates.
+    pub rank_quote_unit: &'static str,
+    /// Allowed quote units and the route-swap rule (ADR-013).
+    pub ledger_scope: &'static str,
     pub window: WindowDto,
     pub protocol_scope: &'static str,
     pub not_decoded: &'static str,
@@ -290,9 +317,55 @@ pub struct RunMetaRecord {
 #[derive(Debug, Serialize)]
 pub struct MoneyDto {
     pub status: &'static str,
+    /// Ranking quote unit of `raw`/`decimal` (`sol`, `usdc`, `usdt`).
+    pub unit: &'static str,
+    /// Raw base units of `unit` (null = N/A, never zero).
+    pub raw: Option<String>,
+    /// Exact decimal of `unit` (SOL 9 dp, USDC/USDT 6 dp).
+    pub decimal: Option<String>,
+    /// Legacy SOL fields: populated only when `unit` is `sol`.
     pub lamports: Option<String>,
     pub sol: Option<String>,
     pub sol_exact: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnitAmountDto {
+    pub raw: String,
+    pub decimal: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnitRoiDto {
+    pub numerator_exact: String,
+    pub denominator_exact: String,
+    pub percent_2dp: Option<String>,
+}
+
+/// ADR-013 §4/§5: figures of ONE quote unit (never summed across units).
+#[derive(Debug, Serialize)]
+pub struct UnitMetricsDto {
+    pub unit: &'static str,
+    pub decimals: u32,
+    pub closed_known: u64,
+    pub wins: u64,
+    pub losses: u64,
+    pub breakeven: u64,
+    /// `null` without a known closed episode in this unit (never zero).
+    pub realized_trade_pnl: Option<UnitAmountDto>,
+    pub consumed_acquisition_basis: Option<UnitAmountDto>,
+    pub realized_cost_roi: Option<UnitRoiDto>,
+    pub win_rate: RatioDto,
+    pub profit_factor: RatioDto,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RouteCountsDto {
+    pub route_swaps: u64,
+    pub route_swaps_sol: u64,
+    pub route_swaps_usdc: u64,
+    pub route_swaps_usdt: u64,
+    pub route_leg_not_wallet_price: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -354,10 +427,18 @@ pub struct OpenExposureDto {
 
 #[derive(Debug, Serialize)]
 pub struct MetricsDto {
+    /// Ranking quote unit: `realized_net_pnl`, `realized_cost_roi`,
+    /// `closed_known_in_quote` and the gates use this unit.
+    pub quote: &'static str,
+    pub closed_known_in_quote: u64,
+    /// All units side by side.
+    pub quote_units: Vec<UnitMetricsDto>,
+    pub route: RouteCountsDto,
     pub realized_net_pnl: MoneyDto,
     pub realized_trade_pnl: AmountDto,
     pub consumed_acquisition_basis: AmountDto,
     pub realized_cost_roi: RoiDto,
+    /// Over all quote units.
     pub closed_episodes_known: u64,
     pub closed_episodes_unknown: u64,
     /// ADR-011: closed episodes whose inventory predates the window; counted, never valued.
@@ -415,6 +496,7 @@ pub struct RunSummaryRecord {
     pub status: &'static str,
     pub cancelled: bool,
     pub rank_by: &'static str,
+    pub rank_quote_unit: &'static str,
     pub profile: &'static str,
     pub input_wallets: usize,
     pub eligible: usize,
@@ -472,10 +554,53 @@ fn rational(n: u64, d: u64) -> RationalDto {
     }
 }
 
+fn unit_metrics_dto(b: &QuoteUnitBlock) -> UnitMetricsDto {
+    let unit = b.unit;
+    let known = b.closed_episodes_known > 0;
+    let amt = |raw: i128, exact: Money| UnitAmountDto {
+        raw: raw.to_string(),
+        decimal: format_quote_money(unit, exact).unwrap_or_default(),
+    };
+    UnitMetricsDto {
+        unit: quote_unit_label(unit),
+        decimals: quote_unit_decimals(unit).unwrap_or(0),
+        closed_known: b.closed_episodes_known,
+        wins: b.wins,
+        losses: b.losses,
+        breakeven: b.breakeven,
+        realized_trade_pnl: known
+            .then(|| amt(b.realized_trade_pnl_raw, b.realized_trade_pnl_exact)),
+        consumed_acquisition_basis: known.then(|| {
+            amt(
+                b.consumed_acquisition_basis_raw,
+                b.consumed_acquisition_basis_exact,
+            )
+        }),
+        realized_cost_roi: b
+            .roi_parts()
+            .and_then(|(n, d)| Ratio::new(n, d))
+            .map(|r| UnitRoiDto {
+                numerator_exact: format_quote_money(unit, b.realized_trade_pnl_exact)
+                    .unwrap_or_default(),
+                denominator_exact: format_quote_money(unit, b.consumed_acquisition_basis_exact)
+                    .unwrap_or_default(),
+                percent_2dp: r.percent_string(2),
+            }),
+        win_rate: ratio_dto(&b.win_rate, b.closed_episodes_known),
+        profit_factor: ratio_dto(&b.profit_factor, b.closed_episodes_known),
+    }
+}
+
 fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
     let l = o.ledger.as_ref()?;
     let a = &l.activity;
-    let roi = match o.roi {
+    // Legacy SOL ROI fields keep their SOL meaning whatever the rank unit
+    // (the ranking-unit ROI is in `quote_units`).
+    let sol_roi = l
+        .unit_block(QuoteUnit::Lamports)
+        .and_then(|b| b.roi_parts())
+        .and_then(|(n, d)| Ratio::new(n, d));
+    let roi = match sol_roi {
         Some(r) => RoiDto {
             status: "value",
             numerator_sol_exact: Some(money_exact_sol_string(l.realized_trade_pnl_exact)),
@@ -509,14 +634,30 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
                 .collect(),
         ),
     };
+    let sol_only = |v: Option<String>| v.filter(|_| o.quote == QuoteUnit::Lamports);
+    let t = &l.trades;
     Some(MetricsDto {
+        quote: quote_unit_label(o.quote),
+        closed_known_in_quote: unit_block_of(o).map_or(0, |b| b.closed_episodes_known),
+        quote_units: l.unit_blocks.iter().map(unit_metrics_dto).collect(),
+        route: RouteCountsDto {
+            route_swaps: t.route_swaps,
+            route_swaps_sol: t.route_swaps_by_quote.sol,
+            route_swaps_usdc: t.route_swaps_by_quote.usdc,
+            route_swaps_usdt: t.route_swaps_by_quote.usdt,
+            route_leg_not_wallet_price: t.route_leg_not_wallet_price,
+        },
         realized_net_pnl: MoneyDto {
             status: o.pnl_status.label(),
-            lamports: o.net_pnl_lamports.map(|v| v.to_string()),
-            sol: o.net_pnl_lamports.map(lamports_to_sol_string),
-            sol_exact: o
-                .net_pnl_lamports
-                .map(|_| money_exact_sol_string(l.realized_net_pnl_exact)),
+            unit: quote_unit_label(o.quote),
+            raw: o.net_pnl_raw.map(|v| v.to_string()),
+            decimal: o.net_pnl_raw.and_then(|v| raw_decimal(o.quote, v)),
+            lamports: sol_only(o.net_pnl_raw.map(|v| v.to_string())),
+            sol: sol_only(o.net_pnl_raw.map(lamports_to_sol_string)),
+            sol_exact: sol_only(
+                o.net_pnl_raw
+                    .map(|_| money_exact_sol_string(l.realized_net_pnl_exact)),
+            ),
         },
         realized_trade_pnl: amount(l.realized_trade_pnl_lamports),
         consumed_acquisition_basis: amount(l.consumed_acquisition_basis_lamports),
@@ -604,6 +745,8 @@ pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMe
         rank_version: SOLANA_WALLET_RANK_VERSION,
         ledger_version: SOLANA_WALLET_LEDGER_VERSION,
         quote_unit: "lamports",
+        rank_quote_unit: quote_unit_label(p.quote),
+        ledger_scope: SOLANA_WALLET_LEDGER_SCOPE,
         window: window_dto(&m.window),
         protocol_scope: scope.recognized,
         not_decoded: scope.not_decoded,
@@ -711,6 +854,7 @@ pub fn run_summary_record(report: &WalletRankReport, s: SummaryInput<'_>) -> Run
         status: if s.partial { "partial" } else { "complete" },
         cancelled: s.cancelled,
         rank_by: report.policy.rank_by.label(),
+        rank_quote_unit: quote_unit_label(report.policy.quote),
         profile: report.policy.profile.label(),
         input_wallets: report.input_count,
         eligible: report.eligible_count,
@@ -769,6 +913,14 @@ mod tests {
         l.realized_net_pnl_lamports = pnl;
         l.consumed_acquisition_basis_exact = lamports_to_money(basis).unwrap();
         l.consumed_acquisition_basis_lamports = basis;
+        {
+            let b = &mut l.unit_blocks[0];
+            b.closed_episodes_known = 3;
+            b.realized_trade_pnl_raw = pnl;
+            b.realized_trade_pnl_exact = lamports_to_money(pnl).unwrap();
+            b.consumed_acquisition_basis_raw = basis;
+            b.consumed_acquisition_basis_exact = lamports_to_money(basis).unwrap();
+        }
         l.activity.active_utc_days = 2;
         l.activity.timestamped_trades = 6;
         l.activity.mint_day_pairs = 3;

@@ -81,13 +81,28 @@ impl Ledger {
     }
 
     /// Record a new acquisition lot. `basis` is the fully capitalized
-    /// cost (consideration + allocated acquisition fees).
+    /// cost (consideration + allocated acquisition fees), in this
+    /// ledger's quote unit.
     pub fn acquire(
         &mut self,
         asset: AssetKey,
         amount: RawAmount,
         basis: Money,
         basis_status: BasisStatus,
+    ) -> u64 {
+        let unit = self.quote_unit;
+        self.acquire_in_unit(asset, amount, basis, basis_status, unit)
+    }
+
+    /// Like [`Ledger::acquire`] but the lot's basis is denominated in
+    /// `quote_unit` (ADR-013 §4). FIFO order does not depend on the unit.
+    pub fn acquire_in_unit(
+        &mut self,
+        asset: AssetKey,
+        amount: RawAmount,
+        basis: Money,
+        basis_status: BasisStatus,
+        quote_unit: QuoteUnit,
     ) -> u64 {
         let sequence = self.next_sequence;
         self.next_sequence += 1;
@@ -102,6 +117,7 @@ impl Ledger {
                 remaining_basis: basis,
                 basis_status,
                 provenance: LotProvenance::Verified,
+                quote_unit,
             },
         );
         sequence
@@ -137,6 +153,7 @@ impl Ledger {
                 remaining_basis: basis,
                 basis_status: BasisStatus::unverified(),
                 provenance: LotProvenance::Unverified,
+                quote_unit: self.quote_unit,
             },
         );
         sequence

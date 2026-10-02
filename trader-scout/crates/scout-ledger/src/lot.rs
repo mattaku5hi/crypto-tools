@@ -5,7 +5,7 @@ use scout_core::{AssetKey, Money, RawAmount, TrustLevel};
 /// The unit all `Money` values of one [`crate::Ledger`] are denominated
 /// in. A tag, not a conversion: ledgers of different units are never
 /// merged implicitly (ADR-010 §1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum QuoteUnit {
     /// The report currency of ADR-001 (USD by default): `Money` is a
     /// decimal amount at `MONEY_SCALE`.
@@ -14,6 +14,11 @@ pub enum QuoteUnit {
     /// Solana lamports: one lamport is `10^MONEY_SCALE` scaled `Money`
     /// units, so no rounding occurs (ADR-010 §1).
     Lamports,
+    /// Raw USDC base units (6 decimals; ADR-013 §3). Never assumed to be
+    /// USD or equal to USDT: no FX.
+    UsdcUnits,
+    /// Raw USDT base units (6 decimals; ADR-013 §3).
+    UsdtUnits,
 }
 
 /// Whether a lot's acquisition cost is known or must be treated as
@@ -81,6 +86,9 @@ pub struct Lot {
     pub remaining_basis: Money,
     pub basis_status: BasisStatus,
     pub provenance: LotProvenance,
+    /// Unit of `original_basis`/`remaining_basis` (ADR-013 §4). A disposal
+    /// whose proceeds are in another unit cannot realize PnL against it.
+    pub quote_unit: QuoteUnit,
 }
 
 impl Lot {

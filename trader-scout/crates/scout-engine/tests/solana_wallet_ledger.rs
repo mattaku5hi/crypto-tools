@@ -27,10 +27,10 @@ use scout_dex_solana::{
 };
 use scout_engine::{
     EpisodeOutcome, LedgerDecoders, LedgerOptions, PUMP_BONDING_CURVE_PROGRAM_ID, QuoteUnit,
-    SolanaWalletLedgerReport, UnknownReason, Venue, allocate_fee_proportionally,
-    build_solana_wallet_ledger, build_solana_wallet_ledger_venues,
-    build_solana_wallet_ledger_with_options, lamports_to_money, pump_amm_decoder,
-    pump_bonding_curve_decoder, solana_mainnet_chain,
+    RouteRejections, RouteSwapRecord, SolanaWalletLedgerReport, USDC_MINT, USDT_MINT,
+    UnknownReason, Venue, allocate_fee_proportionally, build_solana_wallet_ledger,
+    build_solana_wallet_ledger_venues, build_solana_wallet_ledger_with_options, format_quote_money,
+    lamports_to_money, pump_amm_decoder, pump_bonding_curve_decoder, solana_mainnet_chain,
 };
 use scout_providers::HeliusProvider;
 use tokio_util::sync::CancellationToken;
@@ -1096,7 +1096,8 @@ async fn live_fixture_wallets_never_panic_and_count_everything() {
                     + t.unpaired
                     + t.mismatched
                     + t.unsupported_quote
-                    + t.malformed_consideration,
+                    + t.malformed_consideration
+                    + t.route_leg_not_wallet_price,
                 t.buys + t.sells
             );
             eprintln!(
@@ -2192,27 +2193,573 @@ async fn router_wallet_pages_contain_no_atomic_round_trips() {
         assert_eq!(r.diagnostics.atomic_round_trip_txs, 0);
         assert_eq!(r.diagnostics.atomic_round_trip_sol_lamports, 0);
     }
-    // Pinned ledger/3 numbers on these pages (the newest 100 txs only; a
-    // longer window yields larger counts). Every one of these trades was
-    // paid in USDC, not SOL (the PumpSwap leg is an intermediate wSOL hop).
+    // ADR-013 (ledger/4): every successful signed tx with a FixtureVerified
+    // pump leg on these pages is a route swap booked from the wallet's own
+    // USDC/token deltas. ledger/3 had priced 3+7 of them from a hop's event
+    // (SOL, wrong), left 12+42 unreconciled, 6+5 funded elsewhere, 6+0
+    // unsupported quote and 8+8 router-forward.
     assert_eq!(
         (
             a.trades.priced,
+            a.trades.route_swaps,
+            a.trades.route_swaps_by_quote.usdc,
             a.trades.unreconciled,
             a.trades.quote_funded_elsewhere,
             a.trades.unsupported_quote,
             a.diagnostics.router_forward_trades_not_attributed,
         ),
-        (3, 12, 6, 6, 8)
+        (36, 36, 36, 0, 0, 0, 0)
     );
     assert_eq!(
         (
             b.trades.priced,
+            b.trades.route_swaps,
+            b.trades.route_swaps_by_quote.usdc,
             b.trades.unreconciled,
             b.trades.quote_funded_elsewhere,
             b.trades.unsupported_quote,
             b.diagnostics.router_forward_trades_not_attributed,
         ),
-        (7, 42, 5, 0, 8)
+        (62, 62, 62, 0, 0, 0, 0)
+    );
+}
+
+fn sig_str(sig: &[u8; 64]) -> String {
+    bs58::encode(sig).into_string()
+}
+
+fn route_rec<'a>(r: &'a SolanaWalletLedgerReport, prefix: &str) -> &'a RouteSwapRecord {
+    r.route_swap_log
+        .iter()
+        .find(|x| sig_str(&x.signature).starts_with(prefix))
+        .unwrap_or_else(|| panic!("{prefix} is not a booked route swap"))
+}
+
+/// ADR-013 fixture evidence on both router pages (ground truth from the
+/// wallets' own balance deltas).
+#[tokio::test]
+async fn router_pages_are_booked_wallet_side_in_usdc() {
+    let a = router_wallet_report(
+        "router_wallet_9oC3_page_2026-10-02.json",
+        ROUTER_WALLET_9OC3,
+    )
+    .await;
+    let b = router_wallet_report(
+        "router_wallet_tAwv_page_2026-10-02.json",
+        ROUTER_WALLET_TAWV,
+    )
+    .await;
+    let exact = |r: &SolanaWalletLedgerReport, p: &str, side, tokens, usdc| {
+        let x = route_rec(r, p);
+        assert_eq!(
+            (x.side, x.unit, x.token_amount, x.quote_amount),
+            (side, QuoteUnit::UsdcUnits, tokens, usdc),
+            "{p}"
+        );
+    };
+    exact(
+        &a,
+        "4mWy9Cyk5j",
+        TradeSide::Buy,
+        10_711_610_293_044,
+        5_000_000_000,
+    );
+    exact(
+        &b,
+        "5ZLd1GL9zm",
+        TradeSide::Buy,
+        6_657_065_375_403,
+        1_500_000_000,
+    );
+    // Pass-through: the leg user is `ARu4n5mF...` (non-signer, nets 0).
+    exact(
+        &a,
+        "2mD5CtKfFd",
+        TradeSide::Sell,
+        1_403_477_039_775,
+        1_261_908_554,
+    );
+    // The 7 ledger/3 bug cases: USDC from the wallet's deltas, not SOL from
+    // the 24.47 SOL hop event (wallet SOL moved only -550_840 of rent).
+    for (p, tokens, usdc) in [
+        ("4SSojKf9ao", 648_062_069_092, 3_000_000_000),
+        ("2mTX4qouxE", 2_829_384_670_616, 3_000_000_000),
+        ("4TrtWRJ6oP", 4_029_280_822_121, 3_000_000_000),
+        ("5sM5m4jw2H", 1_942_621_723_810, 1_000_000_000),
+        ("5ysTvFYiea", 4_005_614_455_616, 2_000_000_000),
+        ("YtfpxhcUfz", 4_798_658_875_465, 2_000_000_000),
+        ("3tBhzKhDAY", 10_997_446_852_615, 5_000_000_000),
+    ] {
+        exact(&b, p, TradeSide::Buy, tokens, usdc);
+    }
+    // Split routes: event base differs from the wallet delta; the delta wins.
+    exact(
+        &b,
+        "4643cWP7",
+        TradeSide::Buy,
+        1_163_420_181_740,
+        3_000_000_000,
+    );
+    exact(
+        &b,
+        "124TBXVa",
+        TradeSide::Sell,
+        9_345_876_563_219,
+        28_264_643_855,
+    );
+    for r in [&a, &b] {
+        assert_eq!(r.trades.route_swaps_by_quote.sol, 0);
+        assert_eq!(r.trades.route_swaps_by_quote.usdt, 0);
+        assert_eq!(
+            u64::try_from(r.route_swap_log.len()).unwrap(),
+            r.trades.route_swaps
+        );
+        assert_eq!(r.trades.route_leg_not_wallet_price, 0);
+        assert_eq!(r.diagnostics.route_rejected, RouteRejections::default());
+        assert!(
+            r.route_swap_log
+                .iter()
+                .all(|x| x.unit == QuoteUnit::UsdcUnits)
+        );
+        assert_eq!(
+            r.unit_block(QuoteUnit::Lamports)
+                .unwrap()
+                .closed_episodes_known,
+            0
+        );
+        assert_eq!(r.realized_trade_pnl_lamports, 0);
+    }
+    let ua = a.unit_block(QuoteUnit::UsdcUnits).unwrap();
+    assert_eq!(
+        (
+            ua.closed_episodes_known,
+            ua.wins,
+            ua.losses,
+            ua.realized_trade_pnl_raw,
+            ua.consumed_acquisition_basis_raw
+        ),
+        (5, 0, 5, -24_745_390_534, 62_532_744_053)
+    );
+    let ub = b.unit_block(QuoteUnit::UsdcUnits).unwrap();
+    assert_eq!(
+        (
+            ub.closed_episodes_known,
+            ub.wins,
+            ub.losses,
+            ub.realized_trade_pnl_raw,
+            ub.consumed_acquisition_basis_raw
+        ),
+        (5, 2, 3, -7_030_355_795, 41_500_000_000)
+    );
+    assert_eq!(
+        format_quote_money(QuoteUnit::UsdcUnits, ua.realized_trade_pnl_exact).unwrap(),
+        "-24745.390534"
+    );
+}
+
+// ---------------------------------------------------------------------
+// ADR-013 synthetic goldens: event guard, route swaps, quote units.
+// ---------------------------------------------------------------------
+
+const RELAYER: u8 = 88;
+const PASS: u8 = 55;
+const HOP_EVENT_SOL: u64 = 24_474_347_355;
+
+fn usdc() -> SolanaPubkey {
+    pubkey(USDC_MINT)
+}
+
+/// A route tx of wallet `W`: a curve leg of `leg_user` whose event says
+/// 24.47 SOL, while the wallet really moves `tokens` of `mint` against
+/// `quote_amt` raw units of `quote` (USDC/USDT), SOL only -550_840 of rent.
+/// The relayer pays the fee; `signers` = relayer + wallet.
+#[allow(clippy::too_many_arguments)]
+fn route_tx(
+    sig: u8,
+    slot: u64,
+    side: TradeSide,
+    mint: u8,
+    tokens: u64,
+    pre_tokens: u64,
+    quote: SolanaPubkey,
+    quote_amt: u64,
+    leg_user: u8,
+) -> RawSolanaTransaction {
+    let buy = side == TradeSide::Buy;
+    let ev = Ev {
+        mint,
+        user: leg_user,
+        is_buy: buy,
+        sol: HOP_EVENT_SOL,
+        tokens,
+        fee: 0,
+        creator_fee: 0,
+        ts: 1_000 + i64::from(sig),
+    };
+    let post = if buy {
+        pre_tokens + tokens
+    } else {
+        pre_tokens - tokens
+    };
+    let (q_pre, q_post) = if buy {
+        (quote_amt * 2, quote_amt)
+    } else {
+        (0, quote_amt)
+    };
+    let mut bals = vec![
+        bal(mint, W, pre_tokens, post),
+        bal_pk(quote, W, q_pre, q_post),
+    ];
+    if leg_user == PASS {
+        bals.push(bal(mint, PASS, 100, 100));
+    }
+    let mut tx = Tx {
+        sig,
+        slot,
+        index: 0,
+        ixs: vec![trade_ix(side, None, leg_user, mint, 0), event_ix(&ev, 1)],
+        bals,
+        fee: 5_000,
+        payer: RELAYER,
+        native: vec![nat(W, -550_840)],
+        ok: true,
+    }
+    .build();
+    tx.signers = vec![pk(RELAYER), pk(W)];
+    tx
+}
+
+fn rejected(r: &SolanaWalletLedgerReport) -> RouteRejections {
+    r.diagnostics.route_rejected
+}
+
+#[test]
+fn guard_event_of_a_route_leg_is_not_the_wallet_price() {
+    // Wallet is the leg user (event 24.47 SOL) but paid only 5_000 of fee in
+    // SOL: no quote leg => never priced from the hop event.
+    let ev = Ev {
+        mint: M1,
+        user: W,
+        is_buy: true,
+        sol: HOP_EVENT_SOL,
+        tokens: 1000,
+        fee: 0,
+        creator_fee: 0,
+        ts: 10,
+    };
+    let tx = Tx {
+        sig: 1,
+        slot: 1,
+        index: 0,
+        ixs: vec![trade_ix(TradeSide::Buy, None, W, M1, 0), event_ix(&ev, 1)],
+        bals: vec![bal(M1, W, 0, 1000)],
+        fee: 5_000,
+        payer: W,
+        native: vec![nat(W, -5_000)],
+        ok: true,
+    }
+    .build();
+    let r = run(&[tx]);
+    assert_eq!(r.trades.priced, 0);
+    assert_eq!(r.trades.route_leg_not_wallet_price, 1);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(rejected(&r).no_quote_leg, 1);
+    assert_eq!(r.open_positions.len(), 1);
+    assert_eq!(r.open_positions[0].unknown_basis_amount_raw, 1000);
+    assert!(
+        r.episodes[0]
+            .unknown_reasons
+            .contains(&UnknownReason::RouteLegNotWalletPrice)
+    );
+}
+
+#[test]
+fn guard_direct_sol_trade_keeps_event_pricing() {
+    // Unchanged ledger/3 golden: payer W, buy 1_000_000 + fees.
+    let tx = trade_tx(
+        1,
+        1,
+        TradeSide::Buy,
+        M1,
+        1000,
+        0,
+        1_000_000,
+        10_000,
+        5_000,
+        10,
+        5_000,
+        W,
+    );
+    let r = run(&[tx]);
+    assert_eq!((r.trades.priced, r.trades.route_swaps), (1, 0));
+    assert_eq!(r.trades.route_leg_not_wallet_price, 0);
+}
+
+#[test]
+fn route_usdc_buy_is_booked_from_wallet_deltas_not_the_event() {
+    let tx = route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W);
+    let r = run(&[tx]);
+    assert_eq!(r.trades.route_swaps, 1);
+    assert_eq!(r.trades.route_swaps_by_quote.usdc, 1);
+    assert_eq!(r.trades.route_swaps_by_quote.sol, 0);
+    assert_eq!(r.trades.priced, 1);
+    let x = &r.route_swap_log[0];
+    assert_eq!(
+        (x.side, x.unit, x.token_amount, x.quote_amount),
+        (TradeSide::Buy, QuoteUnit::UsdcUnits, 1000, 5_000_000)
+    );
+    assert_eq!(rejected(&r), RouteRejections::default());
+    assert_eq!(r.open_positions[0].open_amount_raw, 1000);
+    assert_eq!(r.open_positions[0].unknown_basis_amount_raw, 0);
+}
+
+#[test]
+fn route_usdc_round_trip_is_closed_known_in_usdc_with_exact_pnl() {
+    let buy = route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W);
+    let sell = route_tx(2, 2, TradeSide::Sell, M1, 1000, 1000, usdc(), 7_250_000, W);
+    let r = run(&[buy, sell]);
+    assert_eq!((r.closed_episodes_known, r.closed_episodes_unknown), (1, 0));
+    let EpisodeOutcome::ClosedKnown { pnl } = r.episodes[0].outcome else {
+        panic!("{:?}", r.episodes[0].outcome)
+    };
+    assert_eq!(r.episodes[0].quote_unit, Some(QuoteUnit::UsdcUnits));
+    assert_eq!(
+        format_quote_money(QuoteUnit::UsdcUnits, pnl).unwrap(),
+        "2.250000"
+    );
+    let u = r.unit_block(QuoteUnit::UsdcUnits).unwrap();
+    assert_eq!(
+        (
+            u.closed_episodes_known,
+            u.wins,
+            u.realized_trade_pnl_raw,
+            u.consumed_acquisition_basis_raw
+        ),
+        (1, 1, 2_250_000, 5_000_000)
+    );
+    // The SOL block and legacy SOL figures stay empty: units are not mixed.
+    assert_eq!(
+        r.unit_block(QuoteUnit::Lamports)
+            .unwrap()
+            .closed_episodes_known,
+        0
+    );
+    assert_eq!(r.realized_trade_pnl_lamports, 0);
+    assert_eq!(r.closed_episodes_known, 1);
+}
+
+#[test]
+fn route_passthrough_leg_user_with_zero_net_is_accepted() {
+    let tx = route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, PASS);
+    let r = run(&[tx]);
+    assert_eq!(r.trades.route_swaps, 1);
+    assert_eq!(rejected(&r), RouteRejections::default());
+}
+
+#[test]
+fn route_usdt_is_its_own_unit() {
+    let tx = route_tx(
+        1,
+        1,
+        TradeSide::Buy,
+        M1,
+        1000,
+        0,
+        pubkey(USDT_MINT),
+        2_000_000,
+        W,
+    );
+    let r = run(&[tx]);
+    assert_eq!(r.trades.route_swaps_by_quote.usdt, 1);
+    assert_eq!(r.route_swap_log[0].unit, QuoteUnit::UsdtUnits);
+}
+
+#[test]
+fn route_rejections_are_counted_and_not_booked() {
+    // Pass-through that receives value.
+    let mut tx = route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, PASS);
+    tx.token_balance_changes.pop();
+    tx.token_balance_changes.push(bal(M1, PASS, 0, 7));
+    let r = run(&[tx]);
+    assert_eq!(
+        (r.trades.route_swaps, rejected(&r).passthrough_nonzero),
+        (0, 1)
+    );
+
+    // Pass-through that signs.
+    let mut tx = route_tx(2, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, PASS);
+    tx.signers.push(pk(PASS));
+    let r = run(&[tx]);
+    assert_eq!(
+        (r.trades.route_swaps, rejected(&r).passthrough_nonzero),
+        (0, 1)
+    );
+
+    // Wallet is not a signer.
+    let mut tx = route_tx(3, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W);
+    tx.signers = vec![pk(RELAYER)];
+    let r = run(&[tx]);
+    assert_eq!(
+        (r.trades.route_swaps, rejected(&r).wallet_not_signer),
+        (0, 1)
+    );
+
+    // Multi-asset: a second token moves for the wallet.
+    let mut tx = route_tx(4, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W);
+    tx.token_balance_changes.push(bal(M2, W, 0, 9));
+    let r = run(&[tx]);
+    assert_eq!((r.trades.route_swaps, rejected(&r).multi_asset), (0, 1));
+
+    // No verified leg for the wallet's token: the only leg trades M2.
+    let mut tx = route_tx(5, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W);
+    for ix in &mut tx.instructions {
+        // retarget the leg's mint (accounts[2]) so no leg trades M1
+        if ix.program_id == pump() && ix.accounts.len() > 2 && ix.data.len() < 40 {
+            ix.accounts[2] = pk(M2);
+        }
+    }
+    let r = run(&[tx]);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(rejected(&r).no_verified_leg + rejected(&r).multi_asset, 1);
+
+    // Same-sign deltas.
+    let mut tx = route_tx(6, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W);
+    tx.token_balance_changes[1] = bal_pk(usdc(), W, 0, 5_000_000);
+    let r = run(&[tx]);
+    assert_eq!(
+        (r.trades.route_swaps, rejected(&r).not_opposite_signs),
+        (0, 1)
+    );
+}
+
+#[test]
+fn cross_quote_unit_disposal_is_unknown_never_mixed() {
+    // USDC buy then SOL sell of the same mint (one FIFO, units differ).
+    let buy = route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W);
+    let sell = trade_tx(
+        2,
+        2,
+        TradeSide::Sell,
+        M1,
+        1000,
+        1000,
+        1_300_000,
+        0,
+        0,
+        20,
+        5_000,
+        W,
+    );
+    let r = run(&[buy, sell]);
+    assert_eq!((r.closed_episodes_known, r.closed_episodes_unknown), (0, 1));
+    assert!(
+        r.episodes[0]
+            .unknown_reasons
+            .contains(&UnknownReason::CrossQuoteUnit)
+    );
+    for b in &r.unit_blocks {
+        assert_eq!(b.closed_episodes_known, 0);
+        assert_eq!(b.realized_trade_pnl_raw, 0);
+    }
+    assert_eq!(r.diagnostics.unknown_disposals, 1);
+}
+
+#[test]
+fn one_episode_realized_in_two_units_is_unknown() {
+    let b1 = route_tx(1, 1, TradeSide::Buy, M1, 500, 0, usdc(), 1_000_000, W);
+    let b2 = trade_tx(
+        2,
+        2,
+        TradeSide::Buy,
+        M1,
+        500,
+        500,
+        600_000,
+        0,
+        0,
+        20,
+        5_000,
+        W,
+    );
+    let s1 = route_tx(3, 3, TradeSide::Sell, M1, 500, 1000, usdc(), 1_500_000, W);
+    let s2 = trade_tx(
+        4,
+        4,
+        TradeSide::Sell,
+        M1,
+        500,
+        500,
+        900_000,
+        0,
+        0,
+        40,
+        5_000,
+        W,
+    );
+    let r = run(&[b1, b2, s1, s2]);
+    assert_eq!((r.closed_episodes_known, r.closed_episodes_unknown), (0, 1));
+    assert!(
+        r.episodes[0]
+            .unknown_reasons
+            .contains(&UnknownReason::CrossQuoteUnit)
+    );
+}
+
+#[test]
+fn per_unit_sums_are_never_mixed_and_win_rate_is_overall() {
+    // M1: USDC round trip +2_000_000 USDC units. M2: SOL curve round trip.
+    let b1 = route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W);
+    let s1 = route_tx(2, 2, TradeSide::Sell, M1, 1000, 1000, usdc(), 7_000_000, W);
+    let b2 = trade_tx(
+        3,
+        3,
+        TradeSide::Buy,
+        M2,
+        1000,
+        0,
+        1_000_000,
+        0,
+        0,
+        30,
+        5_000,
+        W,
+    );
+    let s2 = trade_tx(
+        4,
+        4,
+        TradeSide::Sell,
+        M2,
+        1000,
+        1000,
+        800_000,
+        0,
+        0,
+        40,
+        5_000,
+        W,
+    );
+    let r = run(&[b1, s1, b2, s2]);
+    assert_eq!(r.closed_episodes_known, 2);
+    let usdc_b = r.unit_block(QuoteUnit::UsdcUnits).unwrap();
+    let sol_b = r.unit_block(QuoteUnit::Lamports).unwrap();
+    assert_eq!(usdc_b.realized_trade_pnl_raw, 2_000_000);
+    // SOL: basis 1_000_000 + 5_000 fee, proceeds 800_000 - 5_000 fee.
+    assert_eq!(sol_b.realized_trade_pnl_raw, -210_000);
+    assert_eq!((usdc_b.wins, usdc_b.losses), (1, 0));
+    assert_eq!((sol_b.wins, sol_b.losses), (0, 1));
+    // Legacy SOL figures equal the SOL block; overall counts span units.
+    assert_eq!(r.realized_trade_pnl_lamports, -210_000);
+    assert_eq!((r.wins, r.losses), (1, 1));
+    assert_eq!(
+        r.win_rate,
+        scout_analytics::RatioStatus::Value {
+            value: Money::from_scaled_units(50_000_000)
+        }
+    );
+    assert_eq!(
+        usdc_b.win_rate,
+        scout_analytics::RatioStatus::Value {
+            value: Money::from_scaled_units(100_000_000)
+        }
     );
 }
