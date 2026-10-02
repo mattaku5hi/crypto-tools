@@ -60,6 +60,46 @@ pub enum SolanaBalanceAggregationError {
     DeltaOutOfRange,
 }
 
+/// Per-`(mint, owner)` net deltas for one transaction, plus a count of
+/// balance changes that could not be attributed to any owner.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SolanaOwnerNetDeltas {
+    /// `(mint, owner) -> cumulative post - pre` in raw base units.
+    /// Includes zero and negative entries (unlike
+    /// [`SolanaBalanceAggregation::flows`]) so a caller holding
+    /// independent instruction evidence can resolve owners the
+    /// aggregation had to leave `Ambiguous`.
+    pub deltas: BTreeMap<(SolanaPubkey, SolanaPubkey), i128>,
+    /// Balance changes with `owner: None`: excluded from `deltas`,
+    /// reported here so "could not attribute" is never silently zero.
+    pub unowned_changes: usize,
+}
+
+/// Sum one transaction's token balance changes per `(mint, owner)`.
+/// Checked arithmetic only; a missing `pre_amount` is zero (account
+/// created in this transaction).
+pub fn solana_owner_net_deltas(
+    changes: &[SolanaTokenBalanceChange],
+) -> Result<SolanaOwnerNetDeltas, SolanaBalanceAggregationError> {
+    let mut result = SolanaOwnerNetDeltas::default();
+    for change in changes {
+        let Some(owner) = change.owner else {
+            result.unowned_changes = result.unowned_changes.saturating_add(1);
+            continue;
+        };
+        let pre = i128::from(change.pre_amount.unwrap_or(0));
+        let post = i128::from(change.post_amount);
+        let delta = post
+            .checked_sub(pre)
+            .ok_or(SolanaBalanceAggregationError::DeltaOutOfRange)?;
+        let accumulated = result.deltas.entry((change.mint, owner)).or_insert(0);
+        *accumulated = accumulated
+            .checked_add(delta)
+            .ok_or(SolanaBalanceAggregationError::DeltaOutOfRange)?;
+    }
+    Ok(result)
+}
+
 /// Aggregate one transaction's `SolanaTokenBalanceChange` entries (see
 /// `scout_core::RawSolanaTransaction::token_balance_changes`) into net
 /// deltas keyed by `(mint, owner)` -- never by token account, since one
@@ -77,29 +117,14 @@ pub fn aggregate_solana_token_balance_changes(
     changes: &[SolanaTokenBalanceChange],
     chain: &ChainKey,
 ) -> Result<SolanaBalanceAggregation, SolanaBalanceAggregationError> {
-    // mint -> owner -> cumulative i128 delta. i128 (not u64) because the
-    // delta is routinely negative (the pool/seller side of a swap) and
-    // post_amount - pre_amount on raw u64s would underflow for exactly
-    // that case.
+    let owner_deltas_all = solana_owner_net_deltas(changes)?;
+    // mint -> owner -> cumulative i128 delta (regrouped from the
+    // (mint, owner)-keyed map; BTreeMap iteration order is mint-major,
+    // so grouping and ordering are identical to the previous inline
+    // implementation).
     let mut deltas: BTreeMap<SolanaPubkey, BTreeMap<SolanaPubkey, i128>> = BTreeMap::new();
-
-    for change in changes {
-        let Some(owner) = change.owner else {
-            // No owner reported for this account -- cannot attribute,
-            // not guessed at, not bucketed under a sentinel.
-            continue;
-        };
-        let pre = i128::from(change.pre_amount.unwrap_or(0));
-        let post = i128::from(change.post_amount);
-        let delta = post
-            .checked_sub(pre)
-            .ok_or(SolanaBalanceAggregationError::DeltaOutOfRange)?;
-
-        let owner_deltas = deltas.entry(change.mint).or_default();
-        let accumulated = owner_deltas.entry(owner).or_insert(0);
-        *accumulated = accumulated
-            .checked_add(delta)
-            .ok_or(SolanaBalanceAggregationError::DeltaOutOfRange)?;
+    for ((mint, owner), delta) in owner_deltas_all.deltas {
+        deltas.entry(mint).or_default().insert(owner, delta);
     }
 
     let mut result = SolanaBalanceAggregation::default();
@@ -192,7 +217,41 @@ mod tests {
             decimals: 6,
             pre_amount: pre,
             post_amount: post,
+            closed: false,
         }
+    }
+
+    #[test]
+    fn owner_net_deltas_keep_negative_zero_and_count_unowned() {
+        let changes = vec![
+            change(1, Some(10), Some(100), 40),
+            change(1, Some(11), None, 60),
+            change(1, Some(11), Some(5), 5),
+            change(1, None, None, 9),
+        ];
+        let result = solana_owner_net_deltas(&changes).unwrap();
+        assert_eq!(result.deltas.get(&([1; 32], [10; 32])), Some(&-60));
+        assert_eq!(result.deltas.get(&([1; 32], [11; 32])), Some(&60));
+        assert_eq!(result.unowned_changes, 1);
+    }
+
+    #[test]
+    fn closed_account_yields_exact_negative_delta_of_its_pre_balance() {
+        let mut closed = change(1, Some(10), Some(175_202_561_501), 0);
+        closed.closed = true;
+        let result = solana_owner_net_deltas(&[closed]).unwrap();
+        assert_eq!(
+            result.deltas.get(&([1; 32], [10; 32])),
+            Some(&-175_202_561_501)
+        );
+        // u64::MAX closed: exact in i128.
+        let mut big = change(1, Some(10), Some(u64::MAX), 0);
+        big.closed = true;
+        let result = solana_owner_net_deltas(&[big]).unwrap();
+        assert_eq!(
+            result.deltas.get(&([1; 32], [10; 32])),
+            Some(&-i128::from(u64::MAX))
+        );
     }
 
     #[test]

@@ -7,6 +7,11 @@
 //! transactions, a 10x reduction over calling `getTransaction` once per
 //! signature (1 credit each).
 //!
+//! Pagination: `scan()` follows `paginationToken` sequentially up to a
+//! page budget (`DEFAULT_MAX_PAGES_PER_SCAN`, an unmeasured
+//! conservative value; see `with_max_pages`). `ScanEnvelope.truncated`
+//! means the scan stopped with an unconsumed cursor.
+//!
 //! Scope: `ScanRequest::WalletActivity` and
 //! `ScanRequest::TokenMarketActivity { asset: AssetKey::Token(..) }`.
 //! Per `docs/p0/measurements/2026-10-01-helius-mint-centric-query.md`,
@@ -20,12 +25,14 @@
 //! (AGENTS.md invariant #18: an unfamiliar/unsupported shape is
 //! surfaced, never silently degraded).
 
+use std::num::NonZeroU32;
+
 use futures::stream::{self, BoxStream, StreamExt};
 use scout_api::{
     CapabilityStatus, HistoryProvider, ProviderError, ScanEnvelope, ScanPlan, ScanRequest,
     ScanTask, SourceCapabilities,
 };
-use scout_core::{RawPayload, RawSolanaInstruction, RawSolanaTransaction};
+use scout_core::{RawPayload, RawSolanaInstruction, RawSolanaTransaction, SolanaExecutionStatus};
 use scout_rpc::RpcClient;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -52,8 +59,36 @@ struct FullTransactionRecord {
     meta: Option<TransactionMeta>,
 }
 
+fn present_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
+/// Max chars of provider `meta.err` JSON retained in
+/// `SolanaExecutionStatus::Failed`.
+const MAX_EXECUTION_ERROR_LEN: usize = 200;
+
+/// Compact, control-free, length-bounded rendering of provider error
+/// JSON. Untrusted display text only.
+fn bounded_error_text(err: &serde_json::Value) -> String {
+    err.to_string()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(MAX_EXECUTION_ERROR_LEN)
+        .collect()
+}
+
 #[derive(Debug, Deserialize)]
 struct TransactionMeta {
+    // Execution result. `None` = the key was ABSENT (unsupported shape,
+    // rejected at decode); `Some(Value::Null)` = explicit success;
+    // anything else = failed transaction. `Option<Value>` alone would
+    // fold an explicit `null` into absence, hence the custom
+    // deserializer.
+    #[serde(default, deserialize_with = "present_value")]
+    err: Option<serde_json::Value>,
     #[serde(default, rename = "innerInstructions")]
     inner_instructions: Vec<InnerInstructionGroup>,
     // Address Lookup Table (ALT) resolved addresses for a v0
@@ -172,6 +207,7 @@ struct InnerInstruction {
 #[derive(Debug)]
 pub struct HeliusProvider {
     client: RpcClient,
+    max_pages: NonZeroU32,
 }
 
 impl HeliusProvider {
@@ -205,7 +241,20 @@ impl HeliusProvider {
         max_attempts: u32,
     ) -> Result<Self, ProviderError> {
         let client = RpcClient::new(endpoint, request_timeout_ms, max_attempts)?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            max_pages: DEFAULT_MAX_PAGES_PER_SCAN,
+        })
+    }
+
+    /// Sets the per-`scan()` page budget (explicit, non-zero). When the
+    /// budget is exhausted while a `paginationToken` is still
+    /// outstanding, the last yielded envelope carries
+    /// `truncated = true`.
+    #[must_use]
+    pub fn with_max_pages(mut self, max_pages: NonZeroU32) -> Self {
+        self.max_pages = max_pages;
+        self
     }
 }
 
@@ -275,6 +324,21 @@ fn decode_full_transaction_record(
     let mut inner_by_top_level_index: std::collections::BTreeMap<u32, Vec<InnerInstruction>> =
         std::collections::BTreeMap::new();
     let mut token_balance_changes = Vec::new();
+    // `meta` and `meta.err` are required: a record that does not state
+    // its execution result is an unsupported shape (invariant 18), never
+    // an implicit success.
+    let execution = match record.meta.as_ref().map(|meta| &meta.err) {
+        None => return Err(malformed("meta is absent; execution status unknown")),
+        Some(None) => {
+            return Err(malformed(
+                "meta.err key is absent; execution status unknown",
+            ));
+        }
+        Some(Some(serde_json::Value::Null)) => SolanaExecutionStatus::Succeeded,
+        Some(Some(err)) => SolanaExecutionStatus::Failed {
+            error: bounded_error_text(err),
+        },
+    };
     if let Some(meta) = record.meta {
         for group in meta.inner_instructions {
             inner_by_top_level_index.insert(group.index, group.instructions);
@@ -322,6 +386,7 @@ fn decode_full_transaction_record(
 
     Ok(RawSolanaTransaction {
         signature,
+        execution,
         slot: record.slot,
         transaction_index: record.transaction_index,
         instructions,
@@ -346,49 +411,58 @@ fn decode_token_balance_changes(
     post: &[TokenBalanceEntry],
     account_keys: &[[u8; 32]],
 ) -> Result<Vec<scout_core::SolanaTokenBalanceChange>, ProviderError> {
-    let pre_by_index: std::collections::BTreeMap<u32, &TokenBalanceEntry> = pre
-        .iter()
-        .map(|entry| (entry.account_index, entry))
-        .collect();
-
-    let mut changes = Vec::with_capacity(post.len());
+    let mut pre_by_index: std::collections::BTreeMap<u32, &TokenBalanceEntry> =
+        std::collections::BTreeMap::new();
+    for entry in pre {
+        if pre_by_index.insert(entry.account_index, entry).is_some() {
+            return Err(malformed("duplicate accountIndex in preTokenBalances"));
+        }
+    }
+    let mut post_by_index: std::collections::BTreeMap<u32, &TokenBalanceEntry> =
+        std::collections::BTreeMap::new();
     for entry in post {
-        let mint = decode_pubkey(&entry.mint)?;
-        let owner = entry.owner.as_deref().map(decode_pubkey).transpose()?;
-        let post_amount: u64 = entry
-            .ui_token_amount
-            .amount
-            .parse()
-            .map_err(|_| malformed("postTokenBalances amount is not a valid u64"))?;
+        if post_by_index.insert(entry.account_index, entry).is_some() {
+            return Err(malformed("duplicate accountIndex in postTokenBalances"));
+        }
+    }
 
-        let pre_amount = match pre_by_index.get(&entry.account_index) {
-            Some(pre_entry) => {
-                let amount: u64 = pre_entry
-                    .ui_token_amount
-                    .amount
-                    .parse()
-                    .map_err(|_| malformed("preTokenBalances amount is not a valid u64"))?;
-                Some(amount)
-            }
-            // Absent from preTokenBalances: the account did not exist
-            // before this transaction (e.g. ATA created within it).
-            // Honestly None (= zero), not an error.
-            None => None,
-        };
-
-        // Sanity check, not a correctness requirement: accountIndex
-        // should resolve within the shared account-key space this
-        // transaction already built. A failure here means Helius
-        // returned an index this provider's ALT resolution did not
-        // anticipate -- surface it rather than silently accept an
-        // unverifiable index.
-        let index = usize::try_from(entry.account_index)
+    // accountIndex must resolve within the shared account-key space
+    // this transaction already built; an unverifiable index is
+    // surfaced, not accepted.
+    for index in pre_by_index.keys().chain(post_by_index.keys()) {
+        let index = usize::try_from(*index)
             .map_err(|_| malformed("token balance accountIndex exceeds usize"))?;
         if account_keys.get(index).is_none() {
             return Err(malformed(
                 "token balance accountIndex out of range of the transaction's account-key space",
             ));
         }
+    }
+
+    let mut changes = Vec::with_capacity(pre_by_index.len().max(post_by_index.len()));
+    // Post entries first (in provider order), then closed accounts.
+    for entry in post {
+        let mint = decode_pubkey(&entry.mint)?;
+        let owner = entry.owner.as_deref().map(decode_pubkey).transpose()?;
+        let post_amount = parse_amount(entry, "postTokenBalances")?;
+
+        let pre_amount = match pre_by_index.get(&entry.account_index) {
+            Some(pre_entry) => {
+                // Same account index must describe the same mint and
+                // owner on both sides; otherwise do not guess.
+                if decode_pubkey(&pre_entry.mint)? != mint {
+                    return Err(malformed("pre/post token balance mint mismatch"));
+                }
+                let pre_owner = pre_entry.owner.as_deref().map(decode_pubkey).transpose()?;
+                if pre_owner != owner {
+                    return Err(malformed("pre/post token balance owner mismatch"));
+                }
+                Some(parse_amount(pre_entry, "preTokenBalances")?)
+            }
+            // Absent from preTokenBalances: the account did not exist
+            // before this transaction (e.g. ATA created within it).
+            None => None,
+        };
 
         changes.push(scout_core::SolanaTokenBalanceChange {
             mint,
@@ -396,10 +470,34 @@ fn decode_token_balance_changes(
             decimals: entry.ui_token_amount.decimals,
             pre_amount,
             post_amount,
+            closed: false,
+        });
+    }
+    for entry in pre {
+        if post_by_index.contains_key(&entry.account_index) {
+            continue;
+        }
+        // Present before, absent after: the token account was closed in
+        // this transaction. Its whole pre balance left the account.
+        changes.push(scout_core::SolanaTokenBalanceChange {
+            mint: decode_pubkey(&entry.mint)?,
+            owner: entry.owner.as_deref().map(decode_pubkey).transpose()?,
+            decimals: entry.ui_token_amount.decimals,
+            pre_amount: Some(parse_amount(entry, "preTokenBalances")?),
+            post_amount: 0,
+            closed: true,
         });
     }
 
     Ok(changes)
+}
+
+fn parse_amount(entry: &TokenBalanceEntry, side: &str) -> Result<u64, ProviderError> {
+    entry
+        .ui_token_amount
+        .amount
+        .parse()
+        .map_err(|_| malformed(&format!("{side} amount is not a valid u64")))
 }
 
 fn decode_instruction(
@@ -521,7 +619,7 @@ impl HistoryProvider for HeliusProvider {
     fn scan(
         &self,
         task: ScanTask,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> BoxStream<'_, Result<ScanEnvelope, ProviderError>> {
         // Dispatch on the typed ScanRequest plan() already validated --
         // never re-parse a string prefix out of `description` (that was
@@ -549,96 +647,223 @@ impl HistoryProvider for HeliusProvider {
             }
         };
 
-        // One page (up to MAX_TRANSACTIONS_PER_SCAN transactions) per
-        // scan() call for this P0 vertical slice — pagination via the
-        // response's pagination_token is a real follow-up (tracked,
-        // not silently dropped), not built here to keep this step
-        // narrow per the plan's own guidance.
-        //
-        // fetch_transactions() returns the whole page as one unit (the
-        // HTTP call either succeeds with a full page or fails with a
-        // typed error — never a silently-truncated partial page), so
-        // this flattens that single Result<Vec<_>> into N Ok stream
-        // items on success or one Err item on failure. A caller
-        // draining the stream never sees a silently empty stream
-        // (ADR-006) — success yields N envelopes, failure yields
-        // exactly one typed error.
-        let fetch = self.fetch_page(address);
-        Box::pin(stream::once(fetch).flat_map(stream_results))
+        // Sequential, bounded pagination: see `scan_step` for the
+        // hold-back protocol that keeps `truncated` honest. Page N+1 is
+        // only requested once the consumer has drained everything the
+        // previous step produced (`flat_map` over `unfold`), and at most
+        // one page of decoded transactions is buffered.
+        let state = ScanState {
+            address,
+            cancel,
+            token: None,
+            pages_fetched: 0,
+            held: None,
+            done: false,
+        };
+        Box::pin(stream::unfold(state, move |state| self.scan_step(state)).flat_map(stream::iter))
+    }
+}
+
+/// Pagination state for one `scan()` call.
+struct ScanState {
+    address: String,
+    cancel: CancellationToken,
+    /// Continuation cursor returned by the most recent page; `Some`
+    /// means history continues beyond what has been fetched.
+    token: Option<String>,
+    pages_fetched: u32,
+    /// The last transaction of the most recent page, withheld until we
+    /// know whether the scan continues. If it stops with a cursor
+    /// outstanding (budget/cancel/anomaly) it is emitted with
+    /// `truncated = true`, so the flag is never lost even if later
+    /// pages are empty or never fetched.
+    held: Option<RawSolanaTransaction>,
+    done: bool,
+}
+
+type Chunk = Vec<Result<ScanEnvelope, ProviderError>>;
+
+fn envelope(tx: RawSolanaTransaction, truncated: bool) -> Result<ScanEnvelope, ProviderError> {
+    Ok(ScanEnvelope {
+        payload: RawPayload::SolanaTransaction(tx),
+        truncated,
+    })
+}
+
+fn pagination_error(detail: &str) -> ProviderError {
+    ProviderError::Other(Box::new(std::io::Error::other(format!(
+        "helius pagination: {detail}"
+    ))))
+}
+
+impl HeliusProvider {
+    /// One unfold step: fetches at most one page and returns the
+    /// results to yield for it. Returns `None` once the stream is over.
+    ///
+    /// `truncated` semantics: `true` iff the scan stopped with an
+    /// unconsumed cursor (budget exhausted, cancelled, or a provider
+    /// anomaly). To make that true even when the stop decision comes
+    /// after a page's envelopes would normally have been yielded, the
+    /// last envelope of each page is held back until the next step.
+    async fn scan_step(&self, mut state: ScanState) -> Option<(Chunk, ScanState)> {
+        loop {
+            if state.done {
+                return None;
+            }
+            let mut out: Chunk = Vec::new();
+
+            // Stop conditions are checked before every fetch.
+            let stop = if state.cancel.is_cancelled() {
+                Some("scan cancelled")
+            } else if state.pages_fetched >= self.max_pages.get() {
+                // Budget exhausted. Only a truncation if a cursor remains.
+                state.token.as_ref().map(|_| "page budget exhausted")
+            } else {
+                None
+            };
+            if state.pages_fetched == 0 && state.cancel.is_cancelled() {
+                state.done = true;
+                out.push(Err(pagination_error(
+                    "scan cancelled before the first page",
+                )));
+                return Some((out, state));
+            }
+            if state.pages_fetched > 0 && state.token.is_none() {
+                // Natural end of history (defensive; handled below too).
+                state.done = true;
+                if let Some(tx) = state.held.take() {
+                    out.push(envelope(tx, false));
+                }
+                return Some((out, state));
+            }
+            if let Some(reason) = stop {
+                state.done = true;
+                match state.held.take() {
+                    Some(tx) => out.push(envelope(tx, true)),
+                    // Cursor outstanding but nothing to carry the flag:
+                    // surface it as a typed error, never silent.
+                    None => out.push(Err(pagination_error(&format!(
+                        "{reason} with a continuation cursor outstanding and no envelope to mark truncated"
+                    )))),
+                }
+                return Some((out, state));
+            }
+
+            let sent_token = state.token.take();
+            let page = self
+                .fetch_transactions_page(
+                    &state.address,
+                    MAX_TRANSACTIONS_PER_SCAN,
+                    sent_token.as_deref(),
+                )
+                .await;
+            state.pages_fetched += 1;
+
+            let (transactions, next_token) = match page {
+                Ok(page) => page,
+                Err(err) => {
+                    // The held page's cursor was consumed by this
+                    // request, so its envelope is not truncated; the
+                    // error itself signals incomplete coverage.
+                    state.done = true;
+                    if let Some(tx) = state.held.take() {
+                        out.push(envelope(tx, false));
+                    }
+                    out.push(Err(err));
+                    return Some((out, state));
+                }
+            };
+
+            if next_token.is_some() && next_token == sent_token {
+                // Provider handed back the cursor we just used: would
+                // loop forever. Stop; held envelope is truncated.
+                state.done = true;
+                if let Some(tx) = state.held.take() {
+                    out.push(envelope(tx, true));
+                }
+                out.push(Err(pagination_error(
+                    "provider returned a repeated paginationToken",
+                )));
+                return Some((out, state));
+            }
+
+            state.token = next_token;
+            let mut transactions = transactions.into_iter();
+            let last = transactions.next_back();
+            if let Some(last) = last {
+                // The previous held envelope's cursor was consumed.
+                if let Some(tx) = state.held.take() {
+                    out.push(envelope(tx, false));
+                }
+                out.extend(transactions.map(|tx| envelope(tx, false)));
+                if state.token.is_some() {
+                    state.held = Some(last);
+                } else {
+                    out.push(envelope(last, false));
+                    state.done = true;
+                }
+            } else if state.token.is_none() {
+                // Empty page, no cursor: end of history.
+                state.done = true;
+                if let Some(tx) = state.held.take() {
+                    out.push(envelope(tx, false));
+                }
+            }
+            // Empty page WITH a cursor keeps `held` and loops: the
+            // budget/cancel/repeat checks decide what happens next.
+
+            if !out.is_empty() || state.done {
+                return Some((out, state));
+            }
+        }
     }
 }
 
 impl HeliusProvider {
-    async fn fetch_page(
-        &self,
-        address: String,
-    ) -> Result<(Vec<RawSolanaTransaction>, bool), ProviderError> {
-        self.fetch_transactions_page(&address, MAX_TRANSACTIONS_PER_SCAN)
-            .await
-    }
-
-    /// Like `fetch_transactions`, but also reports whether the response
-    /// carried an unconsumed `paginationToken` -- that signal is the
-    /// provider-level fact `ScanEnvelope.truncated` exists to surface
-    /// (ARCHITECTURE.md §4: a provider declaring the end of a range is
-    /// not itself a durable checkpoint). This is a separate method
-    /// rather than widening `fetch_transactions`'s own return type,
-    /// since that method's existing callers (none currently outside
-    /// this crate) have no need for the pagination signal.
+    /// Fetches one page. Returns the decoded transactions and the
+    /// response's `paginationToken` (the continuation cursor), if any.
     async fn fetch_transactions_page(
         &self,
         address: &str,
         limit: u32,
-    ) -> Result<(Vec<RawSolanaTransaction>, bool), ProviderError> {
-        let params = serde_json::json!([
-            address,
-            {
-                "transactionDetails": "full",
-                "sortOrder": "asc",
-                "limit": limit,
-            }
-        ]);
+        pagination_token: Option<&str>,
+    ) -> Result<(Vec<RawSolanaTransaction>, Option<String>), ProviderError> {
+        let mut options = serde_json::json!({
+            "transactionDetails": "full",
+            "sortOrder": "asc",
+            "limit": limit,
+        });
+        if let (Some(token), Some(map)) = (pagination_token, options.as_object_mut()) {
+            map.insert("paginationToken".to_string(), token.into());
+        }
+        let params = serde_json::json!([address, options]);
 
         let result: TransactionsForAddressResult = self
             .client
             .call("getTransactionsForAddress", params)
             .await?;
 
-        let truncated = result.pagination_token.is_some();
         let transactions = result
             .data
             .into_iter()
             .map(decode_full_transaction_record)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok((transactions, truncated))
+        Ok((transactions, result.pagination_token))
     }
 }
 
-fn stream_results(
-    result: Result<(Vec<RawSolanaTransaction>, bool), ProviderError>,
-) -> BoxStream<'static, Result<ScanEnvelope, ProviderError>> {
-    match result {
-        Ok((transactions, truncated)) => {
-            let envelopes: Vec<_> = transactions
-                .into_iter()
-                .map(|tx| {
-                    Ok(ScanEnvelope {
-                        payload: RawPayload::SolanaTransaction(tx),
-                        truncated,
-                    })
-                })
-                .collect();
-            Box::pin(stream::iter(envelopes))
-        }
-        Err(err) => Box::pin(stream::once(async move { Err(err) })),
-    }
-}
-
-/// Maximum transactions fetched by one `scan()` call. Chosen as a
-/// single-page value (Helius caps `full` mode at 1,000 per call per
-/// its own docs) — deliberately conservative for this first wiring
-/// pass, not a measured budget number (that's P0.6/P0.8).
+/// Maximum transactions requested per page (`limit`). Helius caps `full`
+/// mode at 1,000 per call per its own docs; 100 is deliberately
+/// conservative, not a measured budget (P0.6/P0.8).
 const MAX_TRANSACTIONS_PER_SCAN: u32 = 100;
+
+/// Default page budget per `scan()` call. A conservative, UNMEASURED
+/// value -- not a measured budget (that is P0.6/P0.8). Override with
+/// `HeliusProvider::with_max_pages`.
+pub const DEFAULT_MAX_PAGES_PER_SCAN: NonZeroU32 = match NonZeroU32::new(10) {
+    Some(n) => n,
+    None => unreachable!(),
+};
 
 #[cfg(test)]
 fn parse_solana_wallet(address: &str) -> Result<scout_core::WalletKey, ProviderError> {
@@ -707,6 +932,7 @@ mod tests {
                             }
                         },
                         "meta": {
+                            "err": null,
                             "innerInstructions": [
                                 {
                                     "index": 0,
@@ -909,6 +1135,7 @@ mod tests {
                         }
                     },
                     "meta": {
+                        "err": null,
                         "loadedAddresses": {
                             "writable": [
                                 "7xQYoUjUJF1Kg6WVczoTAkaNhn5syQYcbvjmFrhjWpx",
@@ -1263,5 +1490,391 @@ mod tests {
 
         assert_eq!(new_account_change.pre_amount, None);
         assert_eq!(new_account_change.post_amount, 0);
+    }
+
+    // ---- pagination ----
+
+    const WALLET: &str = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
+
+    fn task() -> ScanTask {
+        ScanTask {
+            request: ScanRequest::WalletActivity {
+                wallet: parse_solana_wallet(WALLET).unwrap(),
+            },
+            description: format!("wallet:{WALLET}"),
+        }
+    }
+
+    /// A page with one transaction per slot in `slots`.
+    fn page(slots: &[u64], token: Option<&str>) -> serde_json::Value {
+        let template = full_mode_body(None)["result"]["data"][0].clone();
+        let data: Vec<_> = slots
+            .iter()
+            .map(|slot| {
+                let mut tx = template.clone();
+                tx["slot"] = json!(slot);
+                tx
+            })
+            .collect();
+        json!({"jsonrpc": "2.0", "id": 1, "result": {"data": data, "paginationToken": token}})
+    }
+
+    /// Serves `pages[token]` where the key is the request's
+    /// `paginationToken` option ("" for none). Unknown token -> HTTP 500.
+    async fn paged_server(pages: Vec<(&'static str, serde_json::Value)>) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let token = body["params"][1]["paginationToken"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                match pages.iter().find(|(k, _)| *k == token) {
+                    Some((_, page)) => ResponseTemplate::new(200).set_body_json(page.clone()),
+                    None => ResponseTemplate::new(500),
+                }
+            })
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn provider(server: &MockServer, max_pages: u32) -> HeliusProvider {
+        HeliusProvider::new_with_endpoint(scout_rpc::RpcEndpoint::new(server.uri()), 5_000, 1)
+            .unwrap()
+            .with_max_pages(NonZeroU32::new(max_pages).unwrap())
+    }
+
+    /// (slot, truncated) for Ok items; None for Err items.
+    async fn drain(
+        provider: &HeliusProvider,
+        cancel: CancellationToken,
+    ) -> Vec<Option<(u64, bool)>> {
+        let mut out = Vec::new();
+        let mut stream = provider.scan(task(), cancel);
+        while let Some(item) = stream.next().await {
+            out.push(item.ok().map(|e| match e.payload {
+                RawPayload::SolanaTransaction(tx) => (tx.slot, e.truncated),
+                _ => panic!("unexpected payload"),
+            }));
+        }
+        out
+    }
+
+    async fn request_tokens(server: &MockServer) -> Vec<Option<String>> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+                body["params"][1]["paginationToken"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn pagination_follows_cursor_to_natural_end_without_truncation() {
+        let server = paged_server(vec![
+            ("", page(&[1, 2], Some("t1"))),
+            ("t1", page(&[3], Some("t2"))),
+            ("t2", page(&[4, 5], None)),
+        ])
+        .await;
+        let out = drain(&provider(&server, 10), CancellationToken::new()).await;
+        let expect: Vec<_> = (1..=5).map(|s| Some((s, false))).collect();
+        assert_eq!(out, expect);
+        assert_eq!(
+            request_tokens(&server).await,
+            vec![None, Some("t1".into()), Some("t2".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn pagination_budget_exhaustion_marks_only_last_page_truncated() {
+        let server = paged_server(vec![
+            ("", page(&[1, 2], Some("t1"))),
+            ("t1", page(&[3, 4], Some("t2"))),
+            ("t2", page(&[5], None)),
+        ])
+        .await;
+        let out = drain(&provider(&server, 2), CancellationToken::new()).await;
+        assert_eq!(
+            out,
+            vec![
+                Some((1, false)),
+                Some((2, false)),
+                Some((3, false)),
+                Some((4, true))
+            ]
+        );
+        assert_eq!(request_tokens(&server).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn pagination_budget_exhausted_on_empty_page_still_flags_truncation() {
+        let server = paged_server(vec![
+            ("", page(&[1], Some("t1"))),
+            ("t1", page(&[], Some("t2"))),
+        ])
+        .await;
+        let out = drain(&provider(&server, 2), CancellationToken::new()).await;
+        assert_eq!(out, vec![Some((1, true))]);
+    }
+
+    #[tokio::test]
+    async fn pagination_empty_only_page_with_cursor_at_budget_is_an_error() {
+        let server = paged_server(vec![("", page(&[], Some("t1")))]).await;
+        let out = drain(&provider(&server, 1), CancellationToken::new()).await;
+        assert_eq!(out, vec![None]);
+    }
+
+    #[tokio::test]
+    async fn pagination_empty_page_without_cursor_is_end_of_history() {
+        let server =
+            paged_server(vec![("", page(&[1], Some("t1"))), ("t1", page(&[], None))]).await;
+        let out = drain(&provider(&server, 10), CancellationToken::new()).await;
+        assert_eq!(out, vec![Some((1, false))]);
+    }
+
+    #[tokio::test]
+    async fn pagination_error_after_first_page_yields_page_then_one_error() {
+        // "t1" is not served -> HTTP 500 on page 2.
+        let server = paged_server(vec![("", page(&[1, 2], Some("t1")))]).await;
+        let out = drain(&provider(&server, 10), CancellationToken::new()).await;
+        assert_eq!(out, vec![Some((1, false)), Some((2, false)), None]);
+    }
+
+    #[tokio::test]
+    async fn pagination_repeated_cursor_stops_with_truncation_and_error() {
+        let server = paged_server(vec![
+            ("", page(&[1], Some("t1"))),
+            ("t1", page(&[2], Some("t1"))),
+        ])
+        .await;
+        let out = drain(&provider(&server, 10), CancellationToken::new()).await;
+        assert_eq!(out, vec![Some((1, true)), None]);
+        assert_eq!(request_tokens(&server).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn pagination_cancellation_between_pages_marks_truncated() {
+        let server = paged_server(vec![
+            ("", page(&[1, 2], Some("t1"))),
+            ("t1", page(&[3], None)),
+        ])
+        .await;
+        let provider = provider(&server, 10);
+        let cancel = CancellationToken::new();
+        let mut stream = provider.scan(task(), cancel.clone());
+        let first = stream.next().await.unwrap().unwrap();
+        assert!(!first.truncated);
+        cancel.cancel();
+        let mut rest = Vec::new();
+        while let Some(item) = stream.next().await {
+            rest.push(item.unwrap().truncated);
+        }
+        // Held-back last envelope of page 1 carries the flag; page 2
+        // was never requested.
+        assert_eq!(rest, vec![true]);
+        assert_eq!(request_tokens(&server).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_first_page_is_an_error_not_empty_success() {
+        let server = paged_server(vec![("", page(&[1], None))]).await;
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let out = drain(&provider(&server, 10), cancel).await;
+        assert_eq!(out, vec![None]);
+        assert!(request_tokens(&server).await.is_empty());
+    }
+
+    // ---- meta.err execution status and closed token accounts ----------
+
+    fn decode_body(body: &serde_json::Value) -> Result<RawSolanaTransaction, ProviderError> {
+        let result: TransactionsForAddressResult =
+            serde_json::from_value(body["result"].clone()).unwrap();
+        decode_full_transaction_record(result.data.into_iter().next().unwrap())
+    }
+
+    fn decode_fixture(name: &str) -> Vec<Result<RawSolanaTransaction, ProviderError>> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/p0/measurements/fixtures")
+            .join(name);
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let result: TransactionsForAddressResult =
+            serde_json::from_value(body["result"].clone()).unwrap();
+        result
+            .data
+            .into_iter()
+            .map(decode_full_transaction_record)
+            .collect()
+    }
+
+    #[test]
+    fn probe_fixture_execution_status_succeeded_then_failed() {
+        let txs = decode_fixture("pump_bonding_curve_buy_probe.json");
+        assert_eq!(txs.len(), 5);
+        for tx in &txs[..4] {
+            assert_eq!(
+                tx.as_ref().unwrap().execution,
+                SolanaExecutionStatus::Succeeded
+            );
+        }
+        match &txs[4].as_ref().unwrap().execution {
+            SolanaExecutionStatus::Failed { error } => {
+                assert_eq!(error, r#"{"InstructionError":[4,{"Custom":6042}]}"#);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_err_key_or_meta_is_a_typed_error_not_success() {
+        let mut body = alt_transaction_body();
+        body["result"]["data"][0]["meta"]
+            .as_object_mut()
+            .unwrap()
+            .remove("err");
+        assert!(decode_body(&body).is_err());
+
+        let mut body = full_mode_body(None);
+        body["result"]["data"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("meta");
+        assert!(decode_body(&body).is_err());
+    }
+
+    #[test]
+    fn failed_error_text_is_bounded_and_control_free() {
+        let mut body = full_mode_body(None);
+        body["result"]["data"][0]["meta"]["err"] =
+            json!({"InstructionError": [0, {"Custom": "x\u{1b}[31m\n".repeat(500)}]});
+        let tx = decode_body(&body).unwrap();
+        match tx.execution {
+            SolanaExecutionStatus::Failed { error } => {
+                assert!(error.chars().count() <= MAX_EXECUTION_ERROR_LEN);
+                assert!(!error.chars().any(char::is_control));
+            }
+            SolanaExecutionStatus::Succeeded => panic!("must be Failed"),
+        }
+    }
+
+    fn tb(index: u32, mint: &str, owner: &str, amount: &str) -> TokenBalanceEntry {
+        serde_json::from_value(json!({
+            "accountIndex": index,
+            "mint": mint,
+            "owner": owner,
+            "uiTokenAmount": {"amount": amount, "decimals": 6}
+        }))
+        .unwrap()
+    }
+
+    const MINT_A: &str = "NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump";
+    const MINT_B: &str = "So11111111111111111111111111111111111111112";
+    const OWNER_A: &str = "EvtwrQSszv1qqr8U4GKjfcvjN43Yyf1isnzXJzva3GRv";
+    const OWNER_B: &str = "7DfuFARLQHn6y7bKd928Unz2gcQS6taVYf3UzjxNdK3y";
+
+    #[test]
+    fn pre_only_token_account_is_a_closed_change_with_pre_amount() {
+        let keys = vec![[1u8; 32]; 4];
+        let pre = vec![tb(1, MINT_A, OWNER_A, "500"), tb(2, MINT_A, OWNER_B, "7")];
+        let post = vec![tb(2, MINT_A, OWNER_B, "9")];
+        let changes = decode_token_balance_changes(&pre, &post, &keys).unwrap();
+        assert_eq!(changes.len(), 2);
+        let open = &changes[0];
+        assert_eq!(
+            (open.pre_amount, open.post_amount, open.closed),
+            (Some(7), 9, false)
+        );
+        let closed = &changes[1];
+        assert_eq!(closed.pre_amount, Some(500));
+        assert_eq!(closed.post_amount, 0);
+        assert!(closed.closed);
+        assert_eq!(closed.mint, decode_pubkey(MINT_A).unwrap());
+        assert_eq!(closed.owner, Some(decode_pubkey(OWNER_A).unwrap()));
+        assert_eq!(closed.decimals, 6);
+    }
+
+    #[test]
+    fn observed_zero_post_balance_is_not_closed() {
+        let keys = vec![[1u8; 32]; 4];
+        let pre = vec![tb(1, MINT_A, OWNER_A, "500")];
+        let post = vec![tb(1, MINT_A, OWNER_A, "0")];
+        let changes = decode_token_balance_changes(&pre, &post, &keys).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert!(!changes[0].closed);
+    }
+
+    #[test]
+    fn pre_post_mint_or_owner_mismatch_is_a_typed_error() {
+        let keys = vec![[1u8; 32]; 4];
+        let pre = vec![tb(1, MINT_A, OWNER_A, "5")];
+        assert!(decode_token_balance_changes(&pre, &[tb(1, MINT_B, OWNER_A, "5")], &keys).is_err());
+        assert!(decode_token_balance_changes(&pre, &[tb(1, MINT_A, OWNER_B, "5")], &keys).is_err());
+    }
+
+    #[test]
+    fn duplicate_account_index_is_a_typed_error() {
+        let keys = vec![[1u8; 32]; 4];
+        let dup = vec![tb(1, MINT_A, OWNER_A, "5"), tb(1, MINT_A, OWNER_A, "6")];
+        assert!(decode_token_balance_changes(&dup, &[], &keys).is_err());
+        assert!(decode_token_balance_changes(&[], &dup, &keys).is_err());
+    }
+
+    #[test]
+    fn pre_only_out_of_range_index_is_a_typed_error() {
+        let keys = vec![[1u8; 32]; 2];
+        let pre = vec![tb(9, MINT_A, OWNER_A, "5")];
+        assert!(decode_token_balance_changes(&pre, &[], &keys).is_err());
+    }
+
+    #[test]
+    fn probe_fixture_sell_closing_ata_shows_exact_owner_outflow() {
+        let txs = decode_fixture("pump_bonding_curve_buy_probe.json");
+        let tx1 = txs[1].as_ref().unwrap();
+        let mut found = false;
+        for change in tx1.token_balance_changes.iter().filter(|c| c.closed) {
+            if change.pre_amount == Some(175_202_561_501) {
+                found = true;
+                assert_eq!(change.post_amount, 0);
+                let owner = bs58::encode(change.owner.unwrap()).into_string();
+                assert!(owner.starts_with("FoaRt"), "{owner}");
+            }
+        }
+        assert!(found, "closed seller ATA with pre 175202561501 not found");
+    }
+
+    #[test]
+    fn mint1_fixture_data2_buyer_delta_unchanged_and_all_fixtures_decode() {
+        let txs = decode_fixture("pump_mint1_full.json");
+        let tx = txs[2].as_ref().unwrap();
+        let mint = decode_pubkey("NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump").unwrap();
+        let owner = decode_pubkey("EvtwrQSszv1qqr8U4GKjfcvjN43Yyf1isnzXJzva3GRv").unwrap();
+        let delta: i128 = tx
+            .token_balance_changes
+            .iter()
+            .filter(|c| c.mint == mint && c.owner == Some(owner))
+            .map(|c| i128::from(c.post_amount) - i128::from(c.pre_amount.unwrap_or(0)))
+            .sum();
+        assert_eq!(delta, 181_673_284_237);
+        for name in [
+            "pump_mint1_full.json",
+            "pump_mint2_full.json",
+            "wallet_full_probe.json",
+            "pump_bonding_curve_buy_probe.json",
+        ] {
+            for tx in decode_fixture(name) {
+                tx.unwrap();
+            }
+        }
     }
 }

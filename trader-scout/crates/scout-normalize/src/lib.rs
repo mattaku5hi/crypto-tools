@@ -18,5 +18,6 @@ mod solana_balance;
 pub use attribution::{AmbiguityReason, AttributionEvidence, AttributionStatus};
 pub use classify::{ActionKind, AssetFlow, NetDeltaInput, classify_buy};
 pub use solana_balance::{
-    SolanaBalanceAggregation, SolanaBalanceAggregationError, aggregate_solana_token_balance_changes,
+    SolanaBalanceAggregation, SolanaBalanceAggregationError, SolanaOwnerNetDeltas,
+    aggregate_solana_token_balance_changes, solana_owner_net_deltas,
 };

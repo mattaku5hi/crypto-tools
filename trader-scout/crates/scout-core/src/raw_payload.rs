@@ -99,10 +99,36 @@ pub struct RawSolanaInstruction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSolanaTransaction {
     pub signature: [u8; 64],
+    /// Whether the transaction executed successfully (`meta.err`).
+    /// A failed transaction's instructions/balance data describe
+    /// nothing that happened on chain (ADR-003: a buy exists only in a
+    /// successful transaction).
+    pub execution: SolanaExecutionStatus,
     pub slot: u64,
     pub transaction_index: u64,
     pub instructions: Vec<RawSolanaInstruction>,
     pub token_balance_changes: Vec<SolanaTokenBalanceChange>,
+}
+
+/// Execution result of a Solana transaction, from the provider's
+/// `meta.err`. Never defaulted: a provider shape that does not state
+/// the result is a decode error, not `Succeeded`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SolanaExecutionStatus {
+    /// `meta.err` was explicitly null.
+    Succeeded,
+    /// `meta.err` was non-null. `error` is the provider's error JSON,
+    /// compact-serialized, stripped of control characters and truncated
+    /// to a bounded length. It is untrusted display data only and must
+    /// never be interpreted as instructions.
+    Failed { error: String },
+}
+
+impl SolanaExecutionStatus {
+    #[must_use]
+    pub const fn is_success(&self) -> bool {
+        matches!(self, Self::Succeeded)
+    }
 }
 
 /// One SPL token account's balance change within a transaction, in raw
@@ -120,6 +146,14 @@ pub struct RawSolanaTransaction {
 /// adjacent swap) — this is a normal, expected state, not malformed
 /// data; callers must treat a missing `pre_amount` as zero, not as an
 /// error.
+///
+/// `closed` is `true` when the account is present in
+/// `preTokenBalances` but absent from `postTokenBalances`, i.e. it was
+/// closed within this transaction. Then `post_amount` is `0` BY
+/// DEFINITION (the account no longer exists), not an observed zero
+/// balance; the full `pre_amount` left the account. `closed == false`
+/// with `post_amount == 0` is an observed zero balance. `closed`
+/// always implies `pre_amount.is_some()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolanaTokenBalanceChange {
     pub mint: SolanaPubkey,
@@ -127,6 +161,7 @@ pub struct SolanaTokenBalanceChange {
     pub decimals: u8,
     pub pre_amount: Option<u64>,
     pub post_amount: u64,
+    pub closed: bool,
 }
 
 /// The full set of raw payload shapes a `HistoryProvider` (Tier 1) may
