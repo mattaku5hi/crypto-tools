@@ -22,14 +22,3 @@ bs58.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 
-[dev-dependencies]
-# Only needed so integration tests in tests/cli.rs can invoke the other
-# two binaries via env!("CARGO_BIN_EXE_...") -- Cargo requires the
-# workspace member to be a build-time dependency for that macro to see
-# its binary path. These are binary-only crates (no lib target), which
-# is exactly why `cargo check`/`clippy` print a harmless
-# "ignoring invalid dependency ... missing a lib target" warning on
-# every workspace build -- not a real problem, but constant noise that
-# makes genuine new warnings easy to miss in gate output.
-wallet-rank = { path = "../wallet-rank" }
-wallet-stats = { path = "../wallet-stats" }

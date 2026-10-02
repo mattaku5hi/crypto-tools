@@ -1,0 +1,26 @@
+# gitleaks config: default rules + a narrow allowlist for public on-chain data.
+#
+# trader-scout commits raw Solana RPC responses as golden fixtures and P0
+# measurement data. Those contain thousands of base58 public keys (account
+# keys, mints, owners) that the `generic-api-key` rule reports as secrets.
+# They are public chain data, not credentials. Provider API keys never
+# appear in these files (scout-capture refuses to write a file containing
+# the key; checked again 2026-10-02 against every configured key).
+title = "crypto-tools gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public Solana chain data in fixtures/measurements and base58 pubkeys in test bodies"
+paths = [
+  '''^trader-scout/docs/p0/measurements/fixtures/[^/]+\.json$''',
+  '''^trader-scout/docs/p0/measurements/p0\.7-[0-9-]+/''',
+]
+regexTarget = "match"
+regexes = [
+  # "accountKey": "<base58 pubkey>" / "token:<base58 mint>" in Rust test bodies.
+  '''(accountKey|token)["']?\s*[:=]\s*["']?[1-9A-HJ-NP-Za-km-z]{32,44}["']''',
+  # Markdown table cell naming a public chain id, e.g. `chain_id=8453`.
+  '''API, `chain_id=[0-9]+`''',
+]

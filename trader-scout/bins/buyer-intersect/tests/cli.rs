@@ -3,13 +3,11 @@
 //! only test layer that can observe process::exit's real behavior —
 //! unit tests inside library crates never see it.
 //!
-//! `env!("CARGO_BIN_EXE_...")` only works for binaries of *this* crate
-//! (buyer-intersect) — Cargo does not expose sibling-crate binary paths
-//! through that macro even when declared as a dev-dependency, since
-//! wallet-rank/wallet-stats have no [lib] target for buyer-intersect to
-//! actually link against. Instead, derive their paths from this test
-//! binary's own location: all three binaries land in the same
-//! `target/<profile>/` directory.
+//! `env!("CARGO_BIN_EXE_...")` only resolves binaries of the package
+//! under test, so wallet-rank and wallet-stats have their own
+//! `tests/cli.rs`. (An earlier version reached them as dev-dependencies
+//! via the target dir; Cargo ignores binary-only dev-dependencies, so
+//! those binaries were never built on a clean checkout and CI failed.)
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -18,17 +16,7 @@
 )]
 
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-
-fn sibling_binary(name: &str) -> PathBuf {
-    let this_test_binary = env!("CARGO_BIN_EXE_buyer-intersect");
-    let target_dir = PathBuf::from(this_test_binary)
-        .parent()
-        .expect("CARGO_BIN_EXE_buyer-intersect has a parent dir")
-        .to_path_buf();
-    target_dir.join(name)
-}
 
 fn run_with_stdin(bin: &str, args: &[&str], stdin_data: &str) -> (i32, String, String) {
     let mut child = Command::new(bin)
@@ -99,54 +87,14 @@ fn buyer_intersect_invalid_address_is_exit_2_with_line_number() {
 }
 
 #[test]
-fn wallet_rank_valid_input_no_provider_is_exit_4() {
-    let bin = sibling_binary("wallet-rank");
-    let input = "base:0x1111111111111111111111111111111111111111\n";
-    let (code, _stdout, stderr) = run_with_stdin(bin.to_str().unwrap(), &["--input", "-"], input);
-    assert_eq!(code, 4, "stderr: {stderr}");
-    assert!(stderr.contains("no history provider configured"));
-}
-
-#[test]
-fn wallet_rank_empty_input_is_exit_2() {
-    let bin = sibling_binary("wallet-rank");
-    let (code, _stdout, stderr) = run_with_stdin(bin.to_str().unwrap(), &["--input", "-"], "");
-    assert_eq!(code, 2, "stderr: {stderr}");
-}
-
-#[test]
-fn wallet_stats_valid_input_no_provider_is_exit_4() {
-    let bin = sibling_binary("wallet-stats");
-    let input = "base:0x1111111111111111111111111111111111111111\n";
-    let (code, _stdout, stderr) = run_with_stdin(bin.to_str().unwrap(), &["--input", "-"], input);
-    assert_eq!(code, 4, "stderr: {stderr}");
-    assert!(stderr.contains("no history provider configured"));
-}
-
-#[test]
-fn wallet_stats_empty_input_is_exit_2() {
-    let bin = sibling_binary("wallet-stats");
-    let (code, _stdout, stderr) = run_with_stdin(bin.to_str().unwrap(), &["--input", "-"], "");
-    assert_eq!(code, 2, "stderr: {stderr}");
-}
-
-#[test]
-fn all_three_binaries_support_dash_for_stdin() {
+fn buyer_intersect_supports_dash_for_stdin() {
     // CLI.md §1: "stdin — --input - или отсутствие --input при pipe."
-    // This test's own harness always has a piped (non-TTY) stdin, so it
-    // also implicitly covers the "no --input, piped data" branch of
-    // read_input() for each binary via the -c equivalent path.
-    let buyer_intersect = PathBuf::from(env!("CARGO_BIN_EXE_buyer-intersect"));
-    for bin in [
-        buyer_intersect,
-        sibling_binary("wallet-rank"),
-        sibling_binary("wallet-stats"),
-    ] {
-        let (code, _stdout, stderr) = run_with_stdin(bin.to_str().unwrap(), &["--input", "-"], "");
-        // Every binary must reach a defined exit code (2, in this
-        // empty-input case) rather than hang waiting for more stdin.
-        assert_eq!(code, 2, "binary {bin:?} stderr: {stderr}");
-    }
+    // The binary must reach a defined exit code (2 for empty input)
+    // rather than hang waiting for more stdin. wallet-rank/wallet-stats
+    // carry the same test in their own packages' tests/cli.rs.
+    let bin = env!("CARGO_BIN_EXE_buyer-intersect");
+    let (code, _stdout, stderr) = run_with_stdin(bin, &["--input", "-"], "");
+    assert_eq!(code, 2, "stderr: {stderr}");
 }
 
 #[test]
