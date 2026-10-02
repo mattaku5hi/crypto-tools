@@ -199,3 +199,40 @@ different position and `global_volume_accumulator`/`user_volume_accumulator`, to
    not yet eligible for the table until a fixture is committed and a decoder exercises it
    (tracked as the next step in `docs/TICKETS.md` P0.12).
 
+
+## 2026-10-02 review — full trade-instruction surface of `6EF8rr…` (supersedes the "buy/sell only" view above)
+
+The 2026-10-01 section compared only `buy`/`sell`. Re-reading the **same pinned IDL**
+(`e0687ae9`, now committed byte-for-byte as
+`docs/p0/measurements/fixtures/pump_idl_e0687ae9.json`, sha256
+`ffe966c42f1af41652ee753fe2f1e3f7cd4077d7e6f49faf3138959c8b56064b`; its trade instructions are
+identical to `pump-public-docs` `main` as fetched 2026-10-02) shows **47 instructions, six of them
+trades**. A decoder that knew only `buy`/`sell` silently returned `NotMine` for the other four,
+so their buyers vanished while coverage looked complete (invariant #18). Findings:
+
+| Variant | Discriminator | IDL accounts | mint / user positions | Live evidence in `pump_bonding_curve_buy_probe.json` | Status |
+|---|---|---|---|---|---|
+| `buy` | `66063d1201daebea` | 16 | `[2]` / `[6]` | tx2 (top-level), tx3 (inner/CPI): owner delta of `user` > 0, tx2 delta == `amount` (2979651581366) | `FixtureVerified` |
+| `sell` | `33e685a4017f83ad` | 14 | `[2]` / `[6]` | tx1: `user` loses exactly `amount` (175202561501) | `FixtureVerified` |
+| `sell_v2` | `5df6823ce7e940b2` | 26 | `[1]` base_mint / `[13]` | tx0 (inner): `user` owner delta == −`amount` (14072072687607), quote mint wSOL | `FixtureVerified` |
+| `buy_exact_sol_in` | `38fc74089edfcd5f` | 16 | `[2]` / `[6]` | none | `IdlOnly` |
+| `buy_v2` | `b817ee6167c5d33d` | 27 | `[1]` base_mint / `[13]` | none | `IdlOnly` |
+| `buy_exact_quote_in_v2` | `c2ab1c46684d5b2f` | 27 | `[1]` base_mint / `[13]` | tx4 only — a **failed** tx (`InstructionError [4, Custom 6042]`): layout decodes, economics unverifiable | `IdlOnly` |
+
+Additional facts recorded so they are not re-derived:
+
+- **Live account counts exceed the IDL by 2** (`buy` 18 vs 16, `sell` 16 vs 14). Positions 0..IDL-count
+  match the IDL; the extra entries are trailing Anchor remaining accounts. The decoder therefore
+  requires *at least* the IDL count; data length stays exact. The 2026-10-01 statement that the IDL
+  "reproduces every fact" was true for discriminators/args/positions but not for the account count.
+- The other 41 IDL instructions plus the Anchor event-CPI tag `e445a52e51cb9a1d` form an explicit
+  known-non-trade table (test-asserted equal to the IDL). Any other discriminator under this program
+  is a coverage gap (exit 3), never `NotMine`.
+- Verification policy for `IdlOnly` variants: see `docs/adr/ADR-009-decoder-variant-verification.md`.
+  Promotion to `FixtureVerified` requires a committed **successful** real transaction whose
+  decoded `user`/`mint` match that transaction's owner-keyed token deltas.
+
+**P0.2 conditions for a schema row, updated:** #1 address — satisfied; #3 pinned IDL — satisfied
+(and now committed); #4 golden fixture + decoder exercising it — satisfied for `buy`, `sell`,
+`sell_v2` (`pump_bonding_curve_buy_probe.json`, committed in `cece920`; the "scratch files only"
+note above is stale). **#2 activation slot — still open**, so no schema-table row yet.

@@ -884,6 +884,7 @@ dependencies = [
  "scout-engine",
  "scout-providers",
  "tokio",
+ "tokio-util",
  "wallet-rank",
  "wallet-stats",
 ]
@@ -3191,6 +3192,8 @@ dependencies = [
  "scout-core",
  "scout-solana",
  "serde",
+ "serde_json",
+ "sha2",
  "thiserror",
 ]
 
@@ -3199,18 +3202,24 @@ name = "scout-engine"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "async-trait",
+ "bs58",
  "futures",
  "scout-api",
  "scout-core",
+ "scout-dex-solana",
  "scout-ledger",
  "scout-normalize",
  "scout-providers",
+ "scout-rpc",
  "scout-scan",
  "scout-storage",
+ "serde_json",
  "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]

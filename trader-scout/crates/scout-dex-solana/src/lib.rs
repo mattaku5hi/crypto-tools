@@ -2,7 +2,8 @@
 //! docs/ARCHITECTURE.md §5 ("Матрица DEX").
 //!
 //! `bonding_curve_buy` decodes pump.fun's `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`
-//! `buy`/`sell` instructions -- a **confirmed** deployment per
+//! all six trade instructions (`buy`, `buy_exact_sol_in`, `sell`, `buy_v2`,
+//! `buy_exact_quote_in_v2`, `sell_v2`) and an explicit non-trade table -- a **confirmed** deployment per
 //! `docs/p0/deployment-registry.md`'s "2026-10-01 confirmation" (on-chain
 //! `executable` state + official IDL from `pump-fun/pump-public-docs`,
 //! commit `e0687ae9b7e064a0f54efc7297c65eecfbba3a8f`, cross-validated
@@ -22,7 +23,11 @@
 mod bonding_curve_buy;
 
 pub use bonding_curve_buy::{
-    BUY_INSTRUCTION_DISCRIMINATOR, BondingCurveBuyDecoder, DecodedBondingCurveBuy,
-    DecodedBondingCurveSell, DecodedBondingCurveTrade, SELL_INSTRUCTION_DISCRIMINATOR,
-    decode_bonding_curve_instruction,
+    BUY_EXACT_QUOTE_IN_V2_INSTRUCTION_DISCRIMINATOR, BUY_EXACT_SOL_IN_INSTRUCTION_DISCRIMINATOR,
+    BUY_INSTRUCTION_DISCRIMINATOR, BUY_V2_INSTRUCTION_DISCRIMINATOR, BondingCurveBuyDecoder,
+    DecodedBondingCurveTrade, EVENT_CPI_DISCRIMINATOR, EVENT_CPI_NAME, NON_TRADE_INSTRUCTIONS,
+    NamedU64, PUMP_IDL_COMMIT, PUMP_IDL_SHA256, PumpInstruction, PumpInstructionOutcome,
+    PumpTradeSpec, PumpTradeVariant, SELL_INSTRUCTION_DISCRIMINATOR,
+    SELL_V2_INSTRUCTION_DISCRIMINATOR, TradeSide, VariantVerification, classify_pump_instruction,
+    hex8,
 };
