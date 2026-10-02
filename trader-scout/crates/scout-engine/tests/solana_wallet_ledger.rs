@@ -2051,3 +2051,168 @@ async fn live_pumpswap_wallet_page_ledger_numbers_and_invariants() {
     assert_eq!(r.diagnostics.reversed_pool_trades, 0);
     assert_eq!(r.diagnostics.out_of_scope_token_movements, 0);
 }
+
+// ---------------------------------------------------------------------
+// Atomic round-trip cohort signal (diagnostic, not PnL).
+// ---------------------------------------------------------------------
+
+fn venue_ix(id: &str, idx: u32) -> RawSolanaInstruction {
+    RawSolanaInstruction {
+        program_id: pubkey(id),
+        accounts: vec![pk(W)],
+        data: vec![0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8],
+        instruction_index: idx,
+    }
+}
+
+const DLMM_ID: &str = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+const WHIRLPOOL_ID: &str = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc";
+
+fn round_trip_tx(
+    sig: u8,
+    ixs: Vec<RawSolanaInstruction>,
+    bals: Vec<SolanaTokenBalanceChange>,
+    native_delta: i64,
+    fee: u64,
+    ok: bool,
+) -> RawSolanaTransaction {
+    Tx {
+        sig,
+        slot: u64::from(sig),
+        index: 0,
+        ixs,
+        bals,
+        fee,
+        payer: W,
+        native: vec![nat(W, native_delta)],
+        ok,
+    }
+    .build()
+}
+
+fn round_trip_report(txs: &[RawSolanaTransaction]) -> SolanaWalletLedgerReport {
+    run_both(txs)
+}
+
+#[test]
+fn atomic_round_trip_counts_only_zero_token_delta_with_sol_delta() {
+    let two_venues = || vec![venue_ix(DLMM_ID, 0), venue_ix(WHIRLPOOL_ID, 1)];
+    // Counted: two venues, no token movement, +7_000 net of a 5_000 fee.
+    let arb_gain = round_trip_tx(1, two_venues(), vec![], 7_000, 5_000, true);
+    // Counted: wSOL-only movement is SOL, not a token (-3_000 native incl.
+    // fee, +1_000 wSOL).
+    let arb_wsol = round_trip_tx(
+        2,
+        two_venues(),
+        vec![bal_pk(WRAPPED_SOL_MINT, W, 0, 1_000)],
+        -3_000,
+        5_000,
+        true,
+    );
+    // Not counted: a token moved (directional swap through two venues).
+    let swap = round_trip_tx(
+        3,
+        two_venues(),
+        vec![bal(M1, W, 0, 50)],
+        -9_000,
+        5_000,
+        true,
+    );
+    // Not counted: a single venue.
+    let single = round_trip_tx(4, vec![venue_ix(DLMM_ID, 0)], vec![], 7_000, 5_000, true);
+    // Not counted: SOL delta exactly zero.
+    let flat = round_trip_tx(5, two_venues(), vec![], 0, 0, true);
+    // Not counted: failed transaction.
+    let failed = round_trip_tx(6, two_venues(), vec![], 7_000, 5_000, false);
+    let r = round_trip_report(&[arb_gain, arb_wsol, swap, single, flat, failed]);
+    assert_eq!(r.diagnostics.atomic_round_trip_txs, 2);
+    assert_eq!(
+        r.diagnostics.atomic_round_trip_sol_lamports,
+        7_000 - 3_000 + 1_000
+    );
+    // Diagnostic only: nothing booked.
+    assert_eq!(r.closed_episodes_known + r.closed_episodes_unknown, 0);
+}
+
+#[test]
+fn atomic_round_trip_requires_wallet_signature() {
+    let mut tx = round_trip_tx(
+        1,
+        vec![venue_ix(DLMM_ID, 0), venue_ix(WHIRLPOOL_ID, 1)],
+        vec![],
+        7_000,
+        0,
+        true,
+    );
+    tx.signers = vec![pk(OTHER)];
+    tx.fee_payer = pk(OTHER);
+    let r = round_trip_report(&[tx]);
+    assert_eq!(r.diagnostics.atomic_round_trip_txs, 0);
+    assert_eq!(r.diagnostics.atomic_round_trip_sol_lamports, 0);
+}
+
+const ROUTER_WALLET_9OC3: &str = "9oC3XYAs2oeU39NeNFke8m3JGixMq7g8PfANsmsbKR8W";
+const ROUTER_WALLET_TAWV: &str = "tAwv75TULEMoR5bU8sNgPrDM2d8gdagDUy4b3qo8VXY";
+
+async fn router_wallet_report(name: &str, wallet: &str) -> SolanaWalletLedgerReport {
+    let txs = fixture_txs(name).await;
+    assert_eq!(txs.len(), 100);
+    let curve = pump_bonding_curve_decoder().unwrap();
+    let amm = pump_amm_decoder();
+    let decoders = LedgerDecoders {
+        curve: &curve,
+        amm: Some(&amm),
+    };
+    let opts = LedgerOptions {
+        left_censoring: true,
+    };
+    build_solana_wallet_ledger_venues(&pubkey(wallet), &txs, &decoders, opts).unwrap()
+}
+
+/// GMGN "top trader" wallets that trade USDC <-> tokens through routers
+/// (2026-10-02 pages, newest 100 txs each). Evidence: 34 / 65 successful
+/// signed transactions touch two or more venue programs, but every one of
+/// them moves a non-wSOL token (USDC or the traded token) for the wallet and
+/// none leaves the wallet's token deltas at zero with a SOL gain: these
+/// pages contain no atomic arbitrage. The wallets are not the fee payer
+/// (relayer pays), so SOL moves only by ATA rent / tips.
+#[tokio::test]
+async fn router_wallet_pages_contain_no_atomic_round_trips() {
+    let a = router_wallet_report(
+        "router_wallet_9oC3_page_2026-10-02.json",
+        ROUTER_WALLET_9OC3,
+    )
+    .await;
+    let b = router_wallet_report(
+        "router_wallet_tAwv_page_2026-10-02.json",
+        ROUTER_WALLET_TAWV,
+    )
+    .await;
+    for r in [&a, &b] {
+        assert_eq!(r.diagnostics.atomic_round_trip_txs, 0);
+        assert_eq!(r.diagnostics.atomic_round_trip_sol_lamports, 0);
+    }
+    // Pinned ledger/3 numbers on these pages (the newest 100 txs only; a
+    // longer window yields larger counts). Every one of these trades was
+    // paid in USDC, not SOL (the PumpSwap leg is an intermediate wSOL hop).
+    assert_eq!(
+        (
+            a.trades.priced,
+            a.trades.unreconciled,
+            a.trades.quote_funded_elsewhere,
+            a.trades.unsupported_quote,
+            a.diagnostics.router_forward_trades_not_attributed,
+        ),
+        (3, 12, 6, 6, 8)
+    );
+    assert_eq!(
+        (
+            b.trades.priced,
+            b.trades.unreconciled,
+            b.trades.quote_funded_elsewhere,
+            b.trades.unsupported_quote,
+            b.diagnostics.router_forward_trades_not_attributed,
+        ),
+        (7, 42, 5, 0, 8)
+    );
+}

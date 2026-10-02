@@ -313,7 +313,34 @@ pub struct LedgerDiagnostics {
     pub quote_funded_elsewhere_trades: u64,
     /// PumpSwap trades of the wallet on pools whose base mint is wSOL.
     pub reversed_pool_trades: u64,
+    /// Cohort signal, NOT PnL: successful transactions the wallet signed in
+    /// which at least two distinct swap-venue programs (see
+    /// [`SWAP_VENUE_PROGRAM_IDS`]) occur or the wallet has at least two
+    /// decoded trade legs, the wallet's owner-keyed net token delta is 0
+    /// for every non-wSOL mint, and its SOL (native + wSOL) delta is not 0.
+    /// This is the footprint of an atomic arbitrage round trip.
+    pub atomic_round_trip_txs: u64,
+    /// Signed sum over those transactions of the wallet's native lamport
+    /// delta (already net of the network fee when it paid it) plus its
+    /// owner-keyed wSOL delta.
+    pub atomic_round_trip_sol_lamports: i128,
 }
+
+/// Program ids counted as swap venues by the atomic round-trip signal:
+/// PumpSwap, pump.fun bonding curve, Meteora DLMM, Raydium CLMM, Raydium
+/// CPMM, Orca Whirlpool. Address labels only (observed as pools CPI'd by
+/// routers in the 2026-10-02 router-wallet fixtures); this is not a decode
+/// or support claim (invariant 16). Aggregators/routers (Jupiter and
+/// unidentified programs) are deliberately absent: one route through one
+/// pool is not a multi-venue round trip.
+pub const SWAP_VENUE_PROGRAM_IDS: [&str; 6] = [
+    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+    "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+    "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+    "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+];
 
 /// Ledger build options.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1229,6 +1256,7 @@ impl Builder {
         self.diag.router_forward_trades_not_attributed += w.router_forwards;
         self.diag.quote_funded_elsewhere_trades += w.qfe_unbooked;
         let is_payer = tx.fee_payer == self.wallet;
+        self.record_atomic_round_trip(w)?;
 
         // §4 fee allocation over verified trades only (consideration known).
         let verified: Vec<usize> = w
@@ -1483,6 +1511,59 @@ impl Builder {
                 "unexplained native flow",
             )?;
             self.diag.unexplained_native_flow_txs += 1;
+        }
+        Ok(())
+    }
+}
+
+impl Builder {
+    /// Cohort signal, see [`LedgerDiagnostics::atomic_round_trip_txs`].
+    /// Diagnostic only: never feeds lots, episodes or PnL.
+    fn record_atomic_round_trip(&mut self, w: &TxWork<'_>) -> Result<(), SolanaWalletLedgerError> {
+        let tx = w.tx;
+        if !tx.signers.contains(&self.wallet) {
+            return Ok(());
+        }
+        let venues: BTreeSet<SolanaPubkey> = tx
+            .instructions
+            .iter()
+            .filter(|ix| {
+                SWAP_VENUE_PROGRAM_IDS.iter().any(|id| {
+                    bs58::decode(id)
+                        .into_vec()
+                        .is_ok_and(|b| b.as_slice() == ix.program_id.as_slice())
+                })
+            })
+            .map(|ix| ix.program_id)
+            .collect();
+        if venues.len() < 2 && w.trades.len() < 2 {
+            return Ok(());
+        }
+        let deltas = solana_owner_net_deltas(&tx.token_balance_changes)?;
+        let moved_other_mint = deltas.deltas.iter().any(|((mint, owner), delta)| {
+            *owner == self.wallet && *mint != WRAPPED_SOL_MINT && *delta != 0
+        });
+        if moved_other_mint {
+            return Ok(());
+        }
+        let native: i128 = tx
+            .native_balance_changes
+            .iter()
+            .filter(|c| c.account == self.wallet)
+            .map(|c| c.delta())
+            .sum();
+        let sol = checked_add_i(
+            native,
+            wsol_token_delta(&tx.token_balance_changes, &self.wallet),
+            "atomic round trip sol",
+        )?;
+        if sol != 0 {
+            self.diag.atomic_round_trip_txs += 1;
+            self.diag.atomic_round_trip_sol_lamports = checked_add_i(
+                self.diag.atomic_round_trip_sol_lamports,
+                sol,
+                "atomic round trip total",
+            )?;
         }
         Ok(())
     }
