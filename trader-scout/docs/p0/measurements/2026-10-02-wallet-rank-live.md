@@ -46,3 +46,17 @@ The 11 `unknown_basis` wallets (`wallet-stats --period 3d --detail full`, 2,646 
 through an undecoded venue (PumpSwap after migration), and most token movement is on mints never
 traded on the bonding curve. The PumpSwap decoder (P4.1) is the binding constraint for this
 population, not the window or the gates.
+
+## Re-run with PumpSwap in the ledger (ADR-012, commit `5a72a68`)
+
+Same command and set: 163 requests, exit 3, 0 eligible. Primary: `incomplete_coverage` 25,
+`unknown_basis` 14; any-reason activity ceilings now 13 (was 3 — AMM trades make the activity
+visible). The 14 `unknown_basis` wallets (2,994 tx in window, 1,073 decoded trades: curve 123,
+PumpSwap 950): priced 501, `quote_funded_elsewhere` 286, `router_forward_trades_not_attributed`
+214, `unreconciled` 158, `unsupported_quote` 128; `continuity_breaks` 356.
+
+The PumpSwap decoder itself is not the problem (direct trades reconcile exactly); the blocker for
+this population is **attribution through router/bot programs** — the PumpSwap `user` is a router
+PDA, the wallet signs, pays and receives, often in multi-venue transactions with Meteora DLMM /
+Jupiter and the unidentified `DF1ow4ts…` (P0.9). Pages of the two most affected wallets are
+committed as fixtures (`router_wallet_{9oC3,tAwv}_page_2026-10-02.json`) for P0.18.
