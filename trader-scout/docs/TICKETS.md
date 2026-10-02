@@ -15,7 +15,7 @@ Legend: `done` | `in-progress` | `blocked` | `todo`
 | P0.3 | Ground-truth corpus (30+ hand-checked scenarios) | in-progress | — | Credentials now exist (Helius, Blockscout). 3 real fixtures captured (`docs/p0/measurements/fixtures/`: 2 pump.fun mint transaction sets + 1 wallet probe) but far short of 30 hand-checked scenarios; no longer credential-blocked, just not yet done |
 | P0.4 | ADR-001..006 (+ ADR-009 decoder variant verification, 2026-10-02) | done | — | `docs/adr/`, committed in `07f066b` |
 | P0.5 | ADR-008: Tier 1/Tier 2 extensibility (scout-api, TxDecoder, NormalizedActivitySource) | done | — | `56a0c2c`..`fc93928` (S0-S5). `docs/TIER-PLAN.md`, `docs/PROVIDERS.md` |
-| P0.6 | `scout-probe`: CLI to run the P0.1 measurement checklist against a live provider and record dated results | todo | credentials | Scope: hit each candidate vendor's actual endpoints, record retention/coverage/CU-cost per `docs/p0/source-capability-matrix.md`'s "What to measure" section. Do not build before credentials exist — nothing to measure yet |
+| P0.6 | `scout-probe`: CLI to run the P0.1 measurement checklist against a live provider and record dated results | in-progress | — | Scope: hit each candidate vendor's actual endpoints, record retention/coverage/CU-cost per `docs/p0/source-capability-matrix.md`'s "What to measure" section. First piece landed 2026-10-02: `bins/scout-capture` (raw `getTransactionsForAddress` capture → redacted fixture file + pump.fun instruction-variant summary). Retention/CU-cost measurement still todo |
 
 ## P1 — Workspace, domain contracts, input/output
 
@@ -31,7 +31,7 @@ Legend: `done` | `in-progress` | `blocked` | `todo`
 | ID | Task | Status | Blocked by | Notes |
 |---|---|---|---|---|
 | P2.1 | HTTP/RPC clients, chain identity preflight | todo | credentials | Cannot preflight genesis identity without a live endpoint |
-| P2.2 | Bounded admission, retries, circuit breaker | todo | P2.1 | |
+| P2.2 | Bounded admission, retries, circuit breaker | todo | P2.1 | Known gap (2026-10-02): `scout-rpc` enforces only a 30s timeout, **no response-body size limit** (invariant #13); `HeliusProvider` and `scout-capture` are bounded only by page count × page size. Add a byte cap with a typed error before any large-page or batch use |
 | P2.3 | SQLite WAL embedded store | todo | P1.2 | Can start independent of credentials |
 | P2.4 | Mock RPC server | todo | P2.1 (interface) | Can build against the HistoryProvider trait before real transport exists |
 

@@ -3162,6 +3162,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "scout-capture"
+version = "0.1.0"
+dependencies = [
+ "bs58",
+ "clap",
+ "scout-api",
+ "scout-core",
+ "scout-dex-solana",
+ "scout-engine",
+ "scout-rpc",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "scout-core"
 version = "0.1.0"
 dependencies = [

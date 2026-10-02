@@ -1,0 +1,25 @@
+[package]
+name = "scout-capture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Dev/P0 tool: capture raw Helius getTransactionsForAddress pages as redacted golden fixtures"
+
+[lints]
+workspace = true
+
+[dependencies]
+scout-api.workspace = true
+scout-core.workspace = true
+scout-dex-solana.workspace = true
+scout-engine.workspace = true
+scout-rpc.workspace = true
+bs58.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true

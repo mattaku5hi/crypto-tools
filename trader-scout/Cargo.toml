@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "bins/buyer-intersect",
+    "bins/scout-capture",
     "bins/wallet-rank",
     "bins/wallet-stats",
     "crates/scout-core",
