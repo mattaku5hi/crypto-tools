@@ -47,12 +47,9 @@ async fn run_input(endpoint: Option<String>, args: Vec<String>, input: &'static 
             cmd.env("SCOUT_BUYER_INTERSECT_ENDPOINT", e);
         }
         let mut child = cmd.spawn().unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.as_bytes())
-            .unwrap();
+        // The binary may exit (usage error) before reading stdin; a broken
+        // pipe here is expected, the exit code is what the test checks.
+        let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
         let o = child.wait_with_output().unwrap();
         Out {
             code: o.status.code().unwrap_or(-1),

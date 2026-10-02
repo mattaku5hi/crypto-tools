@@ -138,12 +138,9 @@ fn buyer_intersect_solana_input_without_helius_key_is_exit_4() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn binary");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    // The binary may exit (usage error) before reading stdin; a broken
+    // pipe here is expected, the exit code is what the test checks.
+    let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
     let output = child.wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(4), "stderr: {stderr}");
