@@ -21,6 +21,9 @@
 )]
 
 mod bonding_curve_buy;
+mod pump_amm;
+mod pump_amm_event;
+mod pump_amm_reconcile;
 mod trade_event;
 
 pub use bonding_curve_buy::{
@@ -31,6 +34,26 @@ pub use bonding_curve_buy::{
     PumpTradeSpec, PumpTradeVariant, SELL_INSTRUCTION_DISCRIMINATOR,
     SELL_V2_INSTRUCTION_DISCRIMINATOR, TradeSide, VariantVerification, classify_pump_instruction,
     hex8,
+};
+pub use pump_amm::{
+    AMM_BUY_DISCRIMINATOR, AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR, AMM_EVENT_CPI_NAME,
+    AMM_NON_TRADE_INSTRUCTIONS, AMM_SELL_DISCRIMINATOR, BASE_MINT_IDX, DecodedPumpAmmTrade,
+    POOL_IDX, PUMP_AMM_IDL_COMMIT, PUMP_AMM_IDL_SHA256, PUMP_AMM_PROGRAM_ID,
+    PUMP_AMM_PROGRAM_ID_BYTES, PumpAmmDecoder, PumpAmmInstruction, PumpAmmInstructionOutcome,
+    PumpAmmTradeSpec, PumpAmmTradeVariant, QUOTE_MINT_IDX, TRADE_DATA_LEN_REQUIRED,
+    USER_BASE_TOKEN_ACCOUNT_IDX, USER_IDX, USER_QUOTE_TOKEN_ACCOUNT_IDX, WRAPPED_SOL_MINT,
+    classify_pump_amm_instruction, pump_amm_mainnet_scope,
+};
+pub use pump_amm_event::{
+    AMM_BUY_EVENT_DISCRIMINATOR, AMM_EVENT_CPI_HEADER_LEN, AMM_EVENT_REQUIRED_LEN,
+    AMM_OTHER_EVENTS, AMM_SELL_EVENT_DISCRIMINATOR, AmmPairMismatch, AmmPairingReport,
+    AmmTradeEventPairing, BuyEvent, MAX_AMM_IX_NAME_BYTES, MAX_AMM_TRAILING_EVENT_BYTES,
+    PairedAmmTrade, PumpAmmEvent, PumpAmmEventOutcome, SellEvent, classify_pump_amm_event,
+    pair_amm_trades_with_events,
+};
+pub use pump_amm_reconcile::{
+    AmmAttribution, AmmMintLeg, AmmTxReconciliation, AmmUserReconciliation,
+    reconcile_pump_amm_transaction,
 };
 pub use trade_event::{
     EVENT_CPI_HEADER_LEN, EVENT_DISCRIMINATORS, MAX_IX_NAME_BYTES, MAX_SHAREHOLDERS,
