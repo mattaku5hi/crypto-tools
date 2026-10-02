@@ -312,6 +312,9 @@ fn golden_buy_then_full_sell_exact_pnl_with_fee_capitalization() {
     assert_eq!(r.open_episodes, 0);
     assert_eq!(r.realized_trade_pnl_lamports, 157_000);
     assert_eq!(r.realized_trade_pnl_exact, lam(157_000));
+    // Consumed basis = capitalized buy basis 1_020_000 => ROI 157_000/1_020_000.
+    assert_eq!(r.consumed_acquisition_basis_lamports, 1_020_000);
+    assert_eq!(r.consumed_acquisition_basis_exact, lam(1_020_000));
     assert_eq!(r.wins, 1);
     assert_eq!(r.median_holding_seconds, Some(600));
     assert_eq!(r.diagnostics.unexplained_native_flow_lamports, 0);
@@ -393,6 +396,8 @@ fn golden_adr004_c02_partial_sell_is_proportional_to_capitalized_basis() {
     assert_eq!(r.closed_episodes_known, 1);
     assert_eq!(r.realized_trade_pnl_lamports, 158_000);
     assert_eq!(r.open_episode_known_disposal_pnl_lamports, 0);
+    // 408_000 + 612_000 = whole capitalized basis of the closed episode.
+    assert_eq!(r.consumed_acquisition_basis_lamports, 1_020_000);
 }
 
 #[test]

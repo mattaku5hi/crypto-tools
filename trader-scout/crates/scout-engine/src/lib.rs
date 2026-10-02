@@ -28,6 +28,7 @@ mod buyer_intersect;
 mod solana_buy_qualification;
 mod solana_buyer_intersect;
 mod solana_wallet_ledger;
+mod solana_wallet_rank;
 mod solana_wallet_stats;
 
 pub use buyer_intersect::{BuyerIntersectReport, BuyerMatch, run_buyer_intersect};
@@ -49,6 +50,11 @@ pub use solana_wallet_ledger::{
     SOLANA_WALLET_LEDGER_VERSION, SolanaWalletLedgerError, SolanaWalletLedgerReport, TradeCounts,
     UnknownReason, WSOL_MINT, allocate_fee_proportionally, build_solana_wallet_ledger,
     lamports_to_money, money_to_lamports_trunc,
+};
+pub use solana_wallet_rank::{
+    DEFAULT_TOP, ExcludedWallet, ExclusionReason, OpenExposure, PnlStatus, RankBy, RankPolicy,
+    RankProfile, RankedWallet, Ratio, SOLANA_WALLET_RANK_VERSION, WalletRankObservation,
+    WalletRankReport, money_exact_sol_string, rank_solana_wallets,
 };
 pub use solana_wallet_stats::{
     SolanaWalletStats, SolanaWalletStatsReport, WalletScanStatus, format_scaled_decimal,

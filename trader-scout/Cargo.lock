@@ -4138,10 +4138,18 @@ dependencies = [
 name = "wallet-rank"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "clap",
+ "scout-analytics",
+ "scout-api",
  "scout-app",
  "scout-core",
+ "scout-engine",
  "scout-providers",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

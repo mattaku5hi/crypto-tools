@@ -411,7 +411,7 @@ impl UpstreamInfo {
 }
 
 /// Parse JSONL produced by another trader-scout CLI. Identities come
-/// from `buyer_match`, `wallet_ref` and `wallet_stats` records (CLI.md
+/// from `buyer_match`, `wallet_ref`, `wallet_stats` and `wallet_rank` records (CLI.md
 /// §7: `wallet.chain` profile name + `wallet.address` string);
 /// `run_meta`/`run_summary` are envelope records; any other kind is a
 /// hard error (e.g. `wallet_excluded` never becomes an identity
@@ -460,7 +460,7 @@ pub fn parse_jsonl_with_upstream<R: BufRead>(
                         .to_string(),
                 );
             }
-            "buyer_match" | "wallet_ref" | "wallet_stats" => {
+            "buyer_match" | "wallet_ref" | "wallet_stats" | "wallet_rank" => {
                 let wallet = value
                     .get("wallet")
                     .ok_or_else(|| err(format!("{kind} without `wallet`")))?;
@@ -501,7 +501,7 @@ pub fn parse_jsonl_with_upstream<R: BufRead>(
             other => {
                 return Err(err(format!(
                     "unsupported record kind `{other}` for identity input \
-                     (expected buyer_match, wallet_ref or wallet_stats)"
+                     (expected buyer_match, wallet_ref, wallet_stats or wallet_rank)"
                 )));
             }
         }
@@ -797,6 +797,25 @@ mod tests {
         assert!(!up.is_complete());
         // Via the generic entry point too.
         assert!(parse_input(input.as_bytes(), InputFormat::Jsonl, None).is_ok());
+    }
+
+    #[test]
+    fn jsonl_reads_wallet_rank_records_but_not_wallet_excluded() {
+        let input = format!(
+            "{}{}{}",
+            jl("\"kind\":\"run_meta\",\"run_id\":\"r\""),
+            jl(&format!(
+                "\"kind\":\"wallet_rank\",\"rank\":1,\"wallet\":{{\"chain\":\"solana\",\"address\":\"{SOL_A}\"}},\"metrics\":{{}}"
+            )),
+            jl("\"kind\":\"run_summary\",\"status\":\"complete\",\"records\":1"),
+        );
+        let (parsed, up) = parse_jsonl_with_upstream(input.as_bytes(), None).unwrap();
+        assert_eq!(parsed.records.len(), 1);
+        assert!(up.is_complete());
+        let excluded = jl(&format!(
+            "\"kind\":\"wallet_excluded\",\"wallet\":{{\"chain\":\"solana\",\"address\":\"{SOL_A}\"}}"
+        ));
+        assert!(parse_jsonl_with_upstream(excluded.as_bytes(), None).is_err());
     }
 
     #[test]

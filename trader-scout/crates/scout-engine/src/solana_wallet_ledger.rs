@@ -159,6 +159,9 @@ pub struct EpisodeRecord {
     /// Known disposals inside the episode and their summed PnL.
     pub known_disposals: u64,
     pub known_disposal_pnl: Money,
+    /// Σ capitalized basis consumed by the known disposals above
+    /// (lamport-scaled `Money`); the ROI denominator for `ClosedKnown`.
+    pub known_disposal_consumed_basis: Money,
 }
 
 /// One open position at the end of history. Never carries a value.
@@ -255,6 +258,13 @@ pub struct SolanaWalletLedgerReport {
     /// SUM A: realized PnL of KNOWN CLOSED episodes only (headline).
     pub realized_trade_pnl_lamports: i128,
     pub realized_trade_pnl_exact: Money,
+    /// Σ basis of lots consumed by disposals inside KNOWN CLOSED episodes
+    /// (the `realized_cost_roi` denominator, ARCHITECTURE §10):
+    /// `realized_cost_roi = realized_trade_pnl / consumed_acquisition_basis`.
+    /// `_exact` is lamport-scaled `Money` (use it for the exact rational);
+    /// the lamport figure truncates a sub-lamport proration remainder.
+    pub consumed_acquisition_basis_lamports: i128,
+    pub consumed_acquisition_basis_exact: Money,
     /// SUM B (separate, NOT in A): PnL of known disposals that sit inside
     /// still-open episodes, and how many such disposals there are.
     pub open_episode_known_disposal_pnl_lamports: i128,
@@ -314,6 +324,7 @@ struct EpisodeAcc {
     opened_at: Option<i64>,
     opened_location: Location,
     pnl: Money,
+    consumed_basis: Money,
     unknown: BTreeSet<UnknownReason>,
     known_disposals: u64,
 }
@@ -394,6 +405,7 @@ impl Builder {
                 opened_at: ts,
                 opened_location: loc,
                 pnl: Money::ZERO,
+                consumed_basis: Money::ZERO,
                 unknown: BTreeSet::new(),
                 known_disposals: 0,
             });
@@ -463,6 +475,7 @@ impl Builder {
         };
         if let Some(pnl) = known_pnl {
             ep.pnl = money_add(ep.pnl, pnl)?;
+            ep.consumed_basis = money_add(ep.consumed_basis, result.consumed_acquisition_basis)?;
             ep.known_disposals += 1;
         } else {
             if gross.is_none() {
@@ -515,6 +528,7 @@ fn close_record(
         unknown_reasons: ep.unknown,
         known_disposals: ep.known_disposals,
         known_disposal_pnl: ep.pnl,
+        known_disposal_consumed_basis: ep.consumed_basis,
     })
 }
 
@@ -979,6 +993,7 @@ impl Builder {
         let mut open_eps = 0u64;
         let (mut wins, mut losses, mut breakeven) = (0u64, 0u64, 0u64);
         let mut pnl_sum = Money::ZERO;
+        let mut basis_sum = Money::ZERO;
         let mut open_pnl = Money::ZERO;
         let mut open_known_disposals = 0u64;
         let mut cohort = EpisodeCohort::default();
@@ -988,6 +1003,7 @@ impl Builder {
                 EpisodeOutcome::ClosedKnown { pnl } => {
                     closed_known += 1;
                     pnl_sum = money_add(pnl_sum, pnl)?;
+                    basis_sum = money_add(basis_sum, r.known_disposal_consumed_basis)?;
                     if pnl.is_positive() {
                         wins += 1;
                     } else if pnl.is_negative() {
@@ -1048,6 +1064,8 @@ impl Builder {
             breakeven,
             realized_trade_pnl_lamports: money_to_lamports_trunc(pnl_sum),
             realized_trade_pnl_exact: pnl_sum,
+            consumed_acquisition_basis_lamports: money_to_lamports_trunc(basis_sum),
+            consumed_acquisition_basis_exact: basis_sum,
             open_episode_known_disposal_pnl_lamports: money_to_lamports_trunc(open_pnl),
             open_episode_known_disposals: open_known_disposals,
             failed_trade_fees_lamports: self.failed_fees,

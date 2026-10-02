@@ -124,6 +124,16 @@ wallet-rank \
 
 Human output: rank, wallet, chain, realized_net_pnl, realized_cost_roi, closed episodes, win rate, PF, open exposure/valuation status, quality. Exclusion summary включает counts по каждой причине. JSONL содержит итоговые исключения и исходные observations, а не только топ.
 
+### Текущее состояние реализации (2026-10-02)
+
+Только срез Solana pump.fun bonding-curve поверх того же анализа, что и `wallet-stats` (ADR-010, PnL в лампортах; нужен `SCOUT_HELIUS_API_KEY`). Флаги: `--input`, `--input-format lines|jsonl` (принимает записи `buyer_match`/`wallet_ref`/`wallet_stats`/`wallet_rank`), `--format table|jsonl`, `--top N`, `--rank-by realized-net-pnl|realized-cost-roi|profit-factor` (`period-equity-pnl` — exit 2 до P5.2), `--profile quality|insider|none`, `--min-closed-episodes`, `--min-active-days`, `--max-trades-per-day`, `--max-mints-per-day`, `--require-no-open`, `--max-pages-per-wallet`, `--max-requests`. `--since/--until/--period` — exit 2 ("not supported yet").
+
+Профили (стартовая исследовательская policy, не статистическая гарантия): `quality` — ≥20 известных закрытых эпизодов, ≥7 активных UTC-дней, без unknown basis; `insider` (P4.3) — ≥5 эпизодов, ≥3 дня, потолок активности ≤30 сделок и ≤10 различных mint на активный день (отсекает HF/sniper-популяцию из P0.7), без unknown basis; `none` — без sample gates, unknown metric не участвует в сортировке, PnL с unknown-эпизодами помечается `known_subset`. Пороги сравниваются точной целочисленной арифметикой.
+
+Открытые позиции с известной себестоимостью не оцениваются (нет источника цен, P5.2): кошелек остается в рейтинге с пометкой `open_exposure: unvalued`; строгий вариант — `--require-no-open`. Это явное отступление от `require_resolved_open_exposure=true` до P5.2.
+
+Каждый входной кошелек попадает либо в `wallet_rank`, либо в `wallet_excluded` со всеми причинами (порядок: provider_error, incomplete_coverage, no_activity, no_pump_activity, unknown_basis, metric_unknown, insufficient_closed_episodes, insufficient_active_days, activity_unknown, activity_ceiling_trades_per_day, activity_ceiling_mints_per_day, open_exposure, below_top_n). Exit: 0 — вся выборка просканирована (пустой рейтинг — норма); 3 — рейтинг по неполной выборке; 4 — нет ключа, EVM-вход или все кошельки с ошибкой; 2 — usage.
+
 ## 5. wallet-stats
 
 ```bash
