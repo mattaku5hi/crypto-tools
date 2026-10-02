@@ -12,6 +12,18 @@
 //! conservative value; see `with_max_pages`). `ScanEnvelope.truncated`
 //! means the scan stopped with an unconsumed cursor.
 //!
+//! Scan order: `with_scan_order` selects `sortOrder` for
+//! `getTransactionsForAddress` (`ScanOrder::OldestFirst` = `"asc"`,
+//! the default; `ScanOrder::NewestFirst` = `"desc"`). Mechanism of
+//! pagination/truncation is identical for both; only the meaning of
+//! `truncated` differs: OldestFirst -> NEWER history was not seen;
+//! NewestFirst -> OLDER history was not seen (so a consumer's opening
+//! inventory/position before the first seen transaction is unknown).
+//! Envelopes are yielded in provider order and are NOT re-sorted here.
+//! Consumers MUST sort by canonical `(slot, transaction_index)` before
+//! any ledger/FIFO use (AGENTS.md invariant 12); with `NewestFirst`
+//! the raw stream order is reverse-chronological.
+//!
 //! Scope: `ScanRequest::WalletActivity` and
 //! `ScanRequest::TokenMarketActivity { asset: AssetKey::Token(..) }`.
 //! Per `docs/p0/measurements/2026-10-01-helius-mint-centric-query.md`,
@@ -232,6 +244,37 @@ struct InnerInstruction {
 pub struct HeliusProvider {
     client: RpcClient,
     max_pages: NonZeroU32,
+    scan_order: ScanOrder,
+}
+
+/// Which end of an address's history `scan()` starts from.
+///
+/// `truncated` on the last `ScanEnvelope` means the scan stopped with an
+/// unconsumed cursor; WHICH history is missing depends on the order:
+/// - `OldestFirst` (default, `sortOrder: "asc"`): NEWER history unseen.
+/// - `NewestFirst` (`sortOrder: "desc"`): OLDER history unseen, so a
+///   consumer's opening inventory before the earliest seen transaction
+///   is unknown.
+///
+/// The provider yields envelopes in provider order and never reorders.
+/// Consumers MUST sort by canonical `(slot, transaction_index)` before
+/// any ledger use (AGENTS.md invariant 12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScanOrder {
+    /// Earliest history first (`"asc"`). Current/default behavior.
+    #[default]
+    OldestFirst,
+    /// Most recent history first (`"desc"`).
+    NewestFirst,
+}
+
+impl ScanOrder {
+    fn as_sort_order(self) -> &'static str {
+        match self {
+            Self::OldestFirst => "asc",
+            Self::NewestFirst => "desc",
+        }
+    }
 }
 
 impl HeliusProvider {
@@ -268,6 +311,7 @@ impl HeliusProvider {
         Ok(Self {
             client,
             max_pages: DEFAULT_MAX_PAGES_PER_SCAN,
+            scan_order: ScanOrder::default(),
         })
     }
 
@@ -278,6 +322,15 @@ impl HeliusProvider {
     #[must_use]
     pub fn with_max_pages(mut self, max_pages: NonZeroU32) -> Self {
         self.max_pages = max_pages;
+        self
+    }
+
+    /// Sets the history direction (default `ScanOrder::OldestFirst`).
+    /// See `ScanOrder` for what `truncated` means per order and for the
+    /// requirement that consumers sort canonically before ledger use.
+    #[must_use]
+    pub fn with_scan_order(mut self, order: ScanOrder) -> Self {
+        self.scan_order = order;
         self
     }
 }
@@ -919,7 +972,7 @@ impl HeliusProvider {
     ) -> Result<(Vec<RawSolanaTransaction>, Option<String>), ProviderError> {
         let mut options = serde_json::json!({
             "transactionDetails": "full",
-            "sortOrder": "asc",
+            "sortOrder": self.scan_order.as_sort_order(),
             "limit": limit,
         });
         if let (Some(token), Some(map)) = (pagination_token, options.as_object_mut()) {
@@ -1656,6 +1709,67 @@ mod tests {
             .mount(&server)
             .await;
         server
+    }
+
+    async fn request_sort_orders(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+                body["params"][1]["sortOrder"].as_str().unwrap().to_string()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn default_scan_order_requests_asc() {
+        let server = paged_server(vec![("", page(&[1], None))]).await;
+        drain(&provider(&server, 10), CancellationToken::new()).await;
+        assert_eq!(request_sort_orders(&server).await, vec!["asc"]);
+    }
+
+    #[tokio::test]
+    async fn newest_first_requests_desc_follows_cursors_and_keeps_provider_order() {
+        let server = paged_server(vec![
+            ("", page(&[5, 4], Some("t1"))),
+            ("t1", page(&[3], Some("t2"))),
+            ("t2", page(&[2, 1], None)),
+        ])
+        .await;
+        let p = provider(&server, 10).with_scan_order(ScanOrder::NewestFirst);
+        let out = drain(&p, CancellationToken::new()).await;
+        let expect: Vec<_> = [5, 4, 3, 2, 1].iter().map(|s| Some((*s, false))).collect();
+        assert_eq!(out, expect);
+        assert_eq!(
+            request_tokens(&server).await,
+            vec![None, Some("t1".into()), Some("t2".into())]
+        );
+        assert_eq!(request_sort_orders(&server).await, vec!["desc"; 3]);
+    }
+
+    #[tokio::test]
+    async fn newest_first_budget_exhaustion_marks_only_last_envelope_truncated() {
+        let server = paged_server(vec![
+            ("", page(&[5, 4], Some("t1"))),
+            ("t1", page(&[3, 2], Some("t2"))),
+            ("t2", page(&[1], None)),
+        ])
+        .await;
+        let p = provider(&server, 2).with_scan_order(ScanOrder::NewestFirst);
+        let out = drain(&p, CancellationToken::new()).await;
+        assert_eq!(
+            out,
+            vec![
+                Some((5, false)),
+                Some((4, false)),
+                Some((3, false)),
+                Some((2, true))
+            ]
+        );
+        assert_eq!(request_sort_orders(&server).await, vec!["desc"; 2]);
     }
 
     fn provider(server: &MockServer, max_pages: u32) -> HeliusProvider {
