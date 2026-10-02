@@ -545,6 +545,10 @@ mod tests {
             transaction_index: 1,
             instructions,
             token_balance_changes: balances,
+            fee_lamports: 5_000,
+            fee_payer: pk(9),
+            signers: vec![pk(9)],
+            native_balance_changes: vec![],
         }
     }
 

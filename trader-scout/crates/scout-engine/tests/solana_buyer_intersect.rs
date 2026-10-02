@@ -352,6 +352,10 @@ fn buy_tx(user: u8, mint: u8) -> RawSolanaTransaction {
         transaction_index: 0,
         instructions: vec![buy_ix(user, mint, 0)],
         token_balance_changes: vec![bal(mint, user, None, 10)],
+        fee_lamports: 5_000,
+        fee_payer: pk(user),
+        signers: vec![pk(user)],
+        native_balance_changes: vec![],
     }
 }
 
@@ -589,6 +593,10 @@ async fn roundtrip_tx_is_not_a_hit_and_unexpected_payload_is_a_gap() {
         transaction_index: 0,
         instructions: vec![buy_ix(1, 1, 0), sell_ix(1, 1, 1)],
         token_balance_changes: vec![bal(1, 1, Some(5), 5)],
+        fee_lamports: 5_000,
+        fee_payer: pk(1),
+        signers: vec![pk(1)],
+        native_balance_changes: vec![],
     };
     let provider = stub(vec![(1, txs(vec![roundtrip])), (2, Script::Foreign)]);
     let report = run_solana_buyer_intersect(
@@ -883,6 +891,10 @@ fn tx_with(ix: RawSolanaInstruction, user: u8, mint: u8) -> RawSolanaTransaction
         transaction_index: 0,
         instructions: vec![ix],
         token_balance_changes: vec![bal(mint, user, None, 10)],
+        fee_lamports: 5_000,
+        fee_payer: pk(user),
+        signers: vec![pk(user)],
+        native_balance_changes: vec![],
     }
 }
 

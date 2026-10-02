@@ -29,6 +29,6 @@ pub use identity::{
 };
 pub use raw_payload::{
     RawEvmLog, RawEvmTransaction, RawPayload, RawSolanaInstruction, RawSolanaTransaction,
-    SolanaExecutionStatus, SolanaPubkey, SolanaTokenBalanceChange,
+    SolanaExecutionStatus, SolanaNativeBalanceChange, SolanaPubkey, SolanaTokenBalanceChange,
 };
 pub use trust::{ExternalDataAcknowledgement, ExternalDataOptIn, TrustLevel};

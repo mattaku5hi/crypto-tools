@@ -32,7 +32,10 @@ use scout_api::{
     CapabilityStatus, HistoryProvider, ProviderError, ScanEnvelope, ScanPlan, ScanRequest,
     ScanTask, SourceCapabilities,
 };
-use scout_core::{RawPayload, RawSolanaInstruction, RawSolanaTransaction, SolanaExecutionStatus};
+use scout_core::{
+    RawPayload, RawSolanaInstruction, RawSolanaTransaction, SolanaExecutionStatus,
+    SolanaNativeBalanceChange,
+};
 use scout_rpc::RpcClient;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -117,6 +120,17 @@ struct TransactionMeta {
     pre_token_balances: Vec<TokenBalanceEntry>,
     #[serde(default, rename = "postTokenBalances")]
     post_token_balances: Vec<TokenBalanceEntry>,
+    // Transaction fee in lamports. `None` = key absent -> typed decode
+    // error (never an implicit 0).
+    #[serde(default)]
+    fee: Option<u64>,
+    // Native lamport balances, indexed by the FULL account-key list
+    // (static ++ loaded writable ++ loaded readonly). Absent -> typed
+    // decode error.
+    #[serde(default, rename = "preBalances")]
+    pre_balances: Option<Vec<u64>>,
+    #[serde(default, rename = "postBalances")]
+    post_balances: Option<Vec<u64>>,
 }
 
 /// One entry from `preTokenBalances`/`postTokenBalances`. `owner` is
@@ -176,6 +190,10 @@ struct InnerTransaction {
 struct InnerMessage {
     #[serde(rename = "accountKeys")]
     account_keys: Vec<String>,
+    // Absent -> typed decode error: the signer count is needed to
+    // identify who signed (and therefore the fee payer's position).
+    #[serde(default)]
+    header: Option<MessageHeader>,
     instructions: Vec<InnerInstruction>,
     // Non-empty only on v0 transactions using Address Lookup Tables.
     // Its presence (independent of meta.loadedAddresses) is what tells
@@ -185,6 +203,12 @@ struct InnerMessage {
     // safely means "nothing to resolve," not "we don't know."
     #[serde(default, rename = "addressTableLookups")]
     address_table_lookups: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageHeader {
+    #[serde(rename = "numRequiredSignatures")]
+    num_required_signatures: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -292,6 +316,7 @@ fn decode_full_transaction_record(
         .iter()
         .map(|key| decode_pubkey(key))
         .collect::<Result<Vec<_>, _>>()?;
+    let static_key_count = account_keys.len();
 
     match (&record.meta, has_alt_lookups) {
         (Some(meta), _) => {
@@ -339,6 +364,12 @@ fn decode_full_transaction_record(
             error: bounded_error_text(err),
         },
     };
+    let (fee_lamports, fee_payer, signers, native_balance_changes) = decode_native_accounting(
+        record.meta.as_ref(),
+        record.transaction.message.header.as_ref(),
+        &account_keys,
+        static_key_count,
+    )?;
     if let Some(meta) = record.meta {
         for group in meta.inner_instructions {
             inner_by_top_level_index.insert(group.index, group.instructions);
@@ -391,7 +422,65 @@ fn decode_full_transaction_record(
         transaction_index: record.transaction_index,
         instructions,
         token_balance_changes,
+        fee_lamports,
+        fee_payer,
+        signers,
+        native_balance_changes,
     })
+}
+
+/// Extracts the raw native-SOL accounting facts: fee, fee payer,
+/// signers and lamport balance changes. `account_keys` is the full
+/// static+ALT key space (the index space of `preBalances`/
+/// `postBalances`); `static_key_count` is the number of static keys
+/// (the only ones that can be signers). No interpretation (rent, fee,
+/// WSOL) happens here.
+#[allow(clippy::type_complexity)]
+fn decode_native_accounting(
+    meta: Option<&TransactionMeta>,
+    header: Option<&MessageHeader>,
+    account_keys: &[[u8; 32]],
+    static_key_count: usize,
+) -> Result<(u64, [u8; 32], Vec<[u8; 32]>, Vec<SolanaNativeBalanceChange>), ProviderError> {
+    let meta = meta.ok_or_else(|| malformed("meta is absent; fee and balances unknown"))?;
+    let fee = meta.fee.ok_or_else(|| malformed("meta.fee is absent"))?;
+    let header = header.ok_or_else(|| malformed("message.header is absent"))?;
+    let pre = meta
+        .pre_balances
+        .as_ref()
+        .ok_or_else(|| malformed("meta.preBalances is absent"))?;
+    let post = meta
+        .post_balances
+        .as_ref()
+        .ok_or_else(|| malformed("meta.postBalances is absent"))?;
+    if pre.len() != post.len() || pre.len() != account_keys.len() {
+        return Err(malformed(
+            "preBalances/postBalances length does not match the resolved account-key count",
+        ));
+    }
+    let signer_count = usize::try_from(header.num_required_signatures)
+        .map_err(|_| malformed("numRequiredSignatures exceeds usize"))?;
+    let signers: Vec<[u8; 32]> = if signer_count <= static_key_count {
+        account_keys.iter().take(signer_count).copied().collect()
+    } else {
+        Vec::new()
+    };
+    let Some(fee_payer) = signers.first().copied() else {
+        return Err(malformed(
+            "header.numRequiredSignatures is zero or exceeds the static account-key count",
+        ));
+    };
+    let changes = account_keys
+        .iter()
+        .zip(pre.iter().zip(post.iter()))
+        .filter(|(_, (pre, post))| pre != post)
+        .map(|(account, (pre, post))| SolanaNativeBalanceChange {
+            account: *account,
+            pre_lamports: *pre,
+            post_lamports: *post,
+        })
+        .collect();
+    Ok((fee, fee_payer, signers, changes))
 }
 
 /// Builds `SolanaTokenBalanceChange` entries from a transaction's
@@ -926,6 +1015,11 @@ mod tests {
                                     "E9BzZER9vhBTPjBpT9QC1NaiinSXonZWgF89HkpKJxGF",
                                     "2qXeC3b9CB1Zd6eLomEq4Jd9g5VqH6o4PT5pBBGvE8jt"
                                 ],
+                                "header": {
+                                    "numRequiredSignatures": 1,
+                                    "numReadonlySignedAccounts": 0,
+                                    "numReadonlyUnsignedAccounts": 2
+                                },
                                 "instructions": [
                                     {"programIdIndex": 1, "accounts": [0], "data": "3Bxs4h"}
                                 ]
@@ -933,6 +1027,9 @@ mod tests {
                         },
                         "meta": {
                             "err": null,
+                            "fee": 5000,
+                            "preBalances": [1_000_000, 2_000_000, 3_000_000],
+                            "postBalances": [995_000, 2_000_000, 3_000_000],
                             "innerInstructions": [
                                 {
                                     "index": 0,
@@ -1080,6 +1177,15 @@ mod tests {
     // real record -- its indices sum to exactly 15 writable + 22
     // readonly, matching `loadedAddresses` below byte-for-byte; a
     // fabricated lookup table would not satisfy that invariant.
+    fn alt_balances(post: bool) -> Vec<u64> {
+        let mut balances = vec![1_000_000_000u64; 48];
+        if post {
+            balances[0] -= 5_000;
+            balances[11] += 5_000;
+        }
+        balances
+    }
+
     fn alt_transaction_body() -> serde_json::Value {
         json!({
             "jsonrpc": "2.0",
@@ -1102,6 +1208,11 @@ mod tests {
                                 "DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH",
                                 "EvtwrQSszv1qqr8U4GKjfcvjN43Yyf1isnzXJzva3GRv"
                             ],
+                            "header": {
+                                "numRequiredSignatures": 1,
+                                "numReadonlySignedAccounts": 0,
+                                "numReadonlyUnsignedAccounts": 5
+                            },
                             "instructions": [
                                 {"programIdIndex": 6, "accounts": [0, 0, 8, 29, 30, 14, 13], "data": "3"}
                             ],
@@ -1136,6 +1247,12 @@ mod tests {
                     },
                     "meta": {
                         "err": null,
+                        "fee": 5000,
+                        // 11 static + 15 writable + 22 readonly = 48 keys.
+                        // Index 0 pays the fee; index 11 (first loaded
+                        // writable) gains lamports.
+                        "preBalances": alt_balances(false),
+                        "postBalances": alt_balances(true),
                         "loadedAddresses": {
                             "writable": [
                                 "7xQYoUjUJF1Kg6WVczoTAkaNhn5syQYcbvjmFrhjWpx",
@@ -1766,6 +1883,199 @@ mod tests {
             }
             SolanaExecutionStatus::Succeeded => panic!("must be Failed"),
         }
+    }
+
+    // ---- native SOL accounting facts ---------------------------------
+
+    fn fixture_records(body: &serde_json::Value) -> Vec<serde_json::Value> {
+        if let Some(data) = body["result"]["data"].as_array() {
+            return data.clone();
+        }
+        body["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|p| p["data"].as_array().unwrap().clone())
+            .collect()
+    }
+
+    fn load_fixture_records(name: &str) -> Vec<serde_json::Value> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/p0/measurements/fixtures")
+            .join(name);
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        fixture_records(&body)
+    }
+
+    fn decode_raw(record: &serde_json::Value) -> Result<RawSolanaTransaction, ProviderError> {
+        decode_full_transaction_record(serde_json::from_value(record.clone()).unwrap())
+    }
+
+    #[test]
+    fn native_facts_match_raw_json_on_all_committed_fixtures() {
+        let mut total = 0;
+        for name in [
+            "pump_bonding_curve_buy_probe.json",
+            "pump_variants_live_2026-10-02.json",
+        ] {
+            for record in load_fixture_records(name) {
+                let tx = decode_raw(&record).unwrap();
+                total += 1;
+                let fee = record["meta"]["fee"].as_u64().unwrap();
+                assert!(fee > 0);
+                assert_eq!(tx.fee_lamports, fee);
+                let keys = record["transaction"]["message"]["accountKeys"]
+                    .as_array()
+                    .unwrap();
+                assert_eq!(
+                    tx.fee_payer,
+                    decode_pubkey(keys[0].as_str().unwrap()).unwrap()
+                );
+                let n = record["transaction"]["message"]["header"]["numRequiredSignatures"]
+                    .as_u64()
+                    .unwrap();
+                assert_eq!(u64::try_from(tx.signers.len()).unwrap(), n);
+                assert_eq!(tx.signers[0], tx.fee_payer);
+                for change in &tx.native_balance_changes {
+                    assert_ne!(change.pre_lamports, change.post_lamports);
+                }
+            }
+        }
+        assert!(total >= 21, "expected all fixture txs, got {total}");
+    }
+
+    #[test]
+    fn successful_buy_fee_payer_lamport_delta_is_negative() {
+        // Known successful pump.fun buy_exact_sol_in from the live
+        // variants fixture (fee payer is also the token buyer).
+        const BUY_SIG: &str = "ySd9GrKgj9QYcV8Ty2hwuHQJM1V6NdrexMhbD4ByzwnV6GAxX7jVC9WeRrjAJXyvC1o6PRPR7z6AEx1SezU95Pe";
+        let records = load_fixture_records("pump_variants_live_2026-10-02.json");
+        let record = records
+            .iter()
+            .find(|r| r["transaction"]["signatures"][0] == BUY_SIG)
+            .expect("buy tx in fixture");
+        let tx = decode_raw(record).unwrap();
+        assert!(tx.execution.is_success());
+        let payer = tx
+            .native_balance_changes
+            .iter()
+            .find(|c| c.account == tx.fee_payer)
+            .expect("fee payer balance changed");
+        assert!(payer.delta() < 0);
+        // Order is by ascending account index.
+        let keys = record["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let positions: Vec<usize> = tx
+            .native_balance_changes
+            .iter()
+            .map(|c| {
+                keys.iter()
+                    .position(|k| decode_pubkey(k.as_str().unwrap()).unwrap() == c.account)
+                    .unwrap()
+            })
+            .collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn alt_loaded_accounts_get_their_own_balances() {
+        let mut checked = false;
+        for record in load_fixture_records("pump_variants_live_2026-10-02.json") {
+            let loaded = &record["meta"]["loadedAddresses"];
+            let writable = loaded["writable"].as_array().cloned().unwrap_or_default();
+            let readonly = loaded["readonly"].as_array().cloned().unwrap_or_default();
+            if writable.is_empty() && readonly.is_empty() {
+                continue;
+            }
+            let tx = decode_raw(&record).unwrap();
+            let static_len = record["transaction"]["message"]["accountKeys"]
+                .as_array()
+                .unwrap()
+                .len();
+            let pre = record["meta"]["preBalances"].as_array().unwrap();
+            let post = record["meta"]["postBalances"].as_array().unwrap();
+            let loaded_keys: Vec<&str> = writable
+                .iter()
+                .chain(readonly.iter())
+                .map(|k| k.as_str().unwrap())
+                .collect();
+            for (offset, key) in loaded_keys.iter().enumerate() {
+                let i = static_len + offset;
+                let (p, q) = (pre[i].as_u64().unwrap(), post[i].as_u64().unwrap());
+                let pk = decode_pubkey(key).unwrap();
+                let found = tx.native_balance_changes.iter().find(|c| c.account == pk);
+                if p == q {
+                    assert!(found.is_none());
+                } else {
+                    let c = found.expect("changed ALT account listed");
+                    assert_eq!((c.pre_lamports, c.post_lamports), (p, q));
+                    checked = true;
+                }
+            }
+        }
+        assert!(checked, "no ALT-loaded account with a balance change found");
+    }
+
+    #[test]
+    fn synthetic_alt_tx_maps_loaded_balances_and_fee_payer() {
+        let tx = decode_body(&alt_transaction_body()).unwrap();
+        assert_eq!(tx.fee_lamports, 5000);
+        assert_eq!(tx.signers.len(), 1);
+        assert_eq!(tx.native_balance_changes.len(), 2);
+        assert_eq!(tx.native_balance_changes[0].account, tx.fee_payer);
+        assert_eq!(tx.native_balance_changes[0].delta(), -5000);
+        // Index 11 is loadedAddresses.writable[0].
+        assert_eq!(
+            tx.native_balance_changes[1].account,
+            decode_pubkey("7xQYoUjUJF1Kg6WVczoTAkaNhn5syQYcbvjmFrhjWpx").unwrap()
+        );
+        assert_eq!(tx.native_balance_changes[1].delta(), 5000);
+    }
+
+    #[test]
+    fn missing_fee_header_or_balances_and_length_mismatch_are_typed_errors() {
+        let meta_keys = ["fee", "preBalances", "postBalances"];
+        for key in meta_keys {
+            let mut body = full_mode_body(None);
+            body["result"]["data"][0]["meta"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+            assert!(decode_body(&body).is_err(), "missing meta.{key}");
+        }
+        let mut body = full_mode_body(None);
+        body["result"]["data"][0]["transaction"]["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("header");
+        assert!(decode_body(&body).is_err());
+
+        // pre/post mismatch.
+        let mut body = full_mode_body(None);
+        body["result"]["data"][0]["meta"]["postBalances"] = json!([1, 2]);
+        assert!(decode_body(&body).is_err());
+        // Both shorter than the key count.
+        let mut body = full_mode_body(None);
+        body["result"]["data"][0]["meta"]["preBalances"] = json!([1, 2]);
+        body["result"]["data"][0]["meta"]["postBalances"] = json!([1, 2]);
+        assert!(decode_body(&body).is_err());
+        // Signer count beyond static keys.
+        let mut body = full_mode_body(None);
+        body["result"]["data"][0]["transaction"]["message"]["header"]["numRequiredSignatures"] =
+            json!(9);
+        assert!(decode_body(&body).is_err());
+    }
+
+    #[test]
+    fn native_delta_is_checked_wide_arithmetic() {
+        let c = SolanaNativeBalanceChange {
+            account: [0; 32],
+            pre_lamports: u64::MAX,
+            post_lamports: 0,
+        };
+        assert_eq!(c.delta(), -i128::from(u64::MAX));
     }
 
     fn tb(index: u32, mint: &str, owner: &str, amount: &str) -> TokenBalanceEntry {

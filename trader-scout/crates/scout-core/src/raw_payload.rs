@@ -87,15 +87,15 @@ pub struct RawSolanaInstruction {
 /// `postTokenBalances` reported — the only verified way to identify an
 /// economic actor (e.g. a buyer) per `RawSolanaInstruction`'s own doc
 /// comment and `docs/p0/deployment-registry.md`'s census notes.
-/// Deliberately **does not** attempt to resolve the SOL (lamports)
-/// side of a trade: `preBalances`/`postBalances` deltas are
-/// contaminated by transaction fees, rent for newly-created accounts,
-/// WSOL wrap/unwrap, and intermediate router hops (a live census found
-/// exactly this: a router program forwarding through multiple
-/// accounts before reaching the AMM) — attributing "how much SOL the
-/// buyer paid" from those deltas would produce a plausible-looking but
-/// wrong number. That is explicitly out of scope here; see
-/// `docs/TICKETS.md` for the follow-up.
+/// Native SOL accounting facts (`fee_lamports`, `fee_payer`, `signers`,
+/// `native_balance_changes`) are carried RAW, exactly as the provider
+/// reported them. This type deliberately does **not** interpret them:
+/// `preBalances`/`postBalances` deltas are contaminated by transaction
+/// fees, rent for newly-created accounts, WSOL wrap/unwrap, and
+/// intermediate router hops, so "how much SOL the buyer paid" must not
+/// be read off a single delta here. Attribution (charging the fee once,
+/// to the fee payer only; separating rent/WSOL) is a ledger-layer
+/// responsibility that consumes these facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSolanaTransaction {
     pub signature: [u8; 64],
@@ -108,6 +108,46 @@ pub struct RawSolanaTransaction {
     pub transaction_index: u64,
     pub instructions: Vec<RawSolanaInstruction>,
     pub token_balance_changes: Vec<SolanaTokenBalanceChange>,
+    /// Transaction fee in lamports, from `meta.fee` (base fee plus
+    /// priority fee, as charged by the runtime). A record without
+    /// `meta.fee` is a decode error, never `0`. The fee is debited from
+    /// `fee_payer` ONLY and exactly once per transaction; it is already
+    /// included in that account's `native_balance_changes` entry.
+    pub fee_lamports: u64,
+    /// The account that paid `fee_lamports`: account key index 0 (the
+    /// first required signer, per the Solana protocol).
+    pub fee_payer: SolanaPubkey,
+    /// The first `message.header.numRequiredSignatures` STATIC account
+    /// keys, i.e. every account that signed the transaction, in message
+    /// order. `signers[0] == fee_payer`.
+    pub signers: Vec<SolanaPubkey>,
+    /// Lamport balance changes from `meta.preBalances`/`postBalances`.
+    /// Those arrays are indexed by the FULL account-key list (static
+    /// keys, then `loadedAddresses.writable`, then `.readonly`).
+    /// Accounts whose balance did not change (`pre == post`) are
+    /// OMITTED; entries are ordered by ascending account index, so the
+    /// output is deterministic. Raw: includes fee, rent and WSOL
+    /// effects uninterpreted.
+    pub native_balance_changes: Vec<SolanaNativeBalanceChange>,
+}
+
+/// One account's native SOL balance before/after a transaction, in
+/// lamports (integers only; invariant #7). Use [`Self::delta`] for the
+/// difference; never subtract the raw `u64` fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SolanaNativeBalanceChange {
+    pub account: SolanaPubkey,
+    pub pre_lamports: u64,
+    pub post_lamports: u64,
+}
+
+impl SolanaNativeBalanceChange {
+    /// `post - pre` in lamports as `i128` (cannot overflow for `u64`
+    /// inputs). Negative = the account lost lamports.
+    #[must_use]
+    pub fn delta(&self) -> i128 {
+        i128::from(self.post_lamports) - i128::from(self.pre_lamports)
+    }
 }
 
 /// Execution result of a Solana transaction, from the provider's
