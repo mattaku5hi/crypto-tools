@@ -28,11 +28,12 @@
 )]
 
 use std::io::{self, IsTerminal, Read};
+use std::num::NonZeroU32;
 use std::process::ExitCode;
 
 use clap::Parser;
 use scout_api::ProviderError;
-use scout_app::{InputFormat, JsonlRecord, RunStatus, WriteOutcome, write_lines_to_stdout};
+use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
 use scout_core::{AddressBytes, AssetKey, ChainFamily};
 use scout_engine::{
     PumpTradeVariant, SolanaBuyerIntersectReport, SolanaProtocolScope, run_buyer_intersect,
@@ -40,6 +41,8 @@ use scout_engine::{
 };
 use scout_providers::{HeliusProvider, UnconfiguredProvider};
 use tokio_util::sync::CancellationToken;
+
+mod output;
 
 const HELIUS_KEY_ENV: &str = "SCOUT_HELIUS_API_KEY";
 const HELIUS_TIMEOUT_MS: u64 = 30_000;
@@ -58,8 +61,20 @@ struct Args {
     min_token_hits: usize,
 
     /// Output format: table or jsonl.
-    #[arg(long, default_value = "table")]
+    #[arg(long, default_value = "table", value_parser = ["table", "jsonl"])]
     format: String,
+
+    /// Provider page budget PER INPUT TOKEN (Solana/Helius only; 100
+    /// transactions per page in full mode). When a token's history needs
+    /// more pages the scan is truncated, reported as partial, and the run
+    /// exits 3. This is NOT the spec's --max-requests: retries are not
+    /// counted against it (not implemented). Ignored for EVM input.
+    #[arg(
+        long,
+        default_value_t = 10,
+        value_parser = clap::value_parser!(u32).range(1..=200)
+    )]
+    max_pages_per_token: u32,
 }
 
 fn main() -> ExitCode {
@@ -204,8 +219,12 @@ fn run_solana(
     args: &Args,
     api_key: &str,
 ) -> ExitCode {
+    let Some(max_pages) = NonZeroU32::new(args.max_pages_per_token) else {
+        eprintln!("buyer-intersect: --max-pages-per-token must be at least 1");
+        return ExitCode::from(2);
+    };
     let provider = match HeliusProvider::new(api_key, HELIUS_TIMEOUT_MS, HELIUS_MAX_ATTEMPTS) {
-        Ok(provider) => provider,
+        Ok(provider) => provider.with_max_pages(max_pages),
         Err(err) => return provider_error_exit(&err, Some(api_key)),
     };
     let result = rt.block_on(run_solana_buyer_intersect(
@@ -219,9 +238,24 @@ fn run_solana(
         Err(err) => return provider_error_exit(&err, Some(api_key)),
     };
 
-    print_solana_diagnostics(&report, api_key);
+    print_solana_diagnostics(&report, api_key, args.max_pages_per_token);
     let incomplete = report.is_coverage_incomplete();
-    let outcome = emit_solana_matches(&report, &args.format, incomplete);
+    let captured_at = scout_app::now_utc_rfc3339();
+    let outcome = match emit_solana_matches(
+        &report,
+        input_tokens,
+        &args.format,
+        incomplete,
+        &captured_at,
+        args.max_pages_per_token,
+        api_key,
+    ) {
+        Ok(outcome) => outcome,
+        Err(message) => {
+            eprintln!("buyer-intersect: could not render output: {message}");
+            return ExitCode::from(4);
+        }
+    };
     if report.cancelled {
         return ExitCode::from(130);
     }
@@ -241,7 +275,11 @@ fn redact(text: &str, secret: &str) -> String {
 /// Scope, coverage and diagnostics block on stderr (stdout stays the
 /// single selected result format, CLI.md §2). Unknown is never printed
 /// as zero: failed tokens say `scan failed`, not `0 transactions`.
-fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str) {
+fn print_solana_diagnostics(
+    report: &SolanaBuyerIntersectReport,
+    api_key: &str,
+    max_pages_per_token: u32,
+) {
     let scope = &report.scope;
     eprintln!("buyer-intersect: protocol scope (Solana mainnet):");
     eprintln!("  recognized: {}", scope.recognized);
@@ -249,6 +287,10 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str) 
     eprintln!(
         "  program={} idl_commit={} idl_file_sha256={} rule={}",
         scope.program_id, scope.idl_commit, scope.idl_sha256, scope.qualification_version
+    );
+    eprintln!(
+        "  budget: max_pages_per_token={max_pages_per_token} (provider pages per input token, \
+         100 txs/page; retries are not counted)"
     );
     eprintln!("  recognized trade variants (IDL name, side, verification):");
     for (name, side, status) in SolanaProtocolScope::variants() {
@@ -370,78 +412,71 @@ fn format_unverified(counts: &[u64; PumpTradeVariant::COUNT]) -> String {
 
 fn emit_solana_matches(
     report: &SolanaBuyerIntersectReport,
+    input_tokens: &[AssetKey],
     format: &str,
     incomplete: bool,
-) -> WriteOutcome {
-    let mut lines: Vec<String> = if format == "jsonl" {
-        report
-            .base
-            .matches
-            .iter()
-            .filter_map(|m| {
-                JsonlRecord::BuyerMatch {
-                    wallet: m.wallet.clone(),
-                    hit_count: m.hit_count,
-                    matched_assets: m.matched_assets.clone(),
-                }
-                .to_jsonl_line()
-                .ok()
-            })
-            .collect()
+    captured_at: &str,
+    max_pages_per_token: u32,
+    api_key: &str,
+) -> Result<WriteOutcome, String> {
+    let lines: Vec<String> = if format == "jsonl" {
+        let run_id = run_id_from(captured_at);
+        output::solana_jsonl_lines(
+            &run_id,
+            captured_at,
+            report,
+            input_tokens,
+            max_pages_per_token,
+            incomplete,
+            &|text| redact(text, api_key),
+        )?
     } else {
-        report
-            .base
-            .matches
-            .iter()
-            .map(|m| format!("{} hit_count={}", m.wallet.address, m.hit_count))
-            .collect()
+        table_lines(&report.base)
     };
-    if format == "jsonl"
-        && let Ok(line) = (JsonlRecord::RunSummary {
-            run_id: "buyer-intersect-solana".to_string(),
-            status: if incomplete {
-                RunStatus::Partial
-            } else {
-                RunStatus::Complete
-            },
-            records: report.base.matches.len(),
-        })
-        .to_jsonl_line()
-    {
-        lines.push(line);
-    }
-    write_lines_to_stdout(lines)
+    Ok(write_lines_to_stdout(lines))
+}
+
+/// `buyer-intersect-20261002T123456Z`: unique per second, sortable.
+fn run_id_from(captured_at: &str) -> String {
+    let compact: String = captured_at
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    format!("buyer-intersect-{compact}")
+}
+
+/// Full address (base58 for Solana, 0x-hex for EVM) and hit count.
+fn table_lines(report: &scout_engine::BuyerIntersectReport) -> Vec<String> {
+    report
+        .matches
+        .iter()
+        .map(|m| format!("{} hit_count={}", m.wallet.address, m.hit_count))
+        .collect()
 }
 
 fn emit_report(report: &scout_engine::BuyerIntersectReport, format: &str) -> ExitCode {
-    if format == "jsonl" {
-        let lines: Vec<String> = report
+    let lines: Vec<String> = if format == "jsonl" {
+        let rendered: Result<Vec<String>, String> = report
             .matches
             .iter()
-            .filter_map(|m| {
-                JsonlRecord::BuyerMatch {
-                    wallet: m.wallet.clone(),
-                    hit_count: m.hit_count,
-                    matched_assets: m.matched_assets.clone(),
-                }
-                .to_jsonl_line()
-                .ok()
+            .map(|m| {
+                output::buyer_match_record(m)
+                    .and_then(|r| serde_json::to_string(&r).map_err(|e| e.to_string()))
             })
             .collect();
-        match write_lines_to_stdout(lines) {
-            WriteOutcome::Complete => ExitCode::SUCCESS,
-            WriteOutcome::PipeClosed => ExitCode::from(141),
+        match rendered {
+            Ok(lines) => lines,
+            Err(message) => {
+                eprintln!("buyer-intersect: could not render output: {message}");
+                return ExitCode::from(4);
+            }
         }
     } else {
-        let lines: Vec<String> = report
-            .matches
-            .iter()
-            .map(|m| format!("{} hit_count={}", m.wallet.address, m.hit_count))
-            .collect();
-        match write_lines_to_stdout(lines) {
-            WriteOutcome::Complete => ExitCode::SUCCESS,
-            WriteOutcome::PipeClosed => ExitCode::from(141),
-        }
+        table_lines(report)
+    };
+    match write_lines_to_stdout(lines) {
+        WriteOutcome::Complete => ExitCode::SUCCESS,
+        WriteOutcome::PipeClosed => ExitCode::from(141),
     }
 }
 

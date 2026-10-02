@@ -452,6 +452,30 @@ fn chain_key_for_tag(tag: ChainTag) -> ChainKey {
     }
 }
 
+/// Input-syntax profile name (`solana`, `bsc`, `base`, `robinhood`) for a
+/// chain, the inverse of the `chain:` prefix parser. `None` for chains
+/// without a v1 profile; callers must not invent a name.
+#[must_use]
+pub fn chain_profile_name(chain: &ChainKey) -> Option<&'static str> {
+    [
+        ChainTag::Solana,
+        ChainTag::Bsc,
+        ChainTag::Base,
+        ChainTag::Robinhood,
+    ]
+    .into_iter()
+    .find(|tag| {
+        let key = chain_key_for_tag(*tag);
+        key.family == chain.family && key.network_id == chain.network_id
+    })
+    .map(|tag| match tag {
+        ChainTag::Solana => "solana",
+        ChainTag::Bsc => "bsc",
+        ChainTag::Base => "base",
+        ChainTag::Robinhood => "robinhood",
+    })
+}
+
 /// Converts parsed input identities into `AssetKey`s for a token-input
 /// binary (`buyer-intersect`: CLI.md §1 "Token input — contract/mint
 /// address"). A `Bare` record is a typed error here, never a guess --

@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 scout-api.workspace = true
+scout-app.workspace = true
 scout-core.workspace = true
 scout-dex-solana.workspace = true
 scout-engine.workspace = true

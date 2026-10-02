@@ -80,6 +80,26 @@ buyer-intersect \
 
 Покупатель, который позже все продал, остается историческим покупателем. Чистый получатель airdrop не становится покупателем. При неполном сканировании токена N не уменьшается. Строгий финальный shortlist не объявляется полным; JSONL содержит status=partial, а plain wallets требует явного `--allow-partial` плюс `--manifest`, чтобы потеря completeness metadata была осознанной.
 
+### Реализовано сегодня (2026-10-02)
+
+Реализован только срез Solana pump.fun bonding-curve (все входные токены — `solana:<mint>`, нужен `SCOUT_HELIUS_API_KEY`). EVM-вход и вход без ключа завершаются кодом 4. Охват и ограничения печатаются в stderr; stdout содержит только выбранный формат.
+
+Поддерживаемые флаги: `--input`, `--min-token-hits K` (по умолчанию 2), `--format table|jsonl` (по умолчанию `table`), `--max-pages-per-token N`.
+
+`--max-pages-per-token N` (1..=200, по умолчанию 10; ошибка диапазона — exit 2) — бюджет страниц провайдера НА КАЖДЫЙ входной токен (Helius full mode: 100 транзакций на страницу). Это не `--max-requests` из спецификации: ретраи в бюджет не входят (не реализовано). Исчерпание бюджета при непрочитанном курсоре помечает токен `truncated`, запуск `partial`, exit 3. Эффективное значение печатается в блоке scope на stderr и в `run_meta.budget`.
+
+Общие опции §2 (`--since`, `--until`, `--max-requests`, `--allow-partial`, `--manifest`, `--chain`, `--input-format` и др.) и опции §3 кроме `--min-token-hits` пока не реализованы.
+
+`table`: одна строка на кошелек `<полный адрес> hit_count=N`. `jsonl`: `run_meta`, затем `buyer_match` (по одному на кошелек), затем терминальный `run_summary`. Адреса полные (base58 для Solana), имена сетей как во входном синтаксисе. Неизвестное не равно нулю: у токена со статусом `failed` счетчики `null`.
+
+```json
+{"schema_version":1,"kind":"run_meta","run_id":"buyer-intersect-20261002T123456Z","captured_at":"2026-10-02T12:34:56Z","scope":{"chain":"solana","program_id":"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P","idl_commit":"<git sha>","idl_sha256":"<sha256>","qualification_version":"pump-bonding-curve-buy/idl-e0687ae/v4","recognized":"...","not_decoded":"...","variants":[{"name":"buy","side":"buy","verification":"FixtureVerified"}]},"budget":{"max_pages_per_token":10},"input_tokens":[{"chain":"solana","token":"<MINT_A_BASE58>"},{"chain":"solana","token":"<MINT_B_BASE58>"}],"input_token_count":2,"min_token_hits":2}
+{"schema_version":1,"kind":"buyer_match","wallet":{"chain":"solana","address":"<WALLET_BASE58>"},"hit_count":2,"matched_assets":[{"chain":"solana","token":"<MINT_A_BASE58>"},{"chain":"solana","token":"<MINT_B_BASE58>"}]}
+{"schema_version":1,"kind":"run_summary","run_id":"buyer-intersect-20261002T123456Z","status":"partial","cancelled":false,"records":1,"incomplete_reasons":["token <MINT_B_BASE58>: scan failed: ..."],"tokens":[{"token":{"chain":"solana","token":"<MINT_A_BASE58>"},"status":"ok","error":null,"transactions_scanned":250,"qualified_buyers":3,"diagnostics":{"decoded_buys":9,"malformed_instructions":0,"unknown_discriminator_instructions":0,"unverified_variant_buys":0,"failed_transactions":1,"positive_delta_without_instruction":0}},{"token":{"chain":"solana","token":"<MINT_B_BASE58>"},"status":"failed","error":"...","transactions_scanned":null,"qualified_buyers":null,"diagnostics":null}]}
+```
+
+`run_summary.status` — `complete` или `partial`; `tokens[].status` — `ok`, `truncated` (счетчики — нижняя граница) или `failed`. Строки в примере сокращены/иллюстративны. Записи `wallet_ref`, `wallet_rank`, `wallet_stats`, `wallet_excluded` здесь не выпускаются.
+
 ## 4. wallet-rank
 
 ```bash

@@ -203,3 +203,45 @@ fn buyer_intersect_solana_input_without_helius_key_is_exit_4() {
     assert!(stderr.contains("SCOUT_HELIUS_API_KEY"));
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn buyer_intersect_max_pages_per_token_range_is_validated_exit_2() {
+    let bin = env!("CARGO_BIN_EXE_buyer-intersect");
+    let input = "solana:AB48pUATr4vEsxdAp54X9pvqyae2whMR2B52rEuJpump\n\
+                 solana:NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump\n";
+    for bad in ["0", "201", "abc", "-1"] {
+        let (code, _out, stderr) = run_with_stdin(
+            bin,
+            &["--input", "-", &format!("--max-pages-per-token={bad}")],
+            input,
+        );
+        assert_eq!(code, 2, "value {bad}: {stderr}");
+    }
+    // Boundary values are accepted by the parser and reach the (EVM-style)
+    // configuration outcome instead of exit 2.
+    for ok in ["1", "200"] {
+        let (code, _out, stderr) = run_with_stdin(
+            bin,
+            &["--input", "-", &format!("--max-pages-per-token={ok}")],
+            "base:0x1111111111111111111111111111111111111111\n\
+             base:0x2222222222222222222222222222222222222222\n",
+        );
+        assert_eq!(code, 4, "value {ok}: {stderr}");
+    }
+}
+
+#[test]
+fn buyer_intersect_unknown_format_is_exit_2() {
+    let bin = env!("CARGO_BIN_EXE_buyer-intersect");
+    let (code, _out, _err) = run_with_stdin(bin, &["--input", "-", "--format", "csv"], "");
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn buyer_intersect_help_documents_the_page_budget_honestly() {
+    let bin = env!("CARGO_BIN_EXE_buyer-intersect");
+    let out = Command::new(bin).arg("--help").output().unwrap();
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(help.contains("--max-pages-per-token"));
+    assert!(help.contains("max-requests"));
+}

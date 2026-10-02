@@ -36,7 +36,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, ValueEnum};
 use scout_core::RawSolanaInstruction;
@@ -178,7 +177,7 @@ async fn run(args: &Args, key: &str) -> Result<(), String> {
             pages.iter().map(|p| filter_page(p, &keep)).collect()
         };
         let doc = json!({
-            "captured_at_utc": now_utc(),
+            "captured_at_utc": scout_app::now_utc_rfc3339(),
             "request": {
                 "address": args.address,
                 "sort": args.sort.as_str(),
@@ -218,35 +217,6 @@ fn filter_page(page: &Value, keep: &BTreeSet<&str>) -> Value {
 fn first_signature(tx: &Value) -> Option<&str> {
     tx.pointer("/transaction/signatures/0")
         .and_then(Value::as_str)
-}
-
-/// Current UTC time as RFC 3339 (seconds), no external time crate.
-#[allow(clippy::integer_division)] // calendar arithmetic is intentionally truncating
-fn now_utc() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let days = i64::try_from(secs / 86_400).unwrap_or(0);
-    let rem = secs % 86_400;
-    // Howard Hinnant's civil_from_days.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let mut year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    if month <= 2 {
-        year += 1;
-    }
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rem / 3600,
-        (rem % 3600) / 60,
-        rem % 60
-    )
 }
 
 type Key32 = [u8; 32];
