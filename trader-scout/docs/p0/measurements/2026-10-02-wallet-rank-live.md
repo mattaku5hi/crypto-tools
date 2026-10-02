@@ -60,3 +60,19 @@ this population is **attribution through router/bot programs** — the PumpSwap 
 PDA, the wallet signs, pays and receives, often in multi-venue transactions with Meteora DLMM /
 Jupiter and the unidentified `DF1ow4ts…` (P0.9). Pages of the two most affected wallets are
 committed as fixtures (`router_wallet_{9oC3,tAwv}_page_2026-10-02.json`) for P0.18.
+
+## Re-run with route swaps and quote units (ADR-013, commit `355bf6a`, 2026-10-03)
+
+Same set/command, `--quote sol` and `--quote usdc`: 163 requests each, exit 3, 0 eligible; primary
+`incomplete_coverage` 24, `unknown_basis` 14 (both units). In the 14 `unknown_basis` wallets
+(3,192 tx in window) **priced trades rose from 501 to 1,502 of 1,528** (route swaps 970: 502 buys /
+468 sells; PumpSwap direct 460; curve 98). Episodes: `closed_known` 300, `closed_unknown` 216,
+`left_censored` 16, open 49. Remaining unknown causes: unexplained outbound 189 / inbound 66 token
+movements (no FixtureVerified swap leg in the tx — swaps only on undecoded venues such as Meteora
+DLMM / Raydium / Whirlpool, or transfers between own wallets), consumed unknown-basis lots 69,
+unsupported quote 12, consideration unverified 8, cross-quote-unit 3.
+
+Next levers, in order of measured impact: (1) verified swap evidence for aggregator routes
+(Jupiter v6 route event) and the major undecoded venues (DLMM, Raydium CLMM/CPMM, Whirlpool), so
+the ADR-013 route rule can book them; (2) an explicit, reported materiality policy for unknown
+episodes in quality gates (today any `ClosedUnknown` excludes a wallet).
