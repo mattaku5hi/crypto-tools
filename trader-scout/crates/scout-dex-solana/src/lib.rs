@@ -21,6 +21,7 @@
 )]
 
 mod bonding_curve_buy;
+mod trade_event;
 
 pub use bonding_curve_buy::{
     BUY_EXACT_QUOTE_IN_V2_INSTRUCTION_DISCRIMINATOR, BUY_EXACT_SOL_IN_INSTRUCTION_DISCRIMINATOR,
@@ -30,4 +31,10 @@ pub use bonding_curve_buy::{
     PumpTradeSpec, PumpTradeVariant, SELL_INSTRUCTION_DISCRIMINATOR,
     SELL_V2_INSTRUCTION_DISCRIMINATOR, TradeSide, VariantVerification, classify_pump_instruction,
     hex8,
+};
+pub use trade_event::{
+    EVENT_CPI_HEADER_LEN, EVENT_DISCRIMINATORS, MAX_IX_NAME_BYTES, MAX_SHAREHOLDERS,
+    MAX_TRAILING_EVENT_BYTES, PairMismatch, PairedTrade, PumpEventOutcome, Shareholder,
+    TRADE_EVENT_DISCRIMINATOR, TRADE_EVENT_REQUIRED_LEN, TradeEvent, TradeEventPairing,
+    TradeEventPairingReport, classify_pump_event, event_name, pair_trades_with_events,
 };

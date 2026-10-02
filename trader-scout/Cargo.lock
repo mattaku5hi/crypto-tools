@@ -888,8 +888,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
- "wallet-rank",
- "wallet-stats",
 ]
 
 [[package]]
@@ -3208,6 +3206,7 @@ dependencies = [
 name = "scout-dex-solana"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "scout-api",
  "scout-core",
  "scout-solana",

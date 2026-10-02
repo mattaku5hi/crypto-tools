@@ -605,6 +605,15 @@ impl BondingCurveBuyDecoder {
         Self { scope }
     }
 
+    /// Program-id gate: whether the instruction belongs to the scoped
+    /// deployment. An empty `contract_addresses` matches nothing.
+    #[must_use]
+    pub(crate) fn is_program(&self, instruction: &RawSolanaInstruction) -> bool {
+        self.scope.contract_addresses.iter().any(
+            |addr| matches!(addr, scout_core::AddressBytes::Solana(p) if *p == instruction.program_id),
+        )
+    }
+
     /// Classify one instruction. Applies the program-id gate first: an
     /// empty `contract_addresses` means nothing is ever "mine".
     #[must_use]
@@ -614,10 +623,7 @@ impl BondingCurveBuyDecoder {
         slot: u64,
         transaction_index: u64,
     ) -> PumpInstructionOutcome {
-        let program_matches = self.scope.contract_addresses.iter().any(
-            |addr| matches!(addr, scout_core::AddressBytes::Solana(p) if *p == instruction.program_id),
-        );
-        if !program_matches {
+        if !self.is_program(instruction) {
             return PumpInstructionOutcome::NotMine;
         }
         classify_pump_instruction(instruction, slot, transaction_index)
