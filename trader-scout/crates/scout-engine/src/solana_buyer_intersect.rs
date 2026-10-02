@@ -34,7 +34,8 @@ use tokio_util::sync::CancellationToken;
 use crate::buyer_intersect::{BuyerIntersectReport, threshold_and_sort_matches};
 use crate::solana_buy_qualification::{
     PUMP_BONDING_CURVE_IDL_COMMIT, PUMP_BONDING_CURVE_PROGRAM_ID, SOLANA_BUY_QUALIFICATION_VERSION,
-    TxQualificationDiagnostics, pump_bonding_curve_decoder, qualify_bonding_curve_buys,
+    TxQualificationDiagnostics, VariantPolicy, default_variant_policy, pump_bonding_curve_decoder,
+    qualify_bonding_curve_buys_with_policy,
 };
 
 /// Max malformed-instruction reason samples retained per run.
@@ -254,6 +255,26 @@ pub async fn run_solana_buyer_intersect(
     min_token_hits: usize,
     cancel: CancellationToken,
 ) -> Result<SolanaBuyerIntersectReport, ProviderError> {
+    run_solana_buyer_intersect_with_policy(
+        provider,
+        input_tokens,
+        min_token_hits,
+        cancel,
+        default_variant_policy,
+    )
+    .await
+}
+
+/// As [`run_solana_buyer_intersect`] with an injected variant policy.
+/// Production callers use [`run_solana_buyer_intersect`] (static spec
+/// table); this exists so the `IdlOnly` path stays testable.
+pub async fn run_solana_buyer_intersect_with_policy(
+    provider: &dyn HistoryProvider,
+    input_tokens: &[AssetKey],
+    min_token_hits: usize,
+    cancel: CancellationToken,
+    policy: VariantPolicy,
+) -> Result<SolanaBuyerIntersectReport, ProviderError> {
     let decoder = pump_bonding_curve_decoder().map_err(|e| ProviderError::Other(Box::new(e)))?;
 
     // Distinct tokens, input order preserved; N is this count.
@@ -336,7 +357,7 @@ pub async fn run_solana_buyer_intersect(
                         continue;
                     };
                     summary.transactions_scanned = summary.transactions_scanned.saturating_add(1);
-                    let q = qualify_bonding_curve_buys(tx, &decoder);
+                    let q = qualify_bonding_curve_buys_with_policy(tx, &decoder, policy);
                     // Unverified-variant buys only matter for declared
                     // input mints; a buy of some other mint seen in the
                     // same transaction does not make THIS run's buyer

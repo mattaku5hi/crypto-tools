@@ -30,7 +30,8 @@ use scout_dex_solana::{
 };
 use scout_engine::{
     PUMP_BONDING_CURVE_PROGRAM_ID, pump_bonding_curve_decoder, qualify_bonding_curve_buys,
-    run_solana_buyer_intersect, sanitize_provider_text, solana_mainnet_chain,
+    qualify_bonding_curve_buys_with_policy, run_solana_buyer_intersect,
+    run_solana_buyer_intersect_with_policy, sanitize_provider_text, solana_mainnet_chain,
 };
 use scout_providers::HeliusProvider;
 use tokio_util::sync::CancellationToken;
@@ -564,7 +565,7 @@ async fn all_tokens_failing_is_an_error_and_config_required_aborts() {
 #[tokio::test]
 async fn malformed_instruction_makes_coverage_incomplete() {
     let mut bad = buy_tx(1, 1);
-    bad.instructions[0].data.pop();
+    bad.instructions[0].data.truncate(23);
     let provider = stub(vec![(1, txs(vec![bad])), (2, txs(vec![buy_tx(1, 2)]))]);
     let report = run_solana_buyer_intersect(
         &provider,
@@ -885,20 +886,75 @@ fn tx_with(ix: RawSolanaInstruction, user: u8, mint: u8) -> RawSolanaTransaction
     }
 }
 
+/// Test-only policy keeping the `IdlOnly` path covered now that no
+/// shipped variant is `IdlOnly`.
+fn sol_in_idl_only(variant: PumpTradeVariant) -> VariantVerification {
+    if variant == PumpTradeVariant::BuyExactSolIn {
+        VariantVerification::IdlOnly
+    } else {
+        variant.verification()
+    }
+}
+
+#[tokio::test]
+async fn buy_exact_sol_in_with_positive_delta_is_a_match_under_default_policy() {
+    let ix = program_ix(
+        16,
+        1,
+        2,
+        6,
+        1,
+        args_data(BUY_EXACT_SOL_IN_INSTRUCTION_DISCRIMINATOR, true),
+    );
+    let provider = stub(vec![(1, txs(vec![tx_with(ix, 1, 1)]))]);
+    let report = run_solana_buyer_intersect(&provider, &[token(1)], 1, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(report.per_token[0].qualified_buyers, 1);
+    assert_eq!(report.diagnostics.decoded_buys, 1);
+    assert_eq!(report.diagnostics.unverified_variant_buys, [0; 6]);
+    assert!(!report.is_coverage_incomplete());
+}
+
 #[tokio::test]
 async fn idl_only_buy_with_positive_delta_is_not_a_match_is_counted_and_incomplete() {
+    let variant = PumpTradeVariant::BuyExactSolIn;
+    let ix = program_ix(
+        16,
+        1,
+        2,
+        6,
+        1,
+        args_data(BUY_EXACT_SOL_IN_INSTRUCTION_DISCRIMINATOR, true),
+    );
+    let provider = stub(vec![(1, txs(vec![tx_with(ix, 1, 1)]))]);
+    let report = run_solana_buyer_intersect_with_policy(
+        &provider,
+        &[token(1)],
+        1,
+        CancellationToken::new(),
+        sol_in_idl_only,
+    )
+    .await
+    .unwrap();
+    assert!(report.base.matches.is_empty());
+    assert_eq!(report.per_token[0].qualified_buyers, 0);
+    assert_eq!(report.diagnostics.decoded_buys, 0);
+    assert_eq!(
+        report.diagnostics.unverified_variant_buys[variant.index()],
+        1
+    );
+    assert!(report.is_coverage_incomplete());
+    let reasons = report.incomplete_reasons();
+    assert!(
+        reasons.iter().any(|r| r.contains(variant.name())),
+        "{reasons:?}"
+    );
+}
+
+#[tokio::test]
+async fn promoted_variant_buy_with_positive_delta_is_a_match_and_complete() {
     let cases: Vec<(PumpTradeVariant, RawSolanaInstruction)> = vec![
-        (
-            PumpTradeVariant::BuyExactSolIn,
-            program_ix(
-                16,
-                1,
-                2,
-                6,
-                1,
-                args_data(BUY_EXACT_SOL_IN_INSTRUCTION_DISCRIMINATOR, true),
-            ),
-        ),
         (
             PumpTradeVariant::BuyV2,
             program_ix(
@@ -928,20 +984,15 @@ async fn idl_only_buy_with_positive_delta_is_not_a_match_is_counted_and_incomple
             run_solana_buyer_intersect(&provider, &[token(1)], 1, CancellationToken::new())
                 .await
                 .unwrap();
-        assert!(report.base.matches.is_empty(), "{variant:?}");
-        assert_eq!(report.per_token[0].qualified_buyers, 0);
-        assert_eq!(report.diagnostics.decoded_buys, 0);
+        assert_eq!(report.base.matches.len(), 1, "{variant:?}");
+        assert_eq!(report.per_token[0].qualified_buyers, 1);
+        assert_eq!(report.diagnostics.decoded_buys, 1);
         assert_eq!(
-            report.diagnostics.unverified_variant_buys[variant.index()],
-            1
+            report.diagnostics.unverified_variant_buys,
+            [0; PumpTradeVariant::COUNT]
         );
         assert_eq!(report.diagnostics.decoded_by_variant[variant.index()], 1);
-        assert!(report.is_coverage_incomplete());
-        let reasons = report.incomplete_reasons();
-        assert!(
-            reasons.iter().any(|r| r.contains(variant.name())),
-            "{reasons:?}"
-        );
+        assert!(!report.is_coverage_incomplete(), "{variant:?}");
     }
 }
 
@@ -1032,11 +1083,244 @@ fn scope_lists_every_variant_with_status_and_idl_hash() {
     assert_eq!(scope.idl_sha256, scout_dex_solana::PUMP_IDL_SHA256);
     assert_eq!(
         scope.qualification_version,
-        "pump-bonding-curve-buy/idl-e0687ae/v2"
+        "pump-bonding-curve-buy/idl-e0687ae/v4"
     );
     let v = scout_engine::SolanaProtocolScope::variants();
     assert_eq!(v.len(), 6);
     assert!(v.contains(&("buy", "buy", "FixtureVerified")));
     assert!(v.contains(&("sell_v2", "sell", "FixtureVerified")));
-    assert!(v.contains(&("buy_v2", "buy", "IdlOnly")));
+    assert!(v.contains(&("buy_exact_sol_in", "buy", "FixtureVerified")));
+    assert!(v.contains(&("buy_v2", "buy", "FixtureVerified")));
+    assert!(v.contains(&("buy_exact_quote_in_v2", "buy", "FixtureVerified")));
+}
+
+const WSOL: &str = "So11111111111111111111111111111111111111112";
+const LIVE_VARIANTS_FIXTURE: &str = "pump_variants_live_2026-10-02.json";
+
+/// Serve the committed live capture's 16 successful txs through the real
+/// `HeliusProvider` (the same decode path production uses) and return
+/// them paired with the fixture's selection label.
+async fn live_variant_txs() -> Vec<(String, RawSolanaTransaction)> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/p0/measurements/fixtures")
+        .join(LIVE_VARIANTS_FIXTURE);
+    let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(fixture["captured_at_utc"], "2026-10-02T13:40:20Z");
+    let data: Vec<serde_json::Value> = fixture["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p["data"].as_array().unwrap().clone())
+        .collect();
+    let labels: BTreeMap<String, String> = fixture["selection"]["signatures"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+        .collect();
+    assert_eq!(labels.len(), 16);
+    let body = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": { "data": data, "paginationToken": null }
+    });
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    let provider = helius(&server);
+    let txs = collect_transactions(&provider, MINT1).await;
+    assert_eq!(txs.len(), data.len());
+    txs.into_iter()
+        .filter_map(|tx| {
+            let sig = bs58::encode(tx.signature).into_string();
+            labels.get(&sig).map(|l| (l.clone(), tx))
+        })
+        .collect()
+}
+
+fn label_variant(label: &str) -> PumpTradeVariant {
+    let name = label
+        .strip_prefix("malformed:")
+        .map_or(label, |r| r.split(':').next().unwrap());
+    PumpTradeVariant::ALL
+        .into_iter()
+        .find(|v| v.name() == name)
+        .unwrap()
+}
+
+/// Signature (prefix) of the one live `buy_exact_sol_in` tx whose decoded
+/// `user` has a net-zero delta for the decoded mint: the 2928987168
+/// base tokens land on another owner's new account in the same tx.
+/// A router-forward: layout is right, user net is 0, the tokens end on
+/// another owner (`CNudZYFg...`) with no instruction evidence. A correct
+/// negative golden case for the promoted `buy_exact_sol_in`.
+const SOL_IN_ZERO_DELTA_SIG_PREFIX: &str = "bUh87USDuBC4";
+
+#[tokio::test]
+async fn live_fixture_variant_promotion_evidence_via_owner_keyed_deltas() {
+    let txs = live_variant_txs().await;
+    assert_eq!(txs.len(), 16);
+    // (variant, positive-delta txs, non-positive-delta txs)
+    let mut tally: BTreeMap<PumpTradeVariant, (u32, u32)> = BTreeMap::new();
+    let mut quote_mints: BTreeMap<String, u32> = BTreeMap::new();
+    let wsol = pubkey(WSOL);
+    for (label, tx) in &txs {
+        let variant = label_variant(label);
+        let sig = bs58::encode(tx.signature).into_string();
+        assert!(tx.execution.is_success(), "{label}");
+        let trades: Vec<_> = trades_in(tx)
+            .into_iter()
+            .filter(|t| t.variant == variant)
+            .collect();
+        assert_eq!(trades.len(), 1, "{label}: expected one decoded {variant:?}");
+        let t = &trades[0];
+        assert_eq!(t.side, TradeSide::Buy);
+        // Arg-length policy per fixture row (observed live shapes).
+        let expected = match (variant, label.starts_with("malformed:")) {
+            (PumpTradeVariant::BuyExactSolIn, false) => (Some(0), 0),
+            (PumpTradeVariant::BuyExactQuoteInV2, true) => (None, 1),
+            _ => (None, 0),
+        };
+        assert_eq!((t.track_volume, t.trailing_arg_bytes), expected, "{label}");
+
+        let delta = owner_delta(tx, &t.mint, &t.user);
+        let entry = tally.entry(variant).or_default();
+        if delta > 0 {
+            entry.0 += 1;
+        } else {
+            entry.1 += 1;
+            assert_eq!(variant, PumpTradeVariant::BuyExactSolIn, "{label}");
+            assert!(sig.starts_with(SOL_IN_ZERO_DELTA_SIG_PREFIX), "{sig}");
+            assert_eq!(delta, 0);
+            continue;
+        }
+        let min_out = i128::from(t.args[1].value);
+        match variant {
+            // `amount` is the exact token amount requested.
+            PumpTradeVariant::BuyV2 | PumpTradeVariant::Buy => {
+                assert_eq!(delta, i128::from(t.args[0].value), "{label} amount");
+            }
+            // Exact-in: spend is fixed, tokens out has a floor.
+            _ => assert!(
+                delta >= min_out,
+                "{label}: delta {delta} < min_out {min_out}"
+            ),
+        }
+        if let Some(q) = t.quote_mint {
+            let seen = tx.token_balance_changes.iter().any(|c| c.mint == q);
+            assert!(
+                q == wsol || seen,
+                "{label}: quote mint not wSOL nor in balances"
+            );
+            *quote_mints
+                .entry(bs58::encode(q).into_string())
+                .or_default() += 1;
+        }
+    }
+    assert_eq!(tally[&PumpTradeVariant::Buy], (3, 0));
+    assert_eq!(tally[&PumpTradeVariant::BuyV2], (2, 0));
+    assert_eq!(tally[&PumpTradeVariant::BuyExactQuoteInV2], (5, 0));
+    // 6/6 confirm the layout: 5 positive user deltas, 1 router-forward
+    // (user net 0, tokens on another owner; see the dedicated test).
+    assert_eq!(tally[&PumpTradeVariant::BuyExactSolIn], (5, 1));
+    for v in [
+        PumpTradeVariant::Buy,
+        PumpTradeVariant::BuyExactSolIn,
+        PumpTradeVariant::BuyV2,
+        PumpTradeVariant::BuyExactQuoteInV2,
+    ] {
+        assert_eq!(v.verification(), VariantVerification::FixtureVerified);
+    }
+    eprintln!("quote_mints={quote_mints:?}");
+}
+
+#[tokio::test]
+async fn live_non_idl_length_txs_decode_and_qualify_under_default_policy() {
+    let txs = live_variant_txs().await;
+    let decoder = pump_bonding_curve_decoder().unwrap();
+    let mut seen = 0;
+    for (label, tx) in txs.iter().filter(|(l, _)| l.starts_with("malformed:")) {
+        seen += 1;
+        let variant = label_variant(label);
+        let q = qualify_bonding_curve_buys(tx, &decoder);
+        assert_eq!(q.diagnostics.malformed_instructions, 0, "{label}");
+        assert!(q.malformed_reasons.is_empty(), "{label}");
+        assert_eq!(
+            q.diagnostics.decoded_by_variant[variant.index()],
+            1,
+            "{label}"
+        );
+        let sig = bs58::encode(tx.signature).into_string();
+        if sig.starts_with(SOL_IN_ZERO_DELTA_SIG_PREFIX) {
+            // Router-forward: neither a buy nor an unverified buy.
+            assert!(q.buys.is_empty(), "{label}");
+            assert!(q.unverified_buys.is_empty());
+            assert_eq!(q.diagnostics.unverified_variant_buys, [0; 6]);
+        } else {
+            assert_eq!(q.buys.len(), 1, "{label}");
+            assert!(q.buys[0].net_delta.to_string().parse::<u128>().unwrap() > 0);
+        }
+    }
+    assert_eq!(seen, 8);
+}
+
+#[tokio::test]
+async fn live_buy_exact_sol_in_under_injected_idl_only_policy_is_never_a_buyer() {
+    let txs = live_variant_txs().await;
+    let decoder = pump_bonding_curve_decoder().unwrap();
+    let mut sol_in = 0;
+    for (label, tx) in &txs {
+        if label_variant(label) != PumpTradeVariant::BuyExactSolIn {
+            continue;
+        }
+        sol_in += 1;
+        let q = qualify_bonding_curve_buys_with_policy(tx, &decoder, sol_in_idl_only);
+        assert!(q.buys.is_empty(), "{label}");
+        let forward = bs58::encode(tx.signature)
+            .into_string()
+            .starts_with(SOL_IN_ZERO_DELTA_SIG_PREFIX);
+        assert_eq!(q.unverified_buys.len(), usize::from(!forward), "{label}");
+    }
+    assert_eq!(sol_in, 6);
+}
+
+#[tokio::test]
+async fn router_forwarded_buy_exact_sol_in_is_not_attributed_to_user_or_recipient() {
+    const USER: &str = "ARu4n5mFdZogZAravu7CcizaojWnS6oqka37gdLT5SZn";
+    const RECIPIENT: &str = "CNudZYFgpbT26fidsiNrWfHeGTBMMeVWqruZXsEkcUPc";
+    const FORWARD_MINT: &str = "26GNNvy4BkuTyGRX2YQm3hey1JUgTKNsUZRKS8gcpump";
+    let txs = live_variant_txs().await;
+    let (_, tx) = txs
+        .iter()
+        .find(|(_, tx)| {
+            bs58::encode(tx.signature)
+                .into_string()
+                .starts_with(SOL_IN_ZERO_DELTA_SIG_PREFIX)
+        })
+        .unwrap();
+    let (user, recipient, mint) = (pubkey(USER), pubkey(RECIPIENT), pubkey(FORWARD_MINT));
+    // Instruction evidence names ARu4 and the mint; its net is exactly 0.
+    let trade = trades_in(tx)
+        .into_iter()
+        .find(|t| t.variant == PumpTradeVariant::BuyExactSolIn)
+        .unwrap();
+    assert_eq!((trade.user, trade.mint), (user, mint));
+    assert_eq!(owner_delta(tx, &mint, &user), 0);
+    // The recipient gains tokens but no instruction names it.
+    assert!(owner_delta(tx, &mint, &recipient) > 0);
+
+    let decoder = pump_bonding_curve_decoder().unwrap();
+    let q = qualify_bonding_curve_buys(tx, &decoder);
+    assert!(q.buys.is_empty());
+    assert!(q.unverified_buys.is_empty());
+    assert_eq!(q.diagnostics.unverified_variant_buys, [0; 6]);
+    assert_eq!(q.diagnostics.decoded_buys, 1);
+    assert_eq!(q.diagnostics.buys_without_positive_delta, 1);
+    assert!(q.uninstructed_positive_deltas.contains(&(mint, recipient)));
+    assert!(
+        !q.uninstructed_positive_deltas
+            .iter()
+            .any(|(_, owner)| *owner == user)
+    );
 }

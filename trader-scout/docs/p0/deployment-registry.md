@@ -236,3 +236,12 @@ Additional facts recorded so they are not re-derived:
 (and now committed); #4 golden fixture + decoder exercising it — satisfied for `buy`, `sell`,
 `sell_v2` (`pump_bonding_curve_buy_probe.json`, committed in `cece920`; the "scratch files only"
 note above is stale). **#2 activation slot — still open**, so no schema-table row yet.
+
+### 2026-10-02 update — all six trade variants `FixtureVerified`
+
+Live fixture `docs/p0/measurements/fixtures/pump_variants_live_2026-10-02.json` (16 successful
+txs) promoted `buy_exact_sol_in`, `buy_v2`, `buy_exact_quote_in_v2`; observed quote mint for the
+v2 samples: wSOL only. Live account counts: `buy`/`buy_exact_sol_in` 18, v2 buys 27 (one 28),
+`sell` 16, `sell_v2` 26 — always ≥ IDL. Live data lengths deviate from the IDL in the trailing
+optional bytes; policy and evidence in ADR-009's amendment. The table in the 2026-10-02 review
+section above reflects the state before this update.

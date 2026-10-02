@@ -4,7 +4,8 @@
 //! A wallet W qualifies as a buyer of mint M in one transaction iff
 //!
 //! 1. a decoded bonding-curve buy instruction of a
-//!    [`VariantVerification::FixtureVerified`] variant (today only `buy`)
+//!    [`VariantVerification::FixtureVerified`] variant (`buy`, `buy_exact_sol_in` as of v4, `buy_v2`, `buy_exact_quote_in_v2`;
+//!    see the decoder's arg-length policy)
 //!    exists whose `user == W` and `mint == M` (instruction evidence:
 //!    confirmed program `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`,
 //!    IDL commit `e0687ae9b7e064a0f54efc7297c65eecfbba3a8f`), AND
@@ -12,8 +13,10 @@
 //!    over `token_balance_changes` (never per token account, never by
 //!    position), is strictly positive.
 //!
-//! A decoded buy of an `IdlOnly` variant (`buy_exact_sol_in`, `buy_v2`,
-//! `buy_exact_quote_in_v2`) whose owner delta WOULD qualify is NOT a
+//! A decoded buy of an `IdlOnly` variant (none ships as of qualification
+//! v4, when `buy_exact_sol_in` was promoted; the gate stays for any
+//! future variant and is exercised through an injected [`VariantPolicy`])
+//! whose owner delta WOULD qualify is NOT a
 //! qualified buy: it is reported in `unverified_buys` and counted in
 //! `unverified_variant_buys` so the caller can mark the buyer set a
 //! knowing lower bound (invariants 16 and 18). Known non-trade program
@@ -62,7 +65,7 @@ pub const PUMP_BONDING_CURVE_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKub
 /// Official IDL commit (`pump-fun/pump-public-docs`, `idl/pump.json`).
 pub const PUMP_BONDING_CURVE_IDL_COMMIT: &str = "e0687ae9b7e064a0f54efc7297c65eecfbba3a8f";
 /// Decoder/qualification rule identifier recorded in reports (invariant 10).
-pub const SOLANA_BUY_QUALIFICATION_VERSION: &str = "pump-bonding-curve-buy/idl-e0687ae/v2";
+pub const SOLANA_BUY_QUALIFICATION_VERSION: &str = "pump-bonding-curve-buy/idl-e0687ae/v4";
 
 /// Why the confirmed deployment scope could not be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -244,12 +247,35 @@ pub struct TxQualification {
     pub diagnostics: TxQualificationDiagnostics,
 }
 
-/// Qualify every buyer in one transaction. Pure and synchronous.
-/// `decoder.scope().chain` supplies the chain identity of produced keys.
+/// Variant -> verification policy used to gate buys. A plain fn pointer:
+/// no global state, `Copy`, trivially `Send + Sync`.
+pub type VariantPolicy = fn(PumpTradeVariant) -> VariantVerification;
+
+/// Production policy: the decoder's static per-variant spec table.
+#[must_use]
+pub fn default_variant_policy(variant: PumpTradeVariant) -> VariantVerification {
+    variant.verification()
+}
+
+/// Qualify every buyer in one transaction with the production policy.
+/// Pure and synchronous. `decoder.scope().chain` supplies the chain
+/// identity of produced keys.
 #[must_use]
 pub fn qualify_bonding_curve_buys(
     tx: &RawSolanaTransaction,
     decoder: &BondingCurveBuyDecoder,
+) -> TxQualification {
+    qualify_bonding_curve_buys_with_policy(tx, decoder, default_variant_policy)
+}
+
+/// As [`qualify_bonding_curve_buys`], with an injected variant policy
+/// (production callers use [`default_variant_policy`]; tests inject one
+/// to keep the `IdlOnly` path covered).
+#[must_use]
+pub fn qualify_bonding_curve_buys_with_policy(
+    tx: &RawSolanaTransaction,
+    decoder: &BondingCurveBuyDecoder,
+    policy: VariantPolicy,
 ) -> TxQualification {
     let mut out = TxQualification::default();
     let scope = decoder.scope();
@@ -302,7 +328,7 @@ pub fn qualify_bonding_curve_buys(
                 {
                     *slot = slot.saturating_add(1);
                 }
-                match (trade.side, trade.variant.verification()) {
+                match (trade.side, policy(trade.variant)) {
                     (TradeSide::Sell, _) => {
                         out.diagnostics.decoded_sells =
                             out.diagnostics.decoded_sells.saturating_add(1);
@@ -664,7 +690,7 @@ mod tests {
     #[test]
     fn malformed_instruction_is_counted_not_skipped() {
         let mut bad = buy_ix(1, 50, 0);
-        bad.data.pop(); // 24 bytes: matches buy discriminator, wrong length
+        bad.data.truncate(23); // matches buy discriminator, shorter than required args
         let q = qualify_bonding_curve_buys(
             &tx(vec![bad], vec![bal(50, Some(1), None, 10)]),
             &decoder(),
@@ -695,6 +721,71 @@ mod tests {
             &decoder(),
         );
         assert_eq!(q.buys[0].net_delta.to_string(), u64::MAX.to_string());
+    }
+
+    fn sol_in_idl_only(variant: PumpTradeVariant) -> VariantVerification {
+        if variant == PumpTradeVariant::BuyExactSolIn {
+            VariantVerification::IdlOnly
+        } else {
+            variant.verification()
+        }
+    }
+
+    fn sol_in_ix(user: u8, mint: u8, idx: u32) -> RawSolanaInstruction {
+        let mut accounts: Vec<SolanaPubkey> = (0..16u8).map(|i| pk(100 + i)).collect();
+        accounts[2] = pk(mint);
+        accounts[6] = pk(user);
+        let mut data = scout_dex_solana::BUY_EXACT_SOL_IN_INSTRUCTION_DISCRIMINATOR.to_vec();
+        data.extend_from_slice(&1000u64.to_le_bytes());
+        data.extend_from_slice(&2000u64.to_le_bytes());
+        data.push(1);
+        RawSolanaInstruction {
+            program_id: program(),
+            accounts,
+            data,
+            instruction_index: idx,
+        }
+    }
+
+    #[test]
+    fn injected_idl_only_policy_reports_unverified_buy_instead_of_qualifying() {
+        let t = tx(vec![sol_in_ix(1, 50, 0)], vec![bal(50, Some(1), None, 700)]);
+        // Default policy: promoted, qualifies.
+        let promoted = qualify_bonding_curve_buys(&t, &decoder());
+        assert_eq!(promoted.buys.len(), 1);
+        assert!(promoted.unverified_buys.is_empty());
+        // Injected IdlOnly: never a buyer, reported as unverified.
+        let q = qualify_bonding_curve_buys_with_policy(&t, &decoder(), sol_in_idl_only);
+        assert!(q.buys.is_empty());
+        assert_eq!(q.diagnostics.decoded_buys, 0);
+        assert_eq!(
+            q.unverified_buys,
+            vec![UnverifiedVariantBuy {
+                variant: PumpTradeVariant::BuyExactSolIn,
+                user: pk(1),
+                mint: pk(50),
+            }]
+        );
+        assert_eq!(
+            q.diagnostics.unverified_variant_buys[PumpTradeVariant::BuyExactSolIn.index()],
+            1
+        );
+        assert!(q.uninstructed_positive_deltas.is_empty());
+    }
+
+    #[test]
+    fn injected_idl_only_policy_zero_delta_is_neither_buy_nor_unverified() {
+        let q = qualify_bonding_curve_buys_with_policy(
+            &tx(
+                vec![sol_in_ix(1, 50, 0)],
+                vec![bal(50, Some(1), Some(5), 5), bal(50, Some(9), None, 7)],
+            ),
+            &decoder(),
+            sol_in_idl_only,
+        );
+        assert!(q.buys.is_empty());
+        assert!(q.unverified_buys.is_empty());
+        assert_eq!(q.uninstructed_positive_deltas, vec![(pk(50), pk(9))]);
     }
 
     #[test]

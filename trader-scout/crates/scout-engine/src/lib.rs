@@ -33,10 +33,11 @@ pub use scout_dex_solana::{PumpTradeVariant, VariantVerification};
 pub use solana_buy_qualification::{
     PUMP_BONDING_CURVE_IDL_COMMIT, PUMP_BONDING_CURVE_PROGRAM_ID, QualifiedBuy,
     SOLANA_BUY_QUALIFICATION_VERSION, ScopeError, TxQualification, TxQualificationDiagnostics,
-    UnverifiedVariantBuy, pump_bonding_curve_decoder, pump_bonding_curve_scope,
-    qualify_bonding_curve_buys, solana_mainnet_chain,
+    UnverifiedVariantBuy, VariantPolicy, default_variant_policy, pump_bonding_curve_decoder,
+    pump_bonding_curve_scope, qualify_bonding_curve_buys, qualify_bonding_curve_buys_with_policy,
+    solana_mainnet_chain,
 };
 pub use solana_buyer_intersect::{
     SolanaBuyerIntersectReport, SolanaProtocolScope, SolanaTokenScanSummary,
-    run_solana_buyer_intersect, sanitize_provider_text,
+    run_solana_buyer_intersect, run_solana_buyer_intersect_with_policy, sanitize_provider_text,
 };

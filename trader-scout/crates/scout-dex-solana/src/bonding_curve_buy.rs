@@ -23,8 +23,9 @@
 //! - **Known non-trade**: one of the other 41 IDL instructions or the
 //!   Anchor event-CPI self-invocation tag `e445a52e51cb9a1d`
 //!   ([`NON_TRADE_INSTRUCTIONS`]); counted by the caller, not decoded.
-//! - **Malformed**: a trade discriminator with a wrong data length or
-//!   too few accounts, or data shorter than 8 bytes.
+//! - **Malformed**: a trade discriminator with data shorter than the
+//!   required args or more than [`MAX_TRAILING_ARG_BYTES`] trailing
+//!   bytes, or too few accounts, or data shorter than 8 bytes.
 //! - **Unknown discriminator**: 8 bytes that are in neither table. A
 //!   COVERAGE GAP (the program changed or the IDL is stale), never
 //!   `NotMine`.
@@ -40,7 +41,33 @@
 //! (`pump_bonding_curve_buy_probe.json`, slot 452380124): a top-level
 //! `sell` carries 16 accounts (IDL 14) and `buy` carries 18 (IDL 16),
 //! i.e. Anchor remaining accounts trail the fixed list. They never
-//! shift the fixed positions read here. Data length is exact.
+//! shift the fixed positions read here. Live v2 buys carry 27 accounts
+//! (one `buy_exact_quote_in_v2` had 28), `buy`/`buy_exact_sol_in` 18.
+//!
+//! ## Arg-length policy (invariants #16, #18)
+//!
+//! Live evidence, `docs/p0/measurements/fixtures/pump_variants_live_2026-10-02.json`
+//! (captured 2026-10-02T13:40:20Z by `bins/scout-capture`, 3 pages,
+//! successful transactions): `buy` 25 B x15 and 24 B x9;
+//! `buy_exact_sol_in` 25 B x5 and 24 B x4; `buy_exact_quote_in_v2`
+//! 24 B x14 and 25 B x2; `buy_v2` 24 B x2; `sell` 24 B x41; `sell_v2`
+//! 24 B x20. A separate live run saw a successful `buy_exact_sol_in`
+//! of 26 B (no committed sample). So the required args are always
+//! present while trailing bytes vary, and the program executes them
+//! successfully (Anchor Borsh does not require consuming all
+//! instruction data; pump's `OptionBool` tolerates absence).
+//!
+//! Per variant, data must be >= 8 + the REQUIRED args (all args except
+//! a trailing `track_volume: OptionBool`); those are parsed exactly.
+//! Then, with `t` = bytes after the required args:
+//! - `t == 0`: `track_volume = None`, `trailing_arg_bytes = 0`.
+//! - `t == 1` and the variant has `track_volume`: `track_volume =
+//!   Some(raw byte)`, `trailing_arg_bytes = 0`.
+//! - any other `t <= `[`MAX_TRAILING_ARG_BYTES`] (e.g. 26 B
+//!   `buy_exact_sol_in`, or 25 B `buy_exact_quote_in_v2` which has no
+//!   `track_volume`): `track_volume = None`, `trailing_arg_bytes = t`;
+//!   the encoding is NOT guessed.
+//! - shorter than required, or `t > MAX_TRAILING_ARG_BYTES`: Malformed.
 //!
 //! ## Verification status per variant (invariant #16)
 //!
@@ -51,7 +78,25 @@
 //! [`VariantVerification::IdlOnly`]: decoded for layout/coverage, but
 //! the qualification layer must not turn it into a confirmed buyer.
 //!
+//! Live promotion evidence (`pump_variants_live_2026-10-02.json`,
+//! asserted in `scout-engine/tests/solana_buyer_intersect.rs`): 6/6
+//! `buy_exact_sol_in`, 3/3 `buy`, 2/2 `buy_v2` and 5/5
+//! `buy_exact_quote_in_v2` successful txs confirm the decoded
+//! user/mint layout. For `buy` (== `amount`), `buy_v2` (== `amount`) and
+//! `buy_exact_quote_in_v2` (>= `min_tokens_out`) the user's owner-keyed
+//! net delta is > 0 in every tx. For `buy_exact_sol_in` 5 txs have a
+//! positive user delta (>= `min_tokens_out`); the 6th (`bUh87USDuBC4...`)
+//! is a router-forward: the layout positions are right, the user's net
+//! is 0 and the tokens land on a different owner's new account with no
+//! instruction evidence. That is a correct negative case (no buy for
+//! either owner), not a layout failure, so all four are
+//! FixtureVerified.
+//!
 //! Args are carried as raw `u64` by their IDL names; no floats.
+
+/// Upper bound on bytes after the required args; more is Malformed so
+/// arbitrary blobs are never accepted as trades.
+pub const MAX_TRAILING_ARG_BYTES: usize = 32;
 
 use scout_api::{DecodeOutcome, DeploymentScope, TxDecoder};
 use scout_core::{RawSolanaInstruction, SolanaPubkey};
@@ -298,7 +343,10 @@ pub struct PumpTradeSpec {
     /// IDL account count; live transactions may carry more (remaining
     /// accounts), never fewer.
     pub min_accounts: usize,
-    /// Exact instruction data length (8 + args).
+    /// IDL instruction data length (8 + all args, including a trailing
+    /// `track_volume`). Live data may be shorter by the optional
+    /// `track_volume` byte or longer by trailing bytes; see
+    /// [`PumpTradeSpec::required_data_len`] and the module doc policy.
     pub data_len: usize,
     /// IDL names of the two leading `u64` args.
     pub arg_names: [&'static str; 2],
@@ -309,6 +357,19 @@ pub struct PumpTradeSpec {
     pub bonding_curve_idx: usize,
     pub user_idx: usize,
     pub verification: VariantVerification,
+}
+
+impl PumpTradeSpec {
+    /// Minimum data length: discriminator + required args (everything
+    /// except a trailing optional `track_volume`).
+    #[must_use]
+    pub const fn required_data_len(&self) -> usize {
+        if self.has_track_volume {
+            self.data_len - 1
+        } else {
+            self.data_len
+        }
+    }
 }
 
 const SPEC_BUY: PumpTradeSpec = PumpTradeSpec {
@@ -339,7 +400,7 @@ const SPEC_BUY_EXACT_SOL_IN: PumpTradeSpec = PumpTradeSpec {
     quote_mint_idx: None,
     bonding_curve_idx: 3,
     user_idx: 6,
-    verification: VariantVerification::IdlOnly,
+    verification: VariantVerification::FixtureVerified,
 };
 const SPEC_SELL: PumpTradeSpec = PumpTradeSpec {
     variant: PumpTradeVariant::Sell,
@@ -369,7 +430,7 @@ const SPEC_BUY_V2: PumpTradeSpec = PumpTradeSpec {
     quote_mint_idx: Some(2),
     bonding_curve_idx: 10,
     user_idx: 13,
-    verification: VariantVerification::IdlOnly,
+    verification: VariantVerification::FixtureVerified,
 };
 const SPEC_BUY_EXACT_QUOTE_IN_V2: PumpTradeSpec = PumpTradeSpec {
     variant: PumpTradeVariant::BuyExactQuoteInV2,
@@ -384,7 +445,7 @@ const SPEC_BUY_EXACT_QUOTE_IN_V2: PumpTradeSpec = PumpTradeSpec {
     quote_mint_idx: Some(2),
     bonding_curve_idx: 10,
     user_idx: 13,
-    verification: VariantVerification::IdlOnly,
+    verification: VariantVerification::FixtureVerified,
 };
 const SPEC_SELL_V2: PumpTradeSpec = PumpTradeSpec {
     variant: PumpTradeVariant::SellV2,
@@ -485,8 +546,13 @@ pub struct DecodedBondingCurveTrade {
     pub quote_mint: Option<SolanaPubkey>,
     pub bonding_curve: SolanaPubkey,
     pub args: [NamedU64; 2],
-    /// Raw `OptionBool` byte for variants that carry it.
+    /// Raw `OptionBool` byte: `Some` only when the variant has
+    /// `track_volume` and exactly one trailing byte was present.
     pub track_volume: Option<u8>,
+    /// Number of data bytes beyond the required args that were NOT
+    /// interpreted as `track_volume` (0 when absent or consumed as
+    /// `track_volume`). Their encoding is deliberately not guessed.
+    pub trailing_arg_bytes: usize,
     pub slot: u64,
     pub transaction_index: u64,
     pub instruction_index: u32,
@@ -642,12 +708,19 @@ fn decode_trade(
 ) -> Result<DecodedBondingCurveTrade, String> {
     let spec = variant.spec();
     let name = spec.name;
-    if instruction.data.len() != spec.data_len {
+    let required = spec.required_data_len();
+    let Some(trailing_arg_bytes) = instruction.data.len().checked_sub(required) else {
         return Err(format!(
-            "instruction matches {name} discriminator but data has {} bytes, expected {} \
-             (IDL commit {PUMP_IDL_COMMIT})",
+            "instruction matches {name} discriminator but data has {} bytes, fewer than the \
+             {required} required by the IDL args (IDL commit {PUMP_IDL_COMMIT})",
             instruction.data.len(),
-            spec.data_len
+        ));
+    };
+    if trailing_arg_bytes > MAX_TRAILING_ARG_BYTES {
+        return Err(format!(
+            "instruction matches {name} discriminator but data has {} bytes: {trailing_arg_bytes} \
+             trailing bytes exceed the {MAX_TRAILING_ARG_BYTES}-byte bound (required {required})",
+            instruction.data.len(),
         ));
     }
     if instruction.accounts.len() < spec.min_accounts {
@@ -663,15 +736,18 @@ fn decode_trade(
         .ok_or_else(|| format!("{name}: {arg0_name} is unreadable"))?;
     let arg1 = read_u64_le(&instruction.data, 16)
         .ok_or_else(|| format!("{name}: {arg1_name} is unreadable"))?;
-    let track_volume = if spec.has_track_volume {
-        Some(
-            *instruction
-                .data
-                .get(24)
-                .ok_or_else(|| format!("{name}: track_volume byte is unreadable"))?,
+    let (track_volume, trailing_arg_bytes) = if spec.has_track_volume && trailing_arg_bytes == 1 {
+        (
+            Some(
+                *instruction
+                    .data
+                    .get(required)
+                    .ok_or_else(|| format!("{name}: track_volume byte is unreadable"))?,
+            ),
+            0,
         )
     } else {
-        None
+        (None, trailing_arg_bytes)
     };
     let account = |idx: usize, what: &str| -> Result<SolanaPubkey, String> {
         instruction
@@ -702,6 +778,7 @@ fn decode_trade(
             },
         ],
         track_volume,
+        trailing_arg_bytes,
         slot,
         transaction_index,
         instruction_index: instruction.instruction_index,
@@ -890,7 +967,7 @@ mod tests {
     #[test]
     fn variant_verification_statuses() {
         use PumpTradeVariant as V;
-        use VariantVerification::{FixtureVerified, IdlOnly};
+        use VariantVerification::FixtureVerified;
         let got: Vec<_> = V::ALL
             .iter()
             .map(|v| (v.name(), v.verification()))
@@ -899,10 +976,10 @@ mod tests {
             got,
             vec![
                 ("buy", FixtureVerified),
-                ("buy_exact_sol_in", IdlOnly),
+                ("buy_exact_sol_in", FixtureVerified),
                 ("sell", FixtureVerified),
-                ("buy_v2", IdlOnly),
-                ("buy_exact_quote_in_v2", IdlOnly),
+                ("buy_v2", FixtureVerified),
+                ("buy_exact_quote_in_v2", FixtureVerified),
                 ("sell_v2", FixtureVerified),
             ]
         );
@@ -928,6 +1005,7 @@ mod tests {
             assert_eq!(t.args[1].name, spec.arg_names[1]);
             assert_eq!(t.args[1].value, 2222);
             assert_eq!(t.track_volume, spec.has_track_volume.then_some(1));
+            assert_eq!(t.trailing_arg_bytes, 0);
             assert_eq!(
                 (t.slot, t.transaction_index, t.instruction_index),
                 (77, 9, 4)
@@ -936,22 +1014,56 @@ mod tests {
     }
 
     #[test]
-    fn wrong_length_and_too_few_accounts_are_malformed_extra_accounts_ok() {
+    fn arg_length_policy_per_variant() {
         for variant in PumpTradeVariant::ALL {
-            let mut longer = synthetic(variant);
-            longer.data.push(0);
-            let mut shorter = synthetic(variant);
-            shorter.data.pop();
-            for bad in [longer, shorter] {
+            let spec = variant.spec();
+            let required = spec.required_data_len();
+            assert_eq!(required, 24, "{}", spec.name);
+            let with_len = |len: usize| {
+                let mut ix = synthetic(variant);
+                ix.data.truncate(24);
+                ix.data.resize(len, 0x07);
+                ix
+            };
+            // Shorter than required: Malformed.
+            for len in [8, 16, 23] {
                 assert!(
                     matches!(
-                        decoder().classify(&bad, 0, 0),
+                        decoder().classify(&with_len(len), 0, 0),
                         PumpInstructionOutcome::Malformed { variant: Some(v), .. } if v == variant
                     ),
-                    "{}",
-                    variant.name()
+                    "{} len {len}",
+                    spec.name
                 );
             }
+            // Exactly required: no track_volume, no trailing.
+            let t = trade_of(decoder().classify(&with_len(24), 0, 0));
+            assert_eq!((t.track_volume, t.trailing_arg_bytes), (None, 0));
+            assert_eq!((t.args[0].value, t.args[1].value), (1111, 2222));
+            // One trailing byte.
+            let t = trade_of(decoder().classify(&with_len(25), 0, 0));
+            if spec.has_track_volume {
+                assert_eq!((t.track_volume, t.trailing_arg_bytes), (Some(7), 0));
+            } else {
+                assert_eq!((t.track_volume, t.trailing_arg_bytes), (None, 1));
+            }
+            // Two trailing bytes (26 B buy_exact_sol_in live case).
+            let t = trade_of(decoder().classify(&with_len(26), 0, 0));
+            assert_eq!((t.track_volume, t.trailing_arg_bytes), (None, 2));
+            // Upper bound.
+            let max = required + MAX_TRAILING_ARG_BYTES;
+            let t = trade_of(decoder().classify(&with_len(max), 0, 0));
+            assert_eq!(t.trailing_arg_bytes, MAX_TRAILING_ARG_BYTES);
+            assert!(matches!(
+                decoder().classify(&with_len(max + 1), 0, 0),
+                PumpInstructionOutcome::Malformed { variant: Some(v), .. } if v == variant
+            ));
+        }
+    }
+
+    #[test]
+    fn too_few_accounts_are_malformed_extra_accounts_ok() {
+        for variant in PumpTradeVariant::ALL {
             let mut few = synthetic(variant);
             few.accounts.pop();
             assert!(matches!(
