@@ -10,9 +10,10 @@ use scout_app::SCHEMA_VERSION;
 use scout_core::MONEY_SCALE;
 use scout_core::Money;
 use scout_engine::{
-    EpisodeOutcome, EpisodeRecord, OpenPosition, SOLANA_WALLET_LEDGER_VERSION, SolanaProtocolScope,
-    SolanaWalletLedgerReport, SolanaWalletStats, SolanaWalletStatsReport, format_scaled_decimal,
-    lamports_to_sol_string, rational_to_decimal_string,
+    EpisodeOutcome, EpisodeRecord, OpenPosition, SOLANA_WALLET_LEDGER_VERSION, ScanFailureKind,
+    ScanStop, SolanaProtocolScope, SolanaWalletLedgerReport, SolanaWalletStats,
+    SolanaWalletStatsReport, format_scaled_decimal, lamports_to_sol_string,
+    rational_to_decimal_string,
 };
 use serde::Serialize;
 
@@ -51,7 +52,11 @@ pub fn pnl_view(w: &SolanaWalletStats) -> PnlView {
         return PnlView {
             status: "n_a",
             lamports: None,
-            na_reason: Some("scan failed"),
+            na_reason: Some(if w.status == scout_engine::WalletScanStatus::NotScanned {
+                "not scanned"
+            } else {
+                "scan failed"
+            }),
         };
     };
     if l.closed_episodes_known == 0 && l.failed_trade_fees_lamports == 0 {
@@ -155,6 +160,7 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
     };
     let coverage = match w.status {
         scout_engine::WalletScanStatus::Error => "failed".to_string(),
+        scout_engine::WalletScanStatus::NotScanned => "not scanned".to_string(),
         scout_engine::WalletScanStatus::Incomplete => {
             if w.truncated {
                 "incomplete (truncated)".to_string()
@@ -367,6 +373,52 @@ pub struct RunMetaRecord {
     pub input_wallet_count: usize,
     pub input_duplicates: usize,
     pub upstream_complete: bool,
+    /// Total HTTP attempts made (retries included).
+    pub requests_made: u64,
+    pub budget: BudgetDto,
+}
+
+/// Run request budget (`--max-requests`; `null` = unlimited).
+#[derive(Debug, Serialize)]
+pub struct BudgetDto {
+    pub max_requests: Option<u64>,
+}
+
+/// Typed run-stop reason / failure kind: `budget_exhausted`,
+/// `rate_limited` (or `other` for a failure with no stop).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ReasonDto {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
+}
+
+pub fn stop_dto(stop: ScanStop) -> ReasonDto {
+    match stop {
+        ScanStop::BudgetExhausted { limit } => ReasonDto {
+            kind: "budget_exhausted",
+            limit: Some(limit),
+            retry_after_secs: None,
+        },
+        ScanStop::RateLimited { retry_after_secs } => ReasonDto {
+            kind: "rate_limited",
+            limit: None,
+            retry_after_secs,
+        },
+    }
+}
+
+fn failure_dto(kind: ScanFailureKind) -> ReasonDto {
+    kind.stop().map_or(
+        ReasonDto {
+            kind: "other",
+            limit: None,
+            retry_after_secs: None,
+        },
+        stop_dto,
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -518,6 +570,10 @@ pub struct WalletStatsRecord {
     pub wallet: WalletDto,
     pub status: &'static str,
     pub error: Option<String>,
+    /// Typed cause of an `error` from a provider failure.
+    pub error_kind: Option<ReasonDto>,
+    /// Why a `not_scanned` wallet was skipped.
+    pub stop_reason: Option<ReasonDto>,
     pub coverage: CoverageDto,
     pub stats: Option<StatsDto>,
     /// Only with `--detail full` (and a ledger).
@@ -541,6 +597,8 @@ pub struct RunSummaryRecord {
     /// `complete` or `partial` (operational completion).
     pub status: &'static str,
     pub cancelled: bool,
+    pub requests_made: u64,
+    pub stop: Option<ReasonDto>,
     pub records: usize,
     pub incomplete_reasons: Vec<String>,
     pub wallets: Vec<WalletStatusDto>,
@@ -700,6 +758,8 @@ pub fn wallet_record(
         wallet: wallet_dto(w),
         status: w.status.label(),
         error: w.error.as_deref().map(redact),
+        error_kind: w.failure.map(failure_dto),
+        stop_reason: w.not_scanned.map(stop_dto),
         coverage: CoverageDto {
             complete: w.coverage_complete(),
             truncated: w.truncated,
@@ -731,6 +791,8 @@ pub struct RunMetaInput<'a> {
     pub input_wallet_count: usize,
     pub input_duplicates: usize,
     pub upstream_complete: bool,
+    pub requests_made: u64,
+    pub max_requests: Option<u64>,
 }
 
 pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
@@ -778,6 +840,10 @@ pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
         input_wallet_count: m.input_wallet_count,
         input_duplicates: m.input_duplicates,
         upstream_complete: m.upstream_complete,
+        requests_made: m.requests_made,
+        budget: BudgetDto {
+            max_requests: m.max_requests,
+        },
     }
 }
 
@@ -785,6 +851,7 @@ pub fn run_summary_record(
     run_id: &str,
     report: &SolanaWalletStatsReport,
     incomplete: bool,
+    requests_made: u64,
     redact: &dyn Fn(&str) -> String,
 ) -> RunSummaryRecord {
     RunSummaryRecord {
@@ -793,6 +860,8 @@ pub fn run_summary_record(
         run_id: run_id.to_string(),
         status: if incomplete { "partial" } else { "complete" },
         cancelled: report.cancelled,
+        requests_made,
+        stop: report.stop.map(stop_dto),
         records: report.wallets.len(),
         incomplete_reasons: report
             .incomplete_reasons()
@@ -833,6 +902,7 @@ pub fn jsonl_lines(
         meta.run_id,
         report,
         incomplete,
+        meta.requests_made,
         redact,
     )))?);
     Ok(lines)
@@ -871,6 +941,8 @@ mod tests {
             } else {
                 vec![]
             },
+            failure: None,
+            not_scanned: None,
         }
     }
 
@@ -885,6 +957,7 @@ mod tests {
                 card(5, WalletScanStatus::Ok, Some(2), Some(900_000_000)),
             ],
             cancelled: false,
+            stop: None,
         }
     }
 
@@ -902,6 +975,8 @@ mod tests {
             input_wallet_count: 5,
             input_duplicates: 0,
             upstream_complete: true,
+            requests_made: 0,
+            max_requests: None,
         }
     }
 

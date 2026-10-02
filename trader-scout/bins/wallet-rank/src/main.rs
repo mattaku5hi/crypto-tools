@@ -12,8 +12,10 @@
 //! the declared scope (an empty or short shortlist is a normal outcome);
 //! 2 usage (incl. `--rank-by period-equity-pnl`, `--since/--until/--period`);
 //! 3 ranking over a PARTIAL universe (a wallet is incomplete/errored, the
-//! request budget ran out, upstream JSONL partial or footerless);
-//! 4 infrastructure/credentials (also: every wallet failed);
+//! request budget ran out, rate-limit stop after at least one wallet
+//! produced data, upstream JSONL partial or footerless);
+//! 4 infrastructure/credentials (also: every wallet failed, rate-limit
+//! stop with no data);
 //! 130 cancelled; 141 stdout closed.
 #![forbid(unsafe_code)]
 #![cfg_attr(
@@ -35,11 +37,12 @@ use scout_api::ProviderError;
 use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
 use scout_core::{AddressBytes, ChainFamily, SolanaPubkey, WalletKey};
 use scout_engine::{
-    DEFAULT_TOP, RankBy, RankPolicy, RankProfile, SolanaWalletStatsReport, WalletRankReport,
-    pump_bonding_curve_decoder, rank_solana_wallets, run_solana_wallet_stats,
+    DEFAULT_TOP, RankBy, RankPolicy, RankProfile, ScanStop, SolanaWalletStatsReport,
+    WalletRankReport, pump_bonding_curve_decoder, rank_solana_wallets, run_solana_wallet_stats,
     sanitize_provider_text,
 };
 use scout_providers::{HeliusProvider, ScanOrder};
+use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
 use tokio_util::sync::CancellationToken;
 
 mod output;
@@ -47,6 +50,9 @@ mod output;
 use output::{RunMetaInput, SummaryInput};
 
 const HELIUS_KEY_ENV: &str = "SCOUT_HELIUS_API_KEY";
+/// Test-only: send requests to this URL instead of Helius (the API key is
+/// never sent to the override).
+const ENDPOINT_OVERRIDE_ENV: &str = "SCOUT_WALLET_RANK_ENDPOINT";
 const HELIUS_TIMEOUT_MS: u64 = 30_000;
 const HELIUS_MAX_ATTEMPTS: u32 = 3;
 
@@ -124,8 +130,8 @@ struct Args {
     max_pages_per_wallet: u32,
 
     /// Total HTTP attempt budget (retries included) for the whole run.
-    /// When spent, remaining wallets are not scanned (`provider_error`,
-    /// exit 3, or 4 when every wallet failed).
+    /// When spent, the interrupted wallet is `provider_error`, remaining
+    /// wallets are `not_scanned` (both excluded); exit 3.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
 
@@ -310,6 +316,35 @@ fn redact(text: &str, secret: &str) -> String {
     sanitize_provider_text(&replaced)
 }
 
+/// Terminal `RateLimited`: the transport refused to wait out a
+/// `Retry-After` above its cap.
+fn rate_limited_text(retry_after_secs: Option<u64>) -> String {
+    let cap = DEFAULT_MAX_RETRY_AFTER.as_secs();
+    match retry_after_secs {
+        Some(s) => format!("rate limited; server asked to retry after {s}s (cap {cap}s)"),
+        None => "rate limited; server gave no Retry-After".to_string(),
+    }
+}
+
+fn build_provider(
+    api_key: &str,
+    max_pages: NonZeroU32,
+    max_requests: Option<u64>,
+) -> Result<HeliusProvider, ProviderError> {
+    let provider = match std::env::var(ENDPOINT_OVERRIDE_ENV) {
+        Ok(url) if !url.is_empty() => HeliusProvider::new_with_endpoint(
+            scout_rpc::RpcEndpoint::new(url),
+            HELIUS_TIMEOUT_MS,
+            HELIUS_MAX_ATTEMPTS,
+        )?,
+        _ => HeliusProvider::new(api_key, HELIUS_TIMEOUT_MS, HELIUS_MAX_ATTEMPTS)?,
+    };
+    Ok(provider
+        .with_max_pages(max_pages)
+        .with_scan_order(ScanOrder::NewestFirst)
+        .with_max_total_requests(max_requests))
+}
+
 fn provider_error_exit(err: &ProviderError, secret: &str) -> ExitCode {
     let text = redact(&err.to_string(), secret);
     match err {
@@ -334,11 +369,8 @@ fn run_solana(
         eprintln!("wallet-rank: --max-pages-per-wallet must be at least 1");
         return ExitCode::from(2);
     };
-    let provider = match HeliusProvider::new(api_key, HELIUS_TIMEOUT_MS, HELIUS_MAX_ATTEMPTS) {
-        Ok(p) => p
-            .with_max_pages(max_pages)
-            .with_scan_order(ScanOrder::NewestFirst)
-            .with_max_total_requests(args.max_requests),
+    let provider = match build_provider(api_key, max_pages, args.max_requests) {
+        Ok(p) => p,
         Err(err) => return provider_error_exit(&err, api_key),
     };
     let decoder = match pump_bonding_curve_decoder() {
@@ -386,6 +418,7 @@ fn run_solana(
             run_id: &run_id,
             partial: incomplete,
             cancelled: stats.cancelled,
+            stop: stats.stop,
             requests_made,
             incomplete_reasons: stats
                 .incomplete_reasons()
@@ -413,6 +446,13 @@ fn run_solana(
     }
     if matches!(outcome, WriteOutcome::PipeClosed) {
         return ExitCode::from(141);
+    }
+    match stats.stop {
+        Some(ScanStop::BudgetExhausted { .. }) => return ExitCode::from(3),
+        Some(ScanStop::RateLimited { .. }) => {
+            return ExitCode::from(if stats.any_data() { 3 } else { 4 });
+        }
+        None => {}
     }
     if stats.all_failed() {
         return ExitCode::from(4);
@@ -443,6 +483,17 @@ fn print_diagnostics(
         args.max_requests
             .map_or_else(|| "unlimited".to_string(), |n| n.to_string())
     );
+    match stats.stop {
+        Some(ScanStop::BudgetExhausted { limit }) => eprintln!(
+            "wallet-rank: request budget exhausted after {requests_made} requests (limit {limit}); \
+             the interrupted wallet is provider_error, remaining wallets are not_scanned, ranking is over an incomplete universe"
+        ),
+        Some(ScanStop::RateLimited { retry_after_secs }) => eprintln!(
+            "wallet-rank: {}; remaining wallets were not scanned, ranking is over an incomplete universe",
+            rate_limited_text(retry_after_secs)
+        ),
+        None => {}
+    }
     let opt = |v: Option<u64>| v.map_or_else(|| "none".to_string(), |n| n.to_string());
     eprintln!(
         "  policy: rank_by={} profile={} min_closed_episodes={} min_active_days={} \

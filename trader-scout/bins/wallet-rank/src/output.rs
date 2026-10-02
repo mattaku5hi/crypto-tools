@@ -12,8 +12,8 @@ use scout_app::SCHEMA_VERSION;
 use scout_core::{MONEY_SCALE, Money};
 use scout_engine::{
     ExcludedWallet, OpenExposure, RankedWallet, SOLANA_WALLET_LEDGER_VERSION,
-    SOLANA_WALLET_RANK_VERSION, SolanaProtocolScope, WalletRankObservation, WalletRankReport,
-    format_scaled_decimal, lamports_to_sol_string, money_exact_sol_string,
+    SOLANA_WALLET_RANK_VERSION, ScanStop, SolanaProtocolScope, WalletRankObservation,
+    WalletRankReport, format_scaled_decimal, lamports_to_sol_string, money_exact_sol_string,
     rational_to_decimal_string,
 };
 use serde::Serialize;
@@ -372,7 +372,18 @@ pub struct RunSummaryRecord {
     pub excluded_by_primary_reason: BTreeMap<&'static str, usize>,
     pub excluded_by_any_reason: BTreeMap<&'static str, usize>,
     pub requests_made: u64,
+    /// Run-terminal stop (budget / rate limit), if any.
+    pub stop: Option<StopDto>,
     pub incomplete_reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StopDto {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
 }
 
 fn amount(lamports: i128) -> AmountDto {
@@ -581,8 +592,24 @@ pub struct SummaryInput<'a> {
     pub run_id: &'a str,
     pub partial: bool,
     pub cancelled: bool,
+    pub stop: Option<ScanStop>,
     pub requests_made: u64,
     pub incomplete_reasons: Vec<String>,
+}
+
+fn stop_dto(stop: ScanStop) -> StopDto {
+    match stop {
+        ScanStop::BudgetExhausted { limit } => StopDto {
+            kind: "budget_exhausted",
+            limit: Some(limit),
+            retry_after_secs: None,
+        },
+        ScanStop::RateLimited { retry_after_secs } => StopDto {
+            kind: "rate_limited",
+            limit: None,
+            retry_after_secs,
+        },
+    }
 }
 
 pub fn run_summary_record(report: &WalletRankReport, s: SummaryInput<'_>) -> RunSummaryRecord {
@@ -601,6 +628,7 @@ pub fn run_summary_record(report: &WalletRankReport, s: SummaryInput<'_>) -> Run
         excluded_by_primary_reason: primary_counts(report),
         excluded_by_any_reason: all_counts(report),
         requests_made: s.requests_made,
+        stop: s.stop.map(stop_dto),
         incomplete_reasons: s.incomplete_reasons,
     }
 }
@@ -662,6 +690,8 @@ mod tests {
             error: None,
             ledger: Some(l),
             incomplete_reasons: Vec::new(),
+            failure: None,
+            not_scanned: None,
         }
     }
 
@@ -699,6 +729,7 @@ mod tests {
                 run_id: "wallet-rank-t",
                 partial: true,
                 cancelled: false,
+                stop: None,
                 requests_made: 4,
                 incomplete_reasons: vec!["wallet x: scan failed".into()],
             },

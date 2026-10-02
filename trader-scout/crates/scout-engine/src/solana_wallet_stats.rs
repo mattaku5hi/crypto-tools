@@ -17,7 +17,15 @@
 //! # Per-wallet status (CLI.md §5: no wallet disappears)
 //! * `Error`: the scan or the ledger build failed; no figures. One
 //!   wallet's failure does not abort the run (only
-//!   `ConfigurationRequired` does: that is infrastructure, not a wallet).
+//!   `ConfigurationRequired` does: that is infrastructure, not a wallet),
+//!   except a run-terminal error classified by the shared
+//!   [`classify_provider_error`] (budget exhaustion, terminal rate
+//!   limit): the interrupted wallet is `Error` carrying the typed
+//!   [`ScanFailureKind`], every later wallet is `NotScanned`, and no
+//!   further request is made.
+//! * `NotScanned`: no request was made for this wallet because the run
+//!   stopped earlier ([`ScanStop`]: request budget spent or terminal
+//!   rate limit). No figures; the stop reason is on the card.
 //! * `Incomplete`: scanned, but coverage has a declared gap (truncation,
 //!   malformed pump instructions, orphan events, `IdlOnly` variant
 //!   trades, non-transaction payloads). Figures are a known subset.
@@ -38,7 +46,9 @@ use scout_dex_solana::BondingCurveBuyDecoder;
 use tokio_util::sync::CancellationToken;
 
 use crate::solana_buy_qualification::solana_mainnet_chain;
-use crate::solana_buyer_intersect::{SolanaProtocolScope, sanitize_provider_text};
+use crate::solana_buyer_intersect::{
+    ScanFailureKind, ScanStop, SolanaProtocolScope, classify_provider_error, sanitize_provider_text,
+};
 use crate::solana_wallet_ledger::{SolanaWalletLedgerReport, build_solana_wallet_ledger};
 
 /// Per-wallet outcome class.
@@ -49,6 +59,8 @@ pub enum WalletScanStatus {
     NoPumpActivity,
     Incomplete,
     Error,
+    /// No request was made: the run stopped earlier.
+    NotScanned,
 }
 
 impl WalletScanStatus {
@@ -60,6 +72,7 @@ impl WalletScanStatus {
             Self::NoPumpActivity => "no_pump_activity",
             Self::Incomplete => "incomplete",
             Self::Error => "error",
+            Self::NotScanned => "not_scanned",
         }
     }
 }
@@ -81,6 +94,11 @@ pub struct SolanaWalletStats {
     /// Why coverage is incomplete (empty unless `Incomplete`; for
     /// `Error` the reason is `error`).
     pub incomplete_reasons: Vec<String>,
+    /// Typed cause for `Error` from a provider failure (`None` for
+    /// ledger/cancel errors and non-error statuses).
+    pub failure: Option<ScanFailureKind>,
+    /// Why no request was made (`NotScanned` only).
+    pub not_scanned: Option<ScanStop>,
 }
 
 impl SolanaWalletStats {
@@ -98,7 +116,7 @@ impl SolanaWalletStats {
     pub fn coverage_complete(&self) -> bool {
         !matches!(
             self.status,
-            WalletScanStatus::Incomplete | WalletScanStatus::Error
+            WalletScanStatus::Incomplete | WalletScanStatus::Error | WalletScanStatus::NotScanned
         )
     }
 }
@@ -109,6 +127,8 @@ pub struct SolanaWalletStatsReport {
     pub scope: SolanaProtocolScope,
     pub wallets: Vec<SolanaWalletStats>,
     pub cancelled: bool,
+    /// Run-terminal stop (budget or rate limit), if any.
+    pub stop: Option<ScanStop>,
 }
 
 impl SolanaWalletStatsReport {
@@ -119,6 +139,9 @@ impl SolanaWalletStatsReport {
             let label = bs58::encode(w.wallet).into_string();
             if let Some(e) = &w.error {
                 out.push(format!("wallet {label}: scan failed: {e}"));
+            }
+            if let Some(stop) = w.not_scanned {
+                out.push(format!("wallet {label}: not scanned: {}", stop.describe()));
             }
             for r in &w.incomplete_reasons {
                 out.push(format!("wallet {label}: {r}"));
@@ -136,13 +159,22 @@ impl SolanaWalletStatsReport {
     }
 
     /// Every wallet failed (nothing usable was observed): exit 4, not 3.
+    /// Wallets skipped after a run stop count as failed here.
     #[must_use]
     pub fn all_failed(&self) -> bool {
         !self.wallets.is_empty()
-            && self
-                .wallets
-                .iter()
-                .all(|w| w.status == WalletScanStatus::Error)
+            && self.wallets.iter().all(|w| {
+                matches!(
+                    w.status,
+                    WalletScanStatus::Error | WalletScanStatus::NotScanned
+                )
+            })
+    }
+
+    /// At least one wallet produced a card with ledger figures.
+    #[must_use]
+    pub fn any_data(&self) -> bool {
+        self.wallets.iter().any(|w| w.ledger.is_some())
     }
 }
 
@@ -164,7 +196,12 @@ pub async fn run_solana_wallet_stats(
 
     let mut out: Vec<SolanaWalletStats> = Vec::with_capacity(distinct.len());
     let mut cancelled = false;
+    let mut stop: Option<ScanStop> = None;
     for wallet in distinct {
+        if let Some(reason) = stop {
+            out.push(not_scanned_card(wallet, reason));
+            continue;
+        }
         if cancelled || cancel.is_cancelled() {
             cancelled = true;
             out.push(failed_card(
@@ -174,7 +211,10 @@ pub async fn run_solana_wallet_stats(
             continue;
         }
         match scan_wallet(provider, wallet, decoder, &cancel).await? {
-            Some(card) => out.push(card),
+            Some(card) => {
+                stop = card.failure.and_then(ScanFailureKind::stop);
+                out.push(card);
+            }
             None => {
                 cancelled = true;
                 out.push(failed_card(
@@ -188,7 +228,30 @@ pub async fn run_solana_wallet_stats(
         scope: SolanaProtocolScope::pump_bonding_curve(),
         wallets: out,
         cancelled,
+        stop,
     })
+}
+
+fn not_scanned_card(wallet: SolanaPubkey, reason: ScanStop) -> SolanaWalletStats {
+    SolanaWalletStats {
+        wallet,
+        status: WalletScanStatus::NotScanned,
+        transactions_scanned: None,
+        truncated: false,
+        unexpected_payloads: 0,
+        error: None,
+        ledger: None,
+        incomplete_reasons: Vec::new(),
+        failure: None,
+        not_scanned: Some(reason),
+    }
+}
+
+/// Error card for a provider failure, typed through the shared classifier.
+fn provider_error_card(wallet: SolanaPubkey, err: &ProviderError) -> SolanaWalletStats {
+    let mut card = failed_card(wallet, sanitize_provider_text(&err.to_string()));
+    card.failure = Some(classify_provider_error(err));
+    card
 }
 
 fn failed_card(wallet: SolanaPubkey, error: String) -> SolanaWalletStats {
@@ -201,6 +264,8 @@ fn failed_card(wallet: SolanaPubkey, error: String) -> SolanaWalletStats {
         error: Some(error),
         ledger: None,
         incomplete_reasons: Vec::new(),
+        failure: None,
+        not_scanned: None,
     }
 }
 
@@ -219,12 +284,7 @@ async fn scan_wallet(
     };
     match provider.plan(&request).await {
         Err(err @ ProviderError::ConfigurationRequired { .. }) => return Err(err),
-        Err(err) => {
-            return Ok(Some(failed_card(
-                wallet,
-                sanitize_provider_text(&err.to_string()),
-            )));
-        }
+        Err(err) => return Ok(Some(provider_error_card(wallet, &err))),
         Ok(_) => {}
     }
     let mut stream = provider.scan(
@@ -250,12 +310,7 @@ async fn scan_wallet(
                 }
             }
             Err(err @ ProviderError::ConfigurationRequired { .. }) => return Err(err),
-            Err(err) => {
-                return Ok(Some(failed_card(
-                    wallet,
-                    sanitize_provider_text(&err.to_string()),
-                )));
-            }
+            Err(err) => return Ok(Some(provider_error_card(wallet, &err))),
         }
     }
     drop(stream);
@@ -325,6 +380,8 @@ async fn scan_wallet(
         error: None,
         ledger: Some(ledger),
         incomplete_reasons: reasons,
+        failure: None,
+        not_scanned: None,
     }))
 }
 

@@ -20,8 +20,8 @@ use scout_api::{
 use scout_core::{AddressBytes, RawPayload, RawSolanaTransaction, SolanaPubkey, WalletKey};
 use scout_dex_solana::{TradeEventPairing, pair_trades_with_events};
 use scout_engine::{
-    WalletScanStatus, build_solana_wallet_ledger, pump_bonding_curve_decoder,
-    run_solana_wallet_stats, solana_mainnet_chain,
+    ScanFailureKind, ScanStop, WalletScanStatus, build_solana_wallet_ledger,
+    pump_bonding_curve_decoder, run_solana_wallet_stats, solana_mainnet_chain,
 };
 use scout_providers::{HeliusProvider, ScanOrder};
 use tokio_util::sync::CancellationToken;
@@ -98,6 +98,8 @@ enum Script {
         truncated: bool,
     },
     Fail,
+    Budget,
+    RateLimit,
     Config,
     NonTx(scout_core::RawSolanaInstruction),
 }
@@ -156,6 +158,12 @@ impl HistoryProvider for Stub {
             Some(Script::Fail) => vec![Err(ProviderError::Transport(Box::new(
                 std::io::Error::other("boom https://h/?api-key=SECRET99"),
             )))],
+            Some(Script::Budget) => vec![Err(ProviderError::Other(Box::new(
+                scout_rpc::RequestBudgetExhausted { limit: 4 },
+            )))],
+            Some(Script::RateLimit) => vec![Err(ProviderError::RateLimited {
+                retry_after: Some(std::time::Duration::from_secs(3600)),
+            })],
             Some(Script::Config) => vec![Err(ProviderError::ConfigurationRequired {
                 port: "solana_history".to_string(),
                 detail: "set SCOUT_HELIUS_API_KEY".to_string(),
@@ -392,4 +400,92 @@ async fn real_helius_provider_wallet_scan_matches_direct_ledger() {
     let card = &report.wallets[0];
     let direct = build_solana_wallet_ledger(&user, &txs, &decoder).unwrap();
     assert_eq!(card.ledger.as_ref().unwrap(), &direct);
+}
+
+async fn stop_run(stop_script: Script) -> (scout_engine::SolanaWalletStatsReport, Stub) {
+    let txs = all_fixture_txs().await;
+    let good = traders(&txs)[0];
+    let (stopper, later) = ([55u8; 32], [56u8; 32]);
+    let stub = Stub::new(BTreeMap::from([
+        (
+            good,
+            Script::Txs {
+                txs: txs.clone(),
+                truncated: false,
+            },
+        ),
+        (stopper, stop_script),
+        (
+            later,
+            Script::Txs {
+                txs,
+                truncated: false,
+            },
+        ),
+    ]));
+    let decoder = pump_bonding_curve_decoder().unwrap();
+    let report = run_solana_wallet_stats(
+        &stub,
+        &[good, stopper, later, [57u8; 32]],
+        &decoder,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    (report, stub)
+}
+
+#[tokio::test]
+async fn budget_exhaustion_stops_the_run_and_marks_later_wallets_not_scanned() {
+    let (report, stub) = stop_run(Script::Budget).await;
+    assert_eq!(report.wallets.len(), 4, "every input wallet stays");
+    assert_ne!(report.wallets[0].status, WalletScanStatus::Error);
+    let hit = &report.wallets[1];
+    assert_eq!(hit.status, WalletScanStatus::Error);
+    assert_eq!(
+        hit.failure,
+        Some(ScanFailureKind::BudgetExhausted { limit: 4 })
+    );
+    for w in &report.wallets[2..] {
+        assert_eq!(w.status, WalletScanStatus::NotScanned);
+        assert_eq!(w.not_scanned, Some(ScanStop::BudgetExhausted { limit: 4 }));
+        assert!(w.ledger.is_none() && w.transactions_scanned.is_none() && w.error.is_none());
+        assert!(!w.coverage_complete());
+    }
+    assert_eq!(report.stop, Some(ScanStop::BudgetExhausted { limit: 4 }));
+    assert!(report.any_data());
+    assert!(!report.all_failed());
+    assert_eq!(
+        stub.seen.lock().unwrap().len(),
+        2,
+        "no request for wallets after the stop"
+    );
+    assert!(report.is_coverage_incomplete());
+}
+
+#[tokio::test]
+async fn terminal_rate_limit_stops_the_run_like_budget() {
+    let (report, stub) = stop_run(Script::RateLimit).await;
+    assert_eq!(
+        report.wallets[1].failure,
+        Some(ScanFailureKind::RateLimited {
+            retry_after_secs: Some(3600)
+        })
+    );
+    assert_eq!(report.wallets[2].status, WalletScanStatus::NotScanned);
+    assert_eq!(
+        report.stop,
+        Some(ScanStop::RateLimited {
+            retry_after_secs: Some(3600)
+        })
+    );
+    assert_eq!(stub.seen.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn other_errors_do_not_set_a_stop() {
+    let (report, _) = stop_run(Script::Fail).await;
+    assert_eq!(report.stop, None);
+    assert_eq!(report.wallets[1].failure, Some(ScanFailureKind::Other));
+    assert_ne!(report.wallets[2].status, WalletScanStatus::NotScanned);
 }

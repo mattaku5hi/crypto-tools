@@ -97,6 +97,8 @@ impl Spec {
             error: None,
             ledger: Some(l),
             incomplete_reasons: Vec::new(),
+            failure: None,
+            not_scanned: None,
         }
     }
 }

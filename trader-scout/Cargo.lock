@@ -4146,10 +4146,12 @@ dependencies = [
  "scout-core",
  "scout-engine",
  "scout-providers",
+ "scout-rpc",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
+ "wiremock",
 ]
 
 [[package]]
@@ -4164,10 +4166,12 @@ dependencies = [
  "scout-core",
  "scout-engine",
  "scout-providers",
+ "scout-rpc",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
+ "wiremock",
 ]
 
 [[package]]

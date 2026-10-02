@@ -9,7 +9,7 @@
 //!   or [`WalletRankReport::excluded`]; nothing is dropped silently.
 //! * A wallet may fail several gates: ALL reasons are recorded, the
 //!   primary one is the first in the fixed [`ExclusionReason`] order:
-//!   `provider_error`, `incomplete_coverage`, `no_activity`,
+//!   `provider_error`, `not_scanned`, `incomplete_coverage`, `no_activity`,
 //!   `no_pump_activity`, `unknown_basis`, `metric_unknown`,
 //!   `insufficient_closed_episodes`, `insufficient_active_days`,
 //!   `activity_unknown`, `activity_ceiling_trades_per_day`,
@@ -174,6 +174,8 @@ impl Default for RankPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ExclusionReason {
     ProviderError,
+    /// The run stopped (budget / terminal rate limit) before this wallet.
+    NotScanned,
     IncompleteCoverage,
     NoActivity,
     NoPumpActivity,
@@ -195,6 +197,7 @@ impl ExclusionReason {
     pub const fn label(self) -> &'static str {
         match self {
             Self::ProviderError => "provider_error",
+            Self::NotScanned => "not_scanned",
             Self::IncompleteCoverage => "incomplete_coverage",
             Self::NoActivity => "no_activity",
             Self::NoPumpActivity => "no_pump_activity",
@@ -461,6 +464,7 @@ fn status_reason(status: WalletScanStatus) -> Option<ExclusionReason> {
     match status {
         WalletScanStatus::Ok => None,
         WalletScanStatus::Error => Some(ExclusionReason::ProviderError),
+        WalletScanStatus::NotScanned => Some(ExclusionReason::NotScanned),
         WalletScanStatus::Incomplete => Some(ExclusionReason::IncompleteCoverage),
         WalletScanStatus::NoActivity => Some(ExclusionReason::NoActivity),
         WalletScanStatus::NoPumpActivity => Some(ExclusionReason::NoPumpActivity),
