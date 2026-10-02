@@ -86,9 +86,11 @@ buyer-intersect \
 
 Поддерживаемые флаги: `--input`, `--min-token-hits K` (по умолчанию 2), `--format table|jsonl` (по умолчанию `table`), `--max-pages-per-token N`.
 
-`--max-pages-per-token N` (1..=200, по умолчанию 10; ошибка диапазона — exit 2) — бюджет страниц провайдера НА КАЖДЫЙ входной токен (Helius full mode: 100 транзакций на страницу). Это не `--max-requests` из спецификации: ретраи в бюджет не входят (не реализовано). Исчерпание бюджета при непрочитанном курсоре помечает токен `truncated`, запуск `partial`, exit 3. Эффективное значение печатается в блоке scope на stderr и в `run_meta.budget`.
+`--max-pages-per-token N` (1..=200, по умолчанию 10; ошибка диапазона — exit 2) — бюджет страниц провайдера НА КАЖДЫЙ входной токен (Helius full mode: 100 транзакций на страницу). Ретраи в этот бюджет не входят; их учитывает `--max-requests`. Исчерпание бюджета при непрочитанном курсоре помечает токен `truncated`, запуск `partial`, exit 3. Эффективное значение печатается в блоке scope на stderr и в `run_meta.budget`.
 
-Общие опции §2 (`--since`, `--until`, `--max-requests`, `--allow-partial`, `--manifest`, `--chain`, `--input-format` и др.) и опции §3 кроме `--min-token-hits` пока не реализованы.
+`--max-requests N` (N ≥ 1; без флага — без лимита, но счетчик ведется) ограничивает ВСЕ HTTP-попытки запуска, включая ретраи; `requests_made` печатается в stderr и в `run_meta`. При исчерпании бюджета или при 429 с `Retry-After` больше лимита ожидания (60 с) скан останавливается: прерванный токен — `failed` с `error_kind`, остальные — `not_scanned` с `stop_reason` (`{kind: budget_exhausted|rate_limited, limit?, retry_after_secs?}`), запросы по ним не делаются. Exit: бюджет — 3; rate limit — 3, если данные уже получены, и 4, если не получено ни одной транзакции.
+
+Общие опции §2 (`--since`, `--until`, `--allow-partial`, `--manifest`, `--chain`, `--input-format` и др.) и опции §3 кроме `--min-token-hits` пока не реализованы.
 
 `table`: одна строка на кошелек `<полный адрес> hit_count=N`. `jsonl`: `run_meta`, затем `buyer_match` (по одному на кошелек), затем терминальный `run_summary`. Адреса полные (base58 для Solana), имена сетей как во входном синтаксисе. Неизвестное не равно нулю: у токена со статусом `failed` счетчики `null`.
 
@@ -98,7 +100,7 @@ buyer-intersect \
 {"schema_version":1,"kind":"run_summary","run_id":"buyer-intersect-20261002T123456Z","status":"partial","cancelled":false,"records":1,"incomplete_reasons":["token <MINT_B_BASE58>: scan failed: ..."],"tokens":[{"token":{"chain":"solana","token":"<MINT_A_BASE58>"},"status":"ok","error":null,"transactions_scanned":250,"qualified_buyers":3,"diagnostics":{"decoded_buys":9,"malformed_instructions":0,"unknown_discriminator_instructions":0,"unverified_variant_buys":0,"failed_transactions":1,"positive_delta_without_instruction":0}},{"token":{"chain":"solana","token":"<MINT_B_BASE58>"},"status":"failed","error":"...","transactions_scanned":null,"qualified_buyers":null,"diagnostics":null}]}
 ```
 
-`run_summary.status` — `complete` или `partial`; `tokens[].status` — `ok`, `truncated` (счетчики — нижняя граница) или `failed`. Строки в примере сокращены/иллюстративны. Записи `wallet_ref`, `wallet_rank`, `wallet_stats`, `wallet_excluded` здесь не выпускаются.
+`run_summary.status` — `complete` или `partial`; `tokens[].status` — `ok`, `truncated` (счетчики — нижняя граница), `failed` (с `error_kind`) или `not_scanned` (с `stop_reason`, счетчики `null`). Строки в примере сокращены/иллюстративны. Записи `wallet_ref`, `wallet_rank`, `wallet_stats`, `wallet_excluded` здесь не выпускаются.
 
 ## 4. wallet-rank
 

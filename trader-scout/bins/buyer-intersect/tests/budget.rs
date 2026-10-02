@@ -26,7 +26,15 @@ struct Out {
     stderr: String,
 }
 
+const INPUT3: &str = "solana:AB48pUATr4vEsxdAp54X9pvqyae2whMR2B52rEuJpump\n\
+                      solana:NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump\n\
+                      solana:GGf4EX9qbzxuboefDTEvqHdysHqtZSQC7Sahprjpump\n";
+
 async fn run(endpoint: Option<String>, args: Vec<String>) -> Out {
+    run_input(endpoint, args, INPUT).await
+}
+
+async fn run_input(endpoint: Option<String>, args: Vec<String>, input: &'static str) -> Out {
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new(BIN);
         cmd.args(args)
@@ -43,7 +51,7 @@ async fn run(endpoint: Option<String>, args: Vec<String>) -> Out {
             .stdin
             .take()
             .unwrap()
-            .write_all(INPUT.as_bytes())
+            .write_all(input.as_bytes())
             .unwrap();
         let o = child.wait_with_output().unwrap();
         Out {
@@ -123,12 +131,91 @@ async fn budget_smaller_than_needed_is_partial_exit_3() {
     assert_eq!(summary["status"], "partial");
     assert_eq!(summary["tokens"][0]["status"], "ok");
     assert_eq!(summary["tokens"][1]["status"], "failed");
+    assert_eq!(
+        summary["tokens"][1]["error_kind"]["kind"],
+        "budget_exhausted"
+    );
+    assert_eq!(summary["tokens"][1]["error_kind"]["limit"], 4);
+    assert!(summary["tokens"][1]["stop_reason"].is_null());
     assert!(
         summary["tokens"][1]["error"]
             .as_str()
             .unwrap()
             .contains("request budget exhausted")
     );
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
+    assert!(!out.stdout.contains(KEY) && !out.stderr.contains(KEY));
+}
+
+#[tokio::test]
+async fn budget_hit_mid_run_marks_remaining_tokens_not_scanned_and_stops_requests() {
+    let server = three_page_server().await;
+    // A: 3 requests, B: 1 request then the budget is spent, C: untouched.
+    let out = run_input(Some(server.uri()), args(&["--max-requests", "4"]), INPUT3).await;
+    assert_eq!(out.code, 3, "stderr: {}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("request budget exhausted after 4 requests (limit 4)"),
+        "{}",
+        out.stderr
+    );
+    let lines = jsonl(&out);
+    let summary = lines.last().unwrap();
+    assert_eq!(summary["status"], "partial");
+    let tokens = summary["tokens"].as_array().unwrap();
+    assert_eq!(tokens.len(), 3, "N never shrinks");
+    assert_eq!(tokens[0]["status"], "ok");
+    assert_eq!(tokens[1]["status"], "failed");
+    assert_eq!(tokens[1]["error_kind"]["kind"], "budget_exhausted");
+    assert_eq!(tokens[2]["status"], "not_scanned");
+    assert_eq!(tokens[2]["stop_reason"]["kind"], "budget_exhausted");
+    assert_eq!(tokens[2]["stop_reason"]["limit"], 4);
+    assert!(tokens[2]["transactions_scanned"].is_null());
+    assert!(tokens[2]["qualified_buyers"].is_null());
+    assert!(tokens[2]["diagnostics"].is_null());
+    assert!(tokens[2]["error"].is_null());
+    assert_eq!(lines[0]["requests_made"], 4);
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn rate_limit_mid_run_is_exit_3_with_typed_statuses_and_no_extra_requests() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let server = MockServer::start().await;
+    let calls = AtomicUsize::new(0);
+    // Token A's three pages succeed; the 4th request (token B) is a
+    // terminal 429 (Retry-After above the cap).
+    Mock::given(method("POST"))
+        .respond_with(move |_req: &wiremock::Request| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            match n {
+                0 => ResponseTemplate::new(200).set_body_json(fixture_page(Some("t1"))),
+                1 => ResponseTemplate::new(200).set_body_json(fixture_page(Some("t2"))),
+                2 => ResponseTemplate::new(200).set_body_json(fixture_page(None)),
+                _ => ResponseTemplate::new(429).insert_header("Retry-After", "3600"),
+            }
+        })
+        .mount(&server)
+        .await;
+    let out = run_input(Some(server.uri()), args(&[]), INPUT3).await;
+    assert_eq!(out.code, 3, "stderr: {}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("rate limited; server asked to retry after 3600s (cap 60s)"),
+        "{}",
+        out.stderr
+    );
+    let lines = jsonl(&out);
+    let summary = lines.last().unwrap();
+    assert_eq!(summary["status"], "partial");
+    let tokens = summary["tokens"].as_array().unwrap();
+    assert_eq!(tokens[0]["status"], "ok");
+    assert_eq!(tokens[1]["status"], "failed");
+    assert_eq!(tokens[1]["error_kind"]["kind"], "rate_limited");
+    assert_eq!(tokens[1]["error_kind"]["retry_after_secs"], 3600);
+    assert_eq!(tokens[2]["status"], "not_scanned");
+    assert_eq!(tokens[2]["stop_reason"]["kind"], "rate_limited");
+    assert_eq!(tokens[2]["stop_reason"]["retry_after_secs"], 3600);
     assert_eq!(server.received_requests().await.unwrap().len(), 4);
     assert!(!out.stdout.contains(KEY) && !out.stderr.contains(KEY));
 }
@@ -190,9 +277,9 @@ async fn long_retry_after_is_exit_4_with_message_and_no_key() {
     );
     assert!(out.stdout.is_empty());
     assert!(!out.stdout.contains(KEY) && !out.stderr.contains(KEY));
-    // Terminal at once (no retry sleeping): exactly one attempt per
-    // input token (the engine still tries the second token).
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    // Terminal at once (no retry sleeping) and the run stops: exactly
+    // one request, the second token is never requested.
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
 #[tokio::test]

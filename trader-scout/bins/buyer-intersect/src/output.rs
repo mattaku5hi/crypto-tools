@@ -10,8 +10,8 @@
 use scout_app::{SCHEMA_VERSION, chain_profile_name};
 use scout_core::{AssetKey, ChainKey, WalletKey};
 use scout_engine::{
-    BuyerMatch, PumpTradeVariant, SolanaBuyerIntersectReport, SolanaProtocolScope,
-    SolanaTokenScanSummary, TxQualificationDiagnostics,
+    BuyerMatch, PumpTradeVariant, ScanFailureKind, ScanStop, SolanaBuyerIntersectReport,
+    SolanaProtocolScope, SolanaTokenScanSummary, TokenScanStatus, TxQualificationDiagnostics,
 };
 use serde::Serialize;
 
@@ -102,14 +102,56 @@ pub struct TokenDiagnosticsDto {
     pub positive_delta_without_instruction: u64,
 }
 
-/// Per-token scan status. For `failed` every count is `null`: unknown is
-/// never reported as zero. For `truncated` counts are lower bounds.
+/// Typed run-stop reason / failure kind: `kind` is `budget_exhausted`,
+/// `rate_limited` (or `other` for a failure kind with no stop).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ReasonDto {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
+}
+
+pub fn stop_dto(stop: ScanStop) -> ReasonDto {
+    match stop {
+        ScanStop::BudgetExhausted { limit } => ReasonDto {
+            kind: "budget_exhausted",
+            limit: Some(limit),
+            retry_after_secs: None,
+        },
+        ScanStop::RateLimited { retry_after_secs } => ReasonDto {
+            kind: "rate_limited",
+            limit: None,
+            retry_after_secs,
+        },
+    }
+}
+
+fn failure_dto(kind: ScanFailureKind) -> ReasonDto {
+    kind.stop().map_or(
+        ReasonDto {
+            kind: "other",
+            limit: None,
+            retry_after_secs: None,
+        },
+        stop_dto,
+    )
+}
+
+/// Per-token scan status. For `failed` and `not_scanned` every count is
+/// `null`: unknown is never reported as zero. For `truncated` counts are
+/// lower bounds.
 #[derive(Debug, Serialize)]
 pub struct TokenStatusDto {
     pub token: AssetDto,
-    /// `ok`, `truncated` or `failed`.
+    /// `ok`, `truncated`, `failed` or `not_scanned`.
     pub status: &'static str,
     pub error: Option<String>,
+    /// For `failed`: the classified cause.
+    pub error_kind: Option<ReasonDto>,
+    /// For `not_scanned`: why the run stopped before this token.
+    pub stop_reason: Option<ReasonDto>,
     pub transactions_scanned: Option<u64>,
     pub qualified_buyers: Option<u64>,
     pub diagnostics: Option<TokenDiagnosticsDto>,
@@ -221,21 +263,40 @@ fn token_status(
     redact: &dyn Fn(&str) -> String,
 ) -> Result<TokenStatusDto, String> {
     let asset = asset_dto(&token.asset)?;
-    if let Some(error) = &token.error {
-        return Ok(TokenStatusDto {
-            token: asset,
-            status: "failed",
-            error: Some(redact(error)),
-            transactions_scanned: None,
-            qualified_buyers: None,
-            diagnostics: None,
-        });
+    match &token.status {
+        TokenScanStatus::Ok => {}
+        TokenScanStatus::Failed { kind, message } => {
+            return Ok(TokenStatusDto {
+                token: asset,
+                status: "failed",
+                error: Some(redact(message)),
+                error_kind: Some(failure_dto(*kind)),
+                stop_reason: None,
+                transactions_scanned: None,
+                qualified_buyers: None,
+                diagnostics: None,
+            });
+        }
+        TokenScanStatus::NotScanned { reason } => {
+            return Ok(TokenStatusDto {
+                token: asset,
+                status: "not_scanned",
+                error: None,
+                error_kind: None,
+                stop_reason: Some(stop_dto(*reason)),
+                transactions_scanned: None,
+                qualified_buyers: None,
+                diagnostics: None,
+            });
+        }
     }
     let d = &token.diagnostics;
     Ok(TokenStatusDto {
         token: asset,
         status: if token.truncated { "truncated" } else { "ok" },
         error: None,
+        error_kind: None,
+        stop_reason: None,
         transactions_scanned: Some(token.transactions_scanned),
         qualified_buyers: Some(token.qualified_buyers),
         diagnostics: Some(TokenDiagnosticsDto {
@@ -330,7 +391,14 @@ mod tests {
             asset,
             transactions_scanned: 250,
             truncated,
-            error: failed.then(|| "scan failed at https://h/?api-key=SECRET99".to_string()),
+            status: if failed {
+                TokenScanStatus::Failed {
+                    kind: ScanFailureKind::Other,
+                    message: "scan failed at https://h/?api-key=SECRET99".to_string(),
+                }
+            } else {
+                TokenScanStatus::Ok
+            },
             qualified_buyers: 3,
             diagnostics: TxQualificationDiagnostics::default(),
             positive_delta_without_instruction: 0,
@@ -363,6 +431,7 @@ mod tests {
             malformed_samples: vec![],
             unknown_discriminator_samples: vec![],
             cancelled: false,
+            stop: None,
         }
     }
 
@@ -458,6 +527,38 @@ mod tests {
         let text = v[2].to_string();
         assert!(!text.contains("SECRET99"));
         assert!(text.contains("<redacted>"));
+    }
+
+    #[test]
+    fn not_scanned_token_has_null_counts_and_typed_reason() {
+        let mut r = report(true);
+        r.per_token[1].status = TokenScanStatus::Failed {
+            kind: ScanFailureKind::BudgetExhausted { limit: 4 },
+            message: "request budget exhausted".to_string(),
+        };
+        let stop = ScanStop::BudgetExhausted { limit: 4 };
+        let mut third = r.per_token[1].clone();
+        third.status = TokenScanStatus::NotScanned { reason: stop };
+        r.per_token.push(third);
+        let summary = run_summary_record("run-1", &r, true, &|t| t.to_string()).unwrap();
+        let v = serde_json::to_value(summary).unwrap();
+        let failed = &v["tokens"][1];
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(failed["error_kind"]["kind"], "budget_exhausted");
+        assert_eq!(failed["error_kind"]["limit"], 4);
+        let skipped = &v["tokens"][2];
+        assert_eq!(skipped["status"], "not_scanned");
+        assert!(skipped["error"].is_null());
+        assert!(skipped["transactions_scanned"].is_null());
+        assert!(skipped["qualified_buyers"].is_null());
+        assert!(skipped["diagnostics"].is_null());
+        assert_eq!(skipped["stop_reason"]["kind"], "budget_exhausted");
+        assert_eq!(skipped["stop_reason"]["limit"], 4);
+        assert!(
+            v["incomplete_reasons"]
+                .to_string()
+                .contains("not scanned: request budget exhausted (limit 4)")
+        );
     }
 
     #[test]

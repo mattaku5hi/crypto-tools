@@ -29,7 +29,8 @@ use scout_dex_solana::{
     VariantVerification,
 };
 use scout_engine::{
-    PUMP_BONDING_CURVE_PROGRAM_ID, pump_bonding_curve_decoder, qualify_bonding_curve_buys,
+    PUMP_BONDING_CURVE_PROGRAM_ID, ScanFailureKind, ScanStop, TokenScanStatus,
+    classify_provider_error, pump_bonding_curve_decoder, qualify_bonding_curve_buys,
     qualify_bonding_curve_buys_with_policy, run_solana_buyer_intersect,
     run_solana_buyer_intersect_with_policy, sanitize_provider_text, solana_mainnet_chain,
 };
@@ -505,7 +506,16 @@ async fn one_token_failure_keeps_n_and_marks_partial_b08() {
     .await
     .unwrap();
     assert_eq!(report.base.input_token_count, 3);
-    assert!(report.per_token[1].error.is_some());
+    assert!(matches!(
+        report.per_token[1].status,
+        TokenScanStatus::Failed {
+            kind: ScanFailureKind::Other,
+            ..
+        }
+    ));
+    // A non-terminal error keeps scanning: token 3 was scanned.
+    assert_eq!(report.per_token[2].status, TokenScanStatus::Ok);
+    assert!(report.stop.is_none());
     assert!(report.is_coverage_incomplete());
     // Hits from the healthy tokens survive.
     assert_eq!(report.base.matches.len(), 1);
@@ -530,7 +540,7 @@ async fn mid_stream_error_is_recorded_and_secret_is_redacted() {
     )
     .await
     .unwrap();
-    let error = report.per_token[0].error.clone().unwrap();
+    let error = report.per_token[0].error_text().unwrap().to_string();
     assert!(!error.contains("SECRETKEY123"), "{error}");
     assert!(error.contains("<redacted>"));
     assert!(report.is_coverage_incomplete());
@@ -1335,4 +1345,172 @@ async fn router_forwarded_buy_exact_sol_in_is_not_attributed_to_user_or_recipien
             .iter()
             .any(|(_, owner)| *owner == user)
     );
+}
+
+/// Provider whose token `fail_mint` yields one transaction then a
+/// terminal error; records every mint it was asked to plan or scan.
+struct StopStub {
+    fail_mint: SolanaPubkey,
+    make_error: fn() -> ProviderError,
+    requested: std::sync::Mutex<Vec<SolanaPubkey>>,
+}
+
+impl StopStub {
+    fn new(fail_mint: u8, make_error: fn() -> ProviderError) -> Self {
+        Self {
+            fail_mint: pk(fail_mint),
+            make_error,
+            requested: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn requested_mints(&self) -> Vec<SolanaPubkey> {
+        self.requested.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl HistoryProvider for StopStub {
+    fn capabilities(&self) -> SourceCapabilities {
+        SourceCapabilities::empty()
+    }
+
+    async fn plan(&self, request: &ScanRequest) -> Result<ScanPlan, ProviderError> {
+        if let ScanRequest::TokenMarketActivity {
+            asset: AssetKey::Token(_, AddressBytes::Solana(mint)),
+        } = request
+        {
+            self.requested.lock().unwrap().push(*mint);
+        }
+        Ok(ScanPlan {
+            request_echo: String::new(),
+            capabilities: SourceCapabilities::empty(),
+        })
+    }
+
+    fn scan(
+        &self,
+        task: ScanTask,
+        _cancel: CancellationToken,
+    ) -> BoxStream<'_, Result<ScanEnvelope, ProviderError>> {
+        let ScanRequest::TokenMarketActivity {
+            asset: AssetKey::Token(_, AddressBytes::Solana(mint)),
+        } = &task.request
+        else {
+            return Box::pin(stream::empty());
+        };
+        self.requested.lock().unwrap().push(*mint);
+        let mint_byte = mint[0];
+        let mut items = vec![Ok(ScanEnvelope {
+            payload: RawPayload::SolanaTransaction(buy_tx(1, mint_byte)),
+            truncated: false,
+        })];
+        if *mint == self.fail_mint {
+            items.push(Err((self.make_error)()));
+        }
+        Box::pin(stream::iter(items))
+    }
+}
+
+fn budget_error() -> ProviderError {
+    ProviderError::Other(Box::new(scout_rpc::RequestBudgetExhausted { limit: 4 }))
+}
+
+fn rate_limited_error() -> ProviderError {
+    ProviderError::RateLimited {
+        retry_after: Some(std::time::Duration::from_secs(3600)),
+    }
+}
+
+async fn stop_run(
+    fail: fn() -> ProviderError,
+) -> (scout_engine::SolanaBuyerIntersectReport, Vec<SolanaPubkey>) {
+    let provider = StopStub::new(2, fail);
+    let report = run_solana_buyer_intersect(
+        &provider,
+        &[token(1), token(2), token(3)],
+        2,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    (report, provider.requested_mints())
+}
+
+fn assert_stopped_after_token_2(
+    report: &scout_engine::SolanaBuyerIntersectReport,
+    requested: &[SolanaPubkey],
+    stop: ScanStop,
+    kind: ScanFailureKind,
+) {
+    assert_eq!(report.base.input_token_count, 3);
+    assert_eq!(report.per_token.len(), 3, "N never shrinks");
+    assert_eq!(report.per_token[0].status, TokenScanStatus::Ok);
+    assert!(matches!(
+        &report.per_token[1].status,
+        TokenScanStatus::Failed { kind: k, .. } if *k == kind
+    ));
+    assert_eq!(
+        report.per_token[2].status,
+        TokenScanStatus::NotScanned { reason: stop }
+    );
+    assert!(report.per_token[2].is_unknown());
+    assert_eq!(report.stop, Some(stop));
+    // Provider saw plan+scan for tokens 1 and 2 only, never token 3.
+    assert!(!requested.contains(&pk(3)), "{requested:?}");
+    assert_eq!(requested, &[pk(1), pk(1), pk(2), pk(2)]);
+    // Never presented as complete.
+    assert!(report.is_coverage_incomplete());
+    let reasons = report.incomplete_reasons().join("\n");
+    assert!(reasons.contains("not scanned"), "{reasons}");
+    // Hits observed before the stop (tokens 1 and 2) are kept, but the
+    // run is incomplete: the record is never presented as complete.
+    assert_eq!(report.base.matches.len(), 1);
+    assert!(report.per_token[1].qualified_buyers >= 1);
+}
+
+#[tokio::test]
+async fn budget_exhausted_mid_run_stops_and_marks_rest_not_scanned() {
+    let (report, requested) = stop_run(budget_error).await;
+    assert_stopped_after_token_2(
+        &report,
+        &requested,
+        ScanStop::BudgetExhausted { limit: 4 },
+        ScanFailureKind::BudgetExhausted { limit: 4 },
+    );
+}
+
+#[tokio::test]
+async fn rate_limited_mid_run_stops_and_marks_rest_not_scanned() {
+    let (report, requested) = stop_run(rate_limited_error).await;
+    assert_stopped_after_token_2(
+        &report,
+        &requested,
+        ScanStop::RateLimited {
+            retry_after_secs: Some(3600),
+        },
+        ScanFailureKind::RateLimited {
+            retry_after_secs: Some(3600),
+        },
+    );
+}
+
+#[test]
+fn classification_is_typed_and_other_errors_do_not_stop() {
+    assert_eq!(
+        classify_provider_error(&budget_error()),
+        ScanFailureKind::BudgetExhausted { limit: 4 }
+    );
+    assert_eq!(
+        classify_provider_error(&ProviderError::RateLimited { retry_after: None }),
+        ScanFailureKind::RateLimited {
+            retry_after_secs: None
+        }
+    );
+    let other = ProviderError::Other(Box::new(std::io::Error::other(
+        "request budget exhausted (text only, wrong type)",
+    )));
+    let kind = classify_provider_error(&other);
+    assert_eq!(kind, ScanFailureKind::Other);
+    assert_eq!(kind.stop(), None);
 }

@@ -19,6 +19,15 @@
 //! unexpected payload shapes, delta overflow and out-of-scope slots all
 //! make coverage incomplete.
 //!
+//! Run-terminal errors (typed, [`ScanStop`]): a `RequestBudgetExhausted`
+//! (user-chosen `--max-requests`) or a `RateLimited` (Retry-After above
+//! the transport cap) will fail every further request too. On the first
+//! one the run stops: the interrupted token is `Failed` with its kind,
+//! every remaining token is `NotScanned { reason }`, and NO further
+//! provider request is issued. All other per-token errors keep going
+//! with the next token. Classification of a `ProviderError` lives in
+//! one place, [`classify_provider_error`].
+//!
 //! Bounded work: tokens are scanned sequentially, each envelope is
 //! consumed and dropped before the next is polled; retained state is
 //! the (wallet, input-token) hit set plus capped diagnostic samples.
@@ -29,6 +38,7 @@ use futures::StreamExt as _;
 use scout_api::{HistoryProvider, ProviderError, ScanRequest, ScanTask};
 use scout_core::{AddressBytes, AssetKey, ChainFamily, RawPayload, WalletKey};
 use scout_dex_solana::{PUMP_IDL_SHA256, PumpTradeVariant};
+use scout_rpc::RequestBudgetExhausted;
 use tokio_util::sync::CancellationToken;
 
 use crate::buyer_intersect::{BuyerIntersectReport, threshold_and_sort_matches};
@@ -93,6 +103,74 @@ impl SolanaProtocolScope {
     }
 }
 
+/// Why a run stopped before scanning every token. Both causes are
+/// terminal for the whole run, not just one token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanStop {
+    /// The client's total request budget (`--max-requests`) is spent.
+    BudgetExhausted { limit: u64 },
+    /// The server asked to wait longer than the transport's cap.
+    RateLimited { retry_after_secs: Option<u64> },
+}
+
+/// Classified cause of a failed token scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanFailureKind {
+    BudgetExhausted {
+        limit: u64,
+    },
+    RateLimited {
+        retry_after_secs: Option<u64>,
+    },
+    /// Any other provider error; the run continues with the next token.
+    Other,
+}
+
+impl ScanFailureKind {
+    /// The run-terminal stop this failure implies, if any.
+    #[must_use]
+    pub const fn stop(self) -> Option<ScanStop> {
+        match self {
+            Self::BudgetExhausted { limit } => Some(ScanStop::BudgetExhausted { limit }),
+            Self::RateLimited { retry_after_secs } => {
+                Some(ScanStop::RateLimited { retry_after_secs })
+            }
+            Self::Other => None,
+        }
+    }
+}
+
+/// The ONE place a `ProviderError` is classified (budget exhaustion is
+/// a boxed `scout_rpc::RequestBudgetExhausted`).
+#[must_use]
+pub fn classify_provider_error(err: &ProviderError) -> ScanFailureKind {
+    match err {
+        ProviderError::RateLimited { retry_after } => ScanFailureKind::RateLimited {
+            retry_after_secs: retry_after.map(|d| d.as_secs()),
+        },
+        ProviderError::Other(inner) => inner
+            .downcast_ref::<RequestBudgetExhausted>()
+            .map_or(ScanFailureKind::Other, |e| {
+                ScanFailureKind::BudgetExhausted { limit: e.limit }
+            }),
+        _ => ScanFailureKind::Other,
+    }
+}
+
+/// Per-token outcome. Never inferred from counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenScanStatus {
+    /// Scan ended without a provider error (may still be `truncated`).
+    Ok,
+    /// Scan (or plan) failed; `message` is sanitized.
+    Failed {
+        kind: ScanFailureKind,
+        message: String,
+    },
+    /// No request was issued: the run stopped earlier.
+    NotScanned { reason: ScanStop },
+}
+
 /// Per-token scan result. Failure/truncation are explicit, never zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolanaTokenScanSummary {
@@ -100,8 +178,7 @@ pub struct SolanaTokenScanSummary {
     /// `RawPayload::SolanaTransaction` envelopes qualified for this token.
     pub transactions_scanned: u64,
     pub truncated: bool,
-    /// Sanitized failure text if the token's scan (or plan) failed.
-    pub error: Option<String>,
+    pub status: TokenScanStatus,
     /// Distinct wallets with a qualified buy of THIS token so far.
     pub qualified_buyers: u64,
     pub diagnostics: TxQualificationDiagnostics,
@@ -127,6 +204,9 @@ pub struct SolanaBuyerIntersectReport {
     /// Up to 5 hex discriminators of unknown instructions of the program.
     pub unknown_discriminator_samples: Vec<String>,
     pub cancelled: bool,
+    /// Set when the run stopped early on a run-terminal error; tokens
+    /// after the interrupted one are `NotScanned`.
+    pub stop: Option<ScanStop>,
 }
 
 impl SolanaBuyerIntersectReport {
@@ -142,11 +222,17 @@ impl SolanaBuyerIntersectReport {
                     token.asset_label()
                 ));
             }
-            if let Some(error) = &token.error {
-                reasons.push(format!(
-                    "token {}: scan failed: {error}",
+            match &token.status {
+                TokenScanStatus::Ok => {}
+                TokenScanStatus::Failed { message, .. } => reasons.push(format!(
+                    "token {}: scan failed: {message}",
                     token.asset_label()
-                ));
+                )),
+                TokenScanStatus::NotScanned { reason } => reasons.push(format!(
+                    "token {}: not scanned: {}",
+                    token.asset_label(),
+                    reason.describe()
+                )),
             }
         }
         let d = &self.diagnostics;
@@ -207,7 +293,54 @@ impl SolanaBuyerIntersectReport {
     }
 }
 
+impl ScanStop {
+    /// Short human text (no secrets: numbers only).
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::BudgetExhausted { limit } => {
+                format!("request budget exhausted (limit {limit})")
+            }
+            Self::RateLimited {
+                retry_after_secs: Some(s),
+            } => format!("rate limited (server asked to retry after {s}s)"),
+            Self::RateLimited {
+                retry_after_secs: None,
+            } => "rate limited (no Retry-After)".to_string(),
+        }
+    }
+}
+
 impl SolanaTokenScanSummary {
+    fn new(asset: AssetKey, status: TokenScanStatus) -> Self {
+        Self {
+            asset,
+            transactions_scanned: 0,
+            truncated: false,
+            status,
+            qualified_buyers: 0,
+            diagnostics: TxQualificationDiagnostics::default(),
+            positive_delta_without_instruction: 0,
+            unexpected_payloads: 0,
+        }
+    }
+
+    /// True when the token was not scanned or its scan failed: counts
+    /// are unknown, not zero.
+    #[must_use]
+    pub const fn is_unknown(&self) -> bool {
+        !matches!(self.status, TokenScanStatus::Ok)
+    }
+
+    /// Sanitized failure text, if the scan failed.
+    #[must_use]
+    pub fn error_text(&self) -> Option<&str> {
+        match &self.status {
+            TokenScanStatus::Failed { message, .. } => Some(message),
+            _ => None,
+        }
+    }
+
     /// Display label (base58 mint when available).
     #[must_use]
     pub fn asset_label(&self) -> String {
@@ -304,22 +437,14 @@ pub async fn run_solana_buyer_intersect_with_policy(
     let mut unknown_discriminator_samples: Vec<String> = Vec::new();
     let mut first_error: Option<ProviderError> = None;
     let mut cancelled = false;
+    let mut stop: Option<ScanStop> = None;
 
-    'tokens: for token in &tokens {
+    'tokens: for (index, token) in tokens.iter().enumerate() {
         if cancel.is_cancelled() {
             cancelled = true;
             break;
         }
-        let mut summary = SolanaTokenScanSummary {
-            asset: token.clone(),
-            transactions_scanned: 0,
-            truncated: false,
-            error: None,
-            qualified_buyers: 0,
-            diagnostics: TxQualificationDiagnostics::default(),
-            positive_delta_without_instruction: 0,
-            unexpected_payloads: 0,
-        };
+        let mut summary = SolanaTokenScanSummary::new(token.clone(), TokenScanStatus::Ok);
         let mut token_buyers: BTreeSet<WalletKey> = BTreeSet::new();
 
         let request = ScanRequest::TokenMarketActivity {
@@ -408,13 +533,31 @@ pub async fn run_solana_buyer_intersect_with_policy(
             }
         }
 
+        let mut run_stop = None;
         if let Some(err) = failure {
-            summary.error = Some(sanitize_provider_text(&err.to_string()));
+            let kind = classify_provider_error(&err);
+            run_stop = kind.stop();
+            summary.status = TokenScanStatus::Failed {
+                kind,
+                message: sanitize_provider_text(&err.to_string()),
+            };
             if first_error.is_none() {
                 first_error = Some(err);
             }
         }
         per_token.push(finish(summary, &token_buyers));
+        if let Some(reason) = run_stop {
+            // Every further request would fail the same way: do not
+            // issue any; remaining tokens are explicitly not scanned.
+            stop = Some(reason);
+            for rest in tokens.iter().skip(index + 1) {
+                per_token.push(SolanaTokenScanSummary::new(
+                    rest.clone(),
+                    TokenScanStatus::NotScanned { reason },
+                ));
+            }
+            break 'tokens;
+        }
     }
 
     let total_txs: u64 = per_token
@@ -458,6 +601,7 @@ pub async fn run_solana_buyer_intersect_with_policy(
         malformed_samples,
         unknown_discriminator_samples,
         cancelled,
+        stop,
     })
 }
 

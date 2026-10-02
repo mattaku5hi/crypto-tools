@@ -30,6 +30,18 @@
 //! (Retry-After above the transport cap) and `ResponseTooLarge` before
 //! any data are infrastructure: exit 4. Requests used are always
 //! printed (`requests_made` in `run_meta`, stderr summary line).
+//!
+//! Run-terminal stops (engine `ScanStop`, typed, no text matching): on
+//! the first budget exhaustion or terminal rate limit the engine issues
+//! no further request; the interrupted token is `failed` (with
+//! `error_kind`) and every later token is `not_scanned` (with
+//! `stop_reason`) in `run_summary`. Exit mapping for a stop AFTER data
+//! was observed (a report exists): budget -> 3; rate limit -> 3 too
+//! (the tool worked, partial matches are printed and marked incomplete;
+//! CLI.md §8: 3 = partial scan/coverage contract, 4 = nothing usable
+//! could be produced). A rate limit before ANY transaction was observed
+//! yields no report: exit 4 (infrastructure), no records on stdout.
+//! Both stop kinds print the same stderr line mid-run and before data.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     test,
@@ -50,8 +62,8 @@ use scout_api::ProviderError;
 use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
 use scout_core::{AddressBytes, AssetKey, ChainFamily};
 use scout_engine::{
-    PumpTradeVariant, SolanaBuyerIntersectReport, SolanaProtocolScope, run_buyer_intersect,
-    run_solana_buyer_intersect, sanitize_provider_text,
+    PumpTradeVariant, ScanStop, SolanaBuyerIntersectReport, SolanaProtocolScope, TokenScanStatus,
+    run_buyer_intersect, run_solana_buyer_intersect, sanitize_provider_text,
 };
 use scout_providers::{HeliusProvider, UnconfiguredProvider};
 use scout_rpc::{DEFAULT_MAX_RETRY_AFTER, RequestBudgetExhausted};
@@ -277,12 +289,6 @@ fn limit_text(limit: Option<u64>) -> String {
     limit.map_or_else(|| "unlimited".to_string(), |n| n.to_string())
 }
 
-/// Per-token errors are stored as sanitized text; the transport's
-/// `RequestBudgetExhausted` Display is the only source of this phrase.
-fn is_budget_exhausted_text(text: &str) -> bool {
-    text.contains("request budget exhausted")
-}
-
 fn build_provider(
     api_key: &str,
     max_pages: NonZeroU32,
@@ -407,10 +413,15 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
         report.base.matches.len()
     );
     for token in &report.per_token {
-        let status = match &token.error {
-            Some(error) => format!("scan failed: {}", redact(error, api_key)),
-            None if token.truncated => "truncated".to_string(),
-            None => "ok".to_string(),
+        let status = match &token.status {
+            TokenScanStatus::Failed { message, .. } => {
+                format!("scan failed: {}", redact(message, api_key))
+            }
+            TokenScanStatus::NotScanned { reason } => {
+                format!("not_scanned: {}", reason.describe())
+            }
+            TokenScanStatus::Ok if token.truncated => "truncated".to_string(),
+            TokenScanStatus::Ok => "ok".to_string(),
         };
         eprintln!(
             "  token {}: status={} txs_scanned={} qualified_buyers={} decoded_buys={} \
@@ -423,10 +434,10 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
             token.diagnostics.decoded_buys,
             token.diagnostics.malformed_instructions,
             unknown_or_na(
-                token.error.is_some(),
+                token.is_unknown(),
                 token.diagnostics.unknown_discriminator_instructions
             ),
-            if token.error.is_some() {
+            if token.is_unknown() {
                 "n/a (scan failed)".to_string()
             } else {
                 format_unverified(&token.diagnostics.unverified_variant_buys)
@@ -446,7 +457,7 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
         d.malformed_instructions,
         d.failed_transactions
     );
-    let any_failed = report.per_token.iter().any(|t| t.error.is_some());
+    let any_failed = report.per_token.iter().any(|t| t.is_unknown());
     let partial_note = if any_failed || report.cancelled {
         " (partial: some tokens were not fully scanned; counts are lower bounds)"
     } else {
@@ -476,17 +487,17 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
     for sample in &report.malformed_samples {
         eprintln!("  malformed sample: {}", redact(sample, api_key));
     }
-    if let Some(limit) = budget.max_requests
-        && report
-            .per_token
-            .iter()
-            .any(|t| t.error.as_deref().is_some_and(is_budget_exhausted_text))
-    {
-        eprintln!(
+    match report.stop {
+        Some(ScanStop::BudgetExhausted { limit }) => eprintln!(
             "buyer-intersect: request budget exhausted after {} requests (limit {limit}); \
              unscanned or partially scanned tokens are marked failed, results are incomplete",
             budget.requests_made
-        );
+        ),
+        Some(ScanStop::RateLimited { retry_after_secs }) => eprintln!(
+            "buyer-intersect: {}; remaining tokens were not scanned, results are incomplete",
+            rate_limited_text(retry_after_secs.map(std::time::Duration::from_secs))
+        ),
+        None => {}
     }
     let reasons = report.incomplete_reasons();
     if reasons.is_empty() {
