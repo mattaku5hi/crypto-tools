@@ -347,6 +347,7 @@ fn bal(mint: u8, owner: u8, pre: Option<u64>, post: u64) -> SolanaTokenBalanceCh
 
 fn buy_tx(user: u8, mint: u8) -> RawSolanaTransaction {
     RawSolanaTransaction {
+        block_time: None,
         signature: [user; 64],
         execution: SolanaExecutionStatus::Succeeded,
         slot: 1000,
@@ -597,6 +598,7 @@ async fn malformed_instruction_makes_coverage_incomplete() {
 #[tokio::test]
 async fn roundtrip_tx_is_not_a_hit_and_unexpected_payload_is_a_gap() {
     let roundtrip = RawSolanaTransaction {
+        block_time: None,
         signature: [1; 64],
         execution: SolanaExecutionStatus::Succeeded,
         slot: 1,
@@ -895,6 +897,7 @@ fn args_data(disc: [u8; 8], track: bool) -> Vec<u8> {
 
 fn tx_with(ix: RawSolanaInstruction, user: u8, mint: u8) -> RawSolanaTransaction {
     RawSolanaTransaction {
+        block_time: None,
         signature: [user; 64],
         execution: SolanaExecutionStatus::Succeeded,
         slot: 1000,

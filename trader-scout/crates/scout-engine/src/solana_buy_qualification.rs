@@ -539,6 +539,7 @@ mod tests {
         balances: Vec<SolanaTokenBalanceChange>,
     ) -> RawSolanaTransaction {
         RawSolanaTransaction {
+            block_time: None,
             signature: [9; 64],
             execution: scout_core::SolanaExecutionStatus::Succeeded,
             slot: 500,

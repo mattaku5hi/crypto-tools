@@ -163,16 +163,55 @@ fn period_equity_pnl_is_rejected_with_a_clear_message() {
 }
 
 #[test]
-fn time_window_options_are_rejected_not_pretended() {
+fn window_options_are_validated_with_exit_2() {
     let input = format!("solana:{SOL_A}\n");
     for args in [
-        ["--input", "-", "--since", "2026-08-01T00:00:00Z"],
-        ["--input", "-", "--until", "2026-09-01T00:00:00Z"],
-        ["--input", "-", "--period", "30d"],
+        vec!["--input", "-", "--period", "0d"],
+        vec!["--input", "-", "--period", "30x"],
+        vec!["--input", "-", "--period", "366d"],
+        vec!["--input", "-", "--since", "2026-08-01T00:00:00+03:00"],
+        vec!["--input", "-", "--since", "2026-08-01"],
+        vec!["--input", "-", "--until", "2026-09-01T00:00:00Z"],
+        vec![
+            "--input",
+            "-",
+            "--period",
+            "30d",
+            "--since",
+            "2026-08-01T00:00:00Z",
+        ],
+        vec![
+            "--input",
+            "-",
+            "--since",
+            "2026-09-01T00:00:00Z",
+            "--until",
+            "2026-08-01T00:00:00Z",
+        ],
     ] {
         let (code, _o, e) = run_with_stdin(&args, &input);
-        assert_eq!(code, 2, "{e}");
-        assert!(e.contains("not supported yet"), "{e}");
+        assert_eq!(code, 2, "{args:?}: {e}");
+    }
+}
+
+#[test]
+fn valid_window_options_are_accepted_and_reach_the_key_check() {
+    let input = format!("solana:{SOL_A}\n");
+    for args in [
+        vec!["--input", "-", "--period", "30d"],
+        vec!["--input", "-", "--since", "2026-08-01T00:00:00Z"],
+        vec![
+            "--input",
+            "-",
+            "--since",
+            "2026-08-01T00:00:00Z",
+            "--until",
+            "2026-09-01T00:00:00Z",
+        ],
+    ] {
+        let (code, _o, e) = run_with_stdin(&args, &input);
+        assert_eq!(code, 4, "{args:?}: {e}");
+        assert!(e.contains("configuration required"), "{e}");
     }
 }
 

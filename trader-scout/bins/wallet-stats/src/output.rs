@@ -10,8 +10,8 @@ use scout_app::SCHEMA_VERSION;
 use scout_core::MONEY_SCALE;
 use scout_core::Money;
 use scout_engine::{
-    EpisodeOutcome, EpisodeRecord, OpenPosition, SOLANA_WALLET_LEDGER_VERSION, ScanFailureKind,
-    ScanStop, SolanaProtocolScope, SolanaWalletLedgerReport, SolanaWalletStats,
+    AnalysisWindow, EpisodeOutcome, EpisodeRecord, OpenPosition, SOLANA_WALLET_LEDGER_VERSION,
+    ScanFailureKind, ScanStop, SolanaProtocolScope, SolanaWalletLedgerReport, SolanaWalletStats,
     SolanaWalletStatsReport, format_scaled_decimal, lamports_to_sol_string,
     rational_to_decimal_string,
 };
@@ -63,11 +63,13 @@ pub fn pnl_view(w: &SolanaWalletStats) -> PnlView {
         return PnlView {
             status: "n_a",
             lamports: None,
-            na_reason: Some(if w.transactions_scanned == Some(0) {
-                "no activity"
-            } else {
-                "no known closed episodes"
-            }),
+            na_reason: Some(
+                if w.transactions_in_window.or(w.transactions_scanned) == Some(0) {
+                    "no activity"
+                } else {
+                    "no known closed episodes"
+                },
+            ),
         };
     }
     let observed = w.coverage_complete() && l.closed_episodes_unknown == 0;
@@ -126,11 +128,12 @@ fn ratio_cell(r: &RatioStatus<Money>, what: &str) -> String {
 // Table
 // ---------------------------------------------------------------------
 
-const HEADER: [&str; 17] = [
+const HEADER: [&str; 18] = [
     "wallet",
     "status",
     "realized_net_pnl_sol",
     "closed_known/unknown",
+    "left_censored",
     "open",
     "W/L/BE",
     "win_rate",
@@ -183,6 +186,7 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
                 "{}/{}",
                 l.closed_episodes_known, l.closed_episodes_unknown
             ));
+            cells.push(l.left_censored_episodes.to_string());
             cells.push(l.open_episodes.to_string());
             cells.push(format!("{}/{}/{}", l.wins, l.losses, l.breakeven));
             cells.push(if ratios_ok {
@@ -274,6 +278,7 @@ fn outcome_parts(o: &EpisodeOutcome) -> (&'static str, Option<i128>) {
             Some(scout_engine::money_to_lamports_trunc(*pnl)),
         ),
         EpisodeOutcome::ClosedUnknown => ("closed_unknown", None),
+        EpisodeOutcome::LeftCensored => ("left_censored", None),
         EpisodeOutcome::Open => ("open", None),
     }
 }
@@ -284,6 +289,7 @@ pub fn table_lines(
     report: &SolanaWalletStatsReport,
     detail: Detail,
     sort: SortMode,
+    window: &AnalysisWindow,
 ) -> Vec<String> {
     let mut rows: Vec<(Vec<String>, &SolanaWalletStats)> = Vec::new();
     for i in display_order(report, sort) {
@@ -311,7 +317,11 @@ pub fn table_lines(
         line.trim_end().to_string()
     };
     let head: Vec<String> = HEADER.iter().map(|s| (*s).to_string()).collect();
-    let mut out = vec![fmt(&head)];
+    let mut out = Vec::new();
+    if let Some(line) = window_line(window) {
+        out.push(line);
+    }
+    out.push(fmt(&head));
     for (cells, w) in &rows {
         out.push(fmt(cells));
         if detail == Detail::Full {
@@ -319,6 +329,22 @@ pub fn table_lines(
         }
     }
     out
+}
+
+fn rfc3339(unix: i64) -> String {
+    scout_app::format_unix_utc(u64::try_from(unix).unwrap_or(0))
+}
+
+/// `# window ...` line above the table header; `None` without a window.
+pub fn window_line(window: &AnalysisWindow) -> Option<String> {
+    let (since, until) = window.bounds()?;
+    Some(format!(
+        "# window [{}, {}) source={} as_of={}",
+        rfc3339(since),
+        rfc3339(until),
+        window.source.label(),
+        rfc3339(window.as_of)
+    ))
 }
 
 // ---------------------------------------------------------------------
@@ -358,6 +384,32 @@ pub struct ScanDto {
     pub window: &'static str,
 }
 
+/// ADR-011 analysis window of the run (`since`/`until` null without one).
+#[derive(Debug, Serialize)]
+pub struct WindowDto {
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub since_unix: Option<i64>,
+    pub until_unix: Option<i64>,
+    pub as_of: String,
+    pub as_of_unix: i64,
+    /// `period`, `explicit` or `none`.
+    pub source: &'static str,
+}
+
+pub fn window_dto(w: &AnalysisWindow) -> WindowDto {
+    let bounds = w.bounds();
+    WindowDto {
+        since: bounds.map(|(s, _)| rfc3339(s)),
+        until: bounds.map(|(_, u)| rfc3339(u)),
+        since_unix: bounds.map(|(s, _)| s),
+        until_unix: bounds.map(|(_, u)| u),
+        as_of: rfc3339(w.as_of),
+        as_of_unix: w.as_of,
+        source: w.source.label(),
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct RunMetaRecord {
     pub schema_version: u32,
@@ -367,6 +419,7 @@ pub struct RunMetaRecord {
     pub scope: ScopeDto,
     pub ledger_version: &'static str,
     pub quote_unit: &'static str,
+    pub window: WindowDto,
     pub scan: ScanDto,
     pub detail: &'static str,
     pub sort: &'static str,
@@ -493,6 +546,7 @@ pub struct DiagnosticsDto {
     pub continuity_breaks: u64,
     pub unknown_disposals: u64,
     pub known_disposals: u64,
+    pub left_censored_disposals: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -510,6 +564,10 @@ pub struct StatsDto {
     pub open_episode_known_disposals: u64,
     pub closed_episodes_known: u64,
     pub closed_episodes_unknown: u64,
+    /// ADR-011: closed episodes whose inventory predates the window (never valued).
+    pub left_censored_episodes: u64,
+    /// Raw token units booked as left-censored shortfall (decimal string).
+    pub left_censored_amount_raw: String,
     pub open_episodes: u64,
     pub wins: u64,
     pub losses: u64,
@@ -522,6 +580,7 @@ pub struct StatsDto {
     pub distinct_mints_traded: u64,
     pub activity: ActivityDto,
     pub has_unknown_basis_inventory: bool,
+    pub has_left_censored_inventory: bool,
     pub open_positions_with_unknown_basis: u64,
     pub unknown_basis_lots_created: u64,
     pub diagnostics: DiagnosticsDto,
@@ -534,6 +593,8 @@ pub struct CoverageDto {
     /// Older history unseen when `truncated` (newest-first scan).
     pub truncation_meaning: &'static str,
     pub transactions_scanned: Option<u64>,
+    /// Transactions inside the window (null without a window or on failure).
+    pub transactions_in_window: Option<u64>,
     pub unexpected_payloads: u64,
     pub incomplete_reasons: Vec<String>,
 }
@@ -541,7 +602,7 @@ pub struct CoverageDto {
 #[derive(Debug, Serialize)]
 pub struct EpisodeDto {
     pub mint: String,
-    /// `closed_known`, `closed_unknown` or `open`.
+    /// `closed_known`, `closed_unknown`, `left_censored` or `open`.
     pub outcome: &'static str,
     pub pnl: Option<AmountDto>,
     pub pnl_sol_exact: Option<String>,
@@ -553,6 +614,7 @@ pub struct EpisodeDto {
     pub unknown_reasons: Vec<&'static str>,
     pub known_disposals: u64,
     pub known_disposal_pnl: AmountDto,
+    pub left_censored_amount_raw: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -662,6 +724,8 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
         open_episode_known_disposals: l.open_episode_known_disposals,
         closed_episodes_known: l.closed_episodes_known,
         closed_episodes_unknown: l.closed_episodes_unknown,
+        left_censored_episodes: l.left_censored_episodes,
+        left_censored_amount_raw: l.left_censored_amount_raw.to_string(),
         open_episodes: l.open_episodes,
         wins: l.wins,
         losses: l.losses,
@@ -697,6 +761,7 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
             },
         },
         has_unknown_basis_inventory: l.has_unknown_basis_inventory,
+        has_left_censored_inventory: l.has_left_censored_inventory,
         open_positions_with_unknown_basis: l.open_positions_with_unknown_basis,
         unknown_basis_lots_created: l.unknown_basis_lots_created,
         diagnostics: DiagnosticsDto {
@@ -711,6 +776,7 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
             continuity_breaks: d.continuity_breaks,
             unknown_disposals: d.unknown_disposals,
             known_disposals: d.known_disposals,
+            left_censored_disposals: d.left_censored_disposals,
         },
     }
 }
@@ -734,6 +800,7 @@ fn episode_dto(ep: &EpisodeRecord) -> EpisodeDto {
         unknown_reasons: ep.unknown_reasons.iter().map(|r| r.label()).collect(),
         known_disposals: ep.known_disposals,
         known_disposal_pnl: amount(scout_engine::money_to_lamports_trunc(ep.known_disposal_pnl)),
+        left_censored_amount_raw: ep.left_censored_amount_raw.to_string(),
     }
 }
 
@@ -765,6 +832,7 @@ pub fn wallet_record(
             truncated: w.truncated,
             truncation_meaning: "older history unseen (newest-first scan, opening inventory unknown)",
             transactions_scanned: w.transactions_scanned,
+            transactions_in_window: w.transactions_in_window,
             unexpected_payloads: w.unexpected_payloads,
             incomplete_reasons: w.incomplete_reasons.iter().map(|r| redact(r)).collect(),
         },
@@ -793,6 +861,7 @@ pub struct RunMetaInput<'a> {
     pub upstream_complete: bool,
     pub requests_made: u64,
     pub max_requests: Option<u64>,
+    pub window: AnalysisWindow,
 }
 
 pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
@@ -821,11 +890,16 @@ pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
         },
         ledger_version: SOLANA_WALLET_LEDGER_VERSION,
         quote_unit: "lamports",
+        window: window_dto(&m.window),
         scan: ScanDto {
             provider: "helius",
             order: SCAN_ORDER,
             max_pages_per_wallet: m.max_pages_per_wallet,
-            window: "full available history within the page budget (no time window)",
+            window: if m.window.is_bounded() {
+                "newest-first walk until the window start (blockTime < since) or the page budget"
+            } else {
+                "full available history within the page budget (no time window)"
+            },
         },
         detail: if m.detail == Detail::Full {
             "full"
@@ -931,6 +1005,7 @@ mod tests {
             wallet: [b; 32],
             status,
             transactions_scanned: txs,
+            transactions_in_window: None,
             truncated: status == WalletScanStatus::Incomplete,
             unexpected_payloads: 0,
             error: (status == WalletScanStatus::Error)
@@ -977,6 +1052,7 @@ mod tests {
             upstream_complete: true,
             requests_made: 0,
             max_requests: None,
+            window: AnalysisWindow::none(1_790_000_000),
         }
     }
 
@@ -989,7 +1065,12 @@ mod tests {
 
     #[test]
     fn table_has_one_row_per_wallet_with_na_never_zero() {
-        let lines = table_lines(&report(), Detail::Summary, SortMode::Input);
+        let lines = table_lines(
+            &report(),
+            Detail::Summary,
+            SortMode::Input,
+            &AnalysisWindow::none(0),
+        );
         assert_eq!(lines.len(), 6);
         let addr = |b: u8| bs58::encode([b; 32]).into_string();
         assert!(lines[1].starts_with(&addr(1)));
@@ -1093,5 +1174,32 @@ mod tests {
         assert_eq!(v[1]["stats"]["win_rate"]["status"], "undefined");
         assert!(v[1]["stats"]["win_rate"]["value"].is_null());
         assert!(v[1]["stats"]["activity"]["trades_per_active_day"]["display_2dp"].is_null());
+    }
+
+    #[test]
+    fn windowed_table_starts_with_the_window_line_and_run_meta_echoes_it() {
+        use scout_engine::WindowSource;
+        let w = AnalysisWindow {
+            since: 1_785_542_400,
+            until: 1_788_220_800,
+            as_of: 1_790_000_000,
+            source: WindowSource::Explicit,
+        };
+        let lines = table_lines(&report(), Detail::Summary, SortMode::Input, &w);
+        assert_eq!(lines.len(), 7);
+        assert!(lines[0].starts_with("# window [2026-08-01T00:00:00Z, 2026-09-01T00:00:00Z)"));
+        assert!(lines[0].contains("source=explicit"));
+        assert!(lines[1].starts_with("wallet"));
+        assert!(lines[1].contains("left_censored"));
+        let mut m = meta(SortMode::Input, Detail::Summary);
+        m.window = w;
+        let v = serde_json::to_value(run_meta_record(&m)).unwrap();
+        assert_eq!(v["window"]["since"], "2026-08-01T00:00:00Z");
+        assert_eq!(v["window"]["until_unix"], 1_788_220_800_i64);
+        assert_eq!(v["window"]["source"], "explicit");
+        let none =
+            serde_json::to_value(run_meta_record(&meta(SortMode::Input, Detail::Summary))).unwrap();
+        assert!(none["window"]["since"].is_null());
+        assert_eq!(none["window"]["source"], "none");
     }
 }

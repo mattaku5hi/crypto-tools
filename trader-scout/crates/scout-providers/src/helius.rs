@@ -72,6 +72,9 @@ struct FullTransactionRecord {
     transaction: InnerTransaction,
     #[serde(default)]
     meta: Option<TransactionMeta>,
+    /// Unix seconds of the block; absent for some records.
+    #[serde(default, rename = "blockTime")]
+    block_time: Option<i64>,
 }
 
 fn present_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
@@ -245,6 +248,9 @@ pub struct HeliusProvider {
     client: RpcClient,
     max_pages: NonZeroU32,
     scan_order: ScanOrder,
+    /// Windowed newest-first scan (ADR-011 §2): stop paging after the first
+    /// page holding a transaction with `blockTime < stop_before_block_time`.
+    stop_before_block_time: Option<i64>,
 }
 
 /// Which end of an address's history `scan()` starts from.
@@ -312,6 +318,7 @@ impl HeliusProvider {
             client,
             max_pages: DEFAULT_MAX_PAGES_PER_SCAN,
             scan_order: ScanOrder::default(),
+            stop_before_block_time: None,
         })
     }
 
@@ -357,6 +364,20 @@ impl HeliusProvider {
     #[must_use]
     pub fn with_scan_order(mut self, order: ScanOrder) -> Self {
         self.scan_order = order;
+        self
+    }
+
+    /// ADR-011 §2 window boundary for `ScanOrder::NewestFirst` scans: after
+    /// the first fetched page that contains a transaction with
+    /// `blockTime < since` the scan ends as a NATURAL end (no further page
+    /// is requested and `truncated` stays `false`), because everything
+    /// older than the boundary is outside the window. The boundary page is
+    /// still yielded whole; the consumer drops out-of-window transactions.
+    /// Running out of page/request budget before the boundary keeps
+    /// the usual `truncated = true`. Ignored for `OldestFirst`.
+    #[must_use]
+    pub fn with_stop_before_block_time(mut self, since: Option<i64>) -> Self {
+        self.stop_before_block_time = since;
         self
     }
 }
@@ -495,6 +516,7 @@ fn decode_full_transaction_record(
     }
 
     Ok(RawSolanaTransaction {
+        block_time: record.block_time,
         signature,
         execution,
         slot: record.slot,
@@ -955,7 +977,13 @@ impl HeliusProvider {
                 return Some((out, state));
             }
 
-            state.token = next_token;
+            let boundary_reached = self.scan_order == ScanOrder::NewestFirst
+                && self.stop_before_block_time.is_some_and(|since| {
+                    transactions
+                        .iter()
+                        .any(|t| t.block_time.is_some_and(|b| b < since))
+                });
+            state.token = if boundary_reached { None } else { next_token };
             let mut transactions = transactions.into_iter();
             let last = transactions.next_back();
             if let Some(last) = last {
@@ -1798,6 +1826,69 @@ mod tests {
         assert_eq!(request_sort_orders(&server).await, vec!["desc"; 2]);
     }
 
+    /// A page whose transactions carry `blockTime` = the given times.
+    fn timed_page(slot_times: &[(u64, i64)], token: Option<&str>) -> serde_json::Value {
+        let template = full_mode_body(None)["result"]["data"][0].clone();
+        let data: Vec<_> = slot_times
+            .iter()
+            .map(|(slot, t)| {
+                let mut tx = template.clone();
+                tx["slot"] = json!(slot);
+                tx["blockTime"] = json!(t);
+                tx
+            })
+            .collect();
+        json!({"jsonrpc": "2.0", "id": 1, "result": {"data": data, "paginationToken": token}})
+    }
+
+    fn five_page_server_pages() -> Vec<(&'static str, serde_json::Value)> {
+        vec![
+            ("", timed_page(&[(50, 5000), (49, 4900)], Some("t1"))),
+            ("t1", timed_page(&[(40, 4000), (39, 900)], Some("t2"))),
+            ("t2", timed_page(&[(30, 800)], Some("t3"))),
+            ("t3", timed_page(&[(20, 700)], Some("t4"))),
+            ("t4", timed_page(&[(10, 600)], None)),
+        ]
+    }
+
+    #[tokio::test]
+    async fn windowed_scan_stops_after_boundary_page_and_is_not_truncated() {
+        let server = paged_server(five_page_server_pages()).await;
+        let p = provider(&server, 10)
+            .with_scan_order(ScanOrder::NewestFirst)
+            .with_stop_before_block_time(Some(1000));
+        let out = drain(&p, CancellationToken::new()).await;
+        let expect: Vec<_> = [50, 49, 40, 39].iter().map(|s| Some((*s, false))).collect();
+        assert_eq!(out, expect);
+        assert_eq!(
+            request_tokens(&server).await,
+            vec![None, Some("t1".into())],
+            "exactly two requests: no page beyond the boundary page"
+        );
+    }
+
+    #[tokio::test]
+    async fn windowed_scan_budget_before_boundary_is_truncated() {
+        let server = paged_server(five_page_server_pages()).await;
+        let p = provider(&server, 1)
+            .with_scan_order(ScanOrder::NewestFirst)
+            .with_stop_before_block_time(Some(1000));
+        let out = drain(&p, CancellationToken::new()).await;
+        assert_eq!(out, vec![Some((50, false)), Some((49, true))]);
+        assert_eq!(request_tokens(&server).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn windowed_scan_boundary_on_last_budgeted_page_is_complete() {
+        let server = paged_server(five_page_server_pages()).await;
+        let p = provider(&server, 2)
+            .with_scan_order(ScanOrder::NewestFirst)
+            .with_stop_before_block_time(Some(1000));
+        let out = drain(&p, CancellationToken::new()).await;
+        assert!(out.iter().all(|i| matches!(i, Some((_, false)))));
+        assert_eq!(request_tokens(&server).await.len(), 2);
+    }
+
     fn provider(server: &MockServer, max_pages: u32) -> HeliusProvider {
         HeliusProvider::new_with_endpoint(scout_rpc::RpcEndpoint::new(server.uri()), 5_000, 1)
             .unwrap()
@@ -2172,6 +2263,15 @@ mod tests {
             decode_pubkey("7xQYoUjUJF1Kg6WVczoTAkaNhn5syQYcbvjmFrhjWpx").unwrap()
         );
         assert_eq!(tx.native_balance_changes[1].delta(), 5000);
+    }
+
+    #[test]
+    fn block_time_is_decoded_and_absent_stays_none_not_zero() {
+        let record = full_mode_body(None)["result"]["data"][0].clone();
+        assert_eq!(decode_raw(&record).unwrap().block_time, Some(1_790_777_970));
+        let mut without = record;
+        without.as_object_mut().unwrap().remove("blockTime");
+        assert_eq!(decode_raw(&without).unwrap().block_time, None);
     }
 
     #[test]

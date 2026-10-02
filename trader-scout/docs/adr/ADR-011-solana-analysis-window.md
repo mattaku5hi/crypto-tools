@@ -22,6 +22,7 @@ windowed wallet scan is complete, and (b) how inventory that predates the window
 1. **Window.** A run has an explicit half-open UTC window `[since, until)` in unix seconds, from
    `--since/--until` or `--period <N>d` (= `[as_of - N·86400, as_of)`, `as_of` = run start, pinned
    once per run and printed in `run_meta`). No window = today's behaviour (full history required).
+   `until > as_of` (a window reaching into the future) is a usage error (exit 2).
 2. **Windowed scan completeness.** The scan reads the wallet history newest-first and stops after
    the first page that contains a transaction with `blockTime < since` (or when history ends).
    Coverage is **complete for the window** iff that boundary was reached; running out of page or
@@ -41,6 +42,9 @@ windowed wallet scan is complete, and (b) how inventory that predates the window
    `LeftCensored` (any consumed lot is `LeftCensored`) / `Open`. Win rate, profit factor, realized
    PnL sums, holding times and `realized_cost_roi` use `ClosedKnown` only (unchanged). Left-censored
    episodes are counted and listed, never valued as 0 and never folded into the known sums.
+   Precedence: an episode with any in-window cause is `ClosedUnknown` even if it also consumed
+   left-censored inventory; `LeftCensored` counts only purely left-censored episodes. The
+   censored raw amount is reported either way (`left_censored_amount_raw`).
 5. **Quality gates.** "Material unknown basis" (ARCHITECTURE §10, `exclude_unknown_basis`) means
    `ClosedUnknown` episodes or unknown-basis inventory from in-window causes. Left-censoring alone
    does not exclude a wallet; it is reported (`left_censored_episodes`, raw amounts). Activity

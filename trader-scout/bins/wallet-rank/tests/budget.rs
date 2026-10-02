@@ -151,3 +151,96 @@ async fn long_retry_after_on_first_wallet_is_exit_4_with_one_request() {
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     assert!(!out.stdout.contains(KEY) && !out.stderr.contains(KEY));
 }
+
+fn unix_now() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap()
+}
+
+/// An endless history (every page has a continuation cursor) whose
+/// transactions are all `age_days` old.
+async fn aged_endless_server(age_days: i64) -> MockServer {
+    let server = MockServer::start().await;
+    let block_time = unix_now() - age_days * 86_400;
+    Mock::given(method("POST"))
+        .respond_with(move |req: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            let prev = body["params"][1]["paginationToken"].as_str().unwrap_or("p");
+            let next = format!("{prev}x");
+            let mut page = fixture_page(Some(&next));
+            for tx in page["result"]["data"].as_array_mut().unwrap() {
+                tx["blockTime"] = json!(block_time);
+            }
+            ResponseTemplate::new(200).set_body_json(page)
+        })
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn period_window_stops_paging_at_the_boundary_page_and_is_echoed_in_run_meta() {
+    // Every tx is 40 days old: the first page of each wallet already holds
+    // a tx before `now - 30d`, so exactly one request per wallet is made
+    // even though the provider would page forever.
+    let server = aged_endless_server(40).await;
+    let before = unix_now();
+    let out = run(server.uri(), args(&["--period", "30d"])).await;
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    let lines = jsonl(&out);
+    let w = &lines[0]["window"];
+    assert_eq!(w["source"], "period");
+    let (since, until, as_of) = (
+        w["since_unix"].as_i64().unwrap(),
+        w["until_unix"].as_i64().unwrap(),
+        w["as_of_unix"].as_i64().unwrap(),
+    );
+    assert_eq!(until - since, 30 * 86_400);
+    assert_eq!(until, as_of);
+    assert!(as_of >= before && as_of <= unix_now());
+    assert!(w["since"].as_str().unwrap().ends_with('Z'));
+    assert!(w["until"].as_str().unwrap().ends_with('Z'));
+    assert!(
+        lines[0]["ledger_version"]
+            .as_str()
+            .unwrap()
+            .starts_with("solana-wallet-ledger/2")
+    );
+}
+
+#[tokio::test]
+async fn explicit_window_is_echoed_and_budget_before_boundary_is_exit_3() {
+    // Recent txs only: the boundary is never reached within 2 pages.
+    let server = aged_endless_server(0).await;
+    let out = run(
+        server.uri(),
+        args(&[
+            "--since",
+            "2026-08-01T00:00:00Z",
+            "--until",
+            "2026-09-01T00:00:00Z",
+            "--max-pages-per-wallet",
+            "2",
+        ]),
+    )
+    .await;
+    let lines = jsonl(&out);
+    let w = &lines[0]["window"];
+    assert_eq!(w["source"], "explicit");
+    assert_eq!(w["since"], "2026-08-01T00:00:00Z");
+    assert_eq!(w["until"], "2026-09-01T00:00:00Z");
+    assert_eq!(w["since_unix"], 1_785_542_400_i64);
+    assert_eq!(w["until_unix"], 1_788_220_800_i64);
+    assert_eq!(out.code, 3, "stderr: {}", out.stderr);
+    assert!(
+        out.stderr.contains("before the window start"),
+        "{}",
+        out.stderr
+    );
+}

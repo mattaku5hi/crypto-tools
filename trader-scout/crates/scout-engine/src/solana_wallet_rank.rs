@@ -43,6 +43,10 @@
 //!   30 trades/day allows a buy, a partial sell and a final sell on each of
 //!   10 mints. Both numbers are a starting guess to be tuned on a separate
 //!   validation set; they are not derived from outcomes.
+//! * Windowed runs (ADR-011): the activity gates are evaluated over the
+//!   window; `incomplete` wallets additionally carry the activity-ceiling
+//!   reasons when the ceiling is exceeded on fully observed days alone
+//!   (evidence only; `incomplete_coverage` stays primary).
 //! * `none`: no sample/activity/unknown-basis gates. Status gates (scan
 //!   not `ok`) and `metric_unknown` still apply, and the `pnl_status`
 //!   label (`observed` / `known_subset`) travels with the figure.
@@ -132,7 +136,8 @@ pub struct RankPolicy {
     /// Ceiling on distinct mints per active day (`None` = no ceiling).
     pub max_mints_per_day: Option<u64>,
     /// Exclude wallets with any `ClosedUnknown` episode or unknown-basis
-    /// open inventory.
+    /// open inventory from IN-WINDOW causes. Left-censoring (ADR-011 §5)
+    /// does not exclude: it is reported, not gated.
     pub exclude_unknown_basis: bool,
     /// Strict variant: exclude wallets with any open position.
     pub require_no_open: bool,
@@ -550,9 +555,46 @@ fn exceeds_per_day(count: u64, days: u64, max: u64) -> bool {
     u128::from(count) > u128::from(max) * u128::from(days)
 }
 
+/// ADR-011 §6: activity-ceiling evidence for an `incomplete` wallet. Every
+/// observed UTC day except the oldest observed one is fully observed, so
+/// the per-day count over those days is exact; an exceeded ceiling there is
+/// recorded in addition to `incomplete_coverage` (it never makes the wallet
+/// eligible). Days are the days with a timestamped trade, as in the
+/// complete-window metric.
+fn incomplete_ceiling_evidence(
+    policy: &RankPolicy,
+    l: &SolanaWalletLedgerReport,
+) -> Vec<ExclusionReason> {
+    let full: Vec<_> = l.daily_activity.iter().skip(1).collect();
+    let days = u64::try_from(full.len()).unwrap_or(u64::MAX);
+    if days == 0 {
+        return Vec::new();
+    }
+    let trades: u64 = full.iter().map(|d| d.trades).sum();
+    let pairs: u64 = full.iter().map(|d| d.distinct_mints).sum();
+    let mut out = Vec::new();
+    if let Some(max) = policy.max_trades_per_day
+        && exceeds_per_day(trades, days, max)
+    {
+        out.push(ExclusionReason::ActivityCeilingTradesPerDay);
+    }
+    if let Some(max) = policy.max_mints_per_day
+        && exceeds_per_day(pairs, days, max)
+    {
+        out.push(ExclusionReason::ActivityCeilingMintsPerDay);
+    }
+    out
+}
+
 fn gate_reasons(policy: &RankPolicy, o: &WalletRankObservation) -> Vec<ExclusionReason> {
     if let Some(r) = status_reason(o.status) {
-        return vec![r];
+        let mut out = vec![r];
+        if o.status == WalletScanStatus::Incomplete
+            && let Some(l) = &o.ledger
+        {
+            out.extend(incomplete_ceiling_evidence(policy, l));
+        }
+        return out;
     }
     let Some(l) = &o.ledger else {
         return vec![ExclusionReason::MetricUnknown];

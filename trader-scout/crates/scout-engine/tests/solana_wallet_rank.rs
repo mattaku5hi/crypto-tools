@@ -22,9 +22,10 @@ use scout_api::{
 use scout_core::{AddressBytes, RawPayload, RawSolanaTransaction, SolanaPubkey, WalletKey};
 use scout_dex_solana::{TradeEventPairing, pair_trades_with_events};
 use scout_engine::{
-    ActivityMetrics, ExclusionReason as R, OpenPosition, RankBy, RankPolicy, RankProfile,
-    SolanaWalletStats, WalletScanStatus, build_solana_wallet_ledger, lamports_to_money,
-    pump_bonding_curve_decoder, rank_solana_wallets, run_solana_wallet_stats, solana_mainnet_chain,
+    ActivityMetrics, DailyActivity, ExclusionReason as R, OpenPosition, RankBy, RankPolicy,
+    RankProfile, SolanaWalletStats, WalletScanStatus, build_solana_wallet_ledger,
+    lamports_to_money, pump_bonding_curve_decoder, rank_solana_wallets, run_solana_wallet_stats,
+    solana_mainnet_chain,
 };
 use scout_providers::{HeliusProvider, ScanOrder};
 use tokio_util::sync::CancellationToken;
@@ -92,6 +93,7 @@ impl Spec {
             wallet: [self.b; 32],
             status: WalletScanStatus::Ok,
             transactions_scanned: Some(self.trades),
+            transactions_in_window: None,
             truncated: false,
             unexpected_payloads: 0,
             error: None,
@@ -603,4 +605,78 @@ async fn end_to_end_fixtures_stats_then_rank_accounts_for_every_wallet() {
             assert!(rep.ranked.is_empty(), "{profile:?}");
         }
     }
+}
+
+fn daily(rows: &[(i64, u64, u64)]) -> Vec<DailyActivity> {
+    rows.iter()
+        .map(|(day, trades, mints)| DailyActivity {
+            day: *day,
+            trades: *trades,
+            distinct_mints: *mints,
+        })
+        .collect()
+}
+
+#[test]
+fn left_censoring_alone_does_not_exclude_under_exclude_unknown_basis() {
+    let mut w = Spec::new(1).build();
+    {
+        let l = w.ledger.as_mut().unwrap();
+        l.left_censored_episodes = 3;
+        l.left_censored_amount_raw = 999;
+        l.has_left_censored_inventory = true;
+    }
+    let rep = rank_solana_wallets(
+        &[w],
+        &policy(RankProfile::Quality, RankBy::RealizedNetPnl, 5),
+    );
+    assert_eq!(ranked_ids(&rep), vec![1]);
+    let l = rep.ranked[0].observation.ledger.as_ref().unwrap();
+    assert_eq!(l.left_censored_episodes, 3);
+}
+
+#[test]
+fn incomplete_wallet_carries_ceiling_evidence_from_fully_observed_days() {
+    // Oldest observed day (100) is dropped; days 101..=102 hold 80 trades
+    // over 2 days = 40/day > 30 and 24 mint-days over 2 days = 12 > 10.
+    let mut hot = Spec::new(1).build();
+    hot.status = WalletScanStatus::Incomplete;
+    hot.truncated = true;
+    hot.ledger.as_mut().unwrap().daily_activity =
+        daily(&[(100, 500, 90), (101, 40, 12), (102, 40, 12)]);
+    // Same wallet where the heavy day is the oldest one only: no evidence.
+    let mut cool = Spec::new(2).build();
+    cool.status = WalletScanStatus::Incomplete;
+    cool.truncated = true;
+    cool.ledger.as_mut().unwrap().daily_activity =
+        daily(&[(100, 500, 90), (101, 30, 10), (102, 30, 10)]);
+    // A single observed day: nothing is fully observed.
+    let mut one = Spec::new(3).build();
+    one.status = WalletScanStatus::Incomplete;
+    one.ledger.as_mut().unwrap().daily_activity = daily(&[(100, 500, 90)]);
+    let rep = rank_solana_wallets(
+        &[hot, cool, one],
+        &policy(RankProfile::Insider, RankBy::RealizedNetPnl, 5),
+    );
+    assert!(rep.ranked.is_empty());
+    assert_eq!(
+        excluded_of(&rep, 1).reasons,
+        vec![
+            R::IncompleteCoverage,
+            R::ActivityCeilingTradesPerDay,
+            R::ActivityCeilingMintsPerDay
+        ]
+    );
+    assert_eq!(excluded_of(&rep, 1).primary_reason(), R::IncompleteCoverage);
+    assert_eq!(excluded_of(&rep, 2).reasons, vec![R::IncompleteCoverage]);
+    assert_eq!(excluded_of(&rep, 3).reasons, vec![R::IncompleteCoverage]);
+    // No ceiling configured (quality profile): never any evidence.
+    let mut q = Spec::new(4).build();
+    q.status = WalletScanStatus::Incomplete;
+    q.ledger.as_mut().unwrap().daily_activity = daily(&[(1, 1, 1), (2, 999, 99)]);
+    let rep = rank_solana_wallets(
+        &[q],
+        &policy(RankProfile::Quality, RankBy::RealizedNetPnl, 5),
+    );
+    assert_eq!(excluded_of(&rep, 4).reasons, vec![R::IncompleteCoverage]);
 }

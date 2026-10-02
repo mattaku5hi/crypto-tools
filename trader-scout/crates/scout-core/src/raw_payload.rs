@@ -98,6 +98,9 @@ pub struct RawSolanaInstruction {
 /// responsibility that consumes these facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSolanaTransaction {
+    /// Block time (unix seconds) as reported by the provider; `None` when the
+    /// provider did not report one (never defaulted to 0).
+    pub block_time: Option<i64>,
     pub signature: [u8; 64],
     /// Whether the transaction executed successfully (`meta.err`).
     /// A failed transaction's instructions/balance data describe

@@ -20,8 +20,9 @@ use scout_api::{
 use scout_core::{AddressBytes, RawPayload, RawSolanaTransaction, SolanaPubkey, WalletKey};
 use scout_dex_solana::{TradeEventPairing, pair_trades_with_events};
 use scout_engine::{
-    ScanFailureKind, ScanStop, WalletScanStatus, build_solana_wallet_ledger,
-    pump_bonding_curve_decoder, run_solana_wallet_stats, solana_mainnet_chain,
+    AnalysisWindow, ScanFailureKind, ScanStop, WalletScanStatus, WindowSource,
+    build_solana_wallet_ledger, pump_bonding_curve_decoder, run_solana_wallet_stats,
+    run_solana_wallet_stats_windowed, solana_mainnet_chain,
 };
 use scout_providers::{HeliusProvider, ScanOrder};
 use tokio_util::sync::CancellationToken;
@@ -488,4 +489,134 @@ async fn other_errors_do_not_set_a_stop() {
     assert_eq!(report.stop, None);
     assert_eq!(report.wallets[1].failure, Some(ScanFailureKind::Other));
     assert_ne!(report.wallets[2].status, WalletScanStatus::NotScanned);
+}
+
+fn bare_tx(sig: u8, slot: u64, block_time: Option<i64>) -> RawSolanaTransaction {
+    RawSolanaTransaction {
+        block_time,
+        signature: [sig; 64],
+        execution: scout_core::SolanaExecutionStatus::Succeeded,
+        slot,
+        transaction_index: 0,
+        instructions: vec![],
+        token_balance_changes: vec![],
+        fee_lamports: 5_000,
+        fee_payer: [200; 32],
+        signers: vec![[200; 32]],
+        native_balance_changes: vec![],
+    }
+}
+
+fn win() -> AnalysisWindow {
+    AnalysisWindow {
+        since: 100,
+        until: 200,
+        as_of: 300,
+        source: WindowSource::Explicit,
+    }
+}
+
+async fn windowed_card(
+    txs: Vec<RawSolanaTransaction>,
+    truncated: bool,
+) -> scout_engine::SolanaWalletStats {
+    let user = [5; 32];
+    let stub = Stub::new(BTreeMap::from([(user, Script::Txs { txs, truncated })]));
+    let decoder = pump_bonding_curve_decoder().unwrap();
+    let mut report = run_solana_wallet_stats_windowed(
+        &stub,
+        &[user],
+        &decoder,
+        &win(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    report.wallets.remove(0)
+}
+
+#[tokio::test]
+async fn window_drops_outside_txs_and_boundary_makes_coverage_complete() {
+    // Newest-first: 250 (>= until, dropped), 150, 120 in window, 90 is the boundary.
+    let card = windowed_card(
+        vec![
+            bare_tx(1, 40, Some(250)),
+            bare_tx(2, 30, Some(150)),
+            bare_tx(3, 20, Some(120)),
+            bare_tx(4, 10, Some(90)),
+        ],
+        false,
+    )
+    .await;
+    assert_eq!(card.transactions_scanned, Some(4));
+    assert_eq!(card.transactions_in_window, Some(2));
+    assert_eq!(card.status, WalletScanStatus::NoPumpActivity);
+    assert!(card.incomplete_reasons.is_empty());
+    // `until` is exclusive, `since` is inclusive.
+    let edge = windowed_card(
+        vec![
+            bare_tx(1, 3, Some(200)),
+            bare_tx(2, 2, Some(100)),
+            bare_tx(3, 1, Some(99)),
+        ],
+        false,
+    )
+    .await;
+    assert_eq!(edge.transactions_in_window, Some(1));
+}
+
+#[tokio::test]
+async fn window_budget_exhausted_before_boundary_is_incomplete() {
+    let card = windowed_card(
+        vec![bare_tx(1, 30, Some(190)), bare_tx(2, 20, Some(150))],
+        true,
+    )
+    .await;
+    assert_eq!(card.status, WalletScanStatus::Incomplete);
+    assert!(
+        card.incomplete_reasons
+            .iter()
+            .any(|r| r.contains("before the window start"))
+    );
+    // A provider that did not stop still yields a complete window once the
+    // boundary tx was seen, even with a leftover cursor.
+    let done = windowed_card(
+        vec![bare_tx(1, 30, Some(190)), bare_tx(2, 20, Some(50))],
+        true,
+    )
+    .await;
+    assert_eq!(done.status, WalletScanStatus::NoPumpActivity);
+}
+
+#[tokio::test]
+async fn window_tx_without_block_time_is_a_coverage_gap_unless_after_the_boundary() {
+    let gap = windowed_card(vec![bare_tx(1, 30, None), bare_tx(2, 20, Some(50))], false).await;
+    assert_eq!(gap.status, WalletScanStatus::Incomplete);
+    assert!(
+        gap.incomplete_reasons
+            .iter()
+            .any(|r| r.contains("without blockTime"))
+    );
+    let after = windowed_card(
+        vec![
+            bare_tx(1, 30, Some(150)),
+            bare_tx(2, 20, Some(50)),
+            bare_tx(3, 10, None),
+        ],
+        false,
+    )
+    .await;
+    assert_eq!(after.status, WalletScanStatus::NoPumpActivity);
+}
+
+#[tokio::test]
+async fn window_with_no_tx_inside_is_no_activity() {
+    let card = windowed_card(
+        vec![bare_tx(1, 20, Some(250)), bare_tx(2, 10, Some(10))],
+        false,
+    )
+    .await;
+    assert_eq!(card.status, WalletScanStatus::NoActivity);
+    assert_eq!(card.transactions_scanned, Some(2));
+    assert_eq!(card.transactions_in_window, Some(0));
 }

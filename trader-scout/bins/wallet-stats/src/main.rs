@@ -14,8 +14,13 @@
 //! later wallets are `not_scanned` (`stop_reason`), no further request is
 //! made, every input wallet stays in the output.
 //!
+//! `--period <N>d` / `--since` / `--until` (ADR-011) restrict the run to a UTC
+//! window `[since, until)`: the scan stops at the first page older than the
+//! window start, pre-window inventory is left-censored.
+//!
 //! Exit codes (CLI.md §8): 0 complete within declared scope (legitimate
-//! N/A, no-activity and unknown-basis cards are NOT failures); 2 usage;
+//! N/A, no-activity and unknown-basis cards are NOT failures); 2 usage
+//! (incl. an invalid window);
 //! 3 incomplete coverage (truncated scan, per-wallet scan failure while
 //! other wallets succeeded, decoder gaps, upstream JSONL partial/without
 //! footer, request budget exhausted, rate-limit stop after at least one
@@ -35,14 +40,15 @@
 use std::io::{self, IsTerminal, Read};
 use std::num::NonZeroU32;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use scout_api::ProviderError;
 use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
 use scout_core::{AddressBytes, ChainFamily, SolanaPubkey, WalletKey};
 use scout_engine::{
-    ScanStop, SolanaWalletStatsReport, pump_bonding_curve_decoder, run_solana_wallet_stats,
-    sanitize_provider_text,
+    AnalysisWindow, ScanStop, SolanaWalletStatsReport, pump_bonding_curve_decoder,
+    run_solana_wallet_stats_windowed, sanitize_provider_text,
 };
 use scout_providers::{HeliusProvider, ScanOrder};
 use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
@@ -104,33 +110,37 @@ struct Args {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
 
-    /// Not supported yet (the provider cannot honour a time window exactly).
-    #[arg(long, hide = true)]
+    /// Analysis window start, UTC RFC 3339 `2026-08-01T00:00:00Z` (inclusive;
+    /// no offsets). Window `[since, until)`; see ADR-011. Conflicts with --period.
+    #[arg(long, conflicts_with = "period")]
     since: Option<String>,
-    /// Not supported yet.
-    #[arg(long, hide = true)]
+    /// Analysis window end (exclusive), same format; default: run start.
+    /// Requires --since or --period.
+    #[arg(long)]
     until: Option<String>,
-    /// Not supported yet.
-    #[arg(long, hide = true)]
+    /// Window of the last N days (`30d`, 1..=365) ending at --until (default
+    /// run start). Conflicts with --since.
+    #[arg(long, conflicts_with = "since")]
     period: Option<String>,
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
 
-    for (name, set) in [
-        ("--since", args.since.is_some()),
-        ("--until", args.until.is_some()),
-        ("--period", args.period.is_some()),
-    ] {
-        if set {
-            eprintln!(
-                "wallet-stats: {name} is not supported yet: the history provider cannot \
-                 honour a time window exactly (scans are bounded by --max-pages-per-wallet, newest first)"
-            );
+    // ADR-011: the window is resolved (and `as_of` pinned) exactly once.
+    let as_of = unix_now();
+    let window = match AnalysisWindow::resolve(
+        args.period.as_deref(),
+        args.since.as_deref(),
+        args.until.as_deref(),
+        as_of,
+    ) {
+        Ok(w) => w,
+        Err(err) => {
+            eprintln!("wallet-stats: {err}");
             return ExitCode::from(2);
         }
-    }
+    };
 
     let input_text = match read_input(args.input.as_deref()) {
         Ok(text) => text,
@@ -221,6 +231,7 @@ fn main() -> ExitCode {
         &wallets,
         &solana,
         &args,
+        &window,
         &api_key,
         parsed.duplicate_count,
         upstream_complete,
@@ -250,10 +261,20 @@ fn rate_limited_text(retry_after_secs: Option<u64>) -> String {
     }
 }
 
+/// Run start in unix seconds (pinned once per run as `as_of`).
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0)
+}
+
 fn build_provider(
     api_key: &str,
     max_pages: NonZeroU32,
     max_requests: Option<u64>,
+    window: &AnalysisWindow,
 ) -> Result<HeliusProvider, ProviderError> {
     let provider = match std::env::var(ENDPOINT_OVERRIDE_ENV) {
         Ok(url) if !url.is_empty() => HeliusProvider::new_with_endpoint(
@@ -266,6 +287,7 @@ fn build_provider(
     Ok(provider
         .with_max_pages(max_pages)
         .with_scan_order(ScanOrder::NewestFirst)
+        .with_stop_before_block_time(window.bounds().map(|(since, _)| since))
         .with_max_total_requests(max_requests))
 }
 
@@ -278,11 +300,13 @@ fn provider_error_exit(err: &ProviderError, secret: &str) -> ExitCode {
     ExitCode::from(4)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_solana(
     rt: &tokio::runtime::Runtime,
     all: &[WalletKey],
     solana: &[SolanaPubkey],
     args: &Args,
+    window: &AnalysisWindow,
     api_key: &str,
     duplicates: usize,
     upstream_complete: bool,
@@ -293,7 +317,7 @@ fn run_solana(
     };
     // ONE provider for the whole run: the budget and counter are shared
     // by every wallet's scan.
-    let provider = match build_provider(api_key, max_pages, args.max_requests) {
+    let provider = match build_provider(api_key, max_pages, args.max_requests, window) {
         Ok(p) => p,
         Err(err) => return provider_error_exit(&err, api_key),
     };
@@ -307,10 +331,11 @@ fn run_solana(
             return ExitCode::from(4);
         }
     };
-    let result = rt.block_on(run_solana_wallet_stats(
+    let result = rt.block_on(run_solana_wallet_stats_windowed(
         &provider,
         solana,
         &decoder,
+        window,
         CancellationToken::new(),
     ));
     let requests_made = provider.total_requests_made();
@@ -335,7 +360,7 @@ fn run_solana(
     } else {
         SortMode::Input
     };
-    print_diagnostics(&report, api_key, args, requests_made);
+    print_diagnostics(&report, api_key, args, window, requests_made);
     let incomplete = report.is_coverage_incomplete() || !upstream_complete;
     let captured_at = scout_app::now_utc_rfc3339();
     let lines = if args.format == "jsonl" {
@@ -355,6 +380,7 @@ fn run_solana(
             upstream_complete,
             requests_made,
             max_requests: args.max_requests,
+            window: *window,
         };
         match output::jsonl_lines(&meta, &report, incomplete, &|t| redact(t, api_key)) {
             Ok(l) => l,
@@ -364,7 +390,7 @@ fn run_solana(
             }
         }
     } else {
-        output::table_lines(&report, detail, sort)
+        output::table_lines(&report, detail, sort, window)
             .into_iter()
             .map(|l| redact(&l, api_key))
             .collect()
@@ -398,6 +424,7 @@ fn print_diagnostics(
     report: &SolanaWalletStatsReport,
     api_key: &str,
     args: &Args,
+    window: &AnalysisWindow,
     requests_made: u64,
 ) {
     let max_pages = args.max_pages_per_wallet;
@@ -407,7 +434,21 @@ fn print_diagnostics(
     eprintln!("  NOT decoded: {}", s.not_decoded);
     eprintln!(
         "  scan: newest-first, max_pages_per_wallet={max_pages} (100 txs/page; retries not counted); \
-         a truncated wallet lacks OLDER history (opening inventory unknown); no time window"
+         {}",
+        match window.bounds() {
+            Some((since, until)) => format!(
+                "window [{}, {}) source={} as_of={}: stops after the first page holding a tx older \
+                 than the window start; a wallet that exhausts the budget before it is incomplete; \
+                 pre-window inventory is left-censored (ADR-011)",
+                scout_app::format_unix_utc(u64::try_from(since).unwrap_or(0)),
+                scout_app::format_unix_utc(u64::try_from(until).unwrap_or(0)),
+                window.source.label(),
+                scout_app::format_unix_utc(u64::try_from(window.as_of).unwrap_or(0))
+            ),
+            None =>
+                "a truncated wallet lacks OLDER history (opening inventory unknown); no time window"
+                    .to_string(),
+        }
     );
     eprintln!(
         "  requests_made={requests_made} max_requests={} (total HTTP attempts, retries included)",

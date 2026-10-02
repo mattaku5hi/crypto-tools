@@ -10,9 +10,21 @@
 //! opening inventory is unknown (the ledger books any disposal beyond
 //! observed inventory as an `Unknown`-basis lot, never a fabricated buy).
 //! `OldestFirst` would give true openings but may never reach recent
-//! activity, which is what a stats card is asked about. There is no
-//! time-window request in `ScanRequest`, so `--since/--until/--period`
-//! cannot be honoured exactly and are not offered.
+//! activity, which is what a stats card is asked about.
+//!
+//! # Analysis window (ADR-011)
+//! With a bounded [`AnalysisWindow`] the window stays OUT of the provider
+//! trait: the provider (`HeliusProvider::with_stop_before_block_time`, set
+//! by the CLI to `since`) ends a newest-first walk as a natural end after
+//! the first page holding a transaction with `blockTime < since`, so no
+//! page beyond the boundary page is requested and `truncated` stays false.
+//! This engine independently recomputes boundary evidence from the
+//! envelopes (a provider that does not stop is still handled: a seen
+//! boundary makes coverage complete for the window), drops transactions
+//! outside `[since, until)` before the ledger, treats a transaction
+//! without `blockTime` in the scanned range as a coverage gap, and builds
+//! the ledger in left-censoring mode. Running out of page/request budget
+//! before the boundary is `Incomplete` as without a window.
 //!
 //! # Per-wallet status (CLI.md §5: no wallet disappears)
 //! * `Error`: the scan or the ledger build failed; no figures. One
@@ -45,11 +57,14 @@ use scout_core::{AddressBytes, RawPayload, RawSolanaTransaction, SolanaPubkey, W
 use scout_dex_solana::BondingCurveBuyDecoder;
 use tokio_util::sync::CancellationToken;
 
+use crate::analysis_window::AnalysisWindow;
 use crate::solana_buy_qualification::solana_mainnet_chain;
 use crate::solana_buyer_intersect::{
     ScanFailureKind, ScanStop, SolanaProtocolScope, classify_provider_error, sanitize_provider_text,
 };
-use crate::solana_wallet_ledger::{SolanaWalletLedgerReport, build_solana_wallet_ledger};
+use crate::solana_wallet_ledger::{
+    LedgerOptions, SolanaWalletLedgerReport, build_solana_wallet_ledger_with_options,
+};
 
 /// Per-wallet outcome class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +99,9 @@ pub struct SolanaWalletStats {
     pub status: WalletScanStatus,
     /// `None` when the scan failed (unknown, not zero).
     pub transactions_scanned: Option<u64>,
+    /// Transactions inside the window and fed to the ledger (`None` when
+    /// the scan failed or no window applies).
+    pub transactions_in_window: Option<u64>,
     /// Provider stopped with an unconsumed cursor.
     pub truncated: bool,
     pub unexpected_payloads: u64,
@@ -187,6 +205,20 @@ pub async fn run_solana_wallet_stats(
     decoder: &BondingCurveBuyDecoder,
     cancel: CancellationToken,
 ) -> Result<SolanaWalletStatsReport, ProviderError> {
+    run_solana_wallet_stats_windowed(provider, wallets, decoder, &AnalysisWindow::none(0), cancel)
+        .await
+}
+
+/// [`run_solana_wallet_stats`] over an [`AnalysisWindow`] (ADR-011). The
+/// provider must be configured to stop at the same `since` for the
+/// bounded-paging guarantee; see the module docs.
+pub async fn run_solana_wallet_stats_windowed(
+    provider: &dyn HistoryProvider,
+    wallets: &[SolanaPubkey],
+    decoder: &BondingCurveBuyDecoder,
+    window: &AnalysisWindow,
+    cancel: CancellationToken,
+) -> Result<SolanaWalletStatsReport, ProviderError> {
     let mut seen: BTreeSet<SolanaPubkey> = BTreeSet::new();
     let distinct: Vec<SolanaPubkey> = wallets
         .iter()
@@ -210,7 +242,7 @@ pub async fn run_solana_wallet_stats(
             ));
             continue;
         }
-        match scan_wallet(provider, wallet, decoder, &cancel).await? {
+        match scan_wallet(provider, wallet, decoder, window, &cancel).await? {
             Some(card) => {
                 stop = card.failure.and_then(ScanFailureKind::stop);
                 out.push(card);
@@ -237,6 +269,7 @@ fn not_scanned_card(wallet: SolanaPubkey, reason: ScanStop) -> SolanaWalletStats
         wallet,
         status: WalletScanStatus::NotScanned,
         transactions_scanned: None,
+        transactions_in_window: None,
         truncated: false,
         unexpected_payloads: 0,
         error: None,
@@ -259,6 +292,7 @@ fn failed_card(wallet: SolanaPubkey, error: String) -> SolanaWalletStats {
         wallet,
         status: WalletScanStatus::Error,
         transactions_scanned: None,
+        transactions_in_window: None,
         truncated: false,
         unexpected_payloads: 0,
         error: Some(error),
@@ -274,6 +308,7 @@ async fn scan_wallet(
     provider: &dyn HistoryProvider,
     wallet: SolanaPubkey,
     decoder: &BondingCurveBuyDecoder,
+    window: &AnalysisWindow,
     cancel: &CancellationToken,
 ) -> Result<Option<SolanaWalletStats>, ProviderError> {
     let request = ScanRequest::WalletActivity {
@@ -297,6 +332,11 @@ async fn scan_wallet(
     let mut txs: Vec<RawSolanaTransaction> = Vec::new();
     let mut truncated = false;
     let mut unexpected = 0u64;
+    let bounded = window.is_bounded();
+    // Window bookkeeping (provider order is newest-first, but only the
+    // "no blockTime after the boundary" leniency relies on it).
+    let mut boundary_seen = false;
+    let mut missing_time = 0u64;
     while let Some(item) = stream.next().await {
         if cancel.is_cancelled() {
             return Ok(None);
@@ -305,7 +345,19 @@ async fn scan_wallet(
             Ok(envelope) => {
                 truncated = truncated || envelope.truncated;
                 match envelope.payload {
-                    RawPayload::SolanaTransaction(tx) => txs.push(tx),
+                    RawPayload::SolanaTransaction(tx) => {
+                        if bounded {
+                            match tx.block_time {
+                                Some(t) if t < window.since => boundary_seen = true,
+                                Some(_) => {}
+                                // Older than the boundary tx by slot order: outside
+                                // the window anyway.
+                                None if boundary_seen => {}
+                                None => missing_time = missing_time.saturating_add(1),
+                            }
+                        }
+                        txs.push(tx);
+                    }
                     _ => unexpected = unexpected.saturating_add(1),
                 }
             }
@@ -319,7 +371,14 @@ async fn scan_wallet(
     }
 
     let scanned = u64::try_from(txs.len()).unwrap_or(u64::MAX);
-    let ledger = match build_solana_wallet_ledger(&wallet, &txs, decoder) {
+    if bounded {
+        txs.retain(|tx| tx.block_time.is_some_and(|t| window.contains(t)));
+    }
+    let in_window = u64::try_from(txs.len()).unwrap_or(u64::MAX);
+    let options = LedgerOptions {
+        left_censoring: bounded,
+    };
+    let ledger = match build_solana_wallet_ledger_with_options(&wallet, &txs, decoder, options) {
         Ok(l) => l,
         Err(err) => {
             return Ok(Some(failed_card(
@@ -330,7 +389,22 @@ async fn scan_wallet(
     };
 
     let mut reasons = Vec::new();
-    if truncated {
+    if bounded {
+        // Complete for the window iff the boundary was reached or history ended.
+        if truncated && !boundary_seen {
+            reasons.push(
+                "provider page budget exhausted before the window start was reached: \
+                 part of the window is not seen (figures cover the newest part only)"
+                    .to_string(),
+            );
+        }
+        if missing_time > 0 {
+            reasons.push(format!(
+                "{missing_time} transaction(s) without blockTime inside the scanned range: \
+                 cannot be placed in the window"
+            ));
+        }
+    } else if truncated {
         reasons.push(
             "provider page budget exhausted with history remaining: older transactions not \
              seen, opening inventory unknown (figures cover the newest window only)"
@@ -364,7 +438,7 @@ async fn scan_wallet(
 
     let status = if !reasons.is_empty() {
         WalletScanStatus::Incomplete
-    } else if scanned == 0 {
+    } else if (if bounded { in_window } else { scanned }) == 0 {
         WalletScanStatus::NoActivity
     } else if ledger.trades.buys + ledger.trades.sells == 0 && ledger.failed_trade_fee_txs == 0 {
         WalletScanStatus::NoPumpActivity
@@ -375,6 +449,7 @@ async fn scan_wallet(
         wallet,
         status,
         transactions_scanned: Some(scanned),
+        transactions_in_window: bounded.then_some(in_window),
         truncated,
         unexpected_payloads: unexpected,
         error: None,

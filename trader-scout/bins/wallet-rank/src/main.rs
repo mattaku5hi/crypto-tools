@@ -10,7 +10,9 @@
 //!
 //! Exit codes (CLI.md §8): 0 the whole wallet universe was scanned within
 //! the declared scope (an empty or short shortlist is a normal outcome);
-//! 2 usage (incl. `--rank-by period-equity-pnl`, `--since/--until/--period`);
+//! 2 usage (incl. `--rank-by period-equity-pnl`, an invalid window:
+//! `--period` outside 1d..=365d, non-UTC/non-RFC3339 `--since/--until`, `--period` with
+//! `--since`, `--until` without a start, empty window; ADR-011);
 //! 3 ranking over a PARTIAL universe (a wallet is incomplete/errored, the
 //! request budget ran out, rate-limit stop after at least one wallet
 //! produced data, upstream JSONL partial or footerless);
@@ -31,15 +33,16 @@
 use std::io::{self, IsTerminal, Read};
 use std::num::NonZeroU32;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use scout_api::ProviderError;
 use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
 use scout_core::{AddressBytes, ChainFamily, SolanaPubkey, WalletKey};
 use scout_engine::{
-    DEFAULT_TOP, RankBy, RankPolicy, RankProfile, ScanStop, SolanaWalletStatsReport,
-    WalletRankReport, pump_bonding_curve_decoder, rank_solana_wallets, run_solana_wallet_stats,
-    sanitize_provider_text,
+    AnalysisWindow, DEFAULT_TOP, RankBy, RankPolicy, RankProfile, ScanStop,
+    SolanaWalletStatsReport, WalletRankReport, pump_bonding_curve_decoder, rank_solana_wallets,
+    run_solana_wallet_stats_windowed, sanitize_provider_text,
 };
 use scout_providers::{HeliusProvider, ScanOrder};
 use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
@@ -135,14 +138,17 @@ struct Args {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
 
-    /// Not supported yet (the provider cannot honour a time window exactly).
-    #[arg(long, hide = true)]
+    /// Analysis window start, UTC RFC 3339 `2026-08-01T00:00:00Z` (inclusive;
+    /// no offsets). Window `[since, until)`; see ADR-011. Conflicts with --period.
+    #[arg(long, conflicts_with = "period")]
     since: Option<String>,
-    /// Not supported yet.
-    #[arg(long, hide = true)]
+    /// Analysis window end (exclusive), same format; default: run start.
+    /// Requires --since or --period.
+    #[arg(long)]
     until: Option<String>,
-    /// Not supported yet.
-    #[arg(long, hide = true)]
+    /// Window of the last N days (`30d`, 1..=365) ending at --until (default
+    /// run start). Conflicts with --since.
+    #[arg(long, conflicts_with = "since")]
     period: Option<String>,
 }
 
@@ -189,19 +195,20 @@ fn policy_from(args: &Args) -> Result<RankPolicy, String> {
 fn main() -> ExitCode {
     let args = Args::parse();
 
-    for (name, set) in [
-        ("--since", args.since.is_some()),
-        ("--until", args.until.is_some()),
-        ("--period", args.period.is_some()),
-    ] {
-        if set {
-            eprintln!(
-                "wallet-rank: {name} is not supported yet: the history provider cannot \
-                 honour a time window exactly (scans are bounded by --max-pages-per-wallet, newest first)"
-            );
+    // ADR-011: the window is resolved (and `as_of` pinned) exactly once.
+    let as_of = unix_now();
+    let window = match AnalysisWindow::resolve(
+        args.period.as_deref(),
+        args.since.as_deref(),
+        args.until.as_deref(),
+        as_of,
+    ) {
+        Ok(w) => w,
+        Err(err) => {
+            eprintln!("wallet-rank: {err}");
             return ExitCode::from(2);
         }
-    }
+    };
     let policy = match policy_from(&args) {
         Ok(p) => p,
         Err(message) => {
@@ -301,6 +308,7 @@ fn main() -> ExitCode {
         &solana,
         &args,
         &policy,
+        &window,
         &api_key,
         parsed.duplicate_count,
         upstream_complete,
@@ -326,10 +334,20 @@ fn rate_limited_text(retry_after_secs: Option<u64>) -> String {
     }
 }
 
+/// Run start in unix seconds (pinned once per run as `as_of`).
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0)
+}
+
 fn build_provider(
     api_key: &str,
     max_pages: NonZeroU32,
     max_requests: Option<u64>,
+    window: &AnalysisWindow,
 ) -> Result<HeliusProvider, ProviderError> {
     let provider = match std::env::var(ENDPOINT_OVERRIDE_ENV) {
         Ok(url) if !url.is_empty() => HeliusProvider::new_with_endpoint(
@@ -342,6 +360,7 @@ fn build_provider(
     Ok(provider
         .with_max_pages(max_pages)
         .with_scan_order(ScanOrder::NewestFirst)
+        .with_stop_before_block_time(window.bounds().map(|(since, _)| since))
         .with_max_total_requests(max_requests))
 }
 
@@ -361,6 +380,7 @@ fn run_solana(
     solana: &[SolanaPubkey],
     args: &Args,
     policy: &RankPolicy,
+    window: &AnalysisWindow,
     api_key: &str,
     duplicates: usize,
     upstream_complete: bool,
@@ -369,7 +389,7 @@ fn run_solana(
         eprintln!("wallet-rank: --max-pages-per-wallet must be at least 1");
         return ExitCode::from(2);
     };
-    let provider = match build_provider(api_key, max_pages, args.max_requests) {
+    let provider = match build_provider(api_key, max_pages, args.max_requests, window) {
         Ok(p) => p,
         Err(err) => return provider_error_exit(&err, api_key),
     };
@@ -383,10 +403,11 @@ fn run_solana(
             return ExitCode::from(4);
         }
     };
-    let stats = match rt.block_on(run_solana_wallet_stats(
+    let stats = match rt.block_on(run_solana_wallet_stats_windowed(
         &provider,
         solana,
         &decoder,
+        window,
         CancellationToken::new(),
     )) {
         Ok(r) => r,
@@ -396,7 +417,7 @@ fn run_solana(
     let report = rank_solana_wallets(&stats.wallets, policy);
 
     let incomplete = stats.is_coverage_incomplete() || !upstream_complete;
-    print_diagnostics(&stats, &report, api_key, args, requests_made);
+    print_diagnostics(&stats, &report, api_key, args, window, requests_made);
     let captured_at = scout_app::now_utc_rfc3339();
     let lines = if args.format == "jsonl" {
         let compact: String = captured_at
@@ -413,6 +434,7 @@ fn run_solana(
             input_wallet_count: all.len(),
             input_duplicates: duplicates,
             upstream_complete,
+            window: *window,
         };
         let summary = SummaryInput {
             run_id: &run_id,
@@ -434,7 +456,7 @@ fn run_solana(
             }
         }
     } else {
-        output::table_lines(&report, incomplete)
+        output::table_lines(&report, incomplete, window)
             .into_iter()
             .map(|l| redact(&l, api_key))
             .collect()
@@ -469,6 +491,7 @@ fn print_diagnostics(
     report: &WalletRankReport,
     api_key: &str,
     args: &Args,
+    window: &AnalysisWindow,
     requests_made: u64,
 ) {
     let s = &stats.scope;
@@ -478,10 +501,22 @@ fn print_diagnostics(
     eprintln!("  NOT decoded: {}", s.not_decoded);
     eprintln!(
         "  scan: newest-first, max_pages_per_wallet={} (100 txs/page; retries not counted), \
-         max_requests={}, requests_made={requests_made}; no time window",
+         max_requests={}, requests_made={requests_made}; {}",
         args.max_pages_per_wallet,
         args.max_requests
-            .map_or_else(|| "unlimited".to_string(), |n| n.to_string())
+            .map_or_else(|| "unlimited".to_string(), |n| n.to_string()),
+        match window.bounds() {
+            Some((since, until)) => format!(
+                "window [{}, {}) source={} as_of={} (stops after the first page older than the \
+                 window start; budget exhausted before it = incomplete; pre-window inventory is \
+                 left-censored, ADR-011)",
+                scout_app::format_unix_utc(u64::try_from(since).unwrap_or(0)),
+                scout_app::format_unix_utc(u64::try_from(until).unwrap_or(0)),
+                window.source.label(),
+                scout_app::format_unix_utc(u64::try_from(window.as_of).unwrap_or(0))
+            ),
+            None => "no time window".to_string(),
+        }
     );
     match stats.stop {
         Some(ScanStop::BudgetExhausted { limit }) => eprintln!(

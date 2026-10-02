@@ -11,7 +11,7 @@ use scout_analytics::RatioStatus;
 use scout_app::SCHEMA_VERSION;
 use scout_core::{MONEY_SCALE, Money};
 use scout_engine::{
-    ExcludedWallet, OpenExposure, RankedWallet, SOLANA_WALLET_LEDGER_VERSION,
+    AnalysisWindow, ExcludedWallet, OpenExposure, RankedWallet, SOLANA_WALLET_LEDGER_VERSION,
     SOLANA_WALLET_RANK_VERSION, ScanStop, SolanaProtocolScope, WalletRankObservation,
     WalletRankReport, format_scaled_decimal, lamports_to_sol_string, money_exact_sol_string,
     rational_to_decimal_string,
@@ -44,6 +44,10 @@ const HEADER: [&str; 10] = [
     "open_exposure",
     "quality",
 ];
+
+fn rfc3339(unix: i64) -> String {
+    scout_app::format_unix_utc(u64::try_from(unix).unwrap_or(0))
+}
 
 fn roi_cell(o: &WalletRankObservation) -> String {
     o.roi
@@ -128,7 +132,11 @@ fn all_counts(report: &WalletRankReport) -> BTreeMap<&'static str, usize> {
 
 /// Header, one row per ranked wallet, then `#` summary lines (stdout is
 /// still one format: the table plus its exclusion summary).
-pub fn table_lines(report: &WalletRankReport, partial: bool) -> Vec<String> {
+pub fn table_lines(
+    report: &WalletRankReport,
+    partial: bool,
+    window: &AnalysisWindow,
+) -> Vec<String> {
     let profile = report.policy.profile.label();
     let rows: Vec<Vec<String>> = report.ranked.iter().map(|r| row(r, profile)).collect();
     let mut widths: Vec<usize> = HEADER.iter().map(|h| h.chars().count()).collect();
@@ -151,7 +159,17 @@ pub fn table_lines(report: &WalletRankReport, partial: bool) -> Vec<String> {
         line.trim_end().to_string()
     };
     let head: Vec<String> = HEADER.iter().map(|s| (*s).to_string()).collect();
-    let mut out = vec![fmt(&head)];
+    let mut out = Vec::new();
+    if let Some((since, until)) = window.bounds() {
+        out.push(format!(
+            "# window [{}, {}) source={} as_of={}",
+            rfc3339(since),
+            rfc3339(until),
+            window.source.label(),
+            rfc3339(window.as_of)
+        ));
+    }
+    out.push(fmt(&head));
     out.extend(rows.iter().map(|c| fmt(c)));
     let p = &report.policy;
     out.push(format!(
@@ -217,6 +235,32 @@ pub struct ScanDto {
     pub window: &'static str,
 }
 
+/// ADR-011 analysis window of the run (`since`/`until` null without one).
+#[derive(Debug, Serialize)]
+pub struct WindowDto {
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub since_unix: Option<i64>,
+    pub until_unix: Option<i64>,
+    pub as_of: String,
+    pub as_of_unix: i64,
+    /// `period`, `explicit` or `none`.
+    pub source: &'static str,
+}
+
+pub fn window_dto(w: &AnalysisWindow) -> WindowDto {
+    let bounds = w.bounds();
+    WindowDto {
+        since: bounds.map(|(s, _)| rfc3339(s)),
+        until: bounds.map(|(_, u)| rfc3339(u)),
+        since_unix: bounds.map(|(s, _)| s),
+        until_unix: bounds.map(|(_, u)| u),
+        as_of: rfc3339(w.as_of),
+        as_of_unix: w.as_of,
+        source: w.source.label(),
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct RunMetaRecord {
     pub schema_version: u32,
@@ -226,6 +270,7 @@ pub struct RunMetaRecord {
     pub rank_version: &'static str,
     pub ledger_version: &'static str,
     pub quote_unit: &'static str,
+    pub window: WindowDto,
     pub protocol_scope: &'static str,
     pub not_decoded: &'static str,
     pub scan: ScanDto,
@@ -313,6 +358,9 @@ pub struct MetricsDto {
     pub realized_cost_roi: RoiDto,
     pub closed_episodes_known: u64,
     pub closed_episodes_unknown: u64,
+    /// ADR-011: closed episodes whose inventory predates the window; counted, never valued.
+    pub left_censored_episodes: u64,
+    pub left_censored_amount_raw: String,
     pub open_episodes: u64,
     pub wins: u64,
     pub losses: u64,
@@ -321,6 +369,7 @@ pub struct MetricsDto {
     pub profit_factor: RatioDto,
     pub failed_trade_fees: AmountDto,
     pub has_unknown_basis_inventory: bool,
+    pub has_left_censored_inventory: bool,
     pub open_exposure: OpenExposureDto,
     pub activity: ActivityDto,
 }
@@ -472,6 +521,8 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
         realized_cost_roi: roi,
         closed_episodes_known: l.closed_episodes_known,
         closed_episodes_unknown: l.closed_episodes_unknown,
+        left_censored_episodes: l.left_censored_episodes,
+        left_censored_amount_raw: l.left_censored_amount_raw.to_string(),
         open_episodes: l.open_episodes,
         wins: l.wins,
         losses: l.losses,
@@ -480,6 +531,7 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
         profit_factor: ratio_dto(&l.profit_factor, l.closed_episodes_known),
         failed_trade_fees: amount(l.failed_trade_fees_lamports),
         has_unknown_basis_inventory: l.has_unknown_basis_inventory,
+        has_left_censored_inventory: l.has_left_censored_inventory,
         open_exposure: OpenExposureDto {
             status: open_status,
             positions,
@@ -506,6 +558,7 @@ pub struct RunMetaInput<'a> {
     pub input_wallet_count: usize,
     pub input_duplicates: usize,
     pub upstream_complete: bool,
+    pub window: AnalysisWindow,
 }
 
 pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMetaRecord {
@@ -519,6 +572,7 @@ pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMe
         rank_version: SOLANA_WALLET_RANK_VERSION,
         ledger_version: SOLANA_WALLET_LEDGER_VERSION,
         quote_unit: "lamports",
+        window: window_dto(&m.window),
         protocol_scope: scope.recognized,
         not_decoded: scope.not_decoded,
         scan: ScanDto {
@@ -527,7 +581,11 @@ pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMe
             max_pages_per_wallet: m.max_pages_per_wallet,
             max_requests: m.max_requests,
             requests_made: m.requests_made,
-            window: "full available history within the page budget (no time window)",
+            window: if m.window.is_bounded() {
+                "newest-first walk until the window start (blockTime < since) or the page budget"
+            } else {
+                "full available history within the page budget (no time window)"
+            },
         },
         rank_by: p.rank_by.label(),
         profile: p.profile.label(),
@@ -685,6 +743,7 @@ mod tests {
             wallet: [b; 32],
             status: WalletScanStatus::Ok,
             transactions_scanned: Some(6),
+            transactions_in_window: None,
             truncated: false,
             unexpected_payloads: 0,
             error: None,
@@ -716,6 +775,7 @@ mod tests {
             input_wallet_count: 3,
             input_duplicates: 0,
             upstream_complete: true,
+            window: AnalysisWindow::none(1_790_000_000),
         }
     }
 
@@ -775,7 +835,7 @@ mod tests {
 
     #[test]
     fn table_has_header_rows_and_exclusion_summary() {
-        let lines = table_lines(&report(), true);
+        let lines = table_lines(&report(), true, &AnalysisWindow::none(0));
         assert!(lines[0].starts_with("rank"));
         assert!(lines[1].contains("0.000157000"), "{}", lines[1]);
         assert!(lines[1].contains("15.39%"), "{}", lines[1]);
@@ -786,5 +846,28 @@ mod tests {
                 .any(|l| l.contains("below_top_n=1") && l.contains("provider_error=1"))
         );
         assert!(lines.iter().any(|l| l.contains("status=partial")));
+    }
+
+    #[test]
+    fn windowed_table_starts_with_the_window_line() {
+        use scout_engine::WindowSource;
+        let w = AnalysisWindow {
+            since: 1_785_542_400,
+            until: 1_788_220_800,
+            as_of: 1_790_000_000,
+            source: WindowSource::Period,
+        };
+        let lines = table_lines(&report(), false, &w);
+        assert!(lines[0].starts_with("# window [2026-08-01T00:00:00Z, 2026-09-01T00:00:00Z)"));
+        assert!(lines[1].starts_with("rank"));
+        let mut m = meta();
+        m.window = w;
+        let v = serde_json::to_value(run_meta_record(&m, &report())).unwrap();
+        assert_eq!(v["window"]["source"], "period");
+        assert_eq!(v["window"]["as_of_unix"], 1_790_000_000_i64);
+        let observed = metrics_dto(&report().ranked[0].observation).unwrap();
+        let o = serde_json::to_value(observed).unwrap();
+        assert_eq!(o["left_censored_episodes"], 0);
+        assert_eq!(o["has_left_censored_inventory"], false);
     }
 }

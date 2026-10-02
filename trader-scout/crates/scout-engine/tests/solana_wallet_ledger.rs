@@ -23,8 +23,9 @@ use scout_dex_solana::{
     pair_trades_with_events,
 };
 use scout_engine::{
-    EpisodeOutcome, PUMP_BONDING_CURVE_PROGRAM_ID, QuoteUnit, SolanaWalletLedgerReport,
-    UnknownReason, allocate_fee_proportionally, build_solana_wallet_ledger, lamports_to_money,
+    EpisodeOutcome, LedgerOptions, PUMP_BONDING_CURVE_PROGRAM_ID, QuoteUnit,
+    SolanaWalletLedgerReport, UnknownReason, allocate_fee_proportionally,
+    build_solana_wallet_ledger, build_solana_wallet_ledger_with_options, lamports_to_money,
     pump_bonding_curve_decoder, solana_mainnet_chain,
 };
 use scout_providers::HeliusProvider;
@@ -180,6 +181,7 @@ struct Tx {
 impl Tx {
     fn build(self) -> RawSolanaTransaction {
         RawSolanaTransaction {
+            block_time: None,
             signature: [self.sig; 64],
             execution: if self.ok {
                 SolanaExecutionStatus::Succeeded
@@ -1022,6 +1024,7 @@ async fn check_fixture_tx(sig_prefix: &str, expect_zero_residual: bool) -> i128 
     let mint_off = 16;
     ixs[1].data[mint_off..mint_off + 32].copy_from_slice(&mint);
     sell_events.push(RawSolanaTransaction {
+        block_time: None,
         signature: [0xab; 64],
         execution: SolanaExecutionStatus::Succeeded,
         slot: tx.slot + 1000,
@@ -1104,4 +1107,209 @@ async fn live_fixture_wallets_never_panic_and_count_everything() {
             );
         }
     }
+}
+
+fn run_windowed(txs: &[RawSolanaTransaction]) -> SolanaWalletLedgerReport {
+    build_solana_wallet_ledger_with_options(
+        &pk(W),
+        txs,
+        &pump_bonding_curve_decoder().unwrap(),
+        LedgerOptions {
+            left_censoring: true,
+        },
+    )
+    .unwrap()
+}
+
+fn golden_buy_sell() -> Vec<RawSolanaTransaction> {
+    vec![
+        trade_tx(
+            1,
+            100,
+            TradeSide::Buy,
+            M1,
+            1000,
+            0,
+            1_000_000,
+            10_000,
+            5_000,
+            1000,
+            5_000,
+            W,
+        ),
+        trade_tx(
+            2,
+            101,
+            TradeSide::Sell,
+            M1,
+            1000,
+            1000,
+            1_200_000,
+            12_000,
+            6_000,
+            1600,
+            5_000,
+            W,
+        ),
+    ]
+}
+
+#[test]
+fn windowed_sell_only_is_left_censored_not_closed_unknown() {
+    // Pre-window buy is not in the input: the sell (net 1_177_000) exceeds
+    // the observed inventory.
+    let sell = golden_buy_sell().remove(1);
+    let r = run_windowed(std::slice::from_ref(&sell));
+    assert_eq!(r.closed_episodes_known, 0);
+    assert_eq!(r.closed_episodes_unknown, 0);
+    assert_eq!(r.left_censored_episodes, 1);
+    assert_eq!(r.left_censored_amount_raw, 1000);
+    assert_eq!(r.episodes.len(), 1);
+    assert_eq!(r.episodes[0].outcome, EpisodeOutcome::LeftCensored);
+    assert_eq!(r.episodes[0].left_censored_amount_raw, 1000);
+    assert!(
+        r.episodes[0]
+            .unknown_reasons
+            .contains(&UnknownReason::LeftCensored)
+    );
+    assert!(
+        !r.episodes[0]
+            .unknown_reasons
+            .contains(&UnknownReason::UnknownBasisLotConsumed)
+    );
+    assert!(!r.has_unknown_basis_inventory, "not an in-window cause");
+    assert!(r.has_left_censored_inventory);
+    assert_eq!(r.unknown_basis_lots_created, 0);
+    assert_eq!(r.diagnostics.continuity_breaks, 0);
+    assert_eq!(r.diagnostics.left_censored_disposals, 1);
+    // Never valued: no PnL, no basis, no win rate.
+    assert_eq!(r.realized_trade_pnl_lamports, 0);
+    assert_eq!(r.consumed_acquisition_basis_lamports, 0);
+    assert_eq!(r.win_rate, scout_analytics::RatioStatus::Undefined);
+    assert!(r.open_positions.is_empty());
+    // Same input without the window keeps the ADR-010 classification.
+    let plain = run(std::slice::from_ref(&sell));
+    assert_eq!(plain.closed_episodes_unknown, 1);
+    assert_eq!(plain.left_censored_episodes, 0);
+    assert!(plain.has_unknown_basis_inventory);
+    assert!(!plain.has_left_censored_inventory);
+    assert!(
+        plain.episodes[0]
+            .unknown_reasons
+            .contains(&UnknownReason::InventoryNotObserved)
+    );
+}
+
+#[test]
+fn windowed_buy_and_sell_inside_window_matches_the_unwindowed_numbers() {
+    let txs = golden_buy_sell();
+    let w = run_windowed(&txs);
+    let p = run(&txs);
+    assert_eq!(w.closed_episodes_known, 1);
+    assert_eq!(w.left_censored_episodes, 0);
+    assert!(!w.has_left_censored_inventory);
+    assert_eq!(w.realized_trade_pnl_lamports, 157_000);
+    assert_eq!(w.realized_trade_pnl_exact, p.realized_trade_pnl_exact);
+    assert_eq!(w.consumed_acquisition_basis_lamports, 1_020_000);
+    assert_eq!(w.win_rate, p.win_rate);
+    assert_eq!(w.median_holding_seconds, Some(600));
+    assert_eq!(w.episodes, p.episodes);
+}
+
+#[test]
+fn windowed_partial_shortfall_mixes_known_and_censored_lots_into_left_censored() {
+    // In-window buy of 1000; the sell disposes 1500: 500 predates the window.
+    let buy = golden_buy_sell().remove(0);
+    let sell = trade_tx(
+        2,
+        101,
+        TradeSide::Sell,
+        M1,
+        1500,
+        1500,
+        1_200_000,
+        0,
+        0,
+        1600,
+        0,
+        OTHER,
+    );
+    let r = run_windowed(&[buy, sell]);
+    assert_eq!(r.left_censored_episodes, 1);
+    assert_eq!(r.left_censored_amount_raw, 500);
+    assert_eq!(r.closed_episodes_known, 0);
+    assert_eq!(r.realized_trade_pnl_lamports, 0);
+}
+
+#[test]
+fn windowed_transfer_in_inside_window_then_sell_stays_closed_unknown() {
+    let transfer_in = Tx {
+        sig: 1,
+        slot: 1,
+        index: 0,
+        ixs: vec![],
+        bals: vec![bal(M1, W, 0, 1000), bal(12, W, 0, 5)],
+        fee: 0,
+        payer: OTHER,
+        native: vec![],
+        ok: true,
+    }
+    .build();
+    let sell = trade_tx(
+        2,
+        2,
+        TradeSide::Sell,
+        M1,
+        1000,
+        1000,
+        900_000,
+        0,
+        0,
+        100,
+        0,
+        OTHER,
+    );
+    let r = run_windowed(&[transfer_in, sell]);
+    assert_eq!(r.closed_episodes_unknown, 1);
+    assert_eq!(r.left_censored_episodes, 0);
+    assert_eq!(r.closed_episodes_known, 0);
+    assert!(r.has_unknown_basis_inventory);
+    assert_eq!(r.unknown_basis_lots_created, 1);
+    assert_eq!(r.episodes[0].outcome, EpisodeOutcome::ClosedUnknown);
+}
+
+#[test]
+fn windowed_censored_shortfall_with_in_window_unknown_proceeds_is_closed_unknown() {
+    // Sell without a paired event: in-window cause, plus a pre-window lot.
+    let sell = Tx {
+        sig: 5,
+        slot: 5,
+        index: 0,
+        ixs: vec![trade_ix(TradeSide::Sell, None, W, M1, 0)],
+        bals: vec![bal(M1, W, 300, 0)],
+        fee: 0,
+        payer: OTHER,
+        native: vec![],
+        ok: true,
+    }
+    .build();
+    let r = run_windowed(&[sell]);
+    assert_eq!(r.closed_episodes_unknown, 1);
+    assert_eq!(r.left_censored_episodes, 0);
+    assert!(r.has_unknown_basis_inventory);
+    assert!(
+        r.has_left_censored_inventory,
+        "the shortfall is still reported"
+    );
+    assert_eq!(r.left_censored_amount_raw, 300);
+}
+
+#[test]
+fn left_censored_daily_activity_is_reported_per_utc_day() {
+    // ts 1000 and 1600 both fall on UTC day 0.
+    let r = run_windowed(&golden_buy_sell());
+    assert_eq!(r.daily_activity.len(), 1);
+    assert_eq!(r.daily_activity[0].day, 0);
+    assert_eq!(r.daily_activity[0].trades, 2);
+    assert_eq!(r.daily_activity[0].distinct_mints, 1);
 }

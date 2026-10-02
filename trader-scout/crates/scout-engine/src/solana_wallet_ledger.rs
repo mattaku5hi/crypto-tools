@@ -19,6 +19,15 @@
 //! * §7 ordering: `(slot, transaction_index, instruction order)`; the
 //!   input order is irrelevant; duplicate signatures are processed once.
 //!
+//! # Windowed mode (ADR-011)
+//! With [`LedgerOptions::left_censoring`] the input is assumed to be the
+//! wallet's transactions inside an analysis window `[since, until)`. A
+//! disposal beyond the inventory the window observed is then
+//! `LeftCensored` (the inventory predates the window), not
+//! `InventoryNotObserved`; the episode is `EpisodeOutcome::LeftCensored`
+//! unless an in-window cause already makes it `ClosedUnknown`. Known
+//! sums and ratios are over `ClosedKnown` only, as before.
+//!
 //! Additions beyond the ADR text (documented in the report): a sale that
 //! exceeds the inventory this history observed first books the shortfall
 //! as an `Unknown`-basis lot (`InventoryNotObserved`), never a fabricated
@@ -45,7 +54,8 @@ use scout_normalize::{SolanaBalanceAggregationError, solana_owner_net_deltas};
 use crate::solana_buy_qualification::solana_mainnet_chain;
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
-pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/1 (ADR-010, ADR-004)";
+pub const SOLANA_WALLET_LEDGER_VERSION: &str =
+    "solana-wallet-ledger/2 (ADR-010, ADR-004, ADR-011 left-censoring)";
 
 /// Wrapped SOL, the only non-native quote asset treated as SOL (ADR-010 §3).
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -113,6 +123,9 @@ pub enum UnknownReason {
     InventoryNotObserved,
     /// A disposal consumed a lot whose basis was `Unknown`.
     UnknownBasisLotConsumed,
+    /// Windowed run (ADR-011): a disposal exceeded the in-window inventory
+    /// because the inventory predates the window.
+    LeftCensored,
 }
 
 impl UnknownReason {
@@ -126,6 +139,7 @@ impl UnknownReason {
             Self::UnexplainedOutboundTokenMovement => "unexplained outbound token movement",
             Self::InventoryNotObserved => "inventory not observed before disposal",
             Self::UnknownBasisLotConsumed => "consumed unknown-basis lot",
+            Self::LeftCensored => "inventory predates the analysis window (left-censored)",
         }
     }
 }
@@ -137,6 +151,9 @@ pub enum EpisodeOutcome {
     ClosedKnown { pnl: Money },
     /// Closed, but some basis/proceeds unknown: PnL unknown, never 0.
     ClosedUnknown,
+    /// Windowed run (ADR-011): closed, a consumed lot predates the window
+    /// and no in-window cause made it unknown. Counted, never valued.
+    LeftCensored,
     /// Inventory still open at the end of history. Unvalued (no price source).
     Open,
 }
@@ -162,6 +179,8 @@ pub struct EpisodeRecord {
     /// Σ capitalized basis consumed by the known disposals above
     /// (lamport-scaled `Money`); the ROI denominator for `ClosedKnown`.
     pub known_disposal_consumed_basis: Money,
+    /// Raw token units booked as left-censored shortfall in this episode.
+    pub left_censored_amount_raw: u128,
 }
 
 /// One open position at the end of history. Never carries a value.
@@ -214,6 +233,24 @@ pub struct LedgerDiagnostics {
     /// Disposals with `Unknown` PnL / known PnL.
     pub unknown_disposals: u64,
     pub known_disposals: u64,
+    /// Windowed runs: disposals that exceeded the in-window inventory
+    /// (booked `LeftCensored`; NOT counted in `continuity_breaks`).
+    pub left_censored_disposals: u64,
+}
+
+/// Ledger build options.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LedgerOptions {
+    /// ADR-011 windowed mode: shortfall disposals are `LeftCensored`.
+    pub left_censoring: bool,
+}
+
+/// Activity of one UTC day (`ts div 86400`), timestamped trades only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DailyActivity {
+    pub day: i64,
+    pub trades: u64,
+    pub distinct_mints: u64,
 }
 
 /// Cohort-gate activity metrics (P4.3); exact integers only.
@@ -249,6 +286,10 @@ pub struct SolanaWalletLedgerReport {
     pub episodes: Vec<EpisodeRecord>,
     pub closed_episodes_known: u64,
     pub closed_episodes_unknown: u64,
+    /// ADR-011: closed episodes whose inventory predates the window.
+    pub left_censored_episodes: u64,
+    /// Σ raw token units booked as left-censored shortfall.
+    pub left_censored_amount_raw: u128,
     pub open_episodes: u64,
     /// Known closed episodes with PnL > 0 / < 0 / == 0 (zero is neither
     /// win nor loss; it stays in the win-rate denominator).
@@ -286,10 +327,15 @@ pub struct SolanaWalletLedgerReport {
     pub open_positions: Vec<OpenPosition>,
     /// ARCHITECTURE §10 input: true when any open inventory has unknown
     /// basis or any closed episode is Unknown. Materiality is the caller's policy.
+    /// Only in-window causes (ADR-011 §5); left-censoring is excluded.
     pub has_unknown_basis_inventory: bool,
+    /// Any left-censored episode / shortfall (windowed runs).
+    pub has_left_censored_inventory: bool,
     pub open_positions_with_unknown_basis: u64,
     pub unknown_basis_lots_created: u64,
     pub activity: ActivityMetrics,
+    /// Per active UTC day, ascending (ADR-011 §6 evidence on incomplete scans).
+    pub daily_activity: Vec<DailyActivity>,
     pub diagnostics: LedgerDiagnostics,
 }
 
@@ -327,6 +373,7 @@ struct EpisodeAcc {
     consumed_basis: Money,
     unknown: BTreeSet<UnknownReason>,
     known_disposals: u64,
+    left_censored_raw: u128,
 }
 
 struct MintState {
@@ -336,6 +383,8 @@ struct MintState {
 
 struct Builder {
     wallet: SolanaPubkey,
+    left_censoring: bool,
+    left_censored_total: u128,
     chain_asset: fn(SolanaPubkey) -> AssetKey,
     mints: BTreeMap<SolanaPubkey, MintState>,
     records: Vec<EpisodeRecord>,
@@ -396,8 +445,11 @@ impl Builder {
             return Ok(());
         }
         let asset = (self.chain_asset)(mint);
-        if reason.is_some() {
+        if reason.is_some_and(|r| r != UnknownReason::LeftCensored) {
             self.unknown_lots += 1;
+        }
+        if reason == Some(UnknownReason::LeftCensored) {
+            self.left_censored_total = self.left_censored_total.saturating_add(u128::from(amount));
         }
         let state = self.state(mint);
         if state.episode.is_none() {
@@ -408,6 +460,7 @@ impl Builder {
                 consumed_basis: Money::ZERO,
                 unknown: BTreeSet::new(),
                 known_disposals: 0,
+                left_censored_raw: 0,
             });
         }
         let status = match reason {
@@ -415,6 +468,10 @@ impl Builder {
             Some(r) => {
                 if let Some(ep) = state.episode.as_mut() {
                     ep.unknown.insert(r);
+                    if r == UnknownReason::LeftCensored {
+                        ep.left_censored_raw =
+                            ep.left_censored_raw.saturating_add(u128::from(amount));
+                    }
                 }
                 BasisStatus::Unknown {
                     reason: r.label().to_string(),
@@ -447,17 +504,17 @@ impl Builder {
         if open < need {
             let shortfall = u64::try_from(need.saturating_sub(open))
                 .map_err(|_| SolanaWalletLedgerError::Overflow("shortfall"))?;
-            self.diag.continuity_breaks += 1;
-            self.acquire(
-                mint,
-                shortfall,
-                None,
-                Some(UnknownReason::InventoryNotObserved),
-                ts,
-                loc,
-            )?;
+            let reason = if self.left_censoring {
+                self.diag.left_censored_disposals += 1;
+                UnknownReason::LeftCensored
+            } else {
+                self.diag.continuity_breaks += 1;
+                UnknownReason::InventoryNotObserved
+            };
+            self.acquire(mint, shortfall, None, Some(reason), ts, loc)?;
         }
         let state = self.state(mint);
+        let (_, consumes_other_unknown) = consumed_unknown_kinds(&state.ledger, need)?;
         let result = state
             .ledger
             .dispose(raw(amount), gross.unwrap_or(Money::ZERO), sale_fee)?;
@@ -481,7 +538,7 @@ impl Builder {
             if gross.is_none() {
                 ep.unknown.insert(unknown_reason);
             }
-            if !result.all_basis_known {
+            if !result.all_basis_known && consumes_other_unknown {
                 ep.unknown.insert(UnknownReason::UnknownBasisLotConsumed);
             }
         }
@@ -499,6 +556,35 @@ impl Builder {
     }
 }
 
+/// FIFO preview of a disposal of `need` units: `(consumes a LeftCensored
+/// lot, consumes any other Unknown-basis lot)`.
+fn consumed_unknown_kinds(
+    ledger: &Ledger,
+    need: u128,
+) -> Result<(bool, bool), SolanaWalletLedgerError> {
+    let censored_label = UnknownReason::LeftCensored.label();
+    let mut left = need;
+    let (mut censored, mut other) = (false, false);
+    for lot in ledger.open_lots() {
+        if left == 0 {
+            break;
+        }
+        let take = raw_to_u128(lot.remaining_amount)?.min(left);
+        if take == 0 {
+            continue;
+        }
+        left -= take;
+        if let BasisStatus::Unknown { reason } = &lot.basis_status {
+            if reason == censored_label {
+                censored = true;
+            } else {
+                other = true;
+            }
+        }
+    }
+    Ok((censored, other))
+}
+
 fn close_record(
     mint: SolanaPubkey,
     ep: EpisodeAcc,
@@ -508,10 +594,12 @@ fn close_record(
 ) -> Result<EpisodeRecord, SolanaWalletLedgerError> {
     let outcome = if open {
         EpisodeOutcome::Open
-    } else if ep.unknown.is_empty() {
-        EpisodeOutcome::ClosedKnown { pnl: ep.pnl }
-    } else {
+    } else if ep.unknown.iter().any(|r| *r != UnknownReason::LeftCensored) {
         EpisodeOutcome::ClosedUnknown
+    } else if ep.unknown.contains(&UnknownReason::LeftCensored) {
+        EpisodeOutcome::LeftCensored
+    } else {
+        EpisodeOutcome::ClosedKnown { pnl: ep.pnl }
     };
     let closed_at = if open { None } else { closed_at };
     let holding_seconds = match (ep.opened_at, closed_at, outcome) {
@@ -529,6 +617,7 @@ fn close_record(
         known_disposals: ep.known_disposals,
         known_disposal_pnl: ep.pnl,
         known_disposal_consumed_basis: ep.consumed_basis,
+        left_censored_amount_raw: ep.left_censored_raw,
     })
 }
 
@@ -659,15 +748,27 @@ fn classify_trades<'a>(
     }
 }
 
-/// Build the report. See the module docs for the rules.
+/// Build the report with default options (full history, no window).
 pub fn build_solana_wallet_ledger(
     wallet: &SolanaPubkey,
     txs: &[RawSolanaTransaction],
     decoder: &BondingCurveBuyDecoder,
 ) -> Result<SolanaWalletLedgerReport, SolanaWalletLedgerError> {
+    build_solana_wallet_ledger_with_options(wallet, txs, decoder, LedgerOptions::default())
+}
+
+/// Build the report. See the module docs for the rules.
+pub fn build_solana_wallet_ledger_with_options(
+    wallet: &SolanaPubkey,
+    txs: &[RawSolanaTransaction],
+    decoder: &BondingCurveBuyDecoder,
+    options: LedgerOptions,
+) -> Result<SolanaWalletLedgerReport, SolanaWalletLedgerError> {
     let wsol = wsol_mint()?;
     let mut b = Builder {
         wallet: *wallet,
+        left_censoring: options.left_censoring,
+        left_censored_total: 0,
         chain_asset: asset_of,
         mints: BTreeMap::new(),
         records: Vec::new(),
@@ -990,6 +1091,7 @@ impl Builder {
 
         let mut closed_known = 0u64;
         let mut closed_unknown = 0u64;
+        let mut left_censored = 0u64;
         let mut open_eps = 0u64;
         let (mut wins, mut losses, mut breakeven) = (0u64, 0u64, 0u64);
         let mut pnl_sum = Money::ZERO;
@@ -1023,6 +1125,7 @@ impl Builder {
                     }
                 }
                 EpisodeOutcome::ClosedUnknown => closed_unknown += 1,
+                EpisodeOutcome::LeftCensored => left_censored += 1,
                 EpisodeOutcome::Open => {
                     open_eps += 1;
                     open_pnl = money_add(open_pnl, r.known_disposal_pnl)?;
@@ -1048,6 +1151,7 @@ impl Builder {
         .unwrap_or(u64::MAX);
 
         let activity = activity_metrics(&self.stamped)?;
+        let daily_activity = daily_activity(&self.stamped);
 
         Ok(SolanaWalletLedgerReport {
             ledger_version: SOLANA_WALLET_LEDGER_VERSION,
@@ -1058,6 +1162,8 @@ impl Builder {
             episodes: self.records,
             closed_episodes_known: closed_known,
             closed_episodes_unknown: closed_unknown,
+            left_censored_episodes: left_censored,
+            left_censored_amount_raw: self.left_censored_total,
             open_episodes: open_eps,
             wins,
             losses,
@@ -1077,13 +1183,31 @@ impl Builder {
             median_holding_seconds,
             holding_time_samples,
             has_unknown_basis_inventory: open_with_unknown > 0 || closed_unknown > 0,
+            has_left_censored_inventory: left_censored > 0 || self.left_censored_total > 0,
             open_positions_with_unknown_basis: open_with_unknown,
             open_positions,
             unknown_basis_lots_created: self.unknown_lots,
             activity,
+            daily_activity,
             diagnostics: self.diag,
         })
     }
+}
+
+fn daily_activity(stamped: &[(i64, SolanaPubkey)]) -> Vec<DailyActivity> {
+    let mut days: BTreeMap<i64, (u64, BTreeSet<SolanaPubkey>)> = BTreeMap::new();
+    for (t, mint) in stamped {
+        let entry = days.entry(t.div_euclid(SECONDS_PER_DAY)).or_default();
+        entry.0 = entry.0.saturating_add(1);
+        entry.1.insert(*mint);
+    }
+    days.into_iter()
+        .map(|(day, (trades, mints))| DailyActivity {
+            day,
+            trades,
+            distinct_mints: u64::try_from(mints.len()).unwrap_or(u64::MAX),
+        })
+        .collect()
 }
 
 fn median(sorted: &[i64]) -> Option<i64> {
