@@ -167,6 +167,18 @@ its usefulness as a discovery-candidate generator only.
 | `filterTokens` (token discovery/screening) | **live_verified, with caveats** (2026-09-27) | Codex `filterTokens` | Works, but: (1) raw `marketCap` can be wildly wrong for zero-liquidity tokens (one result showed a $2.17 trillion MC on zero liquidity) — always pair with `liquidity: {gte: ...}`; (2) result-level `createdAt` is the token's **current top pair's** creation time, not the token's own creation — a stale token with a fresh pool can false-positive into an "age" filter; (3) `limit` caps at 200 per call, but the connection's `count` field reflects the true filtered total independent of `limit`, so volume can be measured without paginating the full result set |
 | `tokenTopTraders` (per-token trader list) | **unsupported on free tier** (2026-09-27) | Codex schema (`docs.codex.io/api-reference/queries/tokentoptraders.md`) | Confirmed via the published schema: `# Requires a Growth or Enterprise plan.` — not reachable on the "Almost free" tier by any query shape. Per-wallet candidate extraction from a token still requires our own decode path, not Codex |
 
+## Cross-network discovery layer — GMGN (`gmgn.ai` OpenAPI, via `gmgn-cli`)
+
+Tier 2 by this matrix's own taxonomy (aggregated market data, never a ledger source of truth per
+invariant #16). Measured 2026-10-02 — see `docs/p0/measurements/2026-10-02-gmgn.md` for the full
+probe, response shape, and cross-check against our own decoded data.
+
+| Capability | Status | Source | Notes |
+|---|---|---|---|
+| `token traders` (per-mint top-trader list, by profit/volume/amount) | **live_verified, with caveats** (2026-10-02) | `gmgn-cli token traders` → `GET /v1/market/token_top_traders` | Real response for a mint we have independently decoded (`AB48pUATr4vEsxdAp54X9pvqyae2whMR2B52rEuJpump`). Cross-checked against our own `6EF8rr...` bonding-curve decoder's single captured buyer for that mint — **zero overlap**, explained by scope mismatch (our sample is one transaction from a narrow window; GMGN aggregates the mint's full trade history), not a data-quality problem with either side. `realized_pnl` is a ratio, not a dollar figure (`realized_profit` is the dollar figure) — field-naming trap worth remembering |
+| Rate limits (free tier) | **live_verified** (2026-10-02) | Observed `HTTP 429 RATE_LIMIT_BANNED` on first call, recovered after the documented reset window | Confirms the documented 5/5 leaky-bucket (rate/capacity at weight 1 for token routes) is real, not just a docs claim — one request at a time, no looping over a candidate list |
+| Other capabilities (`portfolio`, `track kol/smartmoney`, `swap`, etc.) | documented (via `--help`) | `gmgn-cli --help` | Enumerated but not probed — `token traders` was the only capability exercised this session |
+
 ## Cross-cutting notes
 
 - No row in this matrix may be promoted to `live_verified` by editing this file alone — it requires
