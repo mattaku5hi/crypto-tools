@@ -325,6 +325,14 @@ impl HeliusProvider {
         self
     }
 
+    /// Sets the per-response body cap in bytes (default
+    /// `scout_rpc::DEFAULT_MAX_RESPONSE_BYTES`).
+    #[must_use]
+    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.client = self.client.with_max_response_bytes(max_response_bytes);
+        self
+    }
+
     /// Sets the history direction (default `ScanOrder::OldestFirst`).
     /// See `ScanOrder` for what `truncated` means per order and for the
     /// requirement that consumers sort canonically before ledger use.

@@ -21,3 +21,4 @@ tokio.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }

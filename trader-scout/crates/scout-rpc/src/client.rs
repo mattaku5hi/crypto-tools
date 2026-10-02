@@ -22,7 +22,45 @@ pub struct RpcClient {
     http: reqwest::Client,
     endpoint: RpcEndpoint,
     retry: RetryPolicy,
+    max_response_bytes: usize,
 }
+
+/// Default cap on a single HTTP response body: 16 MiB.
+///
+/// Grounded in `docs/p0/measurements/fixtures/pump_mint{1,2}_full.json`:
+/// a Helius `getTransactionsForAddress` full-mode page of 5 pump.fun
+/// transactions is ~90-110 KB (~20 KB/tx), so a 100-tx page is ~2 MB.
+/// 16 MiB leaves ~8x headroom for heavier transactions while still
+/// bounding memory against a hostile or broken endpoint (AGENTS.md
+/// invariant #13). Override with `RpcClient::with_max_response_bytes`.
+pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// A response body exceeded the configured cap. Terminal: the same
+/// request would return the same oversized body. Never contains the
+/// endpoint URL (it embeds the API key). Carried inside
+/// `ProviderError::Other`; downcast to detect it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseTooLarge {
+    pub cap_bytes: usize,
+    /// Declared `Content-Length` (exact) or, for streamed bodies, the
+    /// number of bytes received when reading was aborted (lower bound).
+    pub observed_bytes: u64,
+    /// `true` when `observed_bytes` is a lower bound (streamed abort).
+    pub lower_bound: bool,
+}
+
+impl std::fmt::Display for ResponseTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let at_least = if self.lower_bound { "at least " } else { "" };
+        write!(
+            f,
+            "response body too large: {at_least}{} bytes exceeds cap of {} bytes",
+            self.observed_bytes, self.cap_bytes
+        )
+    }
+}
+
+impl std::error::Error for ResponseTooLarge {}
 
 impl RpcClient {
     /// `request_timeout_ms` and `max_attempts` should come from
@@ -36,12 +74,22 @@ impl RpcClient {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_millis(request_timeout_ms))
             .build()
-            .map_err(|err| ProviderError::Other(Box::new(err)))?;
+            .map_err(|err| ProviderError::Other(Box::new(err.without_url())))?;
         Ok(Self {
             http,
             endpoint,
             retry: RetryPolicy::from_config(max_attempts, request_timeout_ms),
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         })
+    }
+
+    /// Sets the maximum accepted response body size in bytes (default
+    /// `DEFAULT_MAX_RESPONSE_BYTES`). Exceeding it yields a terminal
+    /// `ResponseTooLarge` error inside `ProviderError::Other`.
+    #[must_use]
+    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.max_response_bytes = max_response_bytes;
+        self
     }
 
     /// Issue one JSON-RPC call, retrying on transient failure
@@ -119,9 +167,8 @@ impl RpcClient {
         // HTTP 2xx: still must parse the JSON-RPC envelope and check
         // `error` before trusting `result` — a 200 with an `error`
         // body is not success (see jsonrpc.rs module docs).
-        let envelope: JsonRpcResponse<R> = response
-            .json()
-            .await
+        let bytes = read_capped(response, self.max_response_bytes).await?;
+        let envelope: JsonRpcResponse<R> = serde_json::from_slice(&bytes)
             .map_err(|err| Classified::Terminal(ProviderError::Other(Box::new(err))))?;
 
         envelope.into_result().map_err(|err| match err {
@@ -132,6 +179,43 @@ impl RpcClient {
                 Box::new(std::io::Error::other(err.to_string())),
             )),
         })
+    }
+}
+
+/// Reads the body with a hard cap: rejects early on an oversized
+/// `Content-Length`, otherwise accumulates chunks and aborts as soon as
+/// the total exceeds `cap` (buffers at most `cap` + one chunk).
+async fn read_capped(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, Classified> {
+    let too_large = |observed_bytes: u64, lower_bound: bool| {
+        Classified::Terminal(ProviderError::Other(Box::new(ResponseTooLarge {
+            cap_bytes: cap,
+            observed_bytes,
+            lower_bound,
+        })))
+    };
+    let cap_u64 = u64::try_from(cap).unwrap_or(u64::MAX);
+    if let Some(len) = response.content_length()
+        && len > cap_u64
+    {
+        return Err(too_large(len, false));
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                let total = u64::try_from(buf.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+                if total > cap_u64 {
+                    return Err(too_large(total, true));
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            Ok(None) => return Ok(buf),
+            // Body read failures (reset, timeout mid-body) are
+            // transient network faults: retryable, URL stripped.
+            Err(err) => return Err(Classified::Retryable(transport_error(err))),
+        }
     }
 }
 
@@ -189,6 +273,9 @@ fn map_status(status: reqwest::StatusCode, response: &reqwest::Response) -> Opti
 }
 
 fn transport_error(err: reqwest::Error) -> ProviderError {
+    // `reqwest::Error` Display embeds the request URL, which carries
+    // the `?api-key=` secret. Strip it before it can reach logs/errors.
+    let err = err.without_url();
     if err.is_timeout() {
         ProviderError::Transport(Box::new(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
@@ -352,5 +439,141 @@ mod tests {
             .call_with_jitter("getSlot", json!([]), &NoJitter)
             .await;
         assert!(result.is_err());
+    }
+
+    fn ok_body(payload_len: usize) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "jsonrpc": "2.0", "id": 1, "result": "x".repeat(payload_len)
+        }))
+        .unwrap()
+    }
+
+    fn too_large(err: &ProviderError) -> &ResponseTooLarge {
+        match err {
+            ProviderError::Other(inner) => inner
+                .downcast_ref::<ResponseTooLarge>()
+                .expect("expected ResponseTooLarge"),
+            other => panic!("expected Other(ResponseTooLarge), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn body_under_cap_is_accepted() {
+        let server = MockServer::start().await;
+        let body = ok_body(100);
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        let client = client_for(&server, 3)
+            .await
+            .with_max_response_bytes(body.len());
+        let r: String = client
+            .call_with_jitter("m", json!([]), &NoJitter)
+            .await
+            .unwrap();
+        assert_eq!(r.len(), 100);
+    }
+
+    #[tokio::test]
+    async fn content_length_over_cap_is_terminal_and_not_retried() {
+        let server = MockServer::start().await;
+        let body = ok_body(5_000);
+        let len = body.len();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client_for(&server, 5).await.with_max_response_bytes(1_000);
+        let err = client
+            .call_with_jitter::<_, String>("m", json!([]), &NoJitter)
+            .await
+            .unwrap_err();
+        let e = too_large(&err);
+        assert_eq!(e.cap_bytes, 1_000);
+        assert_eq!(e.observed_bytes, u64::try_from(len).unwrap());
+        assert!(!e.lower_bound);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("1000") && msg.contains(&len.to_string()),
+            "{msg}"
+        );
+        // `expect(1)` is verified on server drop.
+    }
+
+    #[tokio::test]
+    async fn chunked_body_without_content_length_over_cap_is_typed_error() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accepts2 = accepts.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                accepts2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\
+                          content-type: application/json\r\n\r\n",
+                    )
+                    .await;
+                // Endless-ish stream of 1 KiB chunks; client must abort.
+                let payload = "a".repeat(1024);
+                for _ in 0..10_000 {
+                    let chunk = format!("{:x}\r\n{payload}\r\n", payload.len());
+                    if sock.write_all(chunk.as_bytes()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        let client = RpcClient::new(RpcEndpoint::new(format!("http://{addr}/")), 5_000, 5)
+            .unwrap()
+            .with_max_response_bytes(4_096);
+        let err = client
+            .call_with_jitter::<_, String>("m", json!([]), &NoJitter)
+            .await
+            .unwrap_err();
+        let e = too_large(&err);
+        assert!(e.lower_bound);
+        assert!(e.observed_bytes > 4_096 && e.observed_bytes <= 4_096 + 64 * 1024);
+        assert_eq!(accepts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn errors_never_contain_endpoint_url_or_api_key() {
+        // Oversized-body error via a wiremock endpoint with a secret query.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(ok_body(5_000)))
+            .mount(&server)
+            .await;
+        let endpoint = RpcEndpoint::new(format!("{}/?api-key=SECRET123", server.uri()));
+        let client = RpcClient::new(endpoint, 5_000, 1)
+            .unwrap()
+            .with_max_response_bytes(100);
+        let err = client
+            .call_with_jitter::<_, String>("m", json!([]), &NoJitter)
+            .await
+            .unwrap_err();
+        assert!(!format!("{err} {err:?}").contains("SECRET123"));
+
+        // Transport failure (connection refused) must have the URL stripped.
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = dead.local_addr().unwrap();
+        drop(dead);
+        let endpoint = RpcEndpoint::new(format!("http://{addr}/?api-key=SECRET123"));
+        let client = RpcClient::new(endpoint, 1_000, 1).unwrap();
+        let err = client
+            .call_with_jitter::<_, String>("m", json!([]), &NoJitter)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::Transport(_)));
+        let shown = format!("{err} {err:?}");
+        assert!(!shown.contains("SECRET123"), "{shown}");
+        assert!(!shown.contains("api-key"), "{shown}");
     }
 }

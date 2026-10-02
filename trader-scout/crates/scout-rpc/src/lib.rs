@@ -23,6 +23,6 @@ mod endpoint;
 mod jsonrpc;
 
 pub use backoff::{CounterJitter, JitterSource, NoJitter, RetryPolicy};
-pub use client::RpcClient;
+pub use client::{DEFAULT_MAX_RESPONSE_BYTES, ResponseTooLarge, RpcClient};
 pub use endpoint::RpcEndpoint;
 pub use jsonrpc::{JsonRpcEnvelopeError, JsonRpcError, JsonRpcRequest, JsonRpcResponse};

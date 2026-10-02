@@ -31,7 +31,7 @@ Legend: `done` | `in-progress` | `blocked` | `todo`
 | ID | Task | Status | Blocked by | Notes |
 |---|---|---|---|---|
 | P2.1 | HTTP/RPC clients, chain identity preflight | todo | credentials | Cannot preflight genesis identity without a live endpoint |
-| P2.2 | Bounded admission, retries, circuit breaker | todo | P2.1 | Known gap (2026-10-02): `scout-rpc` enforces only a 30s timeout, **no response-body size limit** (invariant #13); `HeliusProvider` and `scout-capture` are bounded only by page count × page size. Add a byte cap with a typed error before any large-page or batch use |
+| P2.2 | Bounded admission, retries, circuit breaker | in-progress | P2.1 | Partial (2026-10-02): response-body byte cap DONE in `scout-rpc` (`RpcClient::with_max_response_bytes`, default 16 MiB; early `Content-Length` reject + incremental chunk read; terminal typed `ResponseTooLarge` in `ProviderError::Other`, no retry; `reqwest` errors stripped of URL/api-key; `HeliusProvider::with_max_response_bytes`; `scout-capture` uses the default). Still TODO: bounded admission, circuit breaker, retry budget (`--max-requests` with retries) |
 | P2.3 | SQLite WAL embedded store | todo | P1.2 | Can start independent of credentials |
 | P2.4 | Mock RPC server | todo | P2.1 (interface) | Can build against the HistoryProvider trait before real transport exists |
 
