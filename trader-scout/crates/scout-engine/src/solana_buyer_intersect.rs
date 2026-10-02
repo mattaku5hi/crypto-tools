@@ -37,7 +37,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use futures::StreamExt as _;
 use scout_api::{HistoryProvider, ProviderError, ScanRequest, ScanTask};
 use scout_core::{AddressBytes, AssetKey, ChainFamily, RawPayload, WalletKey};
-use scout_dex_solana::{PUMP_IDL_SHA256, PumpTradeVariant};
+use scout_dex_solana::{
+    PUMP_AMM_IDL_COMMIT, PUMP_AMM_IDL_SHA256, PUMP_AMM_PROGRAM_ID, PUMP_IDL_SHA256,
+    PumpTradeVariant,
+};
 use scout_rpc::RequestBudgetExhausted;
 use tokio_util::sync::CancellationToken;
 
@@ -63,6 +66,11 @@ pub struct SolanaProtocolScope {
     /// sha256 of the committed IDL file the decoder tables derive from.
     pub idl_sha256: &'static str,
     pub qualification_version: &'static str,
+    /// Second decoded program (PumpSwap AMM, ADR-012) of the wallet-ledger
+    /// scope; `None` for the bonding-curve-only buyer scope.
+    pub amm_program_id: Option<&'static str>,
+    pub amm_idl_commit: Option<&'static str>,
+    pub amm_idl_sha256: Option<&'static str>,
     /// What is recognized.
     pub recognized: &'static str,
     /// What is explicitly NOT decoded.
@@ -93,12 +101,41 @@ impl SolanaProtocolScope {
             idl_commit: PUMP_BONDING_CURVE_IDL_COMMIT,
             idl_sha256: PUMP_IDL_SHA256,
             qualification_version: SOLANA_BUY_QUALIFICATION_VERSION,
+            amm_program_id: None,
+            amm_idl_commit: None,
+            amm_idl_sha256: None,
             recognized: "pump.fun bonding-curve buy via a FixtureVerified variant (program \
                          6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P) with positive owner-keyed \
                          net token delta in the same transaction; IdlOnly buy variants are decoded \
                          but never enter the buyer set (reported as unverified, coverage incomplete)",
             not_decoded: "PumpSwap AMM, Raydium, Orca, Meteora and every other venue; \
                           buyer set is a lower bound for tokens that migrated off the bonding curve",
+        }
+    }
+
+    /// Scope of the wallet ledger (ADR-010 + ADR-012): the bonding curve and
+    /// the PumpSwap AMM, each with its own IDL pin.
+    #[must_use]
+    pub const fn pump_wallet_ledger() -> Self {
+        Self {
+            program_id: PUMP_BONDING_CURVE_PROGRAM_ID,
+            idl_commit: PUMP_BONDING_CURVE_IDL_COMMIT,
+            idl_sha256: PUMP_IDL_SHA256,
+            qualification_version: crate::solana_wallet_ledger::SOLANA_WALLET_LEDGER_VERSION,
+            amm_program_id: Some(PUMP_AMM_PROGRAM_ID),
+            amm_idl_commit: Some(PUMP_AMM_IDL_COMMIT),
+            amm_idl_sha256: Some(PUMP_AMM_IDL_SHA256),
+            recognized: "pump.fun bonding-curve trades (program \
+                         6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P, IDL e0687ae9) and \
+                         PumpSwap AMM trades (program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA, \
+                         IDL e0687ae9; buy, buy_exact_quote_in, sell; wSOL-quoted normal and \
+                         reversed pools), each priced from its paired event; PumpSwap trades are \
+                         attributed only when the wallet's own owner-keyed legs reconcile \
+                         (ADR-012); one FIFO per (wallet, mint) across both venues",
+            not_decoded: "Raydium, Meteora, Orca, Jupiter-only routes not ending in the two \
+                          programs above, PumpSwap liquidity/non-trade instructions and every \
+                          other venue; token movements there are continuity breaks (Unknown), \
+                          never zero PnL; bot/platform fees stay outside trade PnL (ADR-010 §5)",
         }
     }
 }

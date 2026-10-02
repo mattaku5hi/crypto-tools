@@ -56,6 +56,11 @@ receiving the base token while another account funded the quote; 3 are router-fo
    - **Quote funded elsewhere** (base leg exact, wallet's quote movement 0) → the wallet receives
      the tokens but did not pay: acquisition lot with `BasisStatus::Unknown
      { QuoteFundedByAnotherAccount }`, never basis 0 and never the event cost.
+   - Clarifications from implementation (2026-10-02): a normal-pool **sell** whose quote went to
+     another account is booked as a disposal with Unknown proceeds (same reason); in a reversed
+     pool a quote-funded-elsewhere trade has no token leg to book and is only counted. Router-forward
+     = decoded `user` is not a signer, nets zero on both legs, and the wallet signed the transaction;
+     the forwarded tokens reach the wallet through inventory continuity (Unknown basis).
 4. **Fees.** Network fee: ADR-010 §4 unchanged (fee payer only, split across the wallet's trades in
    the transaction over both venues by consideration). Pool fees are already in the consideration.
 5. **One ledger, two venues.** Bonding-curve and PumpSwap trades of the same mint feed the same

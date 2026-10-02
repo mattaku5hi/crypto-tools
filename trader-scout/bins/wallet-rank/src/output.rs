@@ -273,6 +273,8 @@ pub struct RunMetaRecord {
     pub window: WindowDto,
     pub protocol_scope: &'static str,
     pub not_decoded: &'static str,
+    /// Decoded programs with their IDL pins (ADR-012).
+    pub programs: Vec<ProgramPinDto>,
     pub scan: ScanDto,
     pub rank_by: &'static str,
     pub profile: &'static str,
@@ -561,8 +563,38 @@ pub struct RunMetaInput<'a> {
     pub window: AnalysisWindow,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ProgramPinDto {
+    pub name: &'static str,
+    pub program_id: &'static str,
+    pub idl_commit: &'static str,
+    pub idl_sha256: &'static str,
+}
+
+fn program_pins(scope: &SolanaProtocolScope) -> Vec<ProgramPinDto> {
+    let mut pins = vec![ProgramPinDto {
+        name: "pump_bonding_curve",
+        program_id: scope.program_id,
+        idl_commit: scope.idl_commit,
+        idl_sha256: scope.idl_sha256,
+    }];
+    if let (Some(program_id), Some(idl_commit), Some(idl_sha256)) = (
+        scope.amm_program_id,
+        scope.amm_idl_commit,
+        scope.amm_idl_sha256,
+    ) {
+        pins.push(ProgramPinDto {
+            name: "pump_amm",
+            program_id,
+            idl_commit,
+            idl_sha256,
+        });
+    }
+    pins
+}
+
 pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMetaRecord {
-    let scope = SolanaProtocolScope::pump_bonding_curve();
+    let scope = SolanaProtocolScope::pump_wallet_ledger();
     let p = &report.policy;
     RunMetaRecord {
         schema_version: SCHEMA_VERSION,
@@ -575,6 +607,7 @@ pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMe
         window: window_dto(&m.window),
         protocol_scope: scope.recognized,
         not_decoded: scope.not_decoded,
+        programs: program_pins(&scope),
         scan: ScanDto {
             provider: "helius",
             order: "newest_first",

@@ -18,14 +18,18 @@ use scout_core::{
     SolanaExecutionStatus, SolanaNativeBalanceChange, SolanaPubkey, SolanaTokenBalanceChange,
 };
 use scout_dex_solana::{
+    AMM_BUY_DISCRIMINATOR, AMM_BUY_EVENT_DISCRIMINATOR, AMM_SELL_DISCRIMINATOR,
+    AMM_SELL_EVENT_DISCRIMINATOR, AmmAttribution, AmmTradeEventPairing,
     BUY_INSTRUCTION_DISCRIMINATOR, BUY_V2_INSTRUCTION_DISCRIMINATOR, EVENT_CPI_DISCRIMINATOR,
-    SELL_INSTRUCTION_DISCRIMINATOR, TRADE_EVENT_DISCRIMINATOR, TradeEventPairing, TradeSide,
-    pair_trades_with_events,
+    PUMP_AMM_PROGRAM_ID_BYTES, SELL_INSTRUCTION_DISCRIMINATOR, TRADE_EVENT_DISCRIMINATOR,
+    TradeEventPairing, TradeSide, WRAPPED_SOL_MINT, pair_trades_with_events,
+    reconcile_pump_amm_transaction,
 };
 use scout_engine::{
-    EpisodeOutcome, LedgerOptions, PUMP_BONDING_CURVE_PROGRAM_ID, QuoteUnit,
-    SolanaWalletLedgerReport, UnknownReason, allocate_fee_proportionally,
-    build_solana_wallet_ledger, build_solana_wallet_ledger_with_options, lamports_to_money,
+    EpisodeOutcome, LedgerDecoders, LedgerOptions, PUMP_BONDING_CURVE_PROGRAM_ID, QuoteUnit,
+    SolanaWalletLedgerReport, UnknownReason, Venue, allocate_fee_proportionally,
+    build_solana_wallet_ledger, build_solana_wallet_ledger_venues,
+    build_solana_wallet_ledger_with_options, lamports_to_money, pump_amm_decoder,
     pump_bonding_curve_decoder, solana_mainnet_chain,
 };
 use scout_providers::HeliusProvider;
@@ -1312,4 +1316,738 @@ fn left_censored_daily_activity_is_reported_per_utc_day() {
     assert_eq!(r.daily_activity[0].day, 0);
     assert_eq!(r.daily_activity[0].trades, 2);
     assert_eq!(r.daily_activity[0].distinct_mints, 1);
+}
+
+// ---------------------------------------------------------------------
+// ADR-012: PumpSwap AMM venue (synthetic golden cases, hand-computed).
+// ---------------------------------------------------------------------
+
+const M3: u8 = 12;
+const M4: u8 = 13;
+const M5: u8 = 14;
+const M6: u8 = 15;
+const ROUTER: u8 = 77;
+
+#[derive(Clone, Copy)]
+struct Amm {
+    buy: bool,
+    user: u8,
+    base: SolanaPubkey,
+    quote: SolanaPubkey,
+    base_amount: u64,
+    /// `quote_amount_in_with_lp_fee` (buy) / `quote_amount_out_without_lp_fee` (sell).
+    quote_core: u64,
+    protocol_fee: u64,
+    creator_fee: u64,
+    ts: i64,
+}
+
+fn amm_pair(a: Amm, idx: u32) -> Vec<RawSolanaInstruction> {
+    let (pool, ub, uq) = (pk(0xa0), pk(0xb0), pk(0xb1));
+    let mut accounts: Vec<SolanaPubkey> = (0..23u8).map(|i| pk(100 + i)).collect();
+    accounts[0] = pool;
+    accounts[1] = pk(a.user);
+    accounts[3] = a.base;
+    accounts[4] = a.quote;
+    accounts[5] = ub;
+    accounts[6] = uq;
+    let mut data = if a.buy {
+        AMM_BUY_DISCRIMINATOR.to_vec()
+    } else {
+        AMM_SELL_DISCRIMINATOR.to_vec()
+    };
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&2u64.to_le_bytes());
+    if a.buy {
+        data.push(1);
+    }
+    let trade = RawSolanaInstruction {
+        program_id: PUMP_AMM_PROGRAM_ID_BYTES,
+        accounts,
+        data,
+        instruction_index: idx,
+    };
+    let le = |v: u64| v.to_le_bytes();
+    let mut p = Vec::new();
+    p.extend(a.ts.to_le_bytes());
+    // base, limit, 4 reserves, quote (with/without lp, copy), lp bps, lp fee,
+    // protocol bps, protocol fee, quote with/without lp, user quote.
+    for v in [
+        a.base_amount,
+        0,
+        11,
+        12,
+        13,
+        14,
+        a.quote_core,
+        20,
+        0,
+        5,
+        a.protocol_fee,
+        a.quote_core,
+        0,
+    ] {
+        p.extend(le(v));
+    }
+    for k in [pool, pk(a.user), ub, uq, pk(0xf1), pk(0xf2), pk(0xcc)] {
+        p.extend(k);
+    }
+    p.extend(le(30));
+    p.extend(le(a.creator_fee));
+    let mut ev = EVENT_CPI_DISCRIMINATOR.to_vec();
+    ev.extend(if a.buy {
+        AMM_BUY_EVENT_DISCRIMINATOR
+    } else {
+        AMM_SELL_EVENT_DISCRIMINATOR
+    });
+    ev.extend(p);
+    let event = RawSolanaInstruction {
+        program_id: PUMP_AMM_PROGRAM_ID_BYTES,
+        accounts: vec![pk(0xea)],
+        data: ev,
+        instruction_index: idx + 1,
+    };
+    vec![trade, event]
+}
+
+fn bal_pk(mint: SolanaPubkey, owner: u8, pre: u64, post: u64) -> SolanaTokenBalanceChange {
+    SolanaTokenBalanceChange {
+        mint,
+        owner: Some(pk(owner)),
+        decimals: 6,
+        pre_amount: Some(pre),
+        post_amount: post,
+        closed: false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn amm_tx(
+    sig: u8,
+    slot: u64,
+    ixs: Vec<RawSolanaInstruction>,
+    bals: Vec<SolanaTokenBalanceChange>,
+    native_w: i64,
+    fee: u64,
+    payer: u8,
+) -> RawSolanaTransaction {
+    Tx {
+        sig,
+        slot,
+        index: 0,
+        ixs,
+        bals,
+        fee,
+        payer,
+        native: vec![nat(W, native_w)],
+        ok: true,
+    }
+    .build()
+}
+
+fn run_both(txs: &[RawSolanaTransaction]) -> SolanaWalletLedgerReport {
+    let curve = pump_bonding_curve_decoder().unwrap();
+    let amm = pump_amm_decoder();
+    build_solana_wallet_ledger_venues(
+        &pk(W),
+        txs,
+        &LedgerDecoders {
+            curve: &curve,
+            amm: Some(&amm),
+        },
+        LedgerOptions::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn amm_golden_curve_buy_then_amm_sell_is_one_closed_known_episode() {
+    // Curve buy 1000: cost 1_000_000 + 10_000 + 5_000 = 1_015_000 + fee 5_000 => basis 1_020_000.
+    // AMM sell 1000 (normal pool): proceeds = 1_300_000 - 13_000 - 7_000 = 1_280_000,
+    // network fee 5_000 => 1_275_000. PnL = 1_275_000 - 1_020_000 = 255_000.
+    let sell = amm_tx(
+        2,
+        101,
+        amm_pair(
+            Amm {
+                buy: false,
+                user: W,
+                base: pk(M1),
+                quote: WRAPPED_SOL_MINT,
+                base_amount: 1000,
+                quote_core: 1_300_000,
+                protocol_fee: 13_000,
+                creator_fee: 7_000,
+                ts: 1600,
+            },
+            0,
+        ),
+        vec![
+            bal(M1, W, 1000, 0),
+            bal_pk(WRAPPED_SOL_MINT, W, 3_000_000, 4_280_000),
+        ],
+        -5_000,
+        5_000,
+        W,
+    );
+    let buy = trade_tx(
+        1,
+        100,
+        TradeSide::Buy,
+        M1,
+        1000,
+        0,
+        1_000_000,
+        10_000,
+        5_000,
+        1000,
+        5_000,
+        W,
+    );
+    let r = run_both(&[sell, buy]);
+    assert_eq!(r.closed_episodes_known, 1);
+    assert_eq!(r.closed_episodes_unknown, 0);
+    assert_eq!(r.left_censored_episodes, 0);
+    assert_eq!(r.open_episodes, 0);
+    assert_eq!(r.realized_trade_pnl_lamports, 255_000);
+    assert_eq!(r.realized_trade_pnl_exact, lam(255_000));
+    assert_eq!(r.consumed_acquisition_basis_lamports, 1_020_000);
+    assert_eq!(r.median_holding_seconds, Some(600));
+    assert_eq!(r.trades.bonding_curve.buys, 1);
+    assert_eq!(r.trades.bonding_curve.sells, 0);
+    assert_eq!(r.trades.pump_amm.sells, 1);
+    assert_eq!(r.trades.pump_amm.buys, 0);
+    assert_eq!((r.trades.buys, r.trades.sells, r.trades.priced), (1, 1, 2));
+    let keys: Vec<(Venue, &str, u64)> = r
+        .variant_trades
+        .iter()
+        .map(|v| (v.venue, v.variant, v.trades))
+        .collect();
+    assert_eq!(
+        keys,
+        vec![(Venue::BondingCurve, "buy", 1), (Venue::PumpAmm, "sell", 1)]
+    );
+    assert_eq!(r.diagnostics.unexplained_native_flow_lamports, 0);
+    assert_eq!(r.diagnostics.unexplained_native_flow_txs, 0);
+    assert_eq!(r.diagnostics.continuity_breaks, 0);
+    assert_eq!(r.diagnostics.out_of_scope_token_movements, 0);
+    // The curve-only entry point does not see the AMM leg: the sale is a
+    // continuity break, never a known PnL.
+    let curve_only = run(&[
+        trade_tx(
+            1,
+            100,
+            TradeSide::Buy,
+            M1,
+            1000,
+            0,
+            1_000_000,
+            10_000,
+            5_000,
+            1000,
+            5_000,
+            W,
+        ),
+        amm_tx(2, 101, vec![], vec![bal(M1, W, 1000, 0)], -5_000, 5_000, W),
+    ]);
+    assert_eq!(curve_only.closed_episodes_known, 0);
+    assert_eq!(curve_only.closed_episodes_unknown, 1);
+}
+
+#[test]
+fn amm_golden_reversed_pool_acquire_then_dispose_exact_sol_numbers() {
+    // Pool base = wSOL, quote = token M2.
+    // Acquire = instruction `sell`: SOL cost = base_amount_in = 2_000_000,
+    //   tokens = 5_100 - 60 - 40 = 5_000; + network fee 5_000 => basis 2_005_000.
+    // Dispose = instruction `buy`: SOL proceeds = base_amount_out = 2_500_000,
+    //   tokens given = 4_900 + 60 + 40 = 5_000; - fee 5_000 => 2_495_000.
+    // PnL = 2_495_000 - 2_005_000 = 490_000.
+    let acquire = amm_tx(
+        1,
+        100,
+        amm_pair(
+            Amm {
+                buy: false,
+                user: W,
+                base: WRAPPED_SOL_MINT,
+                quote: pk(M2),
+                base_amount: 2_000_000,
+                quote_core: 5_100,
+                protocol_fee: 60,
+                creator_fee: 40,
+                ts: 2000,
+            },
+            0,
+        ),
+        vec![
+            bal_pk(WRAPPED_SOL_MINT, W, 4_000_000, 2_000_000),
+            bal(M2, W, 0, 5_000),
+        ],
+        -5_000,
+        5_000,
+        W,
+    );
+    let dispose = amm_tx(
+        2,
+        101,
+        amm_pair(
+            Amm {
+                buy: true,
+                user: W,
+                base: WRAPPED_SOL_MINT,
+                quote: pk(M2),
+                base_amount: 2_500_000,
+                quote_core: 4_900,
+                protocol_fee: 60,
+                creator_fee: 40,
+                ts: 2300,
+            },
+            0,
+        ),
+        vec![
+            bal_pk(WRAPPED_SOL_MINT, W, 2_000_000, 4_500_000),
+            bal(M2, W, 5_000, 0),
+        ],
+        -5_000,
+        5_000,
+        W,
+    );
+    let r = run_both(&[acquire, dispose]);
+    assert_eq!(r.closed_episodes_known, 1);
+    assert_eq!(r.realized_trade_pnl_lamports, 490_000);
+    assert_eq!(r.consumed_acquisition_basis_lamports, 2_005_000);
+    assert_eq!(r.trades.pump_amm.buys, 1);
+    assert_eq!(r.trades.pump_amm.sells, 1);
+    assert_eq!(r.diagnostics.reversed_pool_trades, 2);
+    assert_eq!(r.diagnostics.unexplained_native_flow_lamports, 0);
+    assert_eq!(r.diagnostics.continuity_breaks, 0);
+    assert_eq!(r.median_holding_seconds, Some(300));
+    let m2 = &r.episodes[0];
+    assert_eq!(m2.mint, pk(M2));
+}
+
+#[test]
+fn amm_non_sol_pair_is_recorded_with_unknown_pnl() {
+    let buy = amm_tx(
+        1,
+        100,
+        amm_pair(
+            Amm {
+                buy: true,
+                user: W,
+                base: pk(M3),
+                quote: pk(M4),
+                base_amount: 700,
+                quote_core: 1_000,
+                protocol_fee: 10,
+                creator_fee: 5,
+                ts: 10,
+            },
+            0,
+        ),
+        vec![bal(M3, W, 0, 700), bal(M4, W, 5_000, 3_985)],
+        -5_000,
+        5_000,
+        W,
+    );
+    let sell = amm_tx(
+        2,
+        101,
+        amm_pair(
+            Amm {
+                buy: false,
+                user: W,
+                base: pk(M3),
+                quote: pk(M4),
+                base_amount: 700,
+                quote_core: 1_200,
+                protocol_fee: 12,
+                creator_fee: 6,
+                ts: 20,
+            },
+            0,
+        ),
+        vec![bal(M3, W, 700, 0), bal(M4, W, 3_985, 5_167)],
+        -5_000,
+        5_000,
+        W,
+    );
+    let r = run_both(&[buy, sell]);
+    assert_eq!(r.trades.unsupported_quote, 2);
+    assert_eq!(r.trades.priced, 0);
+    assert_eq!(r.trades.pump_amm.buys + r.trades.pump_amm.sells, 2);
+    assert_eq!(r.closed_episodes_known, 0);
+    assert_eq!(r.closed_episodes_unknown, 1);
+    assert_eq!(r.realized_trade_pnl_lamports, 0);
+    assert!(
+        r.episodes[0]
+            .unknown_reasons
+            .contains(&UnknownReason::UnsupportedQuoteAsset)
+    );
+}
+
+#[test]
+fn amm_quote_funded_elsewhere_is_unknown_basis_never_zero() {
+    // Another account (the fee payer) paid the quote; the wallet only
+    // received 1000 tokens. Basis is unknown, not 0 and not the event cost.
+    let funded = |sig: u8| {
+        amm_tx(
+            sig,
+            100,
+            amm_pair(
+                Amm {
+                    buy: true,
+                    user: W,
+                    base: pk(M5),
+                    quote: WRAPPED_SOL_MINT,
+                    base_amount: 1000,
+                    quote_core: 900_000,
+                    protocol_fee: 5_000,
+                    creator_fee: 5_000,
+                    ts: 100,
+                },
+                0,
+            ),
+            vec![bal(M5, W, 0, 1000)],
+            0,
+            5_000,
+            OTHER,
+        )
+    };
+    let open = run_both(&[funded(1)]);
+    assert_eq!(open.trades.quote_funded_elsewhere, 1);
+    assert_eq!(open.trades.priced, 0);
+    assert_eq!(open.diagnostics.quote_funded_elsewhere_trades, 1);
+    assert_eq!(open.unknown_basis_lots_created, 1);
+    assert_eq!(open.open_positions.len(), 1);
+    assert_eq!(open.open_positions[0].open_amount_raw, 1000);
+    assert_eq!(open.open_positions[0].unknown_basis_amount_raw, 1000);
+    assert!(open.has_unknown_basis_inventory);
+
+    let closed = run_both(&[
+        funded(1),
+        trade_tx(
+            2,
+            101,
+            TradeSide::Sell,
+            M5,
+            1000,
+            1000,
+            1_000_000,
+            0,
+            0,
+            200,
+            5_000,
+            OTHER,
+        ),
+    ]);
+    assert_eq!(closed.closed_episodes_known, 0);
+    assert_eq!(closed.closed_episodes_unknown, 1);
+    assert_eq!(closed.realized_trade_pnl_lamports, 0);
+    assert!(
+        closed.episodes[0]
+            .unknown_reasons
+            .contains(&UnknownReason::QuoteFundedByAnotherAccount)
+    );
+}
+
+#[test]
+fn amm_router_forward_is_not_attributed_and_transfer_is_a_continuity_lot() {
+    // The decoded user is the router (not a signer, nothing moves for it);
+    // the wallet signed and received 500 tokens.
+    let mut tx = amm_tx(
+        1,
+        100,
+        amm_pair(
+            Amm {
+                buy: true,
+                user: ROUTER,
+                base: pk(M6),
+                quote: WRAPPED_SOL_MINT,
+                base_amount: 500,
+                quote_core: 1_000,
+                protocol_fee: 10,
+                creator_fee: 5,
+                ts: 7,
+            },
+            0,
+        ),
+        vec![bal(M6, W, 0, 500)],
+        -5_000,
+        5_000,
+        W,
+    );
+    tx.signers = vec![pk(W)];
+    let r = run_both(&[tx]);
+    assert_eq!(r.diagnostics.router_forward_trades_not_attributed, 1);
+    assert_eq!(r.trades.pump_amm.buys + r.trades.pump_amm.sells, 0);
+    assert_eq!(r.trades.priced, 0);
+    assert_eq!(r.diagnostics.continuity_breaks, 1);
+    assert_eq!(r.diagnostics.out_of_scope_token_movements, 0);
+    assert_eq!(r.open_positions.len(), 1);
+    assert_eq!(r.open_positions[0].unknown_basis_amount_raw, 500);
+}
+
+#[test]
+fn amm_and_curve_trades_in_one_tx_split_the_network_fee_exactly() {
+    // Curve buy M1 100 tokens for 1_000_000 and AMM buy M2 200 tokens for
+    // 2_980_000 + 12_000 + 8_000 = 3_000_000; fee 5_001 split 1250 / 3750,
+    // remainder 1 to the earliest instruction (the curve trade) = 1251.
+    // Later sponsored sells at exactly cost => pnl = -share per mint.
+    let mut ixs = vec![
+        trade_ix(TradeSide::Buy, None, W, M1, 0),
+        event_ix(
+            &Ev {
+                mint: M1,
+                user: W,
+                is_buy: true,
+                sol: 1_000_000,
+                tokens: 100,
+                fee: 0,
+                creator_fee: 0,
+                ts: 50,
+            },
+            1,
+        ),
+    ];
+    ixs.extend(amm_pair(
+        Amm {
+            buy: true,
+            user: W,
+            base: pk(M2),
+            quote: WRAPPED_SOL_MINT,
+            base_amount: 200,
+            quote_core: 2_980_000,
+            protocol_fee: 12_000,
+            creator_fee: 8_000,
+            ts: 50,
+        },
+        2,
+    ));
+    let buy = amm_tx(
+        1,
+        10,
+        ixs,
+        vec![
+            bal(M1, W, 0, 100),
+            bal(M2, W, 0, 200),
+            bal_pk(WRAPPED_SOL_MINT, W, 5_000_000, 2_000_000),
+        ],
+        -1_005_001,
+        5_001,
+        W,
+    );
+    let curve_sell = trade_tx(
+        2,
+        11,
+        TradeSide::Sell,
+        M1,
+        100,
+        100,
+        1_000_000,
+        0,
+        0,
+        60,
+        5_000,
+        OTHER,
+    );
+    let amm_sell = amm_tx(
+        3,
+        12,
+        amm_pair(
+            Amm {
+                buy: false,
+                user: W,
+                base: pk(M2),
+                quote: WRAPPED_SOL_MINT,
+                base_amount: 200,
+                quote_core: 3_012_000,
+                protocol_fee: 8_000,
+                creator_fee: 4_000,
+                ts: 60,
+            },
+            0,
+        ),
+        vec![
+            bal(M2, W, 200, 0),
+            bal_pk(WRAPPED_SOL_MINT, W, 2_000_000, 5_000_000),
+        ],
+        0,
+        5_000,
+        OTHER,
+    );
+    let r = run_both(&[buy, curve_sell, amm_sell]);
+    assert_eq!(r.diagnostics.unexplained_native_flow_lamports, 0);
+    assert_eq!(r.diagnostics.unexplained_native_flow_txs, 0);
+    assert_eq!(r.closed_episodes_known, 2);
+    let pnl = |m: u8| {
+        r.episodes
+            .iter()
+            .find(|e| e.mint == pk(m))
+            .map(|e| e.outcome)
+            .unwrap()
+    };
+    assert_eq!(pnl(M1), EpisodeOutcome::ClosedKnown { pnl: lam(-1251) });
+    assert_eq!(pnl(M2), EpisodeOutcome::ClosedKnown { pnl: lam(-3750) });
+    assert_eq!(r.realized_trade_pnl_lamports, -5_001);
+    assert_eq!(r.trades.bonding_curve.buys, 1);
+    assert_eq!(r.trades.pump_amm.buys, 1);
+    assert_eq!(
+        (r.trades.bonding_curve.sells, r.trades.pump_amm.sells),
+        (1, 1)
+    );
+}
+
+// ---------------------------------------------------------------------
+// ADR-012 live fixture: wallet page through the real HeliusProvider path.
+// ---------------------------------------------------------------------
+
+const PUMPSWAP_WALLET: &str = "2tgUbS9UMoQD6GkDZBiqKYCURnGrSb6ocYwRABrSJUvY";
+
+#[tokio::test]
+async fn live_pumpswap_wallet_page_ledger_numbers_and_invariants() {
+    let wallet = pubkey(PUMPSWAP_WALLET);
+    let all = fixture_txs("pumpswap_wallet_page_2026-10-02.json").await;
+    assert_eq!(all.len(), 100);
+    // Windowed mode: since = oldest blockTime of the page, so inventory
+    // acquired before the page is left-censored, not "not observed".
+    let since = all.iter().filter_map(|t| t.block_time).min().unwrap();
+    let txs: Vec<RawSolanaTransaction> = all
+        .into_iter()
+        .filter(|t| t.block_time.is_some_and(|b| b >= since))
+        .collect();
+    assert_eq!(txs.len(), 100);
+    let curve = pump_bonding_curve_decoder().unwrap();
+    let amm = pump_amm_decoder();
+    let decoders = LedgerDecoders {
+        curve: &curve,
+        amm: Some(&amm),
+    };
+    let opts = LedgerOptions {
+        left_censoring: true,
+    };
+    let r = build_solana_wallet_ledger_venues(&wallet, &txs, &decoders, opts).unwrap();
+
+    // Independent view: every wallet-user paired trade the reconciler does
+    // not call a router forward must appear exactly once in the report.
+    let mut seen = std::collections::BTreeSet::new();
+    let mut expected_attributed = 0u64;
+    let mut expected_priced = 0u64;
+    let mut exact_txs: Vec<&RawSolanaTransaction> = Vec::new();
+    let mut inexact_txs = 0u64;
+    for tx in &txs {
+        let rec = reconcile_pump_amm_transaction(&amm, tx);
+        let mut all_exact = true;
+        let mut touched = false;
+        for u in rec.users.iter().filter(|u| u.user == wallet) {
+            touched = true;
+            all_exact &= u.attribution == AmmAttribution::Exact;
+            if u.attribution == AmmAttribution::NoUserDelta {
+                continue;
+            }
+            for &i in &u.trade_indices {
+                let p = &rec.pairing.trades[i];
+                assert!(
+                    seen.insert((tx.signature, p.trade.instruction_index)),
+                    "trade counted twice"
+                );
+                expected_attributed += 1;
+                if matches!(p.pairing, AmmTradeEventPairing::Paired(_))
+                    && matches!(
+                        u.attribution,
+                        AmmAttribution::Exact | AmmAttribution::QuoteResidual
+                    )
+                {
+                    expected_priced += 1;
+                }
+            }
+        }
+        if touched {
+            if all_exact {
+                exact_txs.push(tx);
+            } else {
+                inexact_txs += 1;
+            }
+        }
+    }
+    let amm_total = r.trades.pump_amm.buys + r.trades.pump_amm.sells;
+    assert_eq!(amm_total, expected_attributed);
+    assert_eq!(r.trades.priced, expected_priced);
+    assert_eq!(
+        r.variant_trades.iter().map(|v| v.trades).sum::<u64>(),
+        amm_total
+    );
+    assert_eq!(
+        r.trades.priced
+            + r.trades.unpaired
+            + r.trades.mismatched
+            + r.trades.unsupported_quote
+            + r.trades.malformed_consideration
+            + r.trades.quote_funded_elsewhere
+            + r.trades.unreconciled,
+        r.trades.buys + r.trades.sells
+    );
+    assert_eq!(
+        r.trades.bonding_curve.buys + r.trades.bonding_curve.sells,
+        0
+    );
+
+    // Exact reconciliation => the wallet's native residual is 0 per tx.
+    for tx in &exact_txs {
+        let one =
+            build_solana_wallet_ledger_venues(&wallet, std::slice::from_ref(*tx), &decoders, opts)
+                .unwrap();
+        assert_eq!(
+            one.diagnostics.unexplained_native_flow_lamports,
+            0,
+            "tx {}",
+            bs58::encode(tx.signature).into_string()
+        );
+    }
+    // All 98 trade txs reconcile Exactly; the aggregate native residual comes
+    // only from the page's non-trade transactions (plain SOL movements).
+    assert_eq!((exact_txs.len(), inexact_txs), (98, 0));
+    let mut non_trade_residual = 0i128;
+    let mut non_trade_txs = 0u64;
+    for tx in &txs {
+        if exact_txs.iter().any(|e| e.signature == tx.signature) {
+            continue;
+        }
+        let one =
+            build_solana_wallet_ledger_venues(&wallet, std::slice::from_ref(tx), &decoders, opts)
+                .unwrap();
+        non_trade_residual += one.diagnostics.unexplained_native_flow_lamports;
+        non_trade_txs += one.diagnostics.unexplained_native_flow_txs;
+    }
+    assert_eq!(
+        non_trade_residual,
+        r.diagnostics.unexplained_native_flow_lamports
+    );
+    assert_eq!(non_trade_txs, r.diagnostics.unexplained_native_flow_txs);
+
+    // No continuity-caused Unknown on PumpSwap-only mints.
+    assert_eq!(r.closed_episodes_unknown, 0);
+    assert_eq!(r.diagnostics.continuity_breaks, 0);
+    for e in &r.episodes {
+        assert!(
+            e.unknown_reasons
+                .iter()
+                .all(|x| *x == UnknownReason::LeftCensored),
+            "{:?}",
+            e.unknown_reasons
+        );
+    }
+
+    // Pinned live numbers (measured 2026-10-02 on this fixture).
+    assert_eq!((r.trades.pump_amm.buys, r.trades.pump_amm.sells), (53, 45));
+    assert_eq!(r.closed_episodes_known, 9);
+    assert_eq!(r.left_censored_episodes, 26);
+    assert_eq!(r.open_episodes, 13);
+    assert_eq!(r.realized_trade_pnl_lamports, 182_081_259);
+    assert_eq!(r.diagnostics.unexplained_native_flow_lamports, 7_216_315);
+    assert_eq!(r.diagnostics.unexplained_native_flow_txs, 2);
+    assert_eq!(r.diagnostics.router_forward_trades_not_attributed, 0);
+    assert_eq!(r.diagnostics.quote_funded_elsewhere_trades, 0);
+    assert_eq!(r.diagnostics.reversed_pool_trades, 0);
+    assert_eq!(r.diagnostics.out_of_scope_token_movements, 0);
 }

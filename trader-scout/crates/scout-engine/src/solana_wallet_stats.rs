@@ -63,7 +63,7 @@ use crate::solana_buyer_intersect::{
     ScanFailureKind, ScanStop, SolanaProtocolScope, classify_provider_error, sanitize_provider_text,
 };
 use crate::solana_wallet_ledger::{
-    LedgerOptions, SolanaWalletLedgerReport, build_solana_wallet_ledger_with_options,
+    LedgerDecoders, LedgerOptions, SolanaWalletLedgerReport, build_solana_wallet_ledger_venues,
 };
 
 /// Per-wallet outcome class.
@@ -209,13 +209,35 @@ pub async fn run_solana_wallet_stats(
         .await
 }
 
-/// [`run_solana_wallet_stats`] over an [`AnalysisWindow`] (ADR-011). The
-/// provider must be configured to stop at the same `since` for the
-/// bounded-paging guarantee; see the module docs.
+/// [`run_solana_wallet_stats_windowed_venues`] with the bonding curve only
+/// (pre-ADR-012 behaviour and scope).
 pub async fn run_solana_wallet_stats_windowed(
     provider: &dyn HistoryProvider,
     wallets: &[SolanaPubkey],
     decoder: &BondingCurveBuyDecoder,
+    window: &AnalysisWindow,
+    cancel: CancellationToken,
+) -> Result<SolanaWalletStatsReport, ProviderError> {
+    run_solana_wallet_stats_windowed_venues(
+        provider,
+        wallets,
+        &LedgerDecoders {
+            curve: decoder,
+            amm: None,
+        },
+        window,
+        cancel,
+    )
+    .await
+}
+
+/// [`run_solana_wallet_stats`] over an [`AnalysisWindow`] (ADR-011). The
+/// provider must be configured to stop at the same `since` for the
+/// bounded-paging guarantee; see the module docs.
+pub async fn run_solana_wallet_stats_windowed_venues(
+    provider: &dyn HistoryProvider,
+    wallets: &[SolanaPubkey],
+    decoders: &LedgerDecoders<'_>,
     window: &AnalysisWindow,
     cancel: CancellationToken,
 ) -> Result<SolanaWalletStatsReport, ProviderError> {
@@ -242,7 +264,7 @@ pub async fn run_solana_wallet_stats_windowed(
             ));
             continue;
         }
-        match scan_wallet(provider, wallet, decoder, window, &cancel).await? {
+        match scan_wallet(provider, wallet, decoders, window, &cancel).await? {
             Some(card) => {
                 stop = card.failure.and_then(ScanFailureKind::stop);
                 out.push(card);
@@ -257,7 +279,11 @@ pub async fn run_solana_wallet_stats_windowed(
         }
     }
     Ok(SolanaWalletStatsReport {
-        scope: SolanaProtocolScope::pump_bonding_curve(),
+        scope: if decoders.amm.is_some() {
+            SolanaProtocolScope::pump_wallet_ledger()
+        } else {
+            SolanaProtocolScope::pump_bonding_curve()
+        },
         wallets: out,
         cancelled,
         stop,
@@ -307,7 +333,7 @@ fn failed_card(wallet: SolanaPubkey, error: String) -> SolanaWalletStats {
 async fn scan_wallet(
     provider: &dyn HistoryProvider,
     wallet: SolanaPubkey,
-    decoder: &BondingCurveBuyDecoder,
+    decoders: &LedgerDecoders<'_>,
     window: &AnalysisWindow,
     cancel: &CancellationToken,
 ) -> Result<Option<SolanaWalletStats>, ProviderError> {
@@ -378,7 +404,7 @@ async fn scan_wallet(
     let options = LedgerOptions {
         left_censoring: bounded,
     };
-    let ledger = match build_solana_wallet_ledger_with_options(&wallet, &txs, decoder, options) {
+    let ledger = match build_solana_wallet_ledger_venues(&wallet, &txs, decoders, options) {
         Ok(l) => l,
         Err(err) => {
             return Ok(Some(failed_card(

@@ -40,9 +40,9 @@ use scout_api::ProviderError;
 use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
 use scout_core::{AddressBytes, ChainFamily, SolanaPubkey, WalletKey};
 use scout_engine::{
-    AnalysisWindow, DEFAULT_TOP, RankBy, RankPolicy, RankProfile, ScanStop,
-    SolanaWalletStatsReport, WalletRankReport, pump_bonding_curve_decoder, rank_solana_wallets,
-    run_solana_wallet_stats_windowed, sanitize_provider_text,
+    AnalysisWindow, DEFAULT_TOP, LedgerDecoders, RankBy, RankPolicy, RankProfile, ScanStop,
+    SolanaWalletStatsReport, WalletRankReport, pump_amm_decoder, pump_bonding_curve_decoder,
+    rank_solana_wallets, run_solana_wallet_stats_windowed_venues, sanitize_provider_text,
 };
 use scout_providers::{HeliusProvider, ScanOrder};
 use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
@@ -60,7 +60,7 @@ const HELIUS_TIMEOUT_MS: u64 = 30_000;
 const HELIUS_MAX_ATTEMPTS: u32 = 3;
 
 /// Rank input wallets by realized trading performance (Solana pump.fun
-/// bonding-curve slice, SOL-quoted ledger).
+/// bonding-curve + PumpSwap AMM slice, SOL-quoted ledger).
 #[derive(Debug, Parser)]
 #[command(name = "wallet-rank", version)]
 struct Args {
@@ -403,10 +403,14 @@ fn run_solana(
             return ExitCode::from(4);
         }
     };
-    let stats = match rt.block_on(run_solana_wallet_stats_windowed(
+    let amm = pump_amm_decoder();
+    let stats = match rt.block_on(run_solana_wallet_stats_windowed_venues(
         &provider,
         solana,
-        &decoder,
+        &LedgerDecoders {
+            curve: &decoder,
+            amm: Some(&amm),
+        },
         window,
         CancellationToken::new(),
     )) {
@@ -499,6 +503,15 @@ fn print_diagnostics(
     eprintln!("wallet-rank: protocol scope (Solana mainnet, SOL-quoted ledger, lamports):");
     eprintln!("  recognized: {}", s.recognized);
     eprintln!("  NOT decoded: {}", s.not_decoded);
+    eprintln!(
+        "  programs: pump.fun bonding curve {} (IDL {} sha256 {}); PumpSwap AMM {} (IDL {} sha256 {})",
+        s.program_id,
+        s.idl_commit,
+        s.idl_sha256,
+        s.amm_program_id.unwrap_or("-"),
+        s.amm_idl_commit.unwrap_or("-"),
+        s.amm_idl_sha256.unwrap_or("-"),
+    );
     eprintln!(
         "  scan: newest-first, max_pages_per_wallet={} (100 txs/page; retries not counted), \
          max_requests={}, requests_made={requests_made}; {}",

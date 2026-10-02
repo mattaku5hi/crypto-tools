@@ -370,6 +370,10 @@ pub struct ScopeDto {
     pub program_id: &'static str,
     pub idl_commit: &'static str,
     pub idl_sha256: &'static str,
+    /// Second decoded program (PumpSwap AMM, ADR-012) and its IDL pin.
+    pub amm_program_id: Option<&'static str>,
+    pub amm_idl_commit: Option<&'static str>,
+    pub amm_idl_sha256: Option<&'static str>,
     pub qualification_version: &'static str,
     pub recognized: &'static str,
     pub not_decoded: &'static str,
@@ -517,8 +521,29 @@ pub struct TradesDto {
     pub mismatched: u64,
     pub unsupported_quote: u64,
     pub malformed_consideration: u64,
+    pub quote_funded_elsewhere: u64,
+    pub unreconciled: u64,
     pub fixture_verified_variant: u64,
     pub idl_only_variant: u64,
+    /// Per venue, side in token terms (ADR-012 §5).
+    pub bonding_curve: VenueSidesDto,
+    pub pump_amm: VenueSidesDto,
+    /// Per `(venue, variant)` with its verification status.
+    pub variants: Vec<VariantTradesDto>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VenueSidesDto {
+    pub buys: u64,
+    pub sells: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VariantTradesDto {
+    pub venue: &'static str,
+    pub variant: &'static str,
+    pub verification: &'static str,
+    pub trades: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -547,6 +572,9 @@ pub struct DiagnosticsDto {
     pub unknown_disposals: u64,
     pub known_disposals: u64,
     pub left_censored_disposals: u64,
+    pub router_forward_trades_not_attributed: u64,
+    pub quote_funded_elsewhere_trades: u64,
+    pub reversed_pool_trades: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -742,8 +770,28 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
             mismatched: t.mismatched,
             unsupported_quote: t.unsupported_quote,
             malformed_consideration: t.malformed_consideration,
+            quote_funded_elsewhere: t.quote_funded_elsewhere,
+            unreconciled: t.unreconciled,
             fixture_verified_variant: t.fixture_verified_variant,
             idl_only_variant: t.idl_only_variant,
+            bonding_curve: VenueSidesDto {
+                buys: t.bonding_curve.buys,
+                sells: t.bonding_curve.sells,
+            },
+            pump_amm: VenueSidesDto {
+                buys: t.pump_amm.buys,
+                sells: t.pump_amm.sells,
+            },
+            variants: l
+                .variant_trades
+                .iter()
+                .map(|v| VariantTradesDto {
+                    venue: v.venue.label(),
+                    variant: v.variant,
+                    verification: v.verification.label(),
+                    trades: v.trades,
+                })
+                .collect(),
         },
         distinct_mints_traded: l.distinct_mints_traded,
         activity: ActivityDto {
@@ -777,6 +825,9 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
             unknown_disposals: d.unknown_disposals,
             known_disposals: d.known_disposals,
             left_censored_disposals: d.left_censored_disposals,
+            router_forward_trades_not_attributed: d.router_forward_trades_not_attributed,
+            quote_funded_elsewhere_trades: d.quote_funded_elsewhere_trades,
+            reversed_pool_trades: d.reversed_pool_trades,
         },
     }
 }
@@ -865,7 +916,7 @@ pub struct RunMetaInput<'a> {
 }
 
 pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
-    let scope = SolanaProtocolScope::pump_bonding_curve();
+    let scope = SolanaProtocolScope::pump_wallet_ledger();
     RunMetaRecord {
         schema_version: SCHEMA_VERSION,
         kind: "run_meta",
@@ -876,6 +927,9 @@ pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
             program_id: scope.program_id,
             idl_commit: scope.idl_commit,
             idl_sha256: scope.idl_sha256,
+            amm_program_id: scope.amm_program_id,
+            amm_idl_commit: scope.amm_idl_commit,
+            amm_idl_sha256: scope.amm_idl_sha256,
             qualification_version: scope.qualification_version,
             recognized: scope.recognized,
             not_decoded: scope.not_decoded,
@@ -1023,7 +1077,7 @@ mod tests {
 
     fn report() -> SolanaWalletStatsReport {
         SolanaWalletStatsReport {
-            scope: SolanaProtocolScope::pump_bonding_curve(),
+            scope: SolanaProtocolScope::pump_wallet_ledger(),
             wallets: vec![
                 card(1, WalletScanStatus::Ok, Some(4), Some(157_000_000)),
                 card(2, WalletScanStatus::NoActivity, Some(0), None),

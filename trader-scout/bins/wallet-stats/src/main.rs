@@ -47,8 +47,8 @@ use scout_api::ProviderError;
 use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
 use scout_core::{AddressBytes, ChainFamily, SolanaPubkey, WalletKey};
 use scout_engine::{
-    AnalysisWindow, ScanStop, SolanaWalletStatsReport, pump_bonding_curve_decoder,
-    run_solana_wallet_stats_windowed, sanitize_provider_text,
+    AnalysisWindow, LedgerDecoders, ScanStop, SolanaWalletStatsReport, pump_amm_decoder,
+    pump_bonding_curve_decoder, run_solana_wallet_stats_windowed_venues, sanitize_provider_text,
 };
 use scout_providers::{HeliusProvider, ScanOrder};
 use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
@@ -331,10 +331,14 @@ fn run_solana(
             return ExitCode::from(4);
         }
     };
-    let result = rt.block_on(run_solana_wallet_stats_windowed(
+    let amm = pump_amm_decoder();
+    let result = rt.block_on(run_solana_wallet_stats_windowed_venues(
         &provider,
         solana,
-        &decoder,
+        &LedgerDecoders {
+            curve: &decoder,
+            amm: Some(&amm),
+        },
         window,
         CancellationToken::new(),
     ));
@@ -432,6 +436,15 @@ fn print_diagnostics(
     eprintln!("wallet-stats: protocol scope (Solana mainnet, SOL-quoted ledger, lamports):");
     eprintln!("  recognized: {}", s.recognized);
     eprintln!("  NOT decoded: {}", s.not_decoded);
+    eprintln!(
+        "  programs: pump.fun bonding curve {} (IDL {} sha256 {}); PumpSwap AMM {} (IDL {} sha256 {})",
+        s.program_id,
+        s.idl_commit,
+        s.idl_sha256,
+        s.amm_program_id.unwrap_or("-"),
+        s.amm_idl_commit.unwrap_or("-"),
+        s.amm_idl_sha256.unwrap_or("-"),
+    );
     eprintln!(
         "  scan: newest-first, max_pages_per_wallet={max_pages} (100 txs/page; retries not counted); \
          {}",

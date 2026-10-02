@@ -1,5 +1,6 @@
 //! Pure, synchronous per-wallet SOL-quoted ledger for pump.fun
-//! bonding-curve trades (ADR-010; fee rules from ADR-004).
+//! bonding-curve and PumpSwap AMM trades (ADR-010, ADR-012; fee rules
+//! from ADR-004).
 //!
 //! Input: the raw transactions of ONE wallet in any order, any
 //! duplication. Output: [`SolanaWalletLedgerReport`]. No I/O, no clocks,
@@ -18,6 +19,17 @@
 //!   mint => `Unknown` lot / `Unknown`-proceeds disposal.
 //! * §7 ordering: `(slot, transaction_index, instruction order)`; the
 //!   input order is irrelevant; duplicate signatures are processed once.
+//!
+//! # Two venues (ADR-012)
+//! Both decoders feed one venue-agnostic internal `WalletTrade` (venue,
+//! variant, verification, traded mint, side in TOKEN terms, token amount,
+//! SOL consideration or an `Unknown` reason). The bonding-curve extractor
+//! is the ADR-010 one; the PumpSwap extractor takes the consideration from
+//! the paired event (ADR-012 §1/§2, normal and reversed pools) and gates
+//! attribution on `reconcile_pump_amm_transaction` (§3). Everything after
+//! extraction (fee split over ALL the wallet's trades of the tx, FIFO per
+//! `(wallet, mint)`, episodes, continuity, left-censoring) is shared, so a
+//! curve buy followed by an AMM sell is one episode.
 //!
 //! # Windowed mode (ADR-011)
 //! With [`LedgerOptions::left_censoring`] the input is assumed to be the
@@ -44,8 +56,9 @@ use scout_core::{
     SolanaExecutionStatus, SolanaPubkey,
 };
 use scout_dex_solana::{
-    BondingCurveBuyDecoder, PumpInstructionOutcome, TradeEventPairing, TradeSide,
-    VariantVerification, pair_trades_with_events,
+    AmmAttribution, AmmTradeEventPairing, BondingCurveBuyDecoder, PairedAmmTrade, PumpAmmDecoder,
+    PumpAmmEvent, PumpAmmInstructionOutcome, PumpInstructionOutcome, TradeEventPairing, TradeSide,
+    VariantVerification, WRAPPED_SOL_MINT, pair_trades_with_events, reconcile_pump_amm_transaction,
 };
 pub use scout_ledger::QuoteUnit;
 use scout_ledger::{BasisStatus, Ledger};
@@ -55,7 +68,7 @@ use crate::solana_buy_qualification::solana_mainnet_chain;
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
 pub const SOLANA_WALLET_LEDGER_VERSION: &str =
-    "solana-wallet-ledger/2 (ADR-010, ADR-004, ADR-011 left-censoring)";
+    "solana-wallet-ledger/3 (ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM)";
 
 /// Wrapped SOL, the only non-native quote asset treated as SOL (ADR-010 §3).
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -126,6 +139,10 @@ pub enum UnknownReason {
     /// Windowed run (ADR-011): a disposal exceeded the in-window inventory
     /// because the inventory predates the window.
     LeftCensored,
+    /// ADR-012 §3: the wallet's base-token leg matches the trade but its
+    /// quote leg is exactly zero: another account of the transaction paid
+    /// (or received) the quote asset. Basis/proceeds unknown, never 0.
+    QuoteFundedByAnotherAccount,
 }
 
 impl UnknownReason {
@@ -140,6 +157,9 @@ impl UnknownReason {
             Self::InventoryNotObserved => "inventory not observed before disposal",
             Self::UnknownBasisLotConsumed => "consumed unknown-basis lot",
             Self::LeftCensored => "inventory predates the analysis window (left-censored)",
+            Self::QuoteFundedByAnotherAccount => {
+                "quote leg settled by another account (funded/received elsewhere)"
+            }
         }
     }
 }
@@ -194,12 +214,58 @@ pub struct OpenPosition {
     pub opened_at: Option<i64>,
 }
 
+/// Where a trade was executed (ADR-012 §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Venue {
+    BondingCurve,
+    PumpAmm,
+}
+
+impl Venue {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BondingCurve => "bonding_curve",
+            Self::PumpAmm => "pump_amm",
+        }
+    }
+}
+
+/// Trades of one venue by side IN TOKEN TERMS (`buys` acquire the traded
+/// token, `sells` dispose it; for a reversed PumpSwap pool this is the
+/// inverse of the instruction side).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VenueSideCounts {
+    pub buys: u64,
+    pub sells: u64,
+}
+
+/// Trades of one `(venue, variant)` with its evidence level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VariantTradeCount {
+    pub venue: Venue,
+    /// IDL instruction name.
+    pub variant: &'static str,
+    pub verification: VariantVerification,
+    pub trades: u64,
+}
+
 /// Trade counters. Each decoded trade of the wallet in a successful
-/// transaction lands in exactly one of the five consideration buckets.
+/// transaction lands in exactly one of the consideration buckets
+/// (`priced`, `unpaired`, `mismatched`, `unsupported_quote`,
+/// `malformed_consideration`, `quote_funded_elsewhere`, `unreconciled`).
+/// `buys`/`sells` are the totals over both venues, side in token terms.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TradeCounts {
     pub buys: u64,
     pub sells: u64,
+    pub bonding_curve: VenueSideCounts,
+    pub pump_amm: VenueSideCounts,
+    /// ADR-012 §3: wallet's quote leg was zero; Unknown basis/proceeds.
+    pub quote_funded_elsewhere: u64,
+    /// PumpSwap trade whose wallet base leg did not match the paired event
+    /// (token movement left to inventory continuity).
+    pub unreconciled: u64,
     /// Paired, SOL-quoted, consideration computed.
     pub priced: u64,
     pub unpaired: u64,
@@ -225,7 +291,8 @@ pub struct LedgerDiagnostics {
     pub unexplained_native_flow_lamports: i128,
     /// Successful transactions whose residual is non-zero.
     pub unexplained_native_flow_txs: u64,
-    /// `(tx, mint)` wallet token movements of mints with no pump trade in the whole history.
+    /// `(tx, mint)` wallet token movements of mints never traded on either venue (ADR-012 §5);
+    /// wSOL in a transaction with a PumpSwap trade is the quote asset and not counted.
     pub out_of_scope_token_movements: u64,
     /// Token movements of traded mints not explained by decoded trades (ADR-010 §6), incl.
     /// disposals beyond observed inventory.
@@ -236,6 +303,16 @@ pub struct LedgerDiagnostics {
     /// Windowed runs: disposals that exceeded the in-window inventory
     /// (booked `LeftCensored`; NOT counted in `continuity_breaks`).
     pub left_censored_disposals: u64,
+    /// ADR-012 §3: PumpSwap trades whose decoded `user` moved nothing on
+    /// either leg (router/relayer forward) in a transaction the wallet
+    /// signed, or whose `user` is the wallet with a zero net movement.
+    /// Not attributed; the token transfer is handled by continuity.
+    pub router_forward_trades_not_attributed: u64,
+    /// ADR-012 §3: PumpSwap trades of the wallet whose quote was funded by
+    /// another account (booked Unknown, or unbookable on a reversed pool).
+    pub quote_funded_elsewhere_trades: u64,
+    /// PumpSwap trades of the wallet on pools whose base mint is wSOL.
+    pub reversed_pool_trades: u64,
 }
 
 /// Ledger build options.
@@ -281,6 +358,9 @@ pub struct SolanaWalletLedgerReport {
     pub quote_unit: QuoteUnit,
     pub wallet: SolanaPubkey,
     pub trades: TradeCounts,
+    /// Per `(venue, variant)` trade counts with verification status
+    /// (ADR-012 §5), sorted by venue then variant name.
+    pub variant_trades: Vec<VariantTradeCount>,
     /// Distinct mints with at least one decoded wallet trade.
     pub distinct_mints_traded: u64,
     pub episodes: Vec<EpisodeRecord>,
@@ -355,15 +435,27 @@ enum Consideration {
     },
 }
 
+/// Venue-agnostic trade of the wallet (ADR-012). Produced by one extractor
+/// per venue; consumed by the shared ledger logic.
 struct WalletTrade {
+    venue: Venue,
+    /// IDL instruction name of the decoded variant.
+    variant: &'static str,
+    /// Side in TOKEN terms: `Buy` acquires `mint`, `Sell` disposes it.
     side: TradeSide,
+    /// The traded (non-SOL) token.
     mint: SolanaPubkey,
+    /// Flattened instruction order inside the transaction.
     instruction_index: u32,
     consideration: Consideration,
     timestamp: Option<i64>,
     verification: VariantVerification,
     /// The event disagreed with the instruction (vs. no event at all).
     mismatched: bool,
+    /// PumpSwap: paired, but the wallet's base leg did not match the event.
+    unreconciled: bool,
+    /// PumpSwap pool whose base mint is wSOL (ADR-012 §2).
+    reversed_pool: bool,
 }
 
 struct EpisodeAcc {
@@ -390,6 +482,7 @@ struct Builder {
     records: Vec<EpisodeRecord>,
     diag: LedgerDiagnostics,
     counts: TradeCounts,
+    variant_counts: BTreeMap<(Venue, &'static str), (VariantVerification, u64)>,
     unknown_lots: u64,
     failed_fees: i128,
     failed_fee_txs: u64,
@@ -669,16 +762,24 @@ struct TxWork<'a> {
     trades: Vec<WalletTrade>,
     malformed_trades: u64,
     orphans: u64,
+    /// ADR-012 §3 counters of PumpSwap trades that were NOT booked.
+    router_forwards: u64,
+    qfe_unbooked: u64,
+    /// Mints moved by router-forwarded trades of a tx the wallet signed:
+    /// they become continuity candidates (their transfer to the wallet is
+    /// an unexplained token movement of a venue mint, not "out of scope").
+    forward_mints: BTreeSet<SolanaPubkey>,
 }
 
-fn classify_trades<'a>(
-    tx: &'a RawSolanaTransaction,
+/// Bonding-curve extractor (ADR-010 §2/§3), behaviour unchanged.
+fn extract_curve_trades(
+    tx: &RawSolanaTransaction,
     wallet: &SolanaPubkey,
     decoder: &BondingCurveBuyDecoder,
     wsol: &SolanaPubkey,
-) -> TxWork<'a> {
+    work: &mut TxWork<'_>,
+) {
     let rep = pair_trades_with_events(decoder, &tx.instructions, tx.slot, tx.transaction_index);
-    let mut trades = Vec::new();
     for p in &rep.trades {
         if p.trade.user != *wallet {
             continue;
@@ -728,7 +829,9 @@ fn classify_trades<'a>(
                 (c, ts)
             }
         };
-        trades.push(WalletTrade {
+        work.trades.push(WalletTrade {
+            venue: Venue::BondingCurve,
+            variant: t.variant.name(),
             side: t.side,
             mint: t.mint,
             instruction_index: t.instruction_index,
@@ -736,19 +839,278 @@ fn classify_trades<'a>(
             timestamp,
             verification: t.verification(),
             mismatched: matches!(p.pairing, TradeEventPairing::Mismatch { .. }),
+            unreconciled: false,
+            reversed_pool: false,
         });
     }
-    // Pairing already yields execution order; keep it explicit.
-    trades.sort_by_key(|t| t.instruction_index);
-    TxWork {
-        tx,
-        trades,
-        malformed_trades: u64::try_from(rep.malformed_trades).unwrap_or(u64::MAX),
-        orphans: u64::try_from(rep.orphan_events.len()).unwrap_or(u64::MAX),
+    work.malformed_trades = work
+        .malformed_trades
+        .saturating_add(u64::try_from(rep.malformed_trades).unwrap_or(u64::MAX));
+    work.orphans = work
+        .orphans
+        .saturating_add(u64::try_from(rep.orphan_events.len()).unwrap_or(u64::MAX));
+}
+
+/// Owner-keyed net wSOL token delta of `owner` (all of its wSOL accounts).
+fn wsol_token_delta(
+    changes: &[scout_core::SolanaTokenBalanceChange],
+    owner: &SolanaPubkey,
+) -> i128 {
+    changes
+        .iter()
+        .filter(|c| c.owner.as_ref() == Some(owner) && c.mint == WRAPPED_SOL_MINT)
+        .map(|c| i128::from(c.post_amount) - i128::from(c.pre_amount.unwrap_or(0)))
+        .sum()
+}
+
+fn amm_event_timestamp(ev: &PumpAmmEvent) -> i64 {
+    match ev {
+        PumpAmmEvent::Buy(e) => e.timestamp,
+        PumpAmmEvent::Sell(e) => e.timestamp,
     }
 }
 
-/// Build the report with default options (full history, no window).
+/// Economic reading of one PumpSwap trade (ADR-012 §2).
+struct AmmReading {
+    mint: SolanaPubkey,
+    /// Side in token terms.
+    side: TradeSide,
+    reversed: bool,
+    wsol_pair: bool,
+}
+
+fn read_amm_trade(p: &PairedAmmTrade) -> AmmReading {
+    let t = &p.trade;
+    let base_wsol = t.base_mint == WRAPPED_SOL_MINT;
+    let quote_wsol = t.quote_mint == WRAPPED_SOL_MINT;
+    match (base_wsol, quote_wsol) {
+        // Normal pool: token = base, instruction side is the token side.
+        (false, true) => AmmReading {
+            mint: t.base_mint,
+            side: t.side,
+            reversed: false,
+            wsol_pair: true,
+        },
+        // Reversed pool: token = quote, the instruction side is inverted.
+        (true, false) => AmmReading {
+            mint: t.quote_mint,
+            side: match t.side {
+                TradeSide::Buy => TradeSide::Sell,
+                TradeSide::Sell => TradeSide::Buy,
+            },
+            reversed: true,
+            wsol_pair: true,
+        },
+        // Non-SOL pair (or wSOL/wSOL): recorded, PnL unknown.
+        _ => AmmReading {
+            mint: t.base_mint,
+            side: t.side,
+            reversed: false,
+            wsol_pair: false,
+        },
+    }
+}
+
+/// `(token_amount, lamports)` of a paired trade on a SOL pool, or `None`
+/// when the event arithmetic is malformed. Token amount and SOL amount are
+/// the signed legs of ADR-012 §1/§2 in raw units.
+fn amm_amounts(ev: &PumpAmmEvent, reading: &AmmReading) -> Option<(u64, u64)> {
+    let quote = ev.quote_consideration()?;
+    let base = ev.base_amount();
+    Some(if reading.reversed {
+        // base = wSOL leg, quote = token leg.
+        (quote, base)
+    } else {
+        (base, quote)
+    })
+}
+
+/// PumpSwap extractor (ADR-012 §1-3). Legs come from
+/// `reconcile_pump_amm_transaction`; nothing is re-derived here.
+fn extract_amm_trades(
+    tx: &RawSolanaTransaction,
+    wallet: &SolanaPubkey,
+    decoder: &PumpAmmDecoder,
+    work: &mut TxWork<'_>,
+) {
+    let rec = reconcile_pump_amm_transaction(decoder, tx);
+    work.malformed_trades = work
+        .malformed_trades
+        .saturating_add(u64::try_from(rec.pairing.malformed_trades).unwrap_or(u64::MAX));
+    work.orphans = work
+        .orphans
+        .saturating_add(u64::try_from(rec.pairing.orphan_events.len()).unwrap_or(u64::MAX));
+    let wallet_signed = tx.signers.contains(wallet);
+    for u in &rec.users {
+        if u.user != *wallet {
+            // Router-forward guard: another account executed the trade and
+            // moved nothing; the wallet signed the transaction.
+            if wallet_signed && !u.user_is_signer && u.attribution == AmmAttribution::NoUserDelta {
+                for &i in &u.trade_indices {
+                    work.router_forwards = work.router_forwards.saturating_add(1);
+                    if let Some(p) = rec.pairing.trades.get(i) {
+                        let r = read_amm_trade(p);
+                        if r.wsol_pair {
+                            work.forward_mints.insert(r.mint);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        for &i in &u.trade_indices {
+            let Some(p) = rec.pairing.trades.get(i) else {
+                continue;
+            };
+            let reading = read_amm_trade(p);
+            let base = |consideration, timestamp, mismatched, unreconciled| WalletTrade {
+                venue: Venue::PumpAmm,
+                variant: p.trade.variant.name(),
+                side: reading.side,
+                mint: reading.mint,
+                instruction_index: p.trade.instruction_index,
+                consideration,
+                timestamp,
+                verification: p.trade.verification(),
+                mismatched,
+                unreconciled,
+                reversed_pool: reading.reversed,
+            };
+            let unverified = Consideration::Unknown {
+                reason: UnknownReason::ConsiderationUnverified,
+                token_amount: None,
+            };
+            let trade = match &p.pairing {
+                AmmTradeEventPairing::MissingEvent => base(unverified, None, false, false),
+                AmmTradeEventPairing::Mismatch { .. } => base(unverified, None, true, false),
+                AmmTradeEventPairing::Paired(ev) => {
+                    let ts = Some(amm_event_timestamp(ev));
+                    match amm_amounts(ev, &reading) {
+                        None => {
+                            // Event arithmetic over/underflow: tokens known from
+                            // the event's base leg only on a normal pool.
+                            let token_amount = (!reading.reversed).then(|| ev.base_amount());
+                            base(
+                                Consideration::Unknown {
+                                    reason: UnknownReason::MalformedConsideration,
+                                    token_amount,
+                                },
+                                ts,
+                                false,
+                                false,
+                            )
+                        }
+                        Some((token_amount, lamports)) => match u.attribution {
+                            AmmAttribution::NoUserDelta => {
+                                work.router_forwards = work.router_forwards.saturating_add(1);
+                                continue;
+                            }
+                            AmmAttribution::Unpaired | AmmAttribution::ConsiderationInvalid => {
+                                base(unverified, ts, false, false)
+                            }
+                            AmmAttribution::BaseLegMismatch => base(unverified, ts, false, true),
+                            AmmAttribution::Exact | AmmAttribution::QuoteResidual
+                                if !reading.wsol_pair =>
+                            {
+                                base(
+                                    Consideration::Unknown {
+                                        reason: UnknownReason::UnsupportedQuoteAsset,
+                                        token_amount: Some(ev.base_amount()),
+                                    },
+                                    ts,
+                                    false,
+                                    false,
+                                )
+                            }
+                            AmmAttribution::Exact | AmmAttribution::QuoteResidual => base(
+                                Consideration::Verified {
+                                    lamports,
+                                    token_amount,
+                                },
+                                ts,
+                                false,
+                                false,
+                            ),
+                            AmmAttribution::QuoteFundedElsewhere => {
+                                if reading.reversed {
+                                    // The token leg is the zero one: no inventory
+                                    // change to book; the SOL paid/received stays
+                                    // a native-residual diagnostic.
+                                    work.qfe_unbooked = work.qfe_unbooked.saturating_add(1);
+                                    continue;
+                                }
+                                if reading.wsol_pair {
+                                    base(
+                                        Consideration::Unknown {
+                                            reason: UnknownReason::QuoteFundedByAnotherAccount,
+                                            token_amount: Some(token_amount),
+                                        },
+                                        ts,
+                                        false,
+                                        false,
+                                    )
+                                } else {
+                                    base(
+                                        Consideration::Unknown {
+                                            reason: UnknownReason::UnsupportedQuoteAsset,
+                                            token_amount: Some(ev.base_amount()),
+                                        },
+                                        ts,
+                                        false,
+                                        false,
+                                    )
+                                }
+                            }
+                        },
+                    }
+                }
+            };
+            work.trades.push(trade);
+        }
+    }
+}
+
+/// PumpSwap AMM decoder for Solana mainnet (ADR-012).
+#[must_use]
+pub fn pump_amm_decoder() -> PumpAmmDecoder {
+    PumpAmmDecoder::mainnet()
+}
+
+/// The two venue decoders feeding one ledger (ADR-012 §5).
+#[derive(Debug, Clone, Copy)]
+pub struct LedgerDecoders<'a> {
+    pub curve: &'a BondingCurveBuyDecoder,
+    /// `None` = bonding-curve-only run (pre-ADR-012 behaviour).
+    pub amm: Option<&'a PumpAmmDecoder>,
+}
+
+fn classify_trades<'a>(
+    tx: &'a RawSolanaTransaction,
+    wallet: &SolanaPubkey,
+    decoders: &LedgerDecoders<'_>,
+    wsol: &SolanaPubkey,
+) -> TxWork<'a> {
+    let mut work = TxWork {
+        tx,
+        trades: Vec::new(),
+        malformed_trades: 0,
+        orphans: 0,
+        router_forwards: 0,
+        qfe_unbooked: 0,
+        forward_mints: BTreeSet::new(),
+    };
+    extract_curve_trades(tx, wallet, decoders.curve, wsol, &mut work);
+    if let Some(amm) = decoders.amm {
+        extract_amm_trades(tx, wallet, amm, &mut work);
+    }
+    // Both extractors yield execution order; merge across venues by the
+    // flattened instruction index.
+    work.trades.sort_by_key(|t| t.instruction_index);
+    work
+}
+
+/// Build the report with default options (full history, no window),
+/// bonding-curve venue only.
 pub fn build_solana_wallet_ledger(
     wallet: &SolanaPubkey,
     txs: &[RawSolanaTransaction],
@@ -757,11 +1119,29 @@ pub fn build_solana_wallet_ledger(
     build_solana_wallet_ledger_with_options(wallet, txs, decoder, LedgerOptions::default())
 }
 
-/// Build the report. See the module docs for the rules.
+/// Bonding-curve-only build (wrapper of [`build_solana_wallet_ledger_venues`]).
 pub fn build_solana_wallet_ledger_with_options(
     wallet: &SolanaPubkey,
     txs: &[RawSolanaTransaction],
     decoder: &BondingCurveBuyDecoder,
+    options: LedgerOptions,
+) -> Result<SolanaWalletLedgerReport, SolanaWalletLedgerError> {
+    build_solana_wallet_ledger_venues(
+        wallet,
+        txs,
+        &LedgerDecoders {
+            curve: decoder,
+            amm: None,
+        },
+        options,
+    )
+}
+
+/// Build the report over both venues. See the module docs for the rules.
+pub fn build_solana_wallet_ledger_venues(
+    wallet: &SolanaPubkey,
+    txs: &[RawSolanaTransaction],
+    decoders: &LedgerDecoders<'_>,
     options: LedgerOptions,
 ) -> Result<SolanaWalletLedgerReport, SolanaWalletLedgerError> {
     let wsol = wsol_mint()?;
@@ -774,6 +1154,7 @@ pub fn build_solana_wallet_ledger_with_options(
         records: Vec::new(),
         diag: LedgerDiagnostics::default(),
         counts: TradeCounts::default(),
+        variant_counts: BTreeMap::new(),
         unknown_lots: 0,
         failed_fees: 0,
         failed_fee_txs: 0,
@@ -805,9 +1186,14 @@ pub fn build_solana_wallet_ledger_with_options(
                 b.diag.failed_transactions += 1;
                 let own_trade_instruction = tx.instructions.iter().any(|ix| {
                     matches!(
-                        decoder.classify(ix, tx.slot, tx.transaction_index),
+                        decoders.curve.classify(ix, tx.slot, tx.transaction_index),
                         PumpInstructionOutcome::Trade(t) if t.user == *wallet
-                    )
+                    ) || decoders.amm.is_some_and(|amm| {
+                        matches!(
+                            amm.classify(ix, tx.slot, tx.transaction_index),
+                            PumpAmmInstructionOutcome::Trade(t) if t.user == *wallet
+                        )
+                    })
                 });
                 if tx.fee_payer == *wallet && own_trade_instruction {
                     b.failed_fees =
@@ -816,10 +1202,11 @@ pub fn build_solana_wallet_ledger_with_options(
                 }
             }
             SolanaExecutionStatus::Succeeded => {
-                let w = classify_trades(tx, wallet, decoder, &wsol);
+                let w = classify_trades(tx, wallet, decoders, &wsol);
                 for t in &w.trades {
                     b.traded.insert(t.mint);
                 }
+                b.traded.extend(w.forward_mints.iter().copied());
                 work.push(w);
             }
         }
@@ -839,6 +1226,8 @@ impl Builder {
         let loc: Location = (tx.slot, tx.transaction_index);
         self.diag.malformed_trade_instructions += w.malformed_trades;
         self.diag.orphan_trade_events += w.orphans;
+        self.diag.router_forward_trades_not_attributed += w.router_forwards;
+        self.diag.quote_funded_elsewhere_trades += w.qfe_unbooked;
         let is_payer = tx.fee_payer == self.wallet;
 
         // §4 fee allocation over verified trades only (consideration known).
@@ -872,13 +1261,30 @@ impl Builder {
         let mut sell_proceeds: i128 = 0;
 
         for (i, t) in w.trades.iter().enumerate() {
+            let venue_counts = match t.venue {
+                Venue::BondingCurve => &mut self.counts.bonding_curve,
+                Venue::PumpAmm => &mut self.counts.pump_amm,
+            };
             match t.side {
-                TradeSide::Buy => self.counts.buys += 1,
-                TradeSide::Sell => self.counts.sells += 1,
+                TradeSide::Buy => {
+                    self.counts.buys += 1;
+                    venue_counts.buys += 1;
+                }
+                TradeSide::Sell => {
+                    self.counts.sells += 1;
+                    venue_counts.sells += 1;
+                }
             }
             match t.verification {
                 VariantVerification::FixtureVerified => self.counts.fixture_verified_variant += 1,
                 VariantVerification::IdlOnly => self.counts.idl_only_variant += 1,
+            }
+            self.variant_counts
+                .entry((t.venue, t.variant))
+                .or_insert((t.verification, 0))
+                .1 += 1;
+            if t.reversed_pool {
+                self.diag.reversed_pool_trades += 1;
             }
             self.traded.insert(t.mint);
             if let Some(ts) = t.timestamp {
@@ -939,8 +1345,14 @@ impl Builder {
                         UnknownReason::MalformedConsideration => {
                             self.counts.malformed_consideration += 1;
                         }
+                        UnknownReason::QuoteFundedByAnotherAccount => {
+                            self.counts.quote_funded_elsewhere += 1;
+                            self.diag.quote_funded_elsewhere_trades += 1;
+                        }
                         _ => {
-                            if t.mismatched {
+                            if t.unreconciled {
+                                self.counts.unreconciled += 1;
+                            } else if t.mismatched {
                                 self.counts.mismatched += 1;
                             } else {
                                 self.counts.unpaired += 1;
@@ -986,6 +1398,7 @@ impl Builder {
 
         // §6 inventory continuity.
         let deltas = solana_owner_net_deltas(&tx.token_balance_changes)?;
+        let has_amm_trade = w.trades.iter().any(|t| t.venue == Venue::PumpAmm);
         let mut candidates: BTreeSet<SolanaPubkey> = w.trades.iter().map(|t| t.mint).collect();
         for ((mint, owner), delta) in &deltas.deltas {
             if *owner != self.wallet || *delta == 0 {
@@ -993,6 +1406,9 @@ impl Builder {
             }
             if self.traded.contains(mint) {
                 candidates.insert(*mint);
+            } else if *mint == WRAPPED_SOL_MINT && has_amm_trade {
+                // The quote asset of a PumpSwap trade; its flow is part of
+                // the native residual above, not an out-of-scope token.
             } else {
                 self.diag.out_of_scope_token_movements += 1;
             }
@@ -1033,12 +1449,23 @@ impl Builder {
         }
 
         // §5 native residual (diagnostic only).
-        let wallet_delta: i128 = tx
+        let mut wallet_delta: i128 = tx
             .native_balance_changes
             .iter()
             .filter(|c| c.account == self.wallet)
             .map(|c| c.delta())
             .sum();
+        // ADR-012 §3: PumpSwap pays in wSOL; a wSOL account that survives the
+        // transaction holds part of the SOL flow as a token delta. Only
+        // transactions with a PumpSwap trade of the wallet include it, so
+        // the bonding-curve residual stays exactly as before.
+        if w.trades.iter().any(|t| t.venue == Venue::PumpAmm) {
+            wallet_delta = checked_add_i(
+                wallet_delta,
+                wsol_token_delta(&tx.token_balance_changes, &self.wallet),
+                "wsol delta",
+            )?;
+        }
         let fee = if is_payer {
             i128::from(tx.fee_lamports)
         } else {
@@ -1158,6 +1585,18 @@ impl Builder {
             quote_unit: QuoteUnit::Lamports,
             wallet: self.wallet,
             trades: self.counts,
+            variant_trades: self
+                .variant_counts
+                .iter()
+                .map(
+                    |((venue, variant), (verification, trades))| VariantTradeCount {
+                        venue: *venue,
+                        variant,
+                        verification: *verification,
+                        trades: *trades,
+                    },
+                )
+                .collect(),
             distinct_mints_traded: u64::try_from(self.traded.len()).unwrap_or(u64::MAX),
             episodes: self.records,
             closed_episodes_known: closed_known,
