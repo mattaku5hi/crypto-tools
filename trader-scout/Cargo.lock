@@ -3224,6 +3224,8 @@ dependencies = [
  "async-trait",
  "bs58",
  "futures",
+ "proptest",
+ "scout-analytics",
  "scout-api",
  "scout-core",
  "scout-dex-solana",

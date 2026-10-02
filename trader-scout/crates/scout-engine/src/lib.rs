@@ -27,6 +27,7 @@
 mod buyer_intersect;
 mod solana_buy_qualification;
 mod solana_buyer_intersect;
+mod solana_wallet_ledger;
 
 pub use buyer_intersect::{BuyerIntersectReport, BuyerMatch, run_buyer_intersect};
 pub use scout_dex_solana::{PumpTradeVariant, VariantVerification};
@@ -40,4 +41,10 @@ pub use solana_buy_qualification::{
 pub use solana_buyer_intersect::{
     SolanaBuyerIntersectReport, SolanaProtocolScope, SolanaTokenScanSummary,
     run_solana_buyer_intersect, run_solana_buyer_intersect_with_policy, sanitize_provider_text,
+};
+pub use solana_wallet_ledger::{
+    ActivityMetrics, EpisodeOutcome, EpisodeRecord, LedgerDiagnostics, OpenPosition, QuoteUnit,
+    SOLANA_WALLET_LEDGER_VERSION, SolanaWalletLedgerError, SolanaWalletLedgerReport, TradeCounts,
+    UnknownReason, WSOL_MINT, allocate_fee_proportionally, build_solana_wallet_ledger,
+    lamports_to_money, money_to_lamports_trunc,
 };

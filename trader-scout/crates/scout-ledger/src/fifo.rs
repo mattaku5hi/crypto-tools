@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use scout_core::{AssetKey, Money, RawAmount, ScoutError};
 
-use crate::lot::{BasisStatus, Lot, LotProvenance};
+use crate::lot::{BasisStatus, Lot, LotProvenance, QuoteUnit};
 
 /// Result of consuming lots to cover a disposal (sale).
 #[derive(Debug, Clone)]
@@ -30,6 +30,9 @@ pub struct DisposalResult {
 /// asset's lot queue for testability.
 #[derive(Debug, Clone, Default)]
 pub struct Ledger {
+    /// Unit in which every `Money` of this ledger is denominated
+    /// (ADR-010: ledgers of different units must never be mixed).
+    quote_unit: QuoteUnit,
     /// FIFO queue of lots, oldest-first by `acquisition_sequence`.
     /// `BTreeMap` keyed by sequence number keeps consumption order
     /// deterministic regardless of how lots were inserted (workspace
@@ -44,6 +47,37 @@ impl Ledger {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A ledger whose `Money` values are denominated in `quote_unit`.
+    #[must_use]
+    pub fn with_quote_unit(quote_unit: QuoteUnit) -> Self {
+        Self {
+            quote_unit,
+            ..Self::default()
+        }
+    }
+
+    /// The unit tag of this ledger's `Money` values.
+    #[must_use]
+    pub fn quote_unit(&self) -> QuoteUnit {
+        self.quote_unit
+    }
+
+    /// Open (non-exhausted) lots in FIFO order.
+    pub fn open_lots(&self) -> impl Iterator<Item = &Lot> {
+        self.lots.values().filter(|lot| !lot.is_exhausted())
+    }
+
+    /// Total remaining amount of open lots whose basis is unknown.
+    /// `None` on `RawAmount` overflow (never silently zero).
+    #[must_use]
+    pub fn open_unknown_basis_amount(&self) -> Option<RawAmount> {
+        self.open_lots()
+            .filter(|lot| matches!(lot.basis_status, BasisStatus::Unknown { .. }))
+            .try_fold(RawAmount::ZERO, |acc, lot| {
+                acc.checked_add(&lot.remaining_amount)
+            })
     }
 
     /// Record a new acquisition lot. `basis` is the fully capitalized

@@ -2,6 +2,20 @@
 
 use scout_core::{AssetKey, Money, RawAmount, TrustLevel};
 
+/// The unit all `Money` values of one [`crate::Ledger`] are denominated
+/// in. A tag, not a conversion: ledgers of different units are never
+/// merged implicitly (ADR-010 §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuoteUnit {
+    /// The report currency of ADR-001 (USD by default): `Money` is a
+    /// decimal amount at `MONEY_SCALE`.
+    #[default]
+    ReportCurrency,
+    /// Solana lamports: one lamport is `10^MONEY_SCALE` scaled `Money`
+    /// units, so no rounding occurs (ADR-010 §1).
+    Lamports,
+}
+
 /// Whether a lot's acquisition cost is known or must be treated as
 /// unknown (e.g. an external transfer with no provable lineage, or
 /// Tier 2 unverified data admitted via `Ledger::acquire_unverified`).
