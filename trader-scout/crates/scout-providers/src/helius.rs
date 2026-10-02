@@ -333,6 +333,24 @@ impl HeliusProvider {
         self
     }
 
+    /// Sets the total HTTP-attempt budget for this provider instance
+    /// (`None` = unlimited, the default). Every attempt counts,
+    /// including retries, across all `scan()` calls and tokens. When
+    /// spent, calls fail terminally with a `scout_rpc::RequestBudgetExhausted`
+    /// inside `ProviderError::Other`.
+    #[must_use]
+    pub fn with_max_total_requests(mut self, limit: Option<u64>) -> Self {
+        self.client = self.client.with_max_total_requests(limit);
+        self
+    }
+
+    /// HTTP attempts started so far (including retries), whether or not
+    /// a budget is set.
+    #[must_use]
+    pub fn total_requests_made(&self) -> u64 {
+        self.client.total_requests_made()
+    }
+
     /// Sets the history direction (default `ScanOrder::OldestFirst`).
     /// See `ScanOrder` for what `truncated` means per order and for the
     /// requirement that consumers sort canonically before ledger use.

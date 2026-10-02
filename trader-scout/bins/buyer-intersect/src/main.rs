@@ -13,9 +13,23 @@
 //! Exit codes (ADR-005): 0 complete within declared scope; 2 argument
 //! error; 3 incomplete coverage (truncated, failed token scan,
 //! malformed or unknown-discriminator bonding-curve instruction,
-//! unverified-variant buys, ...) even though matches are
-//! still printed; 4 infrastructure/configuration; 130 cancelled; 141
-//! output pipe closed.
+//! unverified-variant buys, request budget exhausted, ...) even though
+//! matches are still printed; 4 infrastructure/configuration; 130
+//! cancelled; 141 output pipe closed.
+//!
+//! `--max-requests N` (N >= 1) bounds the TOTAL HTTP attempts of the run
+//! (retries included, one provider instance shared by all tokens). Exit
+//! decision: exhausting a USER-chosen budget is incomplete coverage
+//! (exit 3), not infrastructure failure (exit 4): the tool worked, the
+//! requested scan contract was not met. Tokens whose scan hit the limit
+//! are `failed` in `run_summary` (unknown, never zero) and the run is
+//! `partial`. If the budget ran out before ANY transaction was seen the
+//! engine yields no report; the run still exits 3 with the diagnostic
+//! and no records on stdout (no `run_summary` footer, so a downstream
+//! consumer cannot take it for complete). A terminal `RateLimited`
+//! (Retry-After above the transport cap) and `ResponseTooLarge` before
+//! any data are infrastructure: exit 4. Requests used are always
+//! printed (`requests_made` in `run_meta`, stderr summary line).
 #![forbid(unsafe_code)]
 #![cfg_attr(
     test,
@@ -40,11 +54,16 @@ use scout_engine::{
     run_solana_buyer_intersect, sanitize_provider_text,
 };
 use scout_providers::{HeliusProvider, UnconfiguredProvider};
+use scout_rpc::{DEFAULT_MAX_RETRY_AFTER, RequestBudgetExhausted};
 use tokio_util::sync::CancellationToken;
 
 mod output;
 
+use output::RunBudget;
+
 const HELIUS_KEY_ENV: &str = "SCOUT_HELIUS_API_KEY";
+/// Test-only: replaces the Helius endpoint URL (offline wiremock tests).
+const ENDPOINT_OVERRIDE_ENV: &str = "SCOUT_BUYER_INTERSECT_ENDPOINT";
 const HELIUS_TIMEOUT_MS: u64 = 30_000;
 const HELIUS_MAX_ATTEMPTS: u32 = 3;
 
@@ -67,14 +86,21 @@ struct Args {
     /// Provider page budget PER INPUT TOKEN (Solana/Helius only; 100
     /// transactions per page in full mode). When a token's history needs
     /// more pages the scan is truncated, reported as partial, and the run
-    /// exits 3. This is NOT the spec's --max-requests: retries are not
-    /// counted against it (not implemented). Ignored for EVM input.
+    /// exits 3. This is NOT --max-requests: retries are not
+    /// counted against it (use --max-requests for that). Ignored for EVM
+    /// input.
     #[arg(
         long,
         default_value_t = 10,
         value_parser = clap::value_parser!(u32).range(1..=200)
     )]
     max_pages_per_token: u32,
+
+    /// Total HTTP request budget for the whole run (all tokens, retries
+    /// included), N >= 1. Absent = unlimited (requests are still counted
+    /// and reported). When exhausted the run is partial and exits 3.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    max_requests: Option<u64>,
 }
 
 fn main() -> ExitCode {
@@ -193,24 +219,86 @@ fn run_legacy(
     }
 }
 
-/// Map a `ProviderError` to exit 4 with a redacted message. Every
-/// current variant is infrastructure/credentials/capability (ADR-005);
-/// the wildcard exists because `ProviderError` is `#[non_exhaustive]`.
-/// Text is sanitized (API-key query values, control characters) and, if
-/// given, the literal key is replaced too: transport errors can embed
-/// the request URL.
+/// Map a `ProviderError` to an exit code with a redacted message.
+/// Request-budget exhaustion with nothing observed is exit 3 (user-chosen
+/// bound hit: incomplete coverage, see module docs); everything else is
+/// infrastructure/credentials/capability, exit 4 (ADR-005; the wildcard
+/// exists because `ProviderError` is `#[non_exhaustive]`). Text is
+/// sanitized (API-key query values, control characters) and, if given,
+/// the literal key is replaced too: transport errors can embed the
+/// request URL.
 fn provider_error_exit(err: &ProviderError, secret: Option<&str>) -> ExitCode {
-    let mut text = sanitize_provider_text(&err.to_string());
-    if let Some(secret) = secret.filter(|s| !s.is_empty()) {
-        text = text.replace(secret, "<redacted>");
+    let redact_text = |raw: &str| {
+        let mut text = sanitize_provider_text(raw);
+        if let Some(secret) = secret.filter(|s| !s.is_empty()) {
+            text = text.replace(secret, "<redacted>");
+        }
+        text
+    };
+    if let ProviderError::Other(inner) = err
+        && let Some(exhausted) = inner.downcast_ref::<RequestBudgetExhausted>()
+    {
+        eprintln!(
+            "buyer-intersect: request budget exhausted after {} requests (limit {}); \
+             no transactions were observed, nothing to report (IncompleteCoverage, exit 3)",
+            exhausted.limit, exhausted.limit
+        );
+        return ExitCode::from(3);
     }
     match err {
         ProviderError::ConfigurationRequired { .. } => {
-            eprintln!("buyer-intersect: {text}");
+            eprintln!("buyer-intersect: {}", redact_text(&err.to_string()));
         }
-        _ => eprintln!("buyer-intersect: provider error: {text}"),
+        ProviderError::RateLimited { retry_after } => {
+            eprintln!("buyer-intersect: {}", rate_limited_text(*retry_after));
+        }
+        _ => eprintln!(
+            "buyer-intersect: provider error: {}",
+            redact_text(&err.to_string())
+        ),
     }
     ExitCode::from(4)
+}
+
+/// Terminal `RateLimited`: the transport refused to wait out a
+/// `Retry-After` above its cap (`DEFAULT_MAX_RETRY_AFTER`).
+fn rate_limited_text(retry_after: Option<std::time::Duration>) -> String {
+    let cap = DEFAULT_MAX_RETRY_AFTER.as_secs();
+    match retry_after {
+        Some(d) => format!(
+            "rate limited; server asked to retry after {}s (cap {cap}s)",
+            d.as_secs()
+        ),
+        None => "rate limited; server gave no Retry-After".to_string(),
+    }
+}
+
+fn limit_text(limit: Option<u64>) -> String {
+    limit.map_or_else(|| "unlimited".to_string(), |n| n.to_string())
+}
+
+/// Per-token errors are stored as sanitized text; the transport's
+/// `RequestBudgetExhausted` Display is the only source of this phrase.
+fn is_budget_exhausted_text(text: &str) -> bool {
+    text.contains("request budget exhausted")
+}
+
+fn build_provider(
+    api_key: &str,
+    max_pages: NonZeroU32,
+    max_requests: Option<u64>,
+) -> Result<HeliusProvider, ProviderError> {
+    let provider = match std::env::var(ENDPOINT_OVERRIDE_ENV) {
+        Ok(url) if !url.is_empty() => HeliusProvider::new_with_endpoint(
+            scout_rpc::RpcEndpoint::new(url),
+            HELIUS_TIMEOUT_MS,
+            HELIUS_MAX_ATTEMPTS,
+        )?,
+        _ => HeliusProvider::new(api_key, HELIUS_TIMEOUT_MS, HELIUS_MAX_ATTEMPTS)?,
+    };
+    Ok(provider
+        .with_max_pages(max_pages)
+        .with_max_total_requests(max_requests))
 }
 
 fn run_solana(
@@ -223,8 +311,10 @@ fn run_solana(
         eprintln!("buyer-intersect: --max-pages-per-token must be at least 1");
         return ExitCode::from(2);
     };
-    let provider = match HeliusProvider::new(api_key, HELIUS_TIMEOUT_MS, HELIUS_MAX_ATTEMPTS) {
-        Ok(provider) => provider.with_max_pages(max_pages),
+    // ONE provider for the whole run: the request budget and counter are
+    // shared by every token's scan.
+    let provider = match build_provider(api_key, max_pages, args.max_requests) {
+        Ok(provider) => provider,
         Err(err) => return provider_error_exit(&err, Some(api_key)),
     };
     let result = rt.block_on(run_solana_buyer_intersect(
@@ -233,12 +323,24 @@ fn run_solana(
         args.min_token_hits,
         CancellationToken::new(),
     ));
+    let requests_made = provider.total_requests_made();
     let report = match result {
         Ok(report) => report,
-        Err(err) => return provider_error_exit(&err, Some(api_key)),
+        Err(err) => {
+            eprintln!(
+                "buyer-intersect: requests_made={requests_made} max_requests={}",
+                limit_text(args.max_requests)
+            );
+            return provider_error_exit(&err, Some(api_key));
+        }
     };
 
-    print_solana_diagnostics(&report, api_key, args.max_pages_per_token);
+    let budget = RunBudget {
+        max_pages_per_token: args.max_pages_per_token,
+        max_requests: args.max_requests,
+        requests_made,
+    };
+    print_solana_diagnostics(&report, api_key, budget);
     let incomplete = report.is_coverage_incomplete();
     let captured_at = scout_app::now_utc_rfc3339();
     let outcome = match emit_solana_matches(
@@ -247,7 +349,7 @@ fn run_solana(
         &args.format,
         incomplete,
         &captured_at,
-        args.max_pages_per_token,
+        budget,
         api_key,
     ) {
         Ok(outcome) => outcome,
@@ -275,11 +377,7 @@ fn redact(text: &str, secret: &str) -> String {
 /// Scope, coverage and diagnostics block on stderr (stdout stays the
 /// single selected result format, CLI.md §2). Unknown is never printed
 /// as zero: failed tokens say `scan failed`, not `0 transactions`.
-fn print_solana_diagnostics(
-    report: &SolanaBuyerIntersectReport,
-    api_key: &str,
-    max_pages_per_token: u32,
-) {
+fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, budget: RunBudget) {
     let scope = &report.scope;
     eprintln!("buyer-intersect: protocol scope (Solana mainnet):");
     eprintln!("  recognized: {}", scope.recognized);
@@ -289,8 +387,14 @@ fn print_solana_diagnostics(
         scope.program_id, scope.idl_commit, scope.idl_sha256, scope.qualification_version
     );
     eprintln!(
-        "  budget: max_pages_per_token={max_pages_per_token} (provider pages per input token, \
-         100 txs/page; retries are not counted)"
+        "  budget: max_pages_per_token={} (provider pages per input token, \
+         100 txs/page; retries are not counted)",
+        budget.max_pages_per_token
+    );
+    eprintln!(
+        "  requests_made={} max_requests={} (total HTTP attempts, retries included)",
+        budget.requests_made,
+        limit_text(budget.max_requests)
     );
     eprintln!("  recognized trade variants (IDL name, side, verification):");
     for (name, side, status) in SolanaProtocolScope::variants() {
@@ -372,6 +476,18 @@ fn print_solana_diagnostics(
     for sample in &report.malformed_samples {
         eprintln!("  malformed sample: {}", redact(sample, api_key));
     }
+    if let Some(limit) = budget.max_requests
+        && report
+            .per_token
+            .iter()
+            .any(|t| t.error.as_deref().is_some_and(is_budget_exhausted_text))
+    {
+        eprintln!(
+            "buyer-intersect: request budget exhausted after {} requests (limit {limit}); \
+             unscanned or partially scanned tokens are marked failed, results are incomplete",
+            budget.requests_made
+        );
+    }
     let reasons = report.incomplete_reasons();
     if reasons.is_empty() {
         eprintln!(
@@ -416,7 +532,7 @@ fn emit_solana_matches(
     format: &str,
     incomplete: bool,
     captured_at: &str,
-    max_pages_per_token: u32,
+    budget: RunBudget,
     api_key: &str,
 ) -> Result<WriteOutcome, String> {
     let lines: Vec<String> = if format == "jsonl" {
@@ -426,7 +542,7 @@ fn emit_solana_matches(
             captured_at,
             report,
             input_tokens,
-            max_pages_per_token,
+            budget,
             incomplete,
             &|text| redact(text, api_key),
         )?

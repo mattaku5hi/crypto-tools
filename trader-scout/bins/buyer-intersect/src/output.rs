@@ -56,11 +56,24 @@ pub struct ScopeDto {
     pub variants: Vec<VariantDto>,
 }
 
+/// Run-level budget inputs and measured usage, passed to the renderers.
+#[derive(Debug, Clone, Copy)]
+pub struct RunBudget {
+    pub max_pages_per_token: u32,
+    /// `--max-requests`; `None` = unlimited.
+    pub max_requests: Option<u64>,
+    /// HTTP attempts actually made (retries included).
+    pub requests_made: u64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct BudgetDto {
     /// Provider pages requested per input token (`--max-pages-per-token`).
-    /// Not the spec's `--max-requests` (retries are not counted).
+    /// Retries are not counted against it.
     pub max_pages_per_token: u32,
+    /// Total HTTP attempts allowed (`--max-requests`, retries included);
+    /// `null` = unlimited.
+    pub max_requests: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,6 +84,9 @@ pub struct RunMetaRecord {
     pub captured_at: String,
     pub scope: ScopeDto,
     pub budget: BudgetDto,
+    /// Measured HTTP attempts for the run (retries included). Always
+    /// present, also when no limit was set.
+    pub requests_made: u64,
     pub input_tokens: Vec<AssetDto>,
     pub input_token_count: usize,
     pub min_token_hits: usize,
@@ -155,7 +171,7 @@ pub fn run_meta_record(
     captured_at: &str,
     report: &SolanaBuyerIntersectReport,
     input_tokens: &[AssetKey],
-    max_pages_per_token: u32,
+    budget: RunBudget,
 ) -> Result<RunMetaRecord, String> {
     let scope: &SolanaProtocolScope = &report.scope;
     Ok(RunMetaRecord {
@@ -181,8 +197,10 @@ pub fn run_meta_record(
                 .collect(),
         },
         budget: BudgetDto {
-            max_pages_per_token,
+            max_pages_per_token: budget.max_pages_per_token,
+            max_requests: budget.max_requests,
         },
+        requests_made: budget.requests_made,
         input_tokens: input_tokens
             .iter()
             .map(asset_dto)
@@ -264,7 +282,7 @@ pub fn solana_jsonl_lines(
     captured_at: &str,
     report: &SolanaBuyerIntersectReport,
     input_tokens: &[AssetKey],
-    max_pages_per_token: u32,
+    budget: RunBudget,
     incomplete: bool,
     redact: &dyn Fn(&str) -> String,
 ) -> Result<Vec<String>, String> {
@@ -275,7 +293,7 @@ pub fn solana_jsonl_lines(
         captured_at,
         report,
         input_tokens,
-        max_pages_per_token,
+        budget,
     )?))?);
     for m in &report.base.matches {
         lines.push(ser(serde_json::to_string(&buyer_match_record(m)?))?);
@@ -357,7 +375,11 @@ mod tests {
             "2026-10-02T12:34:56Z",
             &r,
             &tokens,
-            25,
+            RunBudget {
+                max_pages_per_token: 25,
+                max_requests: Some(9),
+                requests_made: 7,
+            },
             incomplete,
             &|t| t.replace("SECRET99", "<redacted>"),
         )
@@ -393,6 +415,8 @@ mod tests {
         assert_eq!(meta["run_id"], "run-1");
         assert_eq!(meta["captured_at"], "2026-10-02T12:34:56Z");
         assert_eq!(meta["budget"]["max_pages_per_token"], 25);
+        assert_eq!(meta["budget"]["max_requests"], 9);
+        assert_eq!(meta["requests_made"], 7);
         assert_eq!(meta["input_token_count"], 2);
         assert_eq!(meta["min_token_hits"], 2);
         assert_eq!(meta["input_tokens"][0]["token"], MINT_A);

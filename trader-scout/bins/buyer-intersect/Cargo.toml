@@ -15,6 +15,7 @@ scout-app.workspace = true
 scout-core.workspace = true
 scout-engine.workspace = true
 scout-providers.workspace = true
+scout-rpc.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -22,3 +23,7 @@ bs58.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 
+
+[dev-dependencies]
+wiremock.workspace = true
+serde_json.workspace = true

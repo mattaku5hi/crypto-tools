@@ -16,7 +16,18 @@
 //! `SCOUT_CAPTURE_ENDPOINT` replaces the endpoint URL (used by the
 //! offline wiremock tests).
 //!
-//! Exit codes: 0 ok; 2 argument error; 4 configuration/infrastructure.
+//! Exit codes: 0 ok; 2 argument error; 3 incomplete (request budget
+//! exhausted); 4 configuration/infrastructure.
+//!
+//! `--max-requests N` (N >= 1) bounds the TOTAL HTTP attempts of the
+//! run, retries included (absent = unlimited, still counted and printed
+//! on stderr as `requests_made`). Exhausting a user-chosen budget is
+//! incomplete coverage (exit 3), not infrastructure failure (exit 4):
+//! pages fetched before the limit are still summarized and, with
+//! `--out`, written with `incomplete` set in the fixture (never
+//! presented as a complete capture). With zero pages nothing is
+//! written. A terminal `RateLimited` (Retry-After above the transport
+//! cap) or `ResponseTooLarge` is exit 4.
 //!
 //! Bounds: at most 10 sequential pages of 100 transactions. NOTE:
 //! `scout-rpc` does not bound response body size (only the 30 s request
@@ -38,10 +49,11 @@ use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
+use scout_api::ProviderError;
 use scout_core::RawSolanaInstruction;
 use scout_dex_solana::{PumpInstructionOutcome, classify_pump_instruction, hex8};
 use scout_engine::sanitize_provider_text;
-use scout_rpc::{RpcClient, RpcEndpoint};
+use scout_rpc::{DEFAULT_MAX_RETRY_AFTER, RequestBudgetExhausted, RpcClient, RpcEndpoint};
 use serde_json::{Value, json};
 
 const HELIUS_KEY_ENV: &str = "SCOUT_HELIUS_API_KEY";
@@ -94,6 +106,24 @@ struct Args {
     /// transactions.
     #[arg(long, value_delimiter = ',')]
     keep_signatures: Vec<String>,
+
+    /// Total HTTP request budget for the run (retries included), N >= 1.
+    /// Absent = unlimited (requests are still counted and reported).
+    /// When exhausted the capture is incomplete and the exit code is 3.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    max_requests: Option<u64>,
+}
+
+/// Why `run` failed.
+enum RunError {
+    Provider(ProviderError),
+    Other(String),
+}
+
+impl From<String> for RunError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
 }
 
 fn main() -> ExitCode {
@@ -120,12 +150,35 @@ fn main() -> ExitCode {
         }
     };
     match rt.block_on(run(&args, &key)) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
+        Ok(Completion::Complete) => ExitCode::SUCCESS,
+        Ok(Completion::BudgetExhausted) => ExitCode::from(3),
+        Err(RunError::Other(message)) => {
             eprintln!("scout-capture: {}", redact(&message, &key));
             ExitCode::from(4)
         }
+        Err(RunError::Provider(err)) => {
+            let text = match &err {
+                ProviderError::RateLimited {
+                    retry_after: Some(d),
+                } => format!(
+                    "rate limited; server asked to retry after {}s (cap {}s)",
+                    d.as_secs(),
+                    DEFAULT_MAX_RETRY_AFTER.as_secs()
+                ),
+                ProviderError::RateLimited { retry_after: None } => {
+                    "rate limited; server gave no Retry-After".to_string()
+                }
+                other => other.to_string(),
+            };
+            eprintln!("scout-capture: {}", redact(&text, &key));
+            ExitCode::from(4)
+        }
     }
+}
+
+enum Completion {
+    Complete,
+    BudgetExhausted,
 }
 
 fn redact(raw: &str, key: &str) -> String {
@@ -137,15 +190,29 @@ fn redact(raw: &str, key: &str) -> String {
     }
 }
 
-async fn run(args: &Args, key: &str) -> Result<(), String> {
+async fn run(args: &Args, key: &str) -> Result<Completion, RunError> {
     let endpoint = match std::env::var(ENDPOINT_OVERRIDE_ENV) {
         Ok(url) if !url.is_empty() => RpcEndpoint::new(url),
         _ => RpcEndpoint::new(format!("https://mainnet.helius-rpc.com/?api-key={key}")),
     };
-    let client = RpcClient::new(endpoint, TIMEOUT_MS, MAX_ATTEMPTS).map_err(|e| e.to_string())?;
+    let client = RpcClient::new(endpoint, TIMEOUT_MS, MAX_ATTEMPTS)
+        .map_err(RunError::Provider)?
+        .with_max_total_requests(args.max_requests);
+    let result = capture(args, key, &client).await;
+    // Always report measured cost, also on failure.
+    eprintln!(
+        "scout-capture: requests_made={} max_requests={}",
+        client.total_requests_made(),
+        args.max_requests
+            .map_or_else(|| "unlimited".to_string(), |n| n.to_string())
+    );
+    result
+}
 
+async fn capture(args: &Args, key: &str, client: &RpcClient) -> Result<Completion, RunError> {
     let mut pages: Vec<Value> = Vec::new();
     let mut token: Option<String> = None;
+    let mut budget_limit: Option<u64> = None;
     for _ in 0..args.max_pages.min(MAX_PAGES_HARD) {
         let mut options = json!({
             "transactionDetails": "full",
@@ -155,10 +222,18 @@ async fn run(args: &Args, key: &str) -> Result<(), String> {
         if let (Some(t), Some(map)) = (token.as_deref(), options.as_object_mut()) {
             map.insert("paginationToken".to_string(), t.into());
         }
-        let result: Value = client
-            .call(METHOD, json!([args.address, options]))
-            .await
-            .map_err(|e| e.to_string())?;
+        let result: Value = match client.call(METHOD, json!([args.address, options])).await {
+            Ok(result) => result,
+            Err(ProviderError::Other(inner))
+                if inner.downcast_ref::<RequestBudgetExhausted>().is_some() =>
+            {
+                budget_limit = inner
+                    .downcast_ref::<RequestBudgetExhausted>()
+                    .map(|e| e.limit);
+                break;
+            }
+            Err(err) => return Err(RunError::Provider(err)),
+        };
         token = result
             .get("paginationToken")
             .and_then(Value::as_str)
@@ -167,6 +242,19 @@ async fn run(args: &Args, key: &str) -> Result<(), String> {
         if token.is_none() {
             break;
         }
+    }
+
+    if let Some(limit) = budget_limit {
+        eprintln!(
+            "scout-capture: request budget exhausted after {} requests (limit {limit}); \
+             capture is incomplete ({} page(s) fetched)",
+            client.total_requests_made(),
+            pages.len()
+        );
+    }
+
+    if pages.is_empty() && budget_limit.is_some() {
+        return Ok(Completion::BudgetExhausted);
     }
 
     if let Some(path) = &args.out {
@@ -183,13 +271,20 @@ async fn run(args: &Args, key: &str) -> Result<(), String> {
                 "sort": args.sort.as_str(),
                 "max_pages": args.max_pages,
                 "method": METHOD,
+                "max_requests": args.max_requests,
             },
+            "requests_made": client.total_requests_made(),
+            "incomplete": budget_limit.map(|limit| format!(
+                "request budget exhausted (limit {limit}); pages after the last one were not fetched"
+            )),
             "pages": written_pages,
         });
         let mut text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
         text.push('\n');
         if text.contains(key) {
-            return Err("refusing to write: output would contain the API key".to_string());
+            return Err("refusing to write: output would contain the API key"
+                .to_string()
+                .into());
         }
         std::fs::write(path, text).map_err(|e| format!("could not write {path}: {e}"))?;
     }
@@ -197,7 +292,11 @@ async fn run(args: &Args, key: &str) -> Result<(), String> {
     let summary = summarize(&pages);
     // Defense in depth: the summary is built from provider data.
     print!("{}", redact_keep_text(&summary, key));
-    Ok(())
+    Ok(if budget_limit.is_some() {
+        Completion::BudgetExhausted
+    } else {
+        Completion::Complete
+    })
 }
 
 /// Replace the literal key without truncating (summary lines are

@@ -248,3 +248,87 @@ async fn written_file_never_contains_key() {
     assert!(!std::fs::read_to_string(&path).unwrap().contains(KEY));
     assert!(!out.stdout.contains(KEY) && !out.stderr.contains(KEY));
 }
+
+fn paged_ok(next: Option<&str>) -> Value {
+    json!({"jsonrpc": "2.0", "id": 1,
+        "result": {"data": [simple_tx("sigA")], "paginationToken": next}})
+}
+
+#[tokio::test]
+async fn budget_exhausted_mid_capture_is_exit_3_and_marked_incomplete() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(paged_ok(Some("more"))))
+        .mount(&server)
+        .await;
+    let path = tmp("budget.json");
+    let out = run(
+        Some(server.uri()),
+        Some(KEY),
+        args(&["--max-pages", "5", "--max-requests", "2", "--out", &path]),
+    )
+    .await;
+    assert_eq!(out.code, 3, "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("request budget exhausted after 2 requests (limit 2)"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("requests_made=2"), "{}", out.stderr);
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(doc["pages"].as_array().unwrap().len(), 2);
+    assert_eq!(doc["requests_made"], 2);
+    assert!(
+        doc["incomplete"]
+            .as_str()
+            .unwrap()
+            .contains("budget exhausted")
+    );
+    assert!(!out.stdout.contains(KEY) && !out.stderr.contains(KEY));
+}
+
+#[tokio::test]
+async fn unlimited_capture_reports_requests_made_and_not_incomplete() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(paged_ok(None)))
+        .mount(&server)
+        .await;
+    let path = tmp("complete.json");
+    let out = run(Some(server.uri()), Some(KEY), args(&["--out", &path])).await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("requests_made=1 max_requests=unlimited"),
+        "{}",
+        out.stderr
+    );
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(doc["incomplete"].is_null());
+    assert_eq!(doc["requests_made"], 1);
+}
+
+#[tokio::test]
+async fn long_retry_after_is_exit_4_with_message_and_no_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "3600"))
+        .mount(&server)
+        .await;
+    let out = run(Some(server.uri()), Some(KEY), args(&[])).await;
+    assert_eq!(out.code, 4, "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("rate limited; server asked to retry after 3600s (cap 60s)"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stdout.contains(KEY) && !out.stderr.contains(KEY));
+}
+
+#[tokio::test]
+async fn max_requests_zero_is_usage_error_exit_2() {
+    let out = run(None, Some(KEY), args(&["--max-requests", "0"])).await;
+    assert_eq!(out.code, 2, "{}", out.stderr);
+}
