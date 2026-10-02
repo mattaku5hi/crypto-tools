@@ -68,6 +68,25 @@ impl JitterSource for NoJitter {
     }
 }
 
+/// Boxed future returned by [`Sleeper::sleep`].
+pub type SleepFuture<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+
+/// Injectable wait between retry attempts, so tests can record the
+/// requested delays instead of really sleeping.
+pub trait Sleeper: Send + Sync {
+    fn sleep(&self, duration: Duration) -> SleepFuture<'_>;
+}
+
+/// Production sleeper: `tokio::time::sleep`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TokioSleeper;
+
+impl Sleeper for TokioSleeper {
+    fn sleep(&self, duration: Duration) -> SleepFuture<'_> {
+        Box::pin(tokio::time::sleep(duration))
+    }
+}
+
 /// Retry/backoff policy. All delays are whole milliseconds; doubling
 /// uses `saturating_mul` (never silently wraps or panics on overflow,
 /// per AGENTS.md invariant #7's checked-arithmetic discipline extended
