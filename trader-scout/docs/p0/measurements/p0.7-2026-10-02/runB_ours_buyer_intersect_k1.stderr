@@ -1,0 +1,33 @@
+buyer-intersect: protocol scope (Solana mainnet):
+  recognized: pump.fun bonding-curve buy via a FixtureVerified variant (program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P) with positive owner-keyed net token delta in the same transaction; IdlOnly buy variants are decoded but never enter the buyer set (reported as unverified, coverage incomplete)
+  NOT decoded: PumpSwap AMM, Raydium, Orca, Meteora and every other venue; buyer set is a lower bound for tokens that migrated off the bonding curve
+  program=6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P idl_commit=e0687ae9b7e064a0f54efc7297c65eecfbba3a8f idl_file_sha256=ffe966c42f1af41652ee753fe2f1e3f7cd4077d7e6f49faf3138959c8b56064b rule=pump-bonding-curve-buy/idl-e0687ae/v4
+  budget: max_pages_per_token=50 (provider pages per input token, 100 txs/page; retries are not counted)
+  recognized trade variants (IDL name, side, verification):
+    buy side=buy verification=FixtureVerified
+    buy_exact_sol_in side=buy verification=FixtureVerified
+    sell side=sell verification=FixtureVerified
+    buy_v2 side=buy verification=FixtureVerified
+    buy_exact_quote_in_v2 side=buy verification=FixtureVerified
+    sell_v2 side=sell verification=FixtureVerified
+  input_tokens(N)=8 min_token_hits(K)=1 matches=1280
+  token GAwhcphCqCv5bKHmCiN4VDdNWfbXJL4npmkc8L3Q9S9H: status=truncated txs_scanned=5000 qualified_buyers=37 decoded_buys=40 malformed=0 unknown_discriminator=0 unverified_variant_buys=none positive_delta_without_instruction=1433 failed_transactions=2530
+  token 9pJWJdpPebyANys45eetpemLJo8yTz4n5B9zbpYw9ZMr: status=truncated txs_scanned=5000 qualified_buyers=144 decoded_buys=172 malformed=0 unknown_discriminator=0 unverified_variant_buys=none positive_delta_without_instruction=133 failed_transactions=4634
+  token 7VertkgF9KLhxxJXHX6uaWuoYZTP9LdGj2bWmVXVpump: status=truncated txs_scanned=5000 qualified_buyers=242 decoded_buys=306 malformed=0 unknown_discriminator=0 unverified_variant_buys=none positive_delta_without_instruction=290 failed_transactions=4291
+  token CNohWHNTurS7PpB55czspwUJfpk9yy92uf1wXdweEGg9: status=truncated txs_scanned=5000 qualified_buyers=95 decoded_buys=105 malformed=0 unknown_discriminator=0 unverified_variant_buys=none positive_delta_without_instruction=54 failed_transactions=4803
+  token 8oMvxgcBJtDGNSc8kogCEEFxSvvi7x6jHRfSWaiWpump: status=truncated txs_scanned=5000 qualified_buyers=190 decoded_buys=275 malformed=0 unknown_discriminator=0 unverified_variant_buys=none positive_delta_without_instruction=230 failed_transactions=4278
+  token 458eEcXufhsLoS1NWa6donw9Yh9USfWMCtBmyFTypump: status=truncated txs_scanned=5000 qualified_buyers=322 decoded_buys=428 malformed=0 unknown_discriminator=0 unverified_variant_buys=none positive_delta_without_instruction=303 failed_transactions=4204
+  token HXxJdaQbrYRvwTAM8M8mUPyoRPvmyuUbPFBRkiAAMASS: status=truncated txs_scanned=5000 qualified_buyers=233 decoded_buys=289 malformed=0 unknown_discriminator=0 unverified_variant_buys=none positive_delta_without_instruction=161 failed_transactions=3461
+  token FFrRBPP9yWtSqnKjXXM9C77MBdLztfdgSnRE858zpump: status=truncated txs_scanned=5000 qualified_buyers=198 decoded_buys=273 malformed=0 unknown_discriminator=0 unverified_variant_buys=none positive_delta_without_instruction=344 failed_transactions=3218
+  totals: decoded_buys=1888 decoded_sells=1242 buys_without_positive_delta=17 unowned_balance_changes=0 malformed_instructions=0 failed_transactions=31419
+  program instructions: known_non_trade=3322 unknown_discriminator=0 unverified_variant_buys=none
+  decoded trades by variant: buy=1031 buy_exact_sol_in=322 sell=948 buy_v2=116 buy_exact_quote_in_v2=419 sell_v2=294
+buyer-intersect: status=partial (IncompleteCoverage, exit 3):
+  - token GAwhcphCqCv5bKHmCiN4VDdNWfbXJL4npmkc8L3Q9S9H: provider reported unconsumed pagination (truncated)
+  - token 9pJWJdpPebyANys45eetpemLJo8yTz4n5B9zbpYw9ZMr: provider reported unconsumed pagination (truncated)
+  - token 7VertkgF9KLhxxJXHX6uaWuoYZTP9LdGj2bWmVXVpump: provider reported unconsumed pagination (truncated)
+  - token CNohWHNTurS7PpB55czspwUJfpk9yy92uf1wXdweEGg9: provider reported unconsumed pagination (truncated)
+  - token 8oMvxgcBJtDGNSc8kogCEEFxSvvi7x6jHRfSWaiWpump: provider reported unconsumed pagination (truncated)
+  - token 458eEcXufhsLoS1NWa6donw9Yh9USfWMCtBmyFTypump: provider reported unconsumed pagination (truncated)
+  - token HXxJdaQbrYRvwTAM8M8mUPyoRPvmyuUbPFBRkiAAMASS: provider reported unconsumed pagination (truncated)
+  - token FFrRBPP9yWtSqnKjXXM9C77MBdLztfdgSnRE858zpump: provider reported unconsumed pagination (truncated)
