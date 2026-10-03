@@ -23,7 +23,7 @@
 //! of fixture `evm_robinhood_token_aiden_v4_2026-10-03.json`, each matching
 //! the PoolManager's ERC-20 `Transfer` deltas exactly; see
 //! `crates/scout-engine/tests/evm_uniswap_v4_robinhood.rs`), and so is the
-//! Robinhood Uniswap v3 factory's pool family (evidence:
+//! Robinhood Uniswap v3 and v2 factories' pool families (evidence:
 //! `crates/scout-engine/tests/evm_uniswap_v2v3_robinhood.rs`,
 //! `docs/p0/measurements/2026-10-04-uniswap-v2v3-robinhood-verification.md`).
 //! Everything else stays `IdlOnly`. `active_from_block` is `0` ("not
@@ -140,7 +140,7 @@ const fn dep_fixture_verified(
 /// where it reproduces every fixture pool of that chain.
 pub const UNISWAP_V3_CANONICAL_INIT_CODE_HASH: B256 =
     b256!("e34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54");
-/// Canonical Uniswap v2 pair init-code hash (not pinned on any chain yet).
+/// Canonical Uniswap v2 pair init-code hash (pinned for the Robinhood v2 factory: reproduces its 8 live pairs).
 pub const UNISWAP_V2_CANONICAL_INIT_CODE_HASH: B256 =
     b256!("96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f");
 
@@ -172,6 +172,20 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         ),
         UNISWAP_V3_CANONICAL_INIT_CODE_HASH,
     ),
+    // Uniswap v2 factory (developers.uniswap.org v2 deployments, Robinhood
+    // Factory; Router02 0x89e5db8b5aa49aa85ac63f691524311aeb649eba, fetched
+    // 2026-10-04). The canonical v2 init-code hash reproduces all 8 live
+    // pairs of the fixture (whose `getPair` records agree); FixtureVerified by
+    // the v2/v3 evidence test.
+    with_init_code_hash(
+        dep_fixture_verified(
+            4663,
+            SwapVenue::UniswapV2,
+            address!("8bceaa40b9acdfaedf85adf4ff01f5ad6517937f"),
+            AnchorRole::PoolFactory,
+        ),
+        UNISWAP_V2_CANONICAL_INIT_CODE_HASH,
+    ),
     // Base (8453)
     dep(
         8453,
@@ -185,6 +199,14 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         address!("33128a8fC17869897dcE68Ed026d694621f6FDfD"),
         AnchorRole::PoolFactory,
     ),
+    // Uniswap v2 factory on Base (developers.uniswap.org v2 deployments,
+    // fetched 2026-10-04; Router02 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24).
+    dep(
+        8453,
+        SwapVenue::UniswapV2,
+        address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6"),
+        AnchorRole::PoolFactory,
+    ),
     // BSC (56)
     dep(
         56,
@@ -196,6 +218,14 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         56,
         SwapVenue::UniswapV3,
         address!("dB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"),
+        AnchorRole::PoolFactory,
+    ),
+    // Uniswap v2 factory on BNB Chain (developers.uniswap.org v2 deployments,
+    // fetched 2026-10-04; Router02 0x4752ba5DBc23f44D87826276BF6fD6b1C372aD24).
+    dep(
+        56,
+        SwapVenue::UniswapV2,
+        address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6"),
         AnchorRole::PoolFactory,
     ),
     // PancakeSwap v2 factory on BSC (v2 Swap/PairCreated shape).
@@ -592,11 +622,9 @@ mod tests {
     }
 
     #[test]
-    fn only_robinhood_v4_and_v3_are_fixture_verified() {
+    fn only_robinhood_deployments_are_fixture_verified() {
         for d in VENUE_DEPLOYMENTS {
-            let expected = if d.chain_id == 4663
-                && matches!(d.venue, SwapVenue::UniswapV4 | SwapVenue::UniswapV3)
-            {
+            let expected = if d.chain_id == 4663 {
                 VenueVerification::FixtureVerified
             } else {
                 VenueVerification::IdlOnly
@@ -824,8 +852,8 @@ mod tests {
 
     #[test]
     fn emitters_of_venues_without_a_pinned_factory_are_never_pending() {
-        // Robinhood has no pinned v2 factory: a v2-shaped swap is a gap and
-        // costs no metadata lookup.
+        // A chain without a pinned v2 factory (Ethereum mainnet here): a
+        // v2-shaped swap is a gap and costs no metadata lookup.
         let v2 = log(
             Address::repeat_byte(3),
             vec![
@@ -835,7 +863,7 @@ mod tests {
             ],
             vec![0u8; 128],
         );
-        let gate = SwapVenueGate::new(RH);
+        let gate = SwapVenueGate::new(1);
         assert!(!gate.has_factory(SwapVenue::UniswapV2));
         assert!(gate.pending_pool_emitters([&v2]).is_empty());
         assert!(matches!(

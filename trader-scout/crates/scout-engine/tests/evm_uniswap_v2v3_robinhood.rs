@@ -450,25 +450,94 @@ async fn v3_pools_that_the_factory_did_not_create_are_not_admitted() {
 }
 
 #[tokio::test]
-async fn uniswap_v2_shape_is_checked_but_no_robinhood_v2_factory_is_pinned() {
+async fn uniswap_v2_on_robinhood_admitted_pairs_match_pair_deltas() {
     let (rows, _) = all_rows().await;
     let v2: Vec<&Row> = rows.iter().filter(|r| r.kind == PoolKind::V2).collect();
-    println!("v2 swap groups: {}", v2.len());
-    // No Uniswap v2 factory of Robinhood is pinned by the research doc, so no
-    // v2 emitter is admitted and the venue stays outside the gate...
-    assert!(
-        !VENUE_DEPLOYMENTS
-            .iter()
-            .any(|d| d.chain_id == 4663 && d.venue == SwapVenue::UniswapV2)
+    let admitted: Vec<&Row> = v2.iter().copied().filter(|r| r.admitted).collect();
+    println!(
+        "v2 swap groups: {} total, {} admitted, {} exact among admitted",
+        v2.len(),
+        admitted.len(),
+        admitted.iter().filter(|r| r.exact).count()
     );
-    assert!(v2.iter().all(|r| !r.admitted));
-    // ... yet the event shape itself is informative: amounts in/out against
-    // the pair's ERC-20 flows. Reported, never a promotion.
     for r in &v2 {
         println!(
-            "v2 pair {:#x} in {:#x}: event {:?} vs pair net {:?} exact={}",
-            r.pool, r.tx, r.amounts, r.net, r.exact
+            "v2 pair {:#x} in {:#x} ({}, admitted {}): event {:?} vs pair net {:?} exact={}",
+            r.pool, r.tx, r.fixture, r.admitted, r.amounts, r.net, r.exact
         );
+    }
+    // Every admitted v2 sample passes, and there is at least one.
+    assert!(
+        !admitted.is_empty(),
+        "no admitted v2 sample in the fixtures"
+    );
+    for r in &admitted {
+        assert!(
+            r.exact,
+            "tx {:#x} pair {:#x}: event {:?} vs pair net {:?}",
+            r.tx, r.pool, r.amounts, r.net
+        );
+    }
+    // Admitted pairs come from recorded metadata (never derived), and the
+    // pinned factory's record named each one.
+    let pinned = VENUE_DEPLOYMENTS
+        .iter()
+        .find(|d| d.chain_id == 4663 && d.venue == SwapVenue::UniswapV2)
+        .unwrap();
+    for r in &admitted {
+        assert_eq!(r.metadata_source, "recorded eth_calls");
+    }
+    // The canonical v2 init-code hash is pinned iff it reproduces every pair
+    // that reports this factory (and `getPair` agrees for each).
+    let mut reproduced = 0usize;
+    let mut total = 0usize;
+    for path in robinhood_fixtures() {
+        let l = load(&path).await;
+        for m in l
+            .recorded
+            .iter()
+            .filter(|m| m.kind == PoolKind::V2 && m.factory == Some(pinned.anchor))
+        {
+            total += 1;
+            let (t0, t1) = (m.token0.unwrap(), m.token1.unwrap());
+            assert_eq!(m.registered_pool, Some(m.emitter), "{:#x}", m.emitter);
+            let c2 = scout_dex_evm::v2_pair_address_create2(
+                pinned.anchor,
+                t0,
+                t1,
+                scout_dex_evm::UNISWAP_V2_CANONICAL_INIT_CODE_HASH,
+            );
+            if c2 == m.emitter {
+                reproduced += 1;
+            }
+        }
+    }
+    println!(
+        "v2 pairs reporting the pinned factory: {total}; canonical hash reproduces {reproduced}"
+    );
+    assert!(total >= 1);
+    assert_eq!(
+        pinned.init_code_hash.is_some(),
+        reproduced == total,
+        "pin the init-code hash iff it reproduces every pair"
+    );
+    assert_eq!(
+        pinned.init_code_hash,
+        Some(scout_dex_evm::UNISWAP_V2_CANONICAL_INIT_CODE_HASH)
+    );
+    assert_eq!(pinned.verification, VenueVerification::FixtureVerified);
+    assert_eq!(
+        pinned.anchor,
+        "0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f"
+            .parse::<Address>()
+            .unwrap()
+    );
+    assert_eq!(pinned.active_from_block, 0);
+    // Base/BSC v2 factories are pinned but stay IdlOnly (no fixture).
+    for chain in [8453, 56] {
+        assert!(VENUE_DEPLOYMENTS.iter().any(|d| d.chain_id == chain
+            && d.venue == SwapVenue::UniswapV2
+            && d.verification == VenueVerification::IdlOnly));
     }
 }
 

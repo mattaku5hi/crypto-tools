@@ -104,7 +104,7 @@ async fn an_admitted_v3_pool_is_no_longer_a_coverage_gap_but_the_v2_pair_still_i
     let t0 = &before.per_token[0];
     assert!(matches!(t0.status, TokenScanStatus::Ok));
     // Nobody vouches for the pools: both swap logs are outside the gate.
-    assert_eq!((t0.pools_admitted, t0.pools_refused), (0, 1));
+    assert_eq!((t0.pools_admitted, t0.pools_refused), (0, 2));
     assert_eq!(t0.ungated_swap_logs, 2);
 
     let after = run(true).await;
@@ -120,10 +120,10 @@ async fn an_admitted_v3_pool_is_no_longer_a_coverage_gap_but_the_v2_pair_still_i
     );
     // The v3 pool reproduces from the pinned factory and init-code hash.
     assert_eq!(t.pools_admitted, 1);
-    // The v2-shape pair has no pinned Robinhood factory: still a gap, and it
-    // costs no lookup (not counted as refused on chain).
+    // The v2-shape pair is looked up too (Robinhood pins a v2 factory) but the
+    // handler serves no metadata for it: refused on chain, still a gap.
     assert_eq!(t.ungated_swap_logs, 1);
-    assert_eq!(t.pools_refused, 0);
+    assert_eq!(t.pools_refused, 1);
     assert!(after.is_coverage_incomplete());
     assert!(
         after

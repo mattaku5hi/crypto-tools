@@ -244,6 +244,7 @@ mod tests {
             v3_pool_address_create2(RH_FACTORY, T0, T1, 500, UNISWAP_V3_CANONICAL_INIT_CODE_HASH);
         let fork = Address::repeat_byte(0xf0); // reports another factory
         let notpool = Address::repeat_byte(0xe0); // reverts
+        let notpair = Address::repeat_byte(0xd0); // reverts
         let s = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(Node {
@@ -260,14 +261,14 @@ mod tests {
             swap(real, V3_SWAP_TOPIC0, 160),
             swap(fork, V3_SWAP_TOPIC0, 160),
             swap(notpool, V3_SWAP_TOPIC0, 160),
-            // v2 topic on a chain with no pinned v2 factory: not looked up.
-            swap(Address::repeat_byte(0xd0), V2_SWAP_EVENT_SIGNATURE, 128),
+            // v2 topic at a non-pair: looked up (Robinhood pins a v2 factory), refused.
+            swap(notpair, V2_SWAP_EVENT_SIGNATURE, 128),
         ])];
         let mut gate = SwapVenueGate::new(ROBINHOOD.chain_id);
         let r = learn_pools(&mut gate, &client, &txs, 10).await.unwrap();
         assert_eq!(
             (r.lookups, r.admitted, r.refused.len(), r.deferred),
-            (3, 1, 2, 0)
+            (4, 1, 3, 0)
         );
         assert!(
             r.refused[&fork].contains("not a pinned official factory"),
