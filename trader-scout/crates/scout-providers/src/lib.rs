@@ -13,10 +13,12 @@
     )
 )]
 
+mod accounts;
 mod fixture;
 mod helius;
 mod unconfigured;
 
+pub use accounts::{AccountRead, AccountsRead, GET_MULTIPLE_ACCOUNTS_MAX, MAX_ACCOUNT_DATA_BYTES};
 pub use fixture::{Fixture, FixtureProvenance, FixtureProvider};
 pub use helius::{
     DEFAULT_PAGE_LIMIT, HeliusProvider, HeliusRequestOptions, MAX_DERIVED_RESPONSE_BYTES,

@@ -166,9 +166,21 @@ struct Args {
     exclude_unbounded: bool,
 
     /// Strict variant: exclude wallets with ANY open position (default:
-    /// include and flag `open_exposure=unvalued`; no price source yet).
+    /// include and flag `open_exposure`, valued when valuation ran).
     #[arg(long)]
     require_no_open: bool,
+
+    /// ADR-019: exclude wallets with ANY open position that has no
+    /// realizable value (`open_exposure_unvalued`: historical window, no
+    /// fee observation, migrated pool unknown, venue not supported, state
+    /// unavailable). Conflicts with --no-valuation.
+    #[arg(long, conflicts_with = "no_valuation")]
+    require_valued_open: bool,
+
+    /// Skip the ADR-019 realizable valuation of open positions (no
+    /// `getMultipleAccounts` requests; open positions stay unvalued).
+    #[arg(long)]
+    no_valuation: bool,
 
     /// Provider page budget PER WALLET (Helius full mode: 100 transactions
     /// per page). Newest-first: a wallet needing more pages is `incomplete`
@@ -270,6 +282,7 @@ fn policy_from(args: &Args) -> Result<RankPolicy, String> {
         p.max_mints_per_day = Some(v);
     }
     p.require_no_open = args.require_no_open;
+    p.require_valued_open = args.require_valued_open;
     p.max_unknown_episode_share_percent = args.max_unknown_episode_share;
     p.exclude_unbounded = args.exclude_unbounded;
     p.quote = match args.quote.as_str() {
@@ -598,6 +611,18 @@ fn run_solana(
         Ok(r) => r,
         Err(err) => return provider_error_exit(&err, api_key),
     };
+    // ADR-019: realizable valuation of open positions (live runs only);
+    // its account reads share the run's request budget.
+    let valuation = if args.no_valuation {
+        None
+    } else {
+        Some(rt.block_on(scout_engine::apply_open_valuation(
+            &mut stats.wallets,
+            &provider,
+            window,
+        )))
+    };
+    let valuation_line = scout_app::open_valuation_line("wallet-rank", valuation.as_ref());
     let requests_made = provider.total_requests_made();
     // ADR-018: prices only for `--quote usd`; other quotes never fetch.
     let pricing = price_wallets(
@@ -619,10 +644,18 @@ fn run_solana(
             limit_text(args.max_price_requests)
         ));
     }
+    if valuation.as_ref().is_some_and(|v| v.budget_exhausted) {
+        price_reasons.push(format!(
+            "request budget exhausted during open-position valuation (max_requests={}): \
+             affected open positions are unvalued (request_budget_exhausted)",
+            limit_text(args.max_requests)
+        ));
+    }
     let report = rank_solana_wallets(&stats.wallets, policy);
 
     let incomplete =
         stats.is_coverage_incomplete() || !upstream_complete || !price_reasons.is_empty();
+    eprintln!("{valuation_line}");
     if pricing.policy.is_some() {
         eprintln!("{pricing_line}");
     }
@@ -650,6 +683,7 @@ fn run_solana(
             upstream_complete,
             window: *window,
             pricing: scout_app::pricing_meta(&pricing_input),
+            open_valuation: scout_app::open_valuation_meta(valuation.as_ref(), window.as_of),
         };
         let summary = SummaryInput {
             run_id: &run_id,
@@ -770,7 +804,7 @@ fn print_diagnostics(
     let opt = |v: Option<u64>| v.map_or_else(|| "none".to_string(), |n| n.to_string());
     eprintln!(
         "  policy: rank_by={} quote={} profile={} min_closed_episodes={} min_active_days={} \
-         max_trades_per_day={} max_mints_per_day={} unknown_share_gate={} max_unknown_episode_share_percent={} exclude_unbounded={} require_no_open={} top={} \
+         max_trades_per_day={} max_mints_per_day={} unknown_share_gate={} max_unknown_episode_share_percent={} exclude_unbounded={} require_no_open={} require_valued_open={} top={} \
          (research starting policy, not statistical guarantees)",
         p.rank_by.label(),
         scout_engine::quote_unit_label(p.quote),
@@ -783,10 +817,11 @@ fn print_diagnostics(
         p.max_unknown_episode_share_percent,
         p.exclude_unbounded,
         p.require_no_open,
+        p.require_valued_open,
         p.top
     );
     eprintln!(
-        "  open positions are unvalued (no price source, P5.2): included and flagged unless --require-no-open"
+        "  open positions: included and flagged open_exposure (realizable valuation ADR-019 unless --no-valuation; never part of a rank key); --require-no-open / --require-valued-open exclude"
     );
     eprintln!(
         "wallet-rank: {} input, {} eligible, {} ranked, {} excluded",

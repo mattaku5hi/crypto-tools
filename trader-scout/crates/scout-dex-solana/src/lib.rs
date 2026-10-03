@@ -25,9 +25,11 @@ mod dflow_event;
 mod jupiter_event;
 mod okx_event;
 mod okx_schema;
+mod pump_accounts;
 mod pump_amm;
 mod pump_amm_event;
 mod pump_amm_reconcile;
+mod swap_math;
 mod trade_event;
 
 pub use bonding_curve_buy::{
@@ -61,6 +63,13 @@ pub use okx_event::{
     OKX_EVENT_HEADER_LEN, OKX_IDL_SHA256, OKX_ORDER_EVENT_COMMON_LEN, OKX_SWAP_EVENT_DISCRIMINATOR,
     OkxEventDecoder, OkxEventOutcome, OkxHop, OkxOrderEvent, OkxOrderEventKind, classify_okx_event,
 };
+pub use pump_accounts::{
+    AccountDecodeError, BONDING_CURVE_ACCOUNT_DISCRIMINATOR, BONDING_CURVE_REQUIRED_LEN,
+    BondingCurveAccount, POOL_ACCOUNT_DISCRIMINATOR, POOL_REQUIRED_LEN, PUMP_PROGRAM_ID_BYTES,
+    PoolAccount, SPL_TOKEN_2022_PROGRAM_ID_BYTES, SPL_TOKEN_PROGRAM_ID_BYTES,
+    TOKEN_ACCOUNT_BASE_LEN, TokenAccountBalance, decode_bonding_curve, decode_pool,
+    decode_token_account,
+};
 pub use pump_amm::{
     AMM_BUY_DISCRIMINATOR, AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR, AMM_EVENT_CPI_NAME,
     AMM_NON_TRADE_INSTRUCTIONS, AMM_SELL_DISCRIMINATOR, BASE_MINT_IDX, DecodedPumpAmmTrade,
@@ -81,6 +90,10 @@ pub use pump_amm_event::{
 pub use pump_amm_reconcile::{
     AmmAttribution, AmmMintLeg, AmmTxReconciliation, AmmUserReconciliation,
     reconcile_pump_amm_transaction,
+};
+pub use swap_math::{
+    AmmBuyQuote, AmmSellQuote, CurveSellQuote, amm_buy_quote, amm_sell_quote, curve_buy_tokens_out,
+    curve_sell_quote, effective_quote_reserve, fee_ceil, price_impact_bps,
 };
 pub use trade_event::{
     EVENT_CPI_HEADER_LEN, EVENT_DISCRIMINATORS, MAX_IX_NAME_BYTES, MAX_SHAREHOLDERS,

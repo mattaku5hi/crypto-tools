@@ -85,7 +85,7 @@ async fn run(h: &MockServer, c: &MockServer, extra: &[&str]) -> Out {
     let extra: Vec<String> = extra.iter().map(|s| (*s).to_string()).collect();
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new(BIN);
-        cmd.args(["--input", "-", "--profile", "none"])
+        cmd.args(["--input", "-", "--profile", "none", "--no-valuation"])
             .args(extra)
             .env("SCOUT_HELIUS_API_KEY", KEY)
             .env("SCOUT_WALLET_RANK_ENDPOINT", h)
@@ -144,13 +144,13 @@ async fn quote_usd_prices_ranks_in_usd_and_counts_price_requests_apart() {
         meta["rank_version"]
             .as_str()
             .unwrap()
-            .starts_with("solana-wallet-rank/4")
+            .starts_with("solana-wallet-rank/5")
     );
     assert!(
         meta["ledger_version"]
             .as_str()
             .unwrap()
-            .starts_with("solana-wallet-ledger/11")
+            .starts_with("solana-wallet-ledger/12")
     );
     let n_coinbase = c.received_requests().await.unwrap().len();
     assert_eq!(n_coinbase, 1);

@@ -31,7 +31,8 @@
 //!   `no_pump_activity`, `unknown_episode_share`, `pnl_unbounded`,
 //!   `metric_unknown`, `insufficient_closed_episodes`, `insufficient_active_days`,
 //!   `activity_unknown`, `activity_ceiling_trades_per_day`,
-//!   `activity_ceiling_mints_per_day`, `open_exposure`, `below_top_n`.
+//!   `activity_ceiling_mints_per_day`, `open_exposure`, `open_exposure_unvalued`,
+//!   `below_top_n`.
 //!   Wallets whose scan status is not `ok` carry only their status reason
 //!   (their figures are a subset or absent, gates on them would mislead);
 //!   their observations are still reported.
@@ -92,14 +93,20 @@
 //!   not `ok`) and `metric_unknown` still apply, and the `pnl_status`
 //!   label (`observed` / `known_subset`) travels with the figure.
 //!
-//! # Open exposure (explicit deviation, pending P5.2)
+//! # Open exposure (ADR-019)
 //! The config key `require_resolved_open_exposure=true` and ARCHITECTURE
 //! ("unresolved open exposure may exclude") would exclude every wallet
-//! with an open position, but there is no price source until P5.2, so no
-//! open position can be valued. Default here: INCLUDE such wallets and
-//! flag `open_exposure = unvalued` with the position count and raw
-//! amounts; [`RankPolicy::require_no_open`] (`--require-no-open`) is the
-//! strict variant that excludes them with `open_exposure`. An open
+//! with an open position. Default here: INCLUDE such wallets and flag
+//! `open_exposure` with the position count, the raw amounts and, when the
+//! realizable valuation ran (`SolanaWalletLedgerReport::open_valuation`,
+//! live runs only), the valued/unvalued counts and totals.
+//! [`RankPolicy::require_no_open`] (`--require-no-open`) excludes every
+//! wallet with an open position (`open_exposure`);
+//! [`RankPolicy::require_valued_open`] (`--require-valued-open`) excludes
+//! wallets with ANY open position that has no realizable value
+//! (`open_exposure_unvalued`, also when valuation was not run).
+//! Unrealized values are reported next to the rank, NEVER inside a rank
+//! key, gate or sort: the rank layer reads realized figures only. An open
 //! position with unknown basis is only reported (ADR-016).
 //!
 //! # Activity metrics
@@ -113,6 +120,7 @@ use std::collections::BTreeMap;
 use scout_analytics::RatioStatus;
 use scout_core::{MONEY_SCALE, Money, SolanaPubkey};
 
+use crate::solana_open_valuation::{OpenValuationTotals, OpenValuationView};
 use crate::solana_wallet_ledger::{
     LowerBound, OpenPosition, QuoteUnit, SolanaWalletLedgerReport, WinRateLowerBound,
     lamports_to_money, money_to_unit_raw,
@@ -126,7 +134,7 @@ pub const DEFAULT_TOP: usize = 20;
 pub const DEFAULT_MAX_UNKNOWN_EPISODE_SHARE_PERCENT: u8 = 10;
 
 /// Version tag of the ranking rules for report metadata.
-pub const SOLANA_WALLET_RANK_VERSION: &str = "solana-wallet-rank/4 (ADR-013 --quote, ADR-016 unknown-episode lower bounds, ADR-018 --quote usd)";
+pub const SOLANA_WALLET_RANK_VERSION: &str = "solana-wallet-rank/5 (ADR-019 open-exposure valuation totals + --require-valued-open, ADR-013 --quote, ADR-016 unknown-episode lower bounds, ADR-018 --quote usd)";
 
 /// Ranking metric. `period-equity-pnl` needs a price source (P5.2) and is
 /// deliberately not representable.
@@ -192,6 +200,9 @@ pub struct RankPolicy {
     pub exclude_unbounded: bool,
     /// Strict variant: exclude wallets with any open position.
     pub require_no_open: bool,
+    /// ADR-019: exclude wallets with any open position that has no
+    /// realizable value (`open_exposure_unvalued`).
+    pub require_valued_open: bool,
     /// Maximum number of ranked wallets (>= 1).
     pub top: usize,
     /// ADR-013 §5: quote unit of the ranking metrics and the episode gate.
@@ -218,6 +229,7 @@ impl RankPolicy {
             max_unknown_episode_share_percent: DEFAULT_MAX_UNKNOWN_EPISODE_SHARE_PERCENT,
             exclude_unbounded: false,
             require_no_open: false,
+            require_valued_open: false,
             top: top.max(1),
             quote: QuoteUnit::Lamports,
         }
@@ -259,6 +271,8 @@ pub enum ExclusionReason {
     ActivityCeilingTradesPerDay,
     ActivityCeilingMintsPerDay,
     OpenExposure,
+    /// ADR-019: `--require-valued-open` and an open position has no value.
+    OpenExposureUnvalued,
     /// Passed every gate but is below the `--top` cut.
     BelowTopN,
 }
@@ -281,6 +295,7 @@ impl ExclusionReason {
             Self::ActivityCeilingTradesPerDay => "activity_ceiling_trades_per_day",
             Self::ActivityCeilingMintsPerDay => "activity_ceiling_mints_per_day",
             Self::OpenExposure => "open_exposure",
+            Self::OpenExposureUnvalued => "open_exposure_unvalued",
             Self::BelowTopN => "below_top_n",
         }
     }
@@ -388,23 +403,50 @@ impl PnlStatus {
     }
 }
 
-/// Open exposure flag. No price source exists (P5.2): never valued.
+/// Open exposure flag (ADR-019). Valuation is information only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenExposure {
     None,
-    Unvalued {
+    Open {
         positions: u64,
         positions_unknown_basis: u64,
         details: Vec<OpenPosition>,
+        /// The realizable valuation of these positions; `None` = not run.
+        valuation: Option<OpenValuationView>,
     },
 }
 
 impl OpenExposure {
+    /// `none`, `unvalued` (no valuation, or no position valued),
+    /// `partially_valued` or `valued`.
     #[must_use]
-    pub const fn label(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
             Self::None => "none",
-            Self::Unvalued { .. } => "unvalued",
+            Self::Open { valuation, .. } => match valuation {
+                None => "unvalued",
+                Some(v) => {
+                    let t = v.totals();
+                    if t.positions > 0 && t.valued == t.positions {
+                        "valued"
+                    } else if t.valued == 0 {
+                        "unvalued"
+                    } else {
+                        "partially_valued"
+                    }
+                }
+            },
+        }
+    }
+
+    /// Valuation totals (`None` without a valuation).
+    #[must_use]
+    pub fn totals(&self) -> Option<OpenValuationTotals> {
+        match self {
+            Self::Open {
+                valuation: Some(v), ..
+            } => Some(v.totals()),
+            _ => None,
         }
     }
 }
@@ -632,10 +674,11 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
     obs.open_exposure = if l.open_positions.is_empty() {
         OpenExposure::None
     } else {
-        OpenExposure::Unvalued {
+        OpenExposure::Open {
             positions: u64::try_from(l.open_positions.len()).unwrap_or(u64::MAX),
             positions_unknown_basis: l.open_positions_with_unknown_basis,
             details: l.open_positions.clone(),
+            valuation: l.open_valuation.clone(),
         }
     };
     obs
@@ -830,6 +873,15 @@ fn gate_reasons(policy: &RankPolicy, o: &WalletRankObservation) -> Vec<Exclusion
     }
     if policy.require_no_open && !l.open_positions.is_empty() {
         out.push(ExclusionReason::OpenExposure);
+    }
+    if policy.require_valued_open && !l.open_positions.is_empty() {
+        let all_valued = l
+            .open_valuation
+            .as_ref()
+            .is_some_and(|v| v.all_valued() && v.positions.len() == l.open_positions.len());
+        if !all_valued {
+            out.push(ExclusionReason::OpenExposureUnvalued);
+        }
     }
     out
 }

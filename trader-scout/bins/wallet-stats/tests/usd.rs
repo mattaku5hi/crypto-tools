@@ -80,7 +80,7 @@ async fn run(helius: &MockServer, coinbase: &MockServer, extra: &[&str]) -> Out 
     let extra: Vec<String> = extra.iter().map(|s| (*s).to_string()).collect();
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new(BIN);
-        cmd.args(["--input", "-"])
+        cmd.args(["--input", "-", "--no-valuation"])
             .args(extra)
             .env("SCOUT_HELIUS_API_KEY", KEY)
             .env("SCOUT_WALLET_STATS_ENDPOINT", h)
@@ -189,7 +189,7 @@ async fn usd_block_is_priced_from_the_recorded_candles_and_counted_separately() 
         w["stats"]["ledger_version"]
             .as_str()
             .unwrap()
-            .contains("/11")
+            .contains("/12")
     );
     // Per-episode USD view in full detail.
     let eps = w["episodes"].as_array().unwrap();

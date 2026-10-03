@@ -561,6 +561,13 @@ pub async fn apply_usd_pricing(
             }
         }
     }
+    // ADR-019: the SOL price at `as_of` for the valued open positions.
+    if let Some(as_of) = crate::open_usd_requirement(wallets) {
+        needs
+            .entry(QuoteAsset::Sol)
+            .or_default()
+            .insert(minute_start(as_of));
+    }
     let mut run = UsdPricingRun {
         minutes_requested: needs
             .iter()
@@ -571,6 +578,9 @@ pub async fn apply_usd_pricing(
     run.prefetch = source.prefetch(&needs).await;
     for w in wallets.iter_mut() {
         let Some(l) = w.ledger.as_mut() else { continue };
+        if let Some(v) = l.open_valuation.as_mut() {
+            v.apply_usd_price(source);
+        }
         match l.apply_usd_prices(source) {
             Ok(()) => {
                 run.wallets_priced += 1;

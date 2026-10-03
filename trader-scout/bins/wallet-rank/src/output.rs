@@ -90,7 +90,15 @@ fn pf_cell(o: &WalletRankObservation) -> String {
 fn exposure_cell(o: &WalletRankObservation) -> String {
     match &o.open_exposure {
         OpenExposure::None => "none".to_string(),
-        OpenExposure::Unvalued { positions, .. } => format!("unvalued({positions})"),
+        OpenExposure::Open { positions, .. } => match o.open_exposure.totals() {
+            Some(t) if t.valued > 0 => format!(
+                "{}({}/{positions} {} SOL)",
+                o.open_exposure.label(),
+                t.valued,
+                lamports_to_sol_string(i128::try_from(t.realizable_lamports).unwrap_or(i128::MAX)),
+            ),
+            _ => format!("{}({positions})", o.open_exposure.label()),
+        },
     }
 }
 
@@ -219,7 +227,7 @@ pub fn table_lines(
         .any(|r| r.observation.open_exposure != OpenExposure::None)
     {
         out.push(
-            "# open_exposure=unvalued: open positions have no price source (P5.2) and are not in realized PnL; use --require-no-open to exclude them"
+            "# open_exposure: open positions are NOT in realized PnL or any rank key; valued = realizable constant-product sell value at as_of (ADR-019, SOL), unvalued = no realizable value (see --format jsonl for the reason); --require-no-open / --require-valued-open exclude"
                 .to_string(),
         );
     }
@@ -248,6 +256,8 @@ pub struct ThresholdsDto {
     pub max_unknown_episode_share_percent: u8,
     pub exclude_unbounded: bool,
     pub require_no_open: bool,
+    /// ADR-019: exclude wallets with any unvalued open position.
+    pub require_valued_open: bool,
     pub top: usize,
 }
 
@@ -324,6 +334,8 @@ pub struct RunMetaRecord {
     pub thresholds: ThresholdsDto,
     pub profile_note: &'static str,
     pub open_exposure_policy: &'static str,
+    /// ADR-019: valuation of open positions (slot, as_of, policy, totals).
+    pub open_valuation: scout_app::OpenValuationMetaDto,
     pub input_wallet_count: usize,
     pub input_duplicates: usize,
     pub upstream_complete: bool,
@@ -512,19 +524,16 @@ pub struct ActivityDto {
 }
 
 #[derive(Debug, Serialize)]
-pub struct OpenPositionDto {
-    pub mint: String,
-    pub open_amount_raw: String,
-    pub unknown_basis_amount_raw: String,
-}
-
-#[derive(Debug, Serialize)]
 pub struct OpenExposureDto {
-    /// `none` or `unvalued` (no price source until P5.2).
+    /// `none`, `unvalued`, `partially_valued` or `valued` (ADR-019).
     pub status: &'static str,
     pub positions: u64,
     pub positions_unknown_basis: u64,
-    pub details: Vec<OpenPositionDto>,
+    /// Per position: raw amounts, known basis, realizable value, price
+    /// impact, slot, unrealized PnL, USD, or the unvalued reason.
+    pub details: Vec<scout_app::OpenPositionDto>,
+    /// Valuation totals; `null` when valuation did not run.
+    pub totals: Option<scout_app::OpenValuationTotalsDto>,
 }
 
 #[derive(Debug, Serialize)]
@@ -805,26 +814,19 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             percent_2dp: None,
         },
     };
-    let (open_status, positions, unknown_basis, details) = match &o.open_exposure {
-        OpenExposure::None => ("none", 0, 0, Vec::new()),
-        OpenExposure::Unvalued {
+    let (positions, unknown_basis, details) = match &o.open_exposure {
+        OpenExposure::None => (0, 0, Vec::new()),
+        OpenExposure::Open {
             positions,
             positions_unknown_basis,
-            details,
+            ..
         } => (
-            "unvalued",
             *positions,
             *positions_unknown_basis,
-            details
-                .iter()
-                .map(|p| OpenPositionDto {
-                    mint: bs58::encode(p.mint).into_string(),
-                    open_amount_raw: p.open_amount_raw.to_string(),
-                    unknown_basis_amount_raw: p.unknown_basis_amount_raw.to_string(),
-                })
-                .collect(),
+            scout_app::open_positions_dto(l),
         ),
     };
+    let open_status = o.open_exposure.label();
     let sol_only = |v: Option<String>| v.filter(|_| o.quote == QuoteUnit::Lamports);
     let t = &l.trades;
     Some(MetricsDto {
@@ -936,6 +938,7 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             positions,
             positions_unknown_basis: unknown_basis,
             details,
+            totals: o.open_exposure.totals().map(|t| scout_app::totals_dto(&t)),
         },
         activity: ActivityDto {
             timestamped_trades: a.timestamped_trades,
@@ -962,6 +965,8 @@ pub struct RunMetaInput<'a> {
     pub window: AnalysisWindow,
     /// ADR-018 price source / policy / coverage (disabled unless `--quote usd`).
     pub pricing: PricingMetaDto,
+    /// ADR-019 valuation run facts (disabled with `--no-valuation`).
+    pub open_valuation: scout_app::OpenValuationMetaDto,
 }
 
 #[derive(Debug, Serialize)]
@@ -1040,10 +1045,12 @@ pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMe
             max_unknown_episode_share_percent: p.max_unknown_episode_share_percent,
             exclude_unbounded: p.exclude_unbounded,
             require_no_open: p.require_no_open,
+            require_valued_open: p.require_valued_open,
             top: p.top,
         },
         profile_note: "thresholds are research starting policy, not statistical guarantees",
-        open_exposure_policy: "open positions are unvalued (no price source, P5.2): included and flagged open_exposure=unvalued unless require_no_open; deviation from config require_resolved_open_exposure=true",
+        open_exposure_policy: "open positions are included and flagged open_exposure (valued by the ADR-019 realizable valuation on live runs, else unvalued with a reason); unrealized values never enter a rank key; require_no_open excludes any open position (open_exposure), require_valued_open excludes unvalued ones (open_exposure_unvalued); deviation from config require_resolved_open_exposure=true",
+        open_valuation: m.open_valuation.clone(),
         input_wallet_count: m.input_wallet_count,
         input_duplicates: m.input_duplicates,
         upstream_complete: m.upstream_complete,
@@ -1242,6 +1249,7 @@ mod tests {
                 max_requests: None,
                 run: None,
             }),
+            open_valuation: scout_app::open_valuation_meta(None, 1_790_000_000),
         }
     }
 

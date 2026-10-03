@@ -3226,6 +3226,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "async-trait",
+ "base64 0.22.1",
  "bs58",
  "futures",
  "proptest",
@@ -3298,6 +3299,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "async-trait",
+ "base64 0.22.1",
  "bs58",
  "futures",
  "scout-api",
@@ -4144,12 +4146,15 @@ dependencies = [
 name = "wallet-rank"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bs58",
  "clap",
+ "futures",
  "scout-analytics",
  "scout-api",
  "scout-app",
  "scout-core",
+ "scout-dex-solana",
  "scout-engine",
  "scout-pricing",
  "scout-providers",
@@ -4165,12 +4170,15 @@ dependencies = [
 name = "wallet-stats"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bs58",
  "clap",
+ "futures",
  "scout-analytics",
  "scout-api",
  "scout-app",
  "scout-core",
+ "scout-dex-solana",
  "scout-engine",
  "scout-pricing",
  "scout-providers",

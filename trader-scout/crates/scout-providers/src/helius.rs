@@ -524,6 +524,12 @@ impl HeliusProvider {
         self
     }
 
+    /// The shared RPC client (request budget and counter included), for
+    /// sibling modules (`getMultipleAccounts`).
+    pub(crate) fn rpc(&self) -> &RpcClient {
+        &self.client
+    }
+
     /// HTTP attempts started so far (including retries), whether or not
     /// a budget is set.
     #[must_use]

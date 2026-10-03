@@ -88,10 +88,13 @@ use crate::decode_evidence::{DecodeEvidence, scan_tx_evidence};
 use crate::solana_buy_qualification::{
     VariantPolicy, default_variant_policy, solana_mainnet_chain,
 };
+use crate::solana_open_valuation::{
+    FeeObservation, OpenBasis, OpenValuationView, OpenVenueInfo, VenueAddress,
+};
 use crate::solana_wallet_usd::{UsdDisposal, UsdJournal, UsdLedgerView, UsdLotSlice};
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
-pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/11 (ADR-018 USD execution-pricing journal + USD view, OKX DEX Router SwapWithFeesCpiEvent2 FixtureVerified legs + ownership evidence (ADR-017), ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
+pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/12 (ADR-019 open-position venue/fee/basis inputs + realizable valuation view, ADR-018 USD execution-pricing journal + USD view, OKX DEX Router SwapWithFeesCpiEvent2 FixtureVerified legs + ownership evidence (ADR-017), ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
 
 /// Scope text for report metadata (invariant #10): allowed quote units and
 /// the route-swap rule of ADR-013.
@@ -817,6 +820,14 @@ pub struct SolanaWalletLedgerReport {
     /// ([`SolanaWalletLedgerReport::apply_usd_prices`]). Native figures above
     /// never change when it is set.
     pub usd: Option<UsdLedgerView>,
+    /// ADR-019: per open position (ascending mint) the venue accounts, the
+    /// latest observed fee bps and the known remaining basis: the INPUT of
+    /// the realizable valuation. Empty without open positions.
+    pub open_venues: Vec<OpenVenueInfo>,
+    /// ADR-019: the realizable valuation of the open positions; `None`
+    /// until [`apply_open_valuation`](crate::apply_open_valuation) ran.
+    /// Realized figures never read it.
+    pub open_valuation: Option<OpenValuationView>,
 }
 
 /// Audit record of one booked route swap (ADR-013 §2): the wallet's own
@@ -1039,6 +1050,16 @@ struct WalletTrade {
     /// PumpSwap: how the user's own legs reconcile with the events
     /// (ADR-012 §3); `None` for other venues.
     amm_attribution: Option<AmmAttribution>,
+    /// ADR-019: the bonding-curve account / PumpSwap pool the instruction
+    /// named (`None` for route swaps).
+    venue_addr: Option<SolanaPubkey>,
+}
+
+/// ADR-019: fee bps carried by one paired event on a curve / pool.
+struct FeeObs {
+    address: SolanaPubkey,
+    timestamp: i64,
+    fee: FeeObservation,
 }
 
 /// One decoded swap leg of the transaction (any `user`), evidence for the
@@ -1105,6 +1126,16 @@ struct MintState {
     episode: Option<EpisodeAcc>,
     /// ADR-018: pricing time of each lot, by `Lot::acquisition_sequence`.
     lot_price_ts: BTreeMap<u64, Option<i64>>,
+    /// ADR-019: latest direct venue accounts the wallet traded this mint on.
+    venue: MintVenue,
+}
+
+/// ADR-019: where the wallet last traded a mint directly.
+#[derive(Default, Clone, Copy)]
+struct MintVenue {
+    last: Option<Venue>,
+    curve: Option<SolanaPubkey>,
+    pool: Option<SolanaPubkey>,
 }
 
 struct Builder {
@@ -1128,6 +1159,8 @@ struct Builder {
     /// ADR-018: pricing time (block time, else event timestamp) of the trade
     /// being booked; set before every `acquire`/`dispose` of a trade.
     price_ts: Option<i64>,
+    /// ADR-019: latest fee observation per curve / pool address.
+    fees: BTreeMap<SolanaPubkey, (i64, FeeObservation)>,
 }
 
 fn asset_of(mint: SolanaPubkey) -> AssetKey {
@@ -1163,6 +1196,7 @@ impl Builder {
             ledger: Ledger::with_quote_unit(QuoteUnit::Lamports),
             episode: None,
             lot_price_ts: BTreeMap::new(),
+            venue: MintVenue::default(),
         })
     }
 
@@ -1511,6 +1545,8 @@ struct TxWork<'a> {
     orphan_events: Vec<(u32, &'static str)>,
     /// Bounded coverage-gap samples and counters of this transaction.
     scan: crate::decode_evidence::TxScan,
+    /// ADR-019: fee observations of every paired event, instruction order.
+    fee_obs: Vec<FeeObs>,
 }
 
 /// Quote-asset mints of ADR-013 §3 (decoded once per build).
@@ -1590,6 +1626,16 @@ fn extract_curve_trades(
                 _ => None,
             },
         });
+        if let TradeEventPairing::Paired(ev) = &p.pairing {
+            work.fee_obs.push(FeeObs {
+                address: p.trade.bonding_curve,
+                timestamp: ev.timestamp,
+                fee: FeeObservation::Curve {
+                    protocol_bps: ev.fee_basis_points,
+                    creator_bps: ev.creator_fee_basis_points,
+                },
+            });
+        }
         if p.trade.user != *wallet {
             continue;
         }
@@ -1652,6 +1698,7 @@ fn extract_curve_trades(
             unreconciled: false,
             reversed_pool: false,
             amm_attribution: None,
+            venue_addr: Some(t.bonding_curve),
         });
     }
     work.malformed_trades = work
@@ -1838,6 +1885,29 @@ fn extract_amm_trades(
             PumpAmmEvent::Sell(x) => (x.instruction_index, "SellEvent"),
         }));
     for p in &rec.pairing.trades {
+        if let AmmTradeEventPairing::Paired(ev) = &p.pairing {
+            let (lp_bps, protocol_bps, creator_bps) = match ev {
+                PumpAmmEvent::Buy(b) => (
+                    b.lp_fee_basis_points,
+                    b.protocol_fee_basis_points,
+                    b.coin_creator_fee_basis_points,
+                ),
+                PumpAmmEvent::Sell(x) => (
+                    x.lp_fee_basis_points,
+                    x.protocol_fee_basis_points,
+                    x.coin_creator_fee_basis_points,
+                ),
+            };
+            work.fee_obs.push(FeeObs {
+                address: p.trade.pool,
+                timestamp: amm_event_timestamp(ev),
+                fee: FeeObservation::Amm {
+                    lp_bps,
+                    protocol_bps,
+                    creator_bps,
+                },
+            });
+        }
         let r = read_amm_trade(p);
         work.legs.push(LegInfo {
             source: LegSource::PumpAmm,
@@ -1887,6 +1957,7 @@ fn extract_amm_trades(
                 unreconciled,
                 reversed_pool: reading.reversed,
                 amm_attribution: Some(u.attribution),
+                venue_addr: Some(p.trade.pool),
             };
             let unverified = Consideration::Unknown {
                 reason: UnknownReason::ConsiderationUnverified,
@@ -2032,6 +2103,7 @@ fn classify_trades<'a>(
         route_evidence: RouteEvidence::default(),
         orphan_events: Vec::new(),
         scan: crate::decode_evidence::TxScan::default(),
+        fee_obs: Vec::new(),
     };
     extract_curve_trades(tx, wallet, decoders.curve, &qm.wsol, policy, &mut work);
     if let Some(amm) = decoders.amm {
@@ -2303,6 +2375,7 @@ fn apply_route_rules(
                 unreconciled: false,
                 reversed_pool: false,
                 amm_attribution: None,
+                venue_addr: None,
             });
         }
         Err(reject) => {
@@ -2497,6 +2570,7 @@ pub fn build_solana_wallet_ledger_venues(
         traded: BTreeSet::new(),
         evidence_samples: Vec::new(),
         price_ts: None,
+        fees: BTreeMap::new(),
     };
 
     // §7: canonical order, independent of input order; dedup by signature.
@@ -2590,6 +2664,10 @@ impl Builder {
                 RouteReject::PassthroughNonzero => rr.passthrough_nonzero += 1,
             }
         }
+        // ADR-019: canonical order makes the last write the latest event.
+        for o in &w.fee_obs {
+            self.fees.insert(o.address, (o.timestamp, o.fee));
+        }
         let is_payer = tx.fee_payer == self.wallet;
         self.record_atomic_round_trip(w)?;
 
@@ -2662,6 +2740,20 @@ impl Builder {
                 self.diag.reversed_pool_trades += 1;
             }
             self.traded.insert(t.mint);
+            if let Some(addr) = t.venue_addr {
+                let v = &mut self.state(t.mint).venue;
+                match t.venue {
+                    Venue::BondingCurve => {
+                        v.last = Some(Venue::BondingCurve);
+                        v.curve = Some(addr);
+                    }
+                    Venue::PumpAmm => {
+                        v.last = Some(Venue::PumpAmm);
+                        v.pool = Some(addr);
+                    }
+                    Venue::Route => {}
+                }
+            }
             if let Some(ts) = t.timestamp {
                 self.stamped.push((ts, t.mint));
                 tx_ts = tx_ts.or(Some(ts));
@@ -2976,6 +3068,7 @@ impl Builder {
     fn finish(mut self) -> Result<SolanaWalletLedgerReport, SolanaWalletLedgerError> {
         // Open episodes and positions at the end of history.
         let mut open_positions = Vec::new();
+        let mut open_venues: Vec<OpenVenueInfo> = Vec::new();
         let mints: Vec<SolanaPubkey> = self.mints.keys().copied().collect();
         for mint in mints {
             let Some(state) = self.mints.get_mut(&mint) else {
@@ -2994,6 +3087,41 @@ impl Builder {
                 open_amount_raw,
                 unknown_basis_amount_raw,
                 opened_at: ep.opened_at,
+            });
+            // ADR-019 inputs: known remaining basis (lamport lots only) and
+            // the venue accounts with their latest observed fee bps.
+            let mut known_sol_basis = Money::ZERO;
+            let mut fully_known_sol = true;
+            for lot in state.ledger.open_lots() {
+                if matches!(lot.basis_status, BasisStatus::Known)
+                    && lot.quote_unit == QuoteUnit::Lamports
+                {
+                    known_sol_basis = money_add(known_sol_basis, lot.remaining_basis)?;
+                } else {
+                    fully_known_sol = false;
+                }
+            }
+            let v = state.venue;
+            let addr = |a: Option<SolanaPubkey>| {
+                a.map(|address| {
+                    let obs = self.fees.get(&address).copied();
+                    VenueAddress {
+                        address,
+                        fee_observed_at: obs.map(|(t, _)| t),
+                        fee: obs.map(|(_, f)| f),
+                    }
+                })
+            };
+            open_venues.push(OpenVenueInfo {
+                mint,
+                open_amount_raw,
+                last_venue: v.last,
+                curve: addr(v.curve),
+                pool: addr(v.pool),
+                basis: OpenBasis {
+                    known_sol_basis,
+                    fully_known_sol,
+                },
             });
             self.records
                 .push(close_record(mint, ep, None, (0, 0), true)?);
@@ -3189,6 +3317,8 @@ impl Builder {
             route_swap_log: self.route_log,
             evidence_samples: self.evidence_samples,
             usd: None,
+            open_venues,
+            open_valuation: None,
         })
     }
 }

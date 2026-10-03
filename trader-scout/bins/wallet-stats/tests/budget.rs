@@ -33,13 +33,20 @@ struct Out {
 async fn run(endpoint: String, extra: Vec<String>) -> Out {
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new(BIN);
-        cmd.args(["--input", "-", "--format", "jsonl", "--no-usd"])
-            .args(extra)
-            .env("SCOUT_HELIUS_API_KEY", KEY)
-            .env("SCOUT_WALLET_STATS_ENDPOINT", endpoint)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.args([
+            "--input",
+            "-",
+            "--format",
+            "jsonl",
+            "--no-usd",
+            "--no-valuation",
+        ])
+        .args(extra)
+        .env("SCOUT_HELIUS_API_KEY", KEY)
+        .env("SCOUT_WALLET_STATS_ENDPOINT", endpoint)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
         let mut child = cmd.spawn().unwrap();
         // The binary may exit before reading stdin; a broken pipe is
         // expected, the exit code is what the test checks.
@@ -281,7 +288,7 @@ async fn period_window_stops_paging_at_the_boundary_page_and_is_echoed_in_run_me
         lines[0]["ledger_version"]
             .as_str()
             .unwrap()
-            .starts_with("solana-wallet-ledger/11")
+            .starts_with("solana-wallet-ledger/12")
     );
 }
 

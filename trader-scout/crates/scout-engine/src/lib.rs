@@ -29,6 +29,7 @@ mod buyer_intersect;
 mod decode_evidence;
 mod solana_buy_qualification;
 mod solana_buyer_intersect;
+mod solana_open_valuation;
 mod solana_wallet_ledger;
 mod solana_wallet_rank;
 mod solana_wallet_stats;
@@ -57,6 +58,13 @@ pub use solana_buyer_intersect::{
     run_solana_buyer_intersect, run_solana_buyer_intersect_with_policy, run_solana_trade_intersect,
     run_solana_trade_intersect_with_policies, run_solana_trade_intersect_with_policy,
     sanitize_provider_text,
+};
+pub use solana_open_valuation::{
+    CurveRead, FeeObservation, LABEL_REALIZABLE_CP_QUOTE, OpenBasis, OpenUsd, OpenValuationRun,
+    OpenValuationTotals, OpenValuationView, OpenVenueInfo, PoolRead, PositionValuation,
+    SOLANA_OPEN_VALUATION_VERSION, StateSnapshot, UnvaluedReason, VALUATION_COMMITMENT,
+    ValuationOutcome, ValuedPosition, VenueAddress, apply_open_valuation, open_usd_requirement,
+    value_position, window_is_live,
 };
 pub use solana_wallet_ledger::{
     ActivityMetrics, ConsumedBasisStatus, DailyActivity, EpisodeOutcome, EpisodePnlBound,

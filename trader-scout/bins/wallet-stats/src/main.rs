@@ -177,6 +177,14 @@ struct Args {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_price_requests: Option<u64>,
 
+    /// Skip the ADR-019 realizable valuation of open positions (no
+    /// `getMultipleAccounts` requests). By default, on live runs (window
+    /// ending at the run start, or no window) every open position on a
+    /// pump.fun curve / PumpSwap pool is valued as a constant-product sell of
+    /// its whole amount on live state; historical windows stay unvalued.
+    #[arg(long)]
+    no_valuation: bool,
+
     /// Analysis window start, UTC RFC 3339 `2026-08-01T00:00:00Z` (inclusive;
     /// no offsets). Window `[since, until)`; see ADR-011. Conflicts with --period.
     #[arg(long, conflicts_with = "period")]
@@ -520,6 +528,22 @@ fn run_solana(
     } else {
         SortMode::Input
     };
+    // ADR-019: realizable valuation of open positions (live runs only); its
+    // account reads share the run's request budget.
+    let valuation = if args.no_valuation {
+        None
+    } else {
+        Some(rt.block_on(scout_engine::apply_open_valuation(
+            &mut report.wallets,
+            &provider,
+            window,
+        )))
+    };
+    let requests_made = provider.total_requests_made();
+    eprintln!(
+        "{}",
+        scout_app::open_valuation_line("wallet-stats", valuation.as_ref())
+    );
     let pricing = price_wallets(rt, &mut report, args);
     let pricing_input = pricing.input();
     eprintln!(
@@ -535,6 +559,13 @@ fn run_solana(
              affected legs are price_unknown",
             run.prefetch.pages_skipped_budget,
             limit_text(args.max_price_requests)
+        ));
+    }
+    if valuation.as_ref().is_some_and(|v| v.budget_exhausted) {
+        price_reasons.push(format!(
+            "request budget exhausted during open-position valuation (max_requests={}): \
+             affected open positions are unvalued (request_budget_exhausted)",
+            limit_text(args.max_requests)
         ));
     }
     print_diagnostics(&report, api_key, args, window, requests_made);
@@ -566,6 +597,7 @@ fn run_solana(
             window: *window,
             pricing: scout_app::pricing_meta(&pricing_input),
             price_incomplete_reasons: price_reasons.clone(),
+            open_valuation: scout_app::open_valuation_meta(valuation.as_ref(), window.as_of),
         };
         match output::jsonl_lines(&meta, &report, incomplete, &|t| redact(t, api_key)) {
             Ok(l) => l,

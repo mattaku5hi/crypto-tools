@@ -146,7 +146,7 @@ fn ratio_cell(r: &RatioStatus<Money>, what: &str) -> String {
 // Table
 // ---------------------------------------------------------------------
 
-const HEADER: [&str; 27] = [
+const HEADER: [&str; 30] = [
     "wallet",
     "status",
     "realized_net_pnl_sol",
@@ -157,6 +157,9 @@ const HEADER: [&str; 27] = [
     "closed_known/unknown",
     "left_censored",
     "open",
+    "open_valued",
+    "open_realizable_sol",
+    "open_unrealized_sol",
     "W/L/BE",
     "win_rate",
     "profit_factor",
@@ -224,6 +227,7 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
             ));
             cells.push(l.left_censored_episodes.to_string());
             cells.push(l.open_episodes.to_string());
+            cells.extend(open_valuation_cells(l));
             cells.push(format!("{}/{}/{}", l.wins, l.losses, l.breakeven));
             cells.push(if ratios_ok {
                 ratio_cell(&l.win_rate, "win rate")
@@ -271,6 +275,55 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
     }
     cells.push(coverage);
     cells
+}
+
+/// ADR-019 cells: `valued/positions`, Σ realizable SOL, Σ known unrealized
+/// SOL (each `N/A (reason)` when nothing is known; never zero for unknown).
+fn open_valuation_cells(l: &SolanaWalletLedgerReport) -> [String; 3] {
+    if l.open_positions.is_empty() {
+        return [
+            "0/0".to_string(),
+            "0.000000000".to_string(),
+            "0.000000000".to_string(),
+        ];
+    }
+    let Some(v) = &l.open_valuation else {
+        let r = na("valuation not run");
+        return [r.clone(), r.clone(), r];
+    };
+    let t = v.totals();
+    let realizable = if t.valued == 0 {
+        let reason = t
+            .unvalued_by_reason
+            .iter()
+            .next()
+            .map_or("unvalued", |(k, _)| *k);
+        na(reason)
+    } else if t.unvalued > 0 {
+        format!(
+            "N/A (partial: {} of {} valued, {} SOL)",
+            t.valued,
+            t.positions,
+            lamports_to_sol_string(i128::try_from(t.realizable_lamports).unwrap_or(i128::MAX))
+        )
+    } else {
+        lamports_to_sol_string(i128::try_from(t.realizable_lamports).unwrap_or(i128::MAX))
+    };
+    let unrealized = if t.unrealized_known_positions == 0 {
+        na("no known-basis valued position")
+    } else if t.unrealized_unknown_positions > 0 || t.unvalued > 0 {
+        format!(
+            "N/A (known subset: {})",
+            money_exact_sol(Money::from_scaled_units(t.unrealized_known_scaled))
+        )
+    } else {
+        money_exact_sol(Money::from_scaled_units(t.unrealized_known_scaled))
+    };
+    [
+        format!("{}/{}", t.valued, t.positions),
+        realizable,
+        unrealized,
+    ]
 }
 
 /// ADR-016: `wins / (known + unknown)` as an exact fraction and percent.
@@ -403,9 +456,53 @@ fn detail_lines(w: &SolanaWalletStats, out: &mut Vec<String>) {
         let usd_ep = l.usd.as_ref().and_then(|u| u.episodes.get(i));
         out.push(format!("    episode {}", episode_text(ep, usd_ep)));
     }
-    for p in &l.open_positions {
-        out.push(format!("    open {}", open_text(p)));
+    let dtos = scout_app::open_positions_dto(l);
+    for (p, d) in l.open_positions.iter().zip(&dtos) {
+        out.push(format!(
+            "    open {}{}",
+            open_text(p),
+            open_valuation_text(d)
+        ));
     }
+}
+
+/// ADR-019 suffix of an open-position line.
+fn open_valuation_text(d: &scout_app::OpenPositionDto) -> String {
+    let opt = |v: &Option<String>| v.clone().unwrap_or_else(|| "N/A".to_string());
+    if d.status != "valued" {
+        return format!(
+            " valuation=unvalued reason={}",
+            d.unvalued_reason.unwrap_or("unknown")
+        );
+    }
+    let fee = d.fee_bps.as_ref().map_or_else(String::new, |f| {
+        format!(
+            " fee_bps={}{}",
+            f.total,
+            f.observed_at_unix
+                .map_or_else(String::new, |t| format!("@{}", rfc3339(t)))
+        )
+    });
+    format!(
+        " valuation={} venue={} realizable_lamports={} marginal_lamports={} price_impact_bps={} \
+         unrealized_pnl_lamports={} value_usd={} slot={}{fee}",
+        d.label.unwrap_or("-"),
+        d.venue.unwrap_or("-"),
+        opt(&d.realizable_lamports),
+        opt(&d.marginal_lamports),
+        d.price_impact_bps
+            .map_or_else(|| "N/A".to_string(), |b| b.to_string()),
+        d.unrealized_pnl_lamports
+            .clone()
+            .unwrap_or_else(|| "N/A (unknown basis)".to_string()),
+        d.value_usd
+            .clone()
+            .or_else(|| d.usd_unpriced_reason.as_ref().map(|r| format!("N/A ({r})")))
+            .unwrap_or_else(|| "N/A".to_string()),
+        d.vault_slot
+            .or(d.account_slot)
+            .map_or_else(|| "N/A".to_string(), |s| s.to_string()),
+    )
 }
 
 fn episode_text(ep: &EpisodeRecord, usd_ep: Option<&UsdEpisode>) -> String {
@@ -644,6 +741,8 @@ pub struct RunMetaRecord {
     /// HTTP attempts for USD price candles (separate from `requests_made`).
     pub requests_made_prices: u64,
     pub pricing: PricingMetaDto,
+    /// ADR-019 valuation of open positions: slot, as_of, policy, totals.
+    pub open_valuation: scout_app::OpenValuationMetaDto,
 }
 
 /// Run request budget (`--max-requests`; `null` = unlimited).
@@ -1009,6 +1108,9 @@ pub struct StatsDto {
     pub activity: ActivityDto,
     pub has_unknown_basis_inventory: bool,
     pub has_left_censored_inventory: bool,
+    /// ADR-019 totals over the open positions (`null` when valuation did
+    /// not run or there are no open positions); positions: `--detail full`.
+    pub open_valuation: Option<scout_app::OpenValuationTotalsDto>,
     pub open_positions_with_unknown_basis: u64,
     pub unknown_basis_lots_created: u64,
     pub diagnostics: DiagnosticsDto,
@@ -1115,11 +1217,12 @@ fn episode_usd_dto(u: &UsdEpisode) -> EpisodeUsdDto {
     }
 }
 
+/// `--detail full` open position: the ledger fields plus the ADR-019
+/// valuation (or its unvalued reason).
 #[derive(Debug, Serialize)]
 pub struct OpenPositionDto {
-    pub mint: String,
-    pub open_amount_raw: String,
-    pub unknown_basis_amount_raw: String,
+    #[serde(flatten)]
+    pub position: scout_app::OpenPositionDto,
     pub opened_at: Option<i64>,
 }
 
@@ -1558,6 +1661,7 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
         },
         has_unknown_basis_inventory: l.has_unknown_basis_inventory,
         has_left_censored_inventory: l.has_left_censored_inventory,
+        open_valuation: scout_app::ledger_totals_dto(l),
         open_positions_with_unknown_basis: l.open_positions_with_unknown_basis,
         unknown_basis_lots_created: l.unknown_basis_lots_created,
         diagnostics: DiagnosticsDto {
@@ -1642,13 +1746,15 @@ fn episode_dto(ep: &EpisodeRecord, usd: Option<&UsdEpisode>) -> EpisodeDto {
     }
 }
 
-fn open_dto(p: &OpenPosition) -> OpenPositionDto {
-    OpenPositionDto {
-        mint: bs58::encode(p.mint).into_string(),
-        open_amount_raw: p.open_amount_raw.to_string(),
-        unknown_basis_amount_raw: p.unknown_basis_amount_raw.to_string(),
-        opened_at: p.opened_at,
-    }
+fn open_dtos(l: &SolanaWalletLedgerReport) -> Vec<OpenPositionDto> {
+    l.open_positions
+        .iter()
+        .zip(scout_app::open_positions_dto(l))
+        .map(|(p, position)| OpenPositionDto {
+            position,
+            opened_at: p.opened_at,
+        })
+        .collect()
 }
 
 pub fn wallet_record(
@@ -1682,11 +1788,7 @@ pub fn wallet_record(
                 .map(|(i, ep)| episode_dto(ep, l.usd.as_ref().and_then(|u| u.episodes.get(i))))
                 .collect()
         }),
-        open_positions: w
-            .ledger
-            .as_ref()
-            .filter(|_| full)
-            .map(|l| l.open_positions.iter().map(open_dto).collect()),
+        open_positions: w.ledger.as_ref().filter(|_| full).map(open_dtos),
     }
 }
 
@@ -1708,6 +1810,8 @@ pub struct RunMetaInput<'a> {
     pub pricing: PricingMetaDto,
     /// Why the run is incomplete because of pricing (spent price budget).
     pub price_incomplete_reasons: Vec<String>,
+    /// ADR-019 valuation run facts (disabled with `--no-valuation`).
+    pub open_valuation: scout_app::OpenValuationMetaDto,
 }
 
 pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
@@ -1777,6 +1881,7 @@ pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
         },
         requests_made_prices: m.pricing.requests_made_prices,
         pricing: m.pricing.clone(),
+        open_valuation: m.open_valuation.clone(),
     }
 }
 
@@ -1930,6 +2035,7 @@ mod tests {
                 run: None,
             }),
             price_incomplete_reasons: Vec::new(),
+            open_valuation: scout_app::open_valuation_meta(None, 0),
         }
     }
 

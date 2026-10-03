@@ -27,3 +27,6 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
+scout-dex-solana.workspace = true
+base64.workspace = true
+futures.workspace = true

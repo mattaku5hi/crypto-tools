@@ -41,3 +41,16 @@ paper profits of thin markets must not lift strict ranking").
   large price impact instead of a paper profit.
 - Valuation depends on live state at run time (not reproducible later); `run_meta` records the slot
   and `as_of`.
+
+## Implementation evidence (2026-10-03)
+
+- Swap math: `crates/scout-dex-solana/src/swap_math.rs`; exact reproduction on the committed fixtures in
+  `crates/scout-dex-solana/tests/swap_math_evidence.rs` (run with `--nocapture` for per-signature rows).
+  Rules: every fee is `ceil(gross * bps / 10_000)` on the GROSS quote amount; constant-product output is
+  `floor(in * reserve_out / (reserve_in + in))`; PumpSwap runs on `pool_quote_vault + virtual_quote_reserves`
+  (the event's pre-trade reserves); curve `TradeEvent` reserves are POST-trade (`sol_amount` is gross; a sell pays
+  `sol_amount - fee - creator_fee`).
+- State: `getMultipleAccounts` (base64, `confirmed`), decoders in `crates/scout-dex-solana/src/pump_accounts.rs`.
+- Valuation: `crates/scout-engine/src/solana_open_valuation.rs`; venue accounts come from the decoded instruction
+  (`bonding_curve` / `pool` accounts), no PDA derivation is needed.
+- Residual (not a sell path): the fee-exempt mayhem-agent curve buy `2W63KrJw` does not follow the curve formula.
