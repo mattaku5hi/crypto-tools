@@ -55,3 +55,7 @@ committed live fixtures, `scout-engine/tests/venue_swap_legs.rs`: 275 events (Wh
 token-account deltas AND against the vault accounts named by the swap instruction, whose raw mints equal the leg's mints
 (input side exact 264, output side exact 273). The deployed Raydium CLMM `SwapEvent` is 213 bytes, the pinned IDL layout
 (197 bytes) plus 16 unpinned trailing bytes (19/19 samples); 213 is FixtureVerified, 197 IdlOnly.
+
+## EVM live fixtures
+
+- `evm_robinhood_token_aiden_v4_2026-10-03.json` — `evm-capture --chain robinhood --token 0x15e853bc1c69529bd0a16bab1a742645a3607e1f` (symbol `Aiden`), window 2026-10-03T17:54:46Z..18:04:46Z (blocks 79,276,983..79,282,918), public RPC `rpc.mainnet.chain.robinhood.com`, preflight ok: 48 txs, 330 logs, 45 Uniswap v4 `Swap` (gated), 44 extracted trades of which 19 with `NativeLegNotObserved` (native-ETH sells; no trace/archive source). Robinhood quote assets seen in the busiest v4 swaps: `USDG` `0x5fc5360d0400a0fd4f2af552add042d716f1d168`, `WETH` `0x0bd7d308f8e1639fab988df18a8011f41eacad73`.
