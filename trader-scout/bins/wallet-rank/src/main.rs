@@ -137,6 +137,23 @@ struct Args {
     #[arg(long)]
     max_mints_per_day: Option<u64>,
 
+    /// ADR-016: maximum share of `closed_unknown` among all closed
+    /// known+unknown episodes, integer percent 0..=100 (exact integer
+    /// comparison; `quality`/`insider` only). 0 = any unknown episode
+    /// excludes (the old strict rule). Default 10.
+    #[arg(
+        long,
+        default_value_t = 10,
+        value_parser = clap::value_parser!(u8).range(0..=100)
+    )]
+    max_unknown_episode_share: u8,
+
+    /// ADR-016: drop wallets whose worst-case PnL is unbounded (tier 2:
+    /// an unknown episode consumed an unknown-basis lot or lots of several
+    /// quote units) with exclusion `pnl_unbounded`.
+    #[arg(long)]
+    exclude_unbounded: bool,
+
     /// Strict variant: exclude wallets with ANY open position (default:
     /// include and flag `open_exposure=unvalued`; no price source yet).
     #[arg(long)]
@@ -242,6 +259,8 @@ fn policy_from(args: &Args) -> Result<RankPolicy, String> {
         p.max_mints_per_day = Some(v);
     }
     p.require_no_open = args.require_no_open;
+    p.max_unknown_episode_share_percent = args.max_unknown_episode_share;
+    p.exclude_unbounded = args.exclude_unbounded;
     p.quote = match args.quote.as_str() {
         "usdc" => QuoteUnit::UsdcUnits,
         "usdt" => QuoteUnit::UsdtUnits,
@@ -637,7 +656,7 @@ fn print_diagnostics(
     let opt = |v: Option<u64>| v.map_or_else(|| "none".to_string(), |n| n.to_string());
     eprintln!(
         "  policy: rank_by={} quote={} profile={} min_closed_episodes={} min_active_days={} \
-         max_trades_per_day={} max_mints_per_day={} exclude_unknown_basis={} require_no_open={} top={} \
+         max_trades_per_day={} max_mints_per_day={} unknown_share_gate={} max_unknown_episode_share_percent={} exclude_unbounded={} require_no_open={} top={} \
          (research starting policy, not statistical guarantees)",
         p.rank_by.label(),
         scout_engine::quote_unit_label(p.quote),
@@ -646,7 +665,9 @@ fn print_diagnostics(
         p.min_active_days,
         opt(p.max_trades_per_day),
         opt(p.max_mints_per_day),
-        p.exclude_unknown_basis,
+        p.unknown_share_gate,
+        p.max_unknown_episode_share_percent,
+        p.exclude_unbounded,
         p.require_no_open,
         p.top
     );

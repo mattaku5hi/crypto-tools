@@ -10,11 +10,11 @@ use scout_app::SCHEMA_VERSION;
 use scout_core::MONEY_SCALE;
 use scout_core::Money;
 use scout_engine::{
-    AnalysisWindow, EpisodeOutcome, EpisodeRecord, OpenPosition, QuoteUnit, QuoteUnitBlock, Ratio,
-    SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION, ScanFailureKind, ScanStop,
-    SolanaProtocolScope, SolanaWalletLedgerReport, SolanaWalletStats, SolanaWalletStatsReport,
-    format_quote_money, format_scaled_decimal, lamports_to_sol_string, quote_unit_decimals,
-    quote_unit_label, rational_to_decimal_string,
+    AnalysisWindow, EpisodeOutcome, EpisodePnlBound, EpisodeRecord, LowerBound, OpenPosition,
+    QuoteUnit, QuoteUnitBlock, Ratio, SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION,
+    ScanFailureKind, ScanStop, SolanaProtocolScope, SolanaWalletLedgerReport, SolanaWalletStats,
+    SolanaWalletStatsReport, format_quote_money, format_scaled_decimal, lamports_to_sol_string,
+    quote_unit_decimals, quote_unit_label, rational_to_decimal_string,
 };
 use serde::Serialize;
 
@@ -40,6 +40,8 @@ pub enum SortMode {
 /// `observed`: coverage complete and no Unknown closed episode.
 /// `known_subset`: value covers known closed episodes only (incomplete
 /// coverage and/or Unknown closed episodes).
+/// `known_subset_unbounded` (ADR-016): as `known_subset`, and an unknown
+/// episode has no worst-case bound (see the lower-bound fields).
 /// `n_a`: nothing known to report (never rendered as zero).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PnlView {
@@ -78,8 +80,17 @@ pub fn pnl_view(w: &SolanaWalletStats) -> PnlView {
         };
     }
     let observed = w.coverage_complete() && l.closed_episodes_unknown == 0;
+    let unbounded = l
+        .unit_block(QuoteUnit::Lamports)
+        .is_some_and(|b| b.unknown_pnl_bound == LowerBound::Unbounded);
     PnlView {
-        status: if observed { "observed" } else { "known_subset" },
+        status: if observed {
+            "observed"
+        } else if unbounded {
+            "known_subset_unbounded"
+        } else {
+            "known_subset"
+        },
         lamports: Some(l.realized_net_pnl_lamports),
         na_reason: None,
     }
@@ -133,7 +144,7 @@ fn ratio_cell(r: &RatioStatus<Money>, what: &str) -> String {
 // Table
 // ---------------------------------------------------------------------
 
-const HEADER: [&str; 21] = [
+const HEADER: [&str; 24] = [
     "wallet",
     "status",
     "realized_net_pnl_sol",
@@ -146,6 +157,9 @@ const HEADER: [&str; 21] = [
     "W/L/BE",
     "win_rate",
     "profit_factor",
+    "win_rate_lower_bound",
+    "pnl_lower_bound_sol",
+    "unknown_share",
     "median_hold_s",
     "trades",
     "mints",
@@ -167,6 +181,10 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
     let pnl_cell = match (pnl.status, pnl.lamports) {
         ("observed", Some(l)) => lamports_to_sol_string(l),
         ("known_subset", Some(l)) => format!("N/A (known subset: {})", lamports_to_sol_string(l)),
+        ("known_subset_unbounded", Some(l)) => format!(
+            "N/A (known subset, unbounded worst case: {})",
+            lamports_to_sol_string(l)
+        ),
         _ => na(pnl.na_reason.unwrap_or("unknown")),
     };
     let coverage = match w.status {
@@ -211,6 +229,9 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
             } else {
                 na("incomplete coverage")
             });
+            cells.push(win_rate_lb_cell(l));
+            cells.push(pnl_lb_cell(l));
+            cells.push(share_cell(l));
             cells.push(
                 l.median_holding_seconds
                     .map_or_else(|| na("no timed closed episodes"), |s| s.to_string()),
@@ -242,6 +263,50 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
     }
     cells.push(coverage);
     cells
+}
+
+/// ADR-016: `wins / (known + unknown)` as an exact fraction and percent.
+fn win_rate_lb_cell(l: &SolanaWalletLedgerReport) -> String {
+    match l.win_rate_lower_bound {
+        None => na("no closed known/unknown episodes"),
+        Some(w) => {
+            let pct = Ratio::new(i128::from(w.wins), i128::from(w.episodes))
+                .and_then(|r| r.percent_string(2))
+                .unwrap_or_default();
+            format!("{}/{} ({pct}%)", w.wins, w.episodes)
+        }
+    }
+}
+
+/// ADR-016: SOL worst-case net PnL (known + unknown-episode bounds - failed fees).
+fn pnl_lb_cell(l: &SolanaWalletLedgerReport) -> String {
+    let Some(b) = l.unit_block(QuoteUnit::Lamports) else {
+        return na("no SOL block");
+    };
+    match b.realized_pnl_lower_bound() {
+        LowerBound::Unbounded => "unbounded".to_string(),
+        LowerBound::Bounded(m) => {
+            if b.closed_episodes_known == 0 && m.is_zero() && l.failed_trade_fees_lamports == 0 {
+                return na("no known closed SOL episodes");
+            }
+            match scout_engine::lamports_to_money(l.failed_trade_fees_lamports)
+                .ok()
+                .and_then(|f| m.checked_sub(&f).ok())
+            {
+                Some(net) => format!(">= {}", money_exact_sol(net)),
+                None => "unbounded".to_string(),
+            }
+        }
+    }
+}
+
+/// ADR-016: `closed_unknown / (closed_known + closed_unknown)`.
+fn share_cell(l: &SolanaWalletLedgerReport) -> String {
+    let (u, t) = l.unknown_episode_share_parts();
+    match Ratio::new(i128::from(u), i128::from(t)).and_then(|r| r.percent_string(2)) {
+        Some(p) => format!("{u}/{t} ({p}%)"),
+        None => na("no closed known/unknown episodes"),
+    }
 }
 
 /// Realized PnL cell of a non-SOL unit: exact decimal of the known closed
@@ -287,11 +352,21 @@ fn episode_text(ep: &EpisodeRecord) -> String {
         _ => "N/A".to_string(),
     };
     let reasons: Vec<&str> = ep.unknown_reasons.iter().map(|r| r.label()).collect();
+    let bound = match ep.unknown_pnl_bound {
+        Some(EpisodePnlBound::Bounded { unit, lower_bound }) => format!(
+            " pnl_lower_bound_{}={}",
+            quote_unit_label(unit),
+            format_quote_money(unit, lower_bound).unwrap_or_else(|| "N/A".to_string())
+        ),
+        Some(EpisodePnlBound::Unbounded) => " pnl_lower_bound=unbounded".to_string(),
+        None => String::new(),
+    };
     format!(
-        "mint={mint} outcome={kind} pnl_{}={pnl} hold_s={} unknown_reasons=[{}]",
+        "mint={mint} outcome={kind} pnl_{}={pnl} hold_s={} consumed_basis={} unknown_reasons=[{}]{bound}",
         quote_unit_label(unit),
         ep.holding_seconds
             .map_or_else(|| "N/A".to_string(), |s| s.to_string()),
+        ep.consumed_basis_status.label(),
         reasons.join("; ")
     )
 }
@@ -680,6 +755,52 @@ pub struct QuoteUnitDto {
     pub profit_factor: RatioDto,
     pub open_episode_known_disposal_pnl: UnitAmountDto,
     pub open_episode_known_disposals: u64,
+    /// ADR-016: worst-case PnL (known + unknown-episode bounds), `unbounded`
+    /// if an unknown episode has no bound.
+    pub realized_pnl_lower_bound: BoundDto,
+    pub profit_factor_lower_bound: RatioBoundDto,
+}
+
+/// ADR-016: a lower bound that may not exist (`bounded`, `unbounded`, `n_a`).
+#[derive(Debug, Serialize)]
+pub struct BoundDto {
+    pub status: &'static str,
+    pub unit: &'static str,
+    pub raw: Option<String>,
+    pub decimal: Option<String>,
+}
+
+/// ADR-016: ratio lower bound (`value`, `no_observed_losses`, `undefined`, `unbounded`).
+#[derive(Debug, Serialize)]
+pub struct RatioBoundDto {
+    pub status: &'static str,
+    pub value: Option<String>,
+}
+
+/// ADR-016: exact `wins / (closed_known + closed_unknown)`.
+#[derive(Debug, Serialize)]
+pub struct WinRateBoundDto {
+    pub wins: u64,
+    pub episodes: u64,
+    pub percent_2dp: Option<String>,
+}
+
+/// ADR-016: effective unknown-episode share (exact counts).
+#[derive(Debug, Serialize)]
+pub struct UnknownShareDto {
+    pub closed_unknown: u64,
+    pub closed_known_and_unknown: u64,
+    pub percent_2dp: Option<String>,
+}
+
+/// ADR-016: worst-case PnL of one `closed_unknown` episode.
+#[derive(Debug, Serialize)]
+pub struct EpisodeBoundDto {
+    /// `bounded` or `unbounded`.
+    pub status: &'static str,
+    pub unit: Option<&'static str>,
+    pub raw: Option<String>,
+    pub decimal: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -748,6 +869,12 @@ pub struct StatsDto {
     pub breakeven: u64,
     pub win_rate: RatioDto,
     pub profit_factor: RatioDto,
+    /// ADR-016 (SOL block): worst-case net PnL, profit factor and the
+    /// all-unit win rate with every unknown episode counted as a loss.
+    pub realized_net_pnl_lower_bound: BoundDto,
+    pub profit_factor_lower_bound: RatioBoundDto,
+    pub win_rate_lower_bound: Option<WinRateBoundDto>,
+    pub unknown_episode_share: UnknownShareDto,
     pub median_holding_seconds: Option<i64>,
     pub holding_time_samples: u64,
     pub trades: TradesDto,
@@ -798,6 +925,10 @@ pub struct EpisodeDto {
     pub known_disposal_pnl: Option<AmountDto>,
     pub known_disposal_pnl_decimal: Option<String>,
     pub left_censored_amount_raw: String,
+    /// ADR-016: `known` or `partially_unknown`.
+    pub consumed_basis_status: &'static str,
+    /// ADR-016: `closed_unknown` only; `null` otherwise.
+    pub unknown_pnl_lower_bound: Option<EpisodeBoundDto>,
 }
 
 #[derive(Debug, Serialize)]
@@ -945,6 +1076,86 @@ fn quote_unit_dto(
             .unwrap_or_default(),
         },
         open_episode_known_disposals: b.open_episode_known_disposals,
+        realized_pnl_lower_bound: match b.realized_pnl_lower_bound_raw() {
+            LowerBound::Unbounded => BoundDto {
+                status: "unbounded",
+                unit: quote_unit_label(unit),
+                raw: None,
+                decimal: None,
+            },
+            LowerBound::Bounded(v) => BoundDto {
+                status: "bounded",
+                unit: quote_unit_label(unit),
+                raw: Some(v.to_string()),
+                decimal: scout_engine::quote_units_to_money(unit, v)
+                    .ok()
+                    .and_then(|m| format_quote_money(unit, m)),
+            },
+        },
+        profit_factor_lower_bound: ratio_bound_dto(b.profit_factor_lower_bound()),
+    }
+}
+
+fn ratio_bound_dto(b: LowerBound<RatioStatus<Money>>) -> RatioBoundDto {
+    match b {
+        LowerBound::Unbounded => RatioBoundDto {
+            status: "unbounded",
+            value: None,
+        },
+        LowerBound::Bounded(RatioStatus::Value { value }) => RatioBoundDto {
+            status: "value",
+            value: Some(money_str(value)),
+        },
+        LowerBound::Bounded(RatioStatus::NoObservedLosses) => RatioBoundDto {
+            status: "no_observed_losses",
+            value: None,
+        },
+        LowerBound::Bounded(RatioStatus::Undefined) => RatioBoundDto {
+            status: "undefined",
+            value: None,
+        },
+    }
+}
+
+/// SOL-block worst-case net PnL: lower-bound trade PnL minus failed-tx fees.
+fn net_pnl_lower_bound_dto(l: &SolanaWalletLedgerReport) -> BoundDto {
+    let na = BoundDto {
+        status: "n_a",
+        unit: "sol",
+        raw: None,
+        decimal: None,
+    };
+    let Some(b) = l.unit_block(QuoteUnit::Lamports) else {
+        return na;
+    };
+    if b.closed_episodes_known == 0 && l.failed_trade_fees_lamports == 0 {
+        return na;
+    }
+    match b.realized_pnl_lower_bound() {
+        LowerBound::Unbounded => BoundDto {
+            status: "unbounded",
+            ..na
+        },
+        LowerBound::Bounded(m) => {
+            match scout_engine::lamports_to_money(l.failed_trade_fees_lamports)
+                .ok()
+                .and_then(|f| m.checked_sub(&f).ok())
+            {
+                Some(net) => {
+                    let lamports = scout_engine::money_to_lamports_trunc(net);
+                    BoundDto {
+                        status: "bounded",
+                        unit: "sol",
+                        raw: Some(lamports.to_string()),
+                        decimal: Some(lamports_to_sol_string(lamports)),
+                    }
+                }
+                None => BoundDto {
+                    status: "unbounded",
+                    ..na
+                },
+            }
+        }
     }
 }
 
@@ -1008,6 +1219,28 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
         breakeven: l.breakeven,
         win_rate: ratio_dto(&l.win_rate, l.closed_episodes_known),
         profit_factor: ratio_dto(&l.profit_factor, l.closed_episodes_known),
+        realized_net_pnl_lower_bound: net_pnl_lower_bound_dto(l),
+        profit_factor_lower_bound: ratio_bound_dto(
+            l.unit_block(QuoteUnit::Lamports)
+                .map_or(LowerBound::Bounded(RatioStatus::Undefined), |b| {
+                    b.profit_factor_lower_bound_from(l.profit_factor)
+                }),
+        ),
+        win_rate_lower_bound: l.win_rate_lower_bound.map(|w| WinRateBoundDto {
+            wins: w.wins,
+            episodes: w.episodes,
+            percent_2dp: Ratio::new(i128::from(w.wins), i128::from(w.episodes))
+                .and_then(|r| r.percent_string(2)),
+        }),
+        unknown_episode_share: {
+            let (u, t) = l.unknown_episode_share_parts();
+            UnknownShareDto {
+                closed_unknown: u,
+                closed_known_and_unknown: t,
+                percent_2dp: Ratio::new(i128::from(u), i128::from(t))
+                    .and_then(|r| r.percent_string(2)),
+            }
+        },
         median_holding_seconds: l.median_holding_seconds,
         holding_time_samples: l.holding_time_samples,
         trades: TradesDto {
@@ -1123,6 +1356,21 @@ fn episode_dto(ep: &EpisodeRecord) -> EpisodeDto {
             .quote_unit
             .and_then(|u| format_quote_money(u, ep.known_disposal_pnl)),
         left_censored_amount_raw: ep.left_censored_amount_raw.to_string(),
+        consumed_basis_status: ep.consumed_basis_status.label(),
+        unknown_pnl_lower_bound: ep.unknown_pnl_bound.map(|b| match b {
+            EpisodePnlBound::Bounded { unit, lower_bound } => EpisodeBoundDto {
+                status: "bounded",
+                unit: Some(quote_unit_label(unit)),
+                raw: Some(scout_engine::money_to_quote_units_trunc(lower_bound).to_string()),
+                decimal: format_quote_money(unit, lower_bound),
+            },
+            EpisodePnlBound::Unbounded => EpisodeBoundDto {
+                status: "unbounded",
+                unit: None,
+                raw: None,
+                decimal: None,
+            },
+        }),
     }
 }
 

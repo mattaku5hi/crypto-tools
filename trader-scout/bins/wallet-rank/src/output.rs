@@ -11,11 +11,12 @@ use scout_analytics::RatioStatus;
 use scout_app::SCHEMA_VERSION;
 use scout_core::{MONEY_SCALE, Money};
 use scout_engine::{
-    AnalysisWindow, ExcludedWallet, OpenExposure, QuoteUnit, QuoteUnitBlock, RankedWallet, Ratio,
-    SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION, SOLANA_WALLET_RANK_VERSION, ScanStop,
-    SolanaProtocolScope, WalletRankObservation, WalletRankReport, format_quote_money,
-    format_scaled_decimal, lamports_to_sol_string, money_exact_sol_string, quote_unit_decimals,
-    quote_unit_label, quote_units_to_money, rational_to_decimal_string,
+    AnalysisWindow, ExcludedWallet, LowerBound, OpenExposure, QuoteUnit, QuoteUnitBlock,
+    RankedWallet, Ratio, SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION,
+    SOLANA_WALLET_RANK_VERSION, ScanStop, SolanaProtocolScope, WalletRankObservation,
+    WalletRankReport, format_quote_money, format_scaled_decimal, lamports_to_sol_string,
+    money_exact_sol_string, quote_unit_decimals, quote_unit_label, quote_units_to_money,
+    rational_to_decimal_string,
 };
 use serde::Serialize;
 
@@ -63,33 +64,24 @@ fn rfc3339(unix: i64) -> String {
     scout_app::format_unix_utc(u64::try_from(unix).unwrap_or(0))
 }
 
+/// ADR-016: the table shows the rank keys (lower bounds in tier 1,
+/// known-subset values in tier 2).
 fn roi_cell(o: &WalletRankObservation) -> String {
-    o.roi
+    o.key_roi
         .and_then(|r| r.percent_string(2))
         .map_or_else(|| "N/A".to_string(), |p| format!("{p}%"))
 }
 
 fn win_rate_cell(o: &WalletRankObservation) -> String {
-    match unit_block_of(o).map(|b| &b.win_rate) {
-        Some(RatioStatus::Value { value }) => {
-            // value is a fraction at MONEY_SCALE (8 digits); truncated for display.
-            format!(
-                "{}%",
-                format_scaled_decimal(value.scaled_units().div_euclid(10_000), 2)
-            )
-        }
-        _ => "N/A".to_string(),
-    }
+    o.win_rate_lower_bound
+        .and_then(|w| Ratio::new(i128::from(w.wins), i128::from(w.episodes)))
+        .and_then(|r| r.percent_string(2))
+        .map_or_else(|| "N/A".to_string(), |p| format!("{p}%"))
 }
 
 fn pf_cell(o: &WalletRankObservation) -> String {
-    let pf = if o.quote == QuoteUnit::Lamports {
-        o.ledger.as_ref().map(|l| &l.profit_factor)
-    } else {
-        unit_block_of(o).map(|b| &b.profit_factor)
-    };
-    match pf {
-        Some(RatioStatus::Value { value }) => money_str(*value),
+    match o.key_pf {
+        Some(RatioStatus::Value { value }) => money_str(value),
         Some(RatioStatus::NoObservedLosses) => "no_observed_losses".to_string(),
         _ => "N/A".to_string(),
     }
@@ -105,7 +97,7 @@ fn exposure_cell(o: &WalletRankObservation) -> String {
 fn row(r: &RankedWallet, profile: &str) -> Vec<String> {
     let o = &r.observation;
     let pnl = o
-        .net_pnl_raw
+        .key_net
         .and_then(|v| raw_decimal(o.quote, v))
         .unwrap_or_else(|| "N/A".to_string());
     let closed = unit_block_of(o).map_or(0, |b| b.closed_episodes_known);
@@ -119,7 +111,7 @@ fn row(r: &RankedWallet, profile: &str) -> Vec<String> {
         win_rate_cell(o),
         pf_cell(o),
         exposure_cell(o),
-        format!("{profile}/{}", o.pnl_status.label()),
+        format!("{profile}/{}/tier{}", o.pnl_status.label(), o.rank_tier),
     ]
 }
 
@@ -213,6 +205,10 @@ pub fn table_lines(
         "# exclusions by any reason: {}",
         counts_text(&all_counts(report))
     ));
+    out.push(format!(
+        "# unknown episodes (ADR-016): pnl/roi/win_rate/profit_factor are worst-case lower bounds (tier 1); tier 2 = unbounded, known-subset values, ranked after tier 1; max_unknown_episode_share={}% exclude_unbounded={}",
+        p.max_unknown_episode_share_percent, p.exclude_unbounded
+    ));
     if report
         .ranked
         .iter()
@@ -242,7 +238,11 @@ pub struct ThresholdsDto {
     pub min_active_days: u64,
     pub max_trades_per_day: Option<u64>,
     pub max_mints_per_day: Option<u64>,
-    pub exclude_unknown_basis: bool,
+    /// ADR-016: the unknown-episode share gate is applied (`quality`/`insider`).
+    pub unknown_share_gate: bool,
+    /// ADR-016: maximum unknown share of closed known+unknown episodes, percent.
+    pub max_unknown_episode_share_percent: u8,
+    pub exclude_unbounded: bool,
     pub require_no_open: bool,
     pub top: usize,
 }
@@ -368,6 +368,51 @@ pub struct UnitMetricsDto {
     pub realized_cost_roi: Option<UnitRoiDto>,
     pub win_rate: RatioDto,
     pub profit_factor: RatioDto,
+    /// ADR-016: worst-case PnL of this unit (known + unknown-episode bounds).
+    pub realized_pnl_lower_bound: BoundDto,
+    pub profit_factor_lower_bound: RatioBoundDto,
+    /// `null` when unbounded or undefined.
+    pub realized_cost_roi_lower_bound: Option<UnitRoiDto>,
+}
+
+/// ADR-016: a worst-case lower bound that may not exist. `status` is
+/// `bounded`, `unbounded` or `n_a`; `raw`/`decimal` only when bounded.
+#[derive(Debug, Serialize)]
+pub struct BoundDto {
+    pub status: &'static str,
+    pub unit: &'static str,
+    pub raw: Option<String>,
+    pub decimal: Option<String>,
+}
+
+/// ADR-016: ratio lower bound; `status` adds `unbounded` to the ratio statuses.
+#[derive(Debug, Serialize)]
+pub struct RatioBoundDto {
+    pub status: &'static str,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RoiBoundDto {
+    pub numerator_exact: String,
+    pub denominator_exact: String,
+    pub percent_2dp: Option<String>,
+}
+
+/// ADR-016: exact `wins / (closed_known + closed_unknown)`.
+#[derive(Debug, Serialize)]
+pub struct WinRateBoundDto {
+    pub wins: u64,
+    pub episodes: u64,
+    pub percent_2dp: Option<String>,
+}
+
+/// ADR-016: effective unknown-episode share (exact counts).
+#[derive(Debug, Serialize)]
+pub struct UnknownShareDto {
+    pub closed_unknown: u64,
+    pub closed_known_and_unknown: u64,
+    pub percent_2dp: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -464,6 +509,15 @@ pub struct MetricsDto {
     pub quote_units: Vec<UnitMetricsDto>,
     pub route: RouteCountsDto,
     pub realized_net_pnl: MoneyDto,
+    /// ADR-016: 1 bounded, 2 unbounded (`known_subset_unbounded`).
+    pub rank_tier: u8,
+    /// ADR-016: worst-case net PnL in the ranking unit (the tier-1 rank key).
+    pub realized_net_pnl_lower_bound: BoundDto,
+    /// ADR-016: worst-case ROI and profit factor in the ranking unit.
+    pub realized_cost_roi_lower_bound: Option<RoiBoundDto>,
+    pub profit_factor_lower_bound: RatioBoundDto,
+    pub win_rate_lower_bound: Option<WinRateBoundDto>,
+    pub unknown_episode_share: UnknownShareDto,
     pub realized_trade_pnl: AmountDto,
     pub consumed_acquisition_basis: AmountDto,
     pub realized_cost_roi: RoiDto,
@@ -575,6 +629,55 @@ fn ratio_dto(r: &RatioStatus<Money>, sample: u64) -> RatioDto {
     }
 }
 
+fn bound_dto(unit: QuoteUnit, b: Option<LowerBound<i128>>) -> BoundDto {
+    let label = quote_unit_label(unit);
+    match b {
+        None => BoundDto {
+            status: "n_a",
+            unit: label,
+            raw: None,
+            decimal: None,
+        },
+        Some(LowerBound::Unbounded) => BoundDto {
+            status: "unbounded",
+            unit: label,
+            raw: None,
+            decimal: None,
+        },
+        Some(LowerBound::Bounded(v)) => BoundDto {
+            status: "bounded",
+            unit: label,
+            raw: Some(v.to_string()),
+            decimal: raw_decimal(unit, v),
+        },
+    }
+}
+
+fn ratio_bound_dto(b: Option<LowerBound<RatioStatus<Money>>>) -> RatioBoundDto {
+    match b {
+        None => RatioBoundDto {
+            status: "n_a",
+            value: None,
+        },
+        Some(LowerBound::Unbounded) => RatioBoundDto {
+            status: "unbounded",
+            value: None,
+        },
+        Some(LowerBound::Bounded(RatioStatus::Value { value })) => RatioBoundDto {
+            status: "value",
+            value: Some(money_str(value)),
+        },
+        Some(LowerBound::Bounded(RatioStatus::NoObservedLosses)) => RatioBoundDto {
+            status: "no_observed_losses",
+            value: None,
+        },
+        Some(LowerBound::Bounded(RatioStatus::Undefined)) => RatioBoundDto {
+            status: "undefined",
+            value: None,
+        },
+    }
+}
+
 fn rational(n: u64, d: u64) -> RationalDto {
     RationalDto {
         numerator: n,
@@ -617,7 +720,33 @@ fn unit_metrics_dto(b: &QuoteUnitBlock) -> UnitMetricsDto {
             }),
         win_rate: ratio_dto(&b.win_rate, b.closed_episodes_known),
         profit_factor: ratio_dto(&b.profit_factor, b.closed_episodes_known),
+        realized_pnl_lower_bound: bound_dto(
+            unit,
+            known_or_unknown_bound(b).then(|| b.realized_pnl_lower_bound_raw()),
+        ),
+        profit_factor_lower_bound: ratio_bound_dto(Some(b.profit_factor_lower_bound())),
+        realized_cost_roi_lower_bound: roi_lower_bound(b).map(|(r, n, d)| UnitRoiDto {
+            numerator_exact: format_quote_money(unit, n).unwrap_or_default(),
+            denominator_exact: format_quote_money(unit, d).unwrap_or_default(),
+            percent_2dp: r.percent_string(2),
+        }),
     }
+}
+
+/// A block has a PnL lower bound to show when it has a known closed
+/// episode or an unknown-episode bound (never zero out of nothing).
+fn known_or_unknown_bound(b: &QuoteUnitBlock) -> bool {
+    b.closed_episodes_known > 0 || b.unknown_pnl_bound != LowerBound::Bounded(Money::ZERO)
+}
+
+/// `(ratio, numerator, denominator)` of the worst-case ROI of one block.
+fn roi_lower_bound(b: &QuoteUnitBlock) -> Option<(Ratio, Money, Money)> {
+    let n = b.realized_pnl_lower_bound().bounded().copied()?;
+    let d = b.consumed_basis_with_unknown_exact()?;
+    (b.closed_episodes_known > 0)
+        .then(|| Ratio::new(n.scaled_units(), d.scaled_units()))
+        .flatten()
+        .map(|r| (r, n, d))
 }
 
 fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
@@ -701,6 +830,31 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
                 o.net_pnl_raw
                     .map(|_| money_exact_sol_string(l.realized_net_pnl_exact)),
             ),
+        },
+        rank_tier: o.rank_tier,
+        realized_net_pnl_lower_bound: bound_dto(o.quote, o.net_pnl_lower_bound),
+        realized_cost_roi_lower_bound: unit_block_of(o).and_then(|b| {
+            roi_lower_bound(b).map(|(r, n, d)| RoiBoundDto {
+                numerator_exact: format_quote_money(o.quote, n).unwrap_or_default(),
+                denominator_exact: format_quote_money(o.quote, d).unwrap_or_default(),
+                percent_2dp: r.percent_string(2),
+            })
+        }),
+        profit_factor_lower_bound: ratio_bound_dto(o.pf_lower_bound),
+        win_rate_lower_bound: o.win_rate_lower_bound.map(|w| WinRateBoundDto {
+            wins: w.wins,
+            episodes: w.episodes,
+            percent_2dp: Ratio::new(i128::from(w.wins), i128::from(w.episodes))
+                .and_then(|r| r.percent_string(2)),
+        }),
+        unknown_episode_share: {
+            let (unknown, total) = l.unknown_episode_share_parts();
+            UnknownShareDto {
+                closed_unknown: unknown,
+                closed_known_and_unknown: total,
+                percent_2dp: Ratio::new(i128::from(unknown), i128::from(total))
+                    .and_then(|r| r.percent_string(2)),
+            }
         },
         realized_trade_pnl: amount(l.realized_trade_pnl_lamports),
         consumed_acquisition_basis: amount(l.consumed_acquisition_basis_lamports),
@@ -821,7 +975,9 @@ pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMe
             min_active_days: p.min_active_days,
             max_trades_per_day: p.max_trades_per_day,
             max_mints_per_day: p.max_mints_per_day,
-            exclude_unknown_basis: p.exclude_unknown_basis,
+            unknown_share_gate: p.unknown_share_gate,
+            max_unknown_episode_share_percent: p.max_unknown_episode_share_percent,
+            exclude_unbounded: p.exclude_unbounded,
             require_no_open: p.require_no_open,
             top: p.top,
         },

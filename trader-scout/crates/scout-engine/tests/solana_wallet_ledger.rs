@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use futures::StreamExt as _;
 use proptest::prelude::*;
+use scout_analytics::RatioStatus;
 use scout_api::{HistoryProvider, ScanRequest, ScanTask};
 use scout_core::{
     AddressBytes, AssetKey, Money, RawPayload, RawSolanaInstruction, RawSolanaTransaction,
@@ -28,11 +29,12 @@ use scout_dex_solana::{
     pair_trades_with_events, reconcile_pump_amm_transaction,
 };
 use scout_engine::{
-    EpisodeOutcome, LedgerDecoders, LedgerOptions, PUMP_BONDING_CURVE_PROGRAM_ID, QuoteUnit,
-    RouteRejections, RouteSwapRecord, SolanaWalletLedgerReport, USDC_MINT, USDT_MINT,
-    UnknownReason, Venue, allocate_fee_proportionally, build_solana_wallet_ledger,
-    build_solana_wallet_ledger_venues, build_solana_wallet_ledger_with_options, format_quote_money,
-    lamports_to_money, pump_amm_decoder, pump_bonding_curve_decoder, solana_mainnet_chain,
+    ConsumedBasisStatus, EpisodeOutcome, EpisodePnlBound, LedgerDecoders, LedgerOptions,
+    LowerBound, PUMP_BONDING_CURVE_PROGRAM_ID, QuoteUnit, RouteRejections, RouteSwapRecord,
+    SolanaWalletLedgerReport, USDC_MINT, USDT_MINT, UnknownReason, Venue, WinRateLowerBound,
+    allocate_fee_proportionally, build_solana_wallet_ledger, build_solana_wallet_ledger_venues,
+    build_solana_wallet_ledger_with_options, format_quote_money, lamports_to_money,
+    pump_amm_decoder, pump_bonding_curve_decoder, solana_mainnet_chain,
 };
 use scout_providers::HeliusProvider;
 use tokio_util::sync::CancellationToken;
@@ -722,6 +724,133 @@ fn unexplained_inbound_transfer_then_sell_is_unknown_not_zero() {
     let reasons = &r.episodes[0].unknown_reasons;
     assert!(reasons.contains(&UnknownReason::UnexplainedInboundTokenMovement));
     assert!(reasons.contains(&UnknownReason::UnknownBasisLotConsumed));
+}
+
+/// ADR-016: the worst case of an unknown episode with a fully known
+/// consumed basis is `-basis` (proceeds unknown but >= 0).
+#[test]
+fn adr016_unknown_episode_with_known_basis_is_bounded_by_minus_basis() {
+    let ev = Ev {
+        mint: M1,
+        user: W,
+        is_buy: true,
+        sol: 1_000_000,
+        tokens: 1000,
+        fee: 0,
+        creator_fee: 0,
+        ts: 10,
+    };
+    let tx = Tx {
+        sig: 1,
+        slot: 1,
+        index: 0,
+        ixs: vec![trade_ix(TradeSide::Buy, None, W, M1, 0), event_ix(&ev, 1)],
+        bals: vec![bal(M1, 77, 0, 1000)],
+        fee: 5_000,
+        payer: W,
+        native: vec![nat(W, -1_005_000)],
+        ok: true,
+    }
+    .build();
+    let r = run(&[tx]);
+    assert_eq!(r.closed_episodes_unknown, 1);
+    let ep = &r.episodes[0];
+    assert_eq!(ep.consumed_basis_status, ConsumedBasisStatus::Known);
+    let basis = ep.consumed_known_basis_by_unit.clone();
+    assert_eq!(basis.len(), 1);
+    assert_eq!(basis[0].0, QuoteUnit::Lamports);
+    assert_eq!(basis[0].1, lam(1_005_000));
+    assert_eq!(
+        ep.unknown_pnl_bound,
+        Some(EpisodePnlBound::Bounded {
+            unit: QuoteUnit::Lamports,
+            lower_bound: Money::ZERO.checked_sub(&basis[0].1).unwrap(),
+        })
+    );
+    // Per-unit block: no known episode, bound = -basis, never zero.
+    let sol = r.unit_block(QuoteUnit::Lamports).unwrap();
+    assert_eq!(sol.closed_episodes_known, 0);
+    assert_eq!(
+        sol.realized_pnl_lower_bound(),
+        LowerBound::Bounded(Money::ZERO.checked_sub(&basis[0].1).unwrap())
+    );
+    assert!(matches!(
+        sol.realized_pnl_lower_bound_raw(),
+        LowerBound::Bounded(v) if v < 0
+    ));
+    // PF lower bound: no profit, loss = basis -> value 0 (floored).
+    assert_eq!(
+        sol.profit_factor_lower_bound(),
+        LowerBound::Bounded(RatioStatus::Value { value: Money::ZERO })
+    );
+    // Other units are untouched.
+    let usdc = r.unit_block(QuoteUnit::UsdcUnits).unwrap();
+    assert_eq!(
+        usdc.realized_pnl_lower_bound(),
+        LowerBound::Bounded(Money::ZERO)
+    );
+    // Win rate lower bound counts the unknown episode as a non-win.
+    assert_eq!(
+        r.win_rate_lower_bound,
+        Some(WinRateLowerBound {
+            wins: 0,
+            episodes: 1
+        })
+    );
+    assert_eq!(r.unknown_episode_share_parts(), (1, 1));
+}
+
+/// ADR-016: a consumed unknown-basis lot makes the episode unbounded and
+/// taints every unit block.
+#[test]
+fn adr016_unknown_basis_lot_makes_the_episode_and_blocks_unbounded() {
+    let transfer_in = Tx {
+        sig: 1,
+        slot: 1,
+        index: 0,
+        ixs: vec![],
+        bals: vec![bal(M1, W, 0, 1000)],
+        fee: 0,
+        payer: OTHER,
+        native: vec![],
+        ok: true,
+    }
+    .build();
+    let sell = trade_tx(
+        2,
+        2,
+        TradeSide::Sell,
+        M1,
+        1000,
+        1000,
+        900_000,
+        0,
+        0,
+        100,
+        0,
+        OTHER,
+    );
+    let r = run(&[transfer_in, sell]);
+    let ep = &r.episodes[0];
+    assert_eq!(ep.outcome, EpisodeOutcome::ClosedUnknown);
+    assert_eq!(
+        ep.consumed_basis_status,
+        ConsumedBasisStatus::PartiallyUnknown
+    );
+    assert_eq!(ep.unknown_pnl_bound, Some(EpisodePnlBound::Unbounded));
+    for b in &r.unit_blocks {
+        assert_eq!(b.unknown_pnl_bound, LowerBound::Unbounded, "{:?}", b.unit);
+        assert_eq!(b.realized_pnl_lower_bound(), LowerBound::Unbounded);
+        assert_eq!(b.profit_factor_lower_bound(), LowerBound::Unbounded);
+        assert_eq!(b.consumed_basis_with_unknown_exact(), None);
+    }
+    assert_eq!(
+        r.win_rate_lower_bound,
+        Some(WinRateLowerBound {
+            wins: 0,
+            episodes: 1
+        })
+    );
 }
 
 #[test]

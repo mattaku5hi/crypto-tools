@@ -89,7 +89,7 @@ use crate::solana_buy_qualification::{
 };
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
-pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/7 (ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
+pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/8 (ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
 
 /// Scope text for report metadata (invariant #10): allowed quote units and
 /// the route-swap rule of ADR-013.
@@ -272,6 +272,68 @@ impl UnknownReason {
     }
 }
 
+/// ADR-016: is the acquisition basis consumed by an episode fully known?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumedBasisStatus {
+    /// Every lot consumed by the episode's disposals had a known basis.
+    Known,
+    /// At least one consumed lot had an unknown basis.
+    PartiallyUnknown,
+}
+
+impl ConsumedBasisStatus {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Known => "known",
+            Self::PartiallyUnknown => "partially_unknown",
+        }
+    }
+}
+
+/// ADR-016: worst-case PnL bound of one `ClosedUnknown` episode.
+///
+/// Proceeds are unknown but never negative, so PnL >= -(consumed known
+/// basis). The bound is exact (`Money`), in the single quote unit of the
+/// consumed lots. It is [`Unbounded`](Self::Unbounded) when any consumed
+/// lot had an unknown basis, or when the consumed lots span more than one
+/// quote unit (documented conservative rule: such an episode taints every
+/// unit block instead of guessing which unit absorbs the loss).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpisodePnlBound {
+    /// `lower_bound <= 0`, denominated in `unit`.
+    Bounded {
+        unit: QuoteUnit,
+        lower_bound: Money,
+    },
+    Unbounded,
+}
+
+/// ADR-016: a lower bound that may not exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LowerBound<T> {
+    Bounded(T),
+    Unbounded,
+}
+
+impl<T> LowerBound<T> {
+    #[must_use]
+    pub const fn bounded(&self) -> Option<&T> {
+        match self {
+            Self::Bounded(v) => Some(v),
+            Self::Unbounded => None,
+        }
+    }
+}
+
+/// ADR-016: exact `wins / (closed_known + closed_unknown)`; every unknown
+/// closed episode counts as a non-win.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WinRateLowerBound {
+    pub wins: u64,
+    pub episodes: u64,
+}
+
 /// Outcome of one `(wallet, mint)` inventory episode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EpisodeOutcome {
@@ -311,6 +373,15 @@ pub struct EpisodeRecord {
     pub known_disposal_consumed_basis: Money,
     /// Raw token units booked as left-censored shortfall in this episode.
     pub left_censored_amount_raw: u128,
+    /// ADR-016: whether every lot consumed by the episode's disposals had a
+    /// known basis.
+    pub consumed_basis_status: ConsumedBasisStatus,
+    /// ADR-016: capitalized basis of the KNOWN-basis lots consumed by ALL
+    /// disposals of the episode (known and unknown ones), per lot quote
+    /// unit (ascending, no duplicates).
+    pub consumed_known_basis_by_unit: Vec<(QuoteUnit, Money)>,
+    /// ADR-016: worst-case PnL bound; `Some` exactly for `ClosedUnknown`.
+    pub unknown_pnl_bound: Option<EpisodePnlBound>,
 }
 
 /// One open position at the end of history. Never carries a value.
@@ -669,6 +740,9 @@ pub struct SolanaWalletLedgerReport {
     /// basis or any closed episode is Unknown. Materiality is the caller's policy.
     /// Only in-window causes (ADR-011 §5); left-censoring is excluded.
     pub has_unknown_basis_inventory: bool,
+    /// ADR-016: `wins / (closed_known + closed_unknown)` over all units;
+    /// `None` when there is no closed known/unknown episode.
+    pub win_rate_lower_bound: Option<WinRateLowerBound>,
     /// Any left-censored episode / shortfall (windowed runs).
     pub has_left_censored_inventory: bool,
     pub open_positions_with_unknown_basis: u64,
@@ -724,9 +798,89 @@ pub struct QuoteUnitBlock {
     pub open_episode_known_disposals: u64,
     pub win_rate: RatioStatus<Money>,
     pub profit_factor: RatioStatus<Money>,
+    /// ADR-016: Σ positive / Σ |negative| episode PnL of the known closed
+    /// episodes of this unit (the profit-factor parts, exact).
+    pub gross_profit_exact: Money,
+    pub gross_loss_abs_exact: Money,
+    /// ADR-016: Σ worst-case bounds (each <= 0) of the `ClosedUnknown`
+    /// episodes bounded in this unit, or `Unbounded` if ANY unknown episode
+    /// of the wallet is unbounded (the taint applies to every unit block).
+    pub unknown_pnl_bound: LowerBound<Money>,
 }
 
 impl QuoteUnitBlock {
+    /// ADR-016: `realized_trade_pnl + Σ unknown-episode bounds` (exact).
+    #[must_use]
+    pub fn realized_pnl_lower_bound(&self) -> LowerBound<Money> {
+        match self.unknown_pnl_bound {
+            LowerBound::Unbounded => LowerBound::Unbounded,
+            LowerBound::Bounded(b) => self
+                .realized_trade_pnl_exact
+                .checked_add(&b)
+                .map_or(LowerBound::Unbounded, LowerBound::Bounded),
+        }
+    }
+
+    /// ADR-016: raw-unit (truncated) form of [`Self::realized_pnl_lower_bound`].
+    #[must_use]
+    pub fn realized_pnl_lower_bound_raw(&self) -> LowerBound<i128> {
+        match self.realized_pnl_lower_bound() {
+            LowerBound::Bounded(m) => LowerBound::Bounded(money_to_quote_units_trunc(m)),
+            LowerBound::Unbounded => LowerBound::Unbounded,
+        }
+    }
+
+    /// ADR-016: consumed basis including the known basis of the bounded
+    /// unknown episodes (the lower-bound ROI denominator).
+    #[must_use]
+    pub fn consumed_basis_with_unknown_exact(&self) -> Option<Money> {
+        match self.unknown_pnl_bound {
+            LowerBound::Unbounded => None,
+            LowerBound::Bounded(b) => self.consumed_acquisition_basis_exact.checked_sub(&b).ok(),
+        }
+    }
+
+    /// ADR-016: `gross_profit / (gross_loss + Σ |unknown bounds|)` with the
+    /// profit-factor semantics (Money scale, floored). `base` is the known
+    /// profit factor, returned unchanged when there is nothing to add.
+    #[must_use]
+    pub fn profit_factor_lower_bound_from(
+        &self,
+        base: RatioStatus<Money>,
+    ) -> LowerBound<RatioStatus<Money>> {
+        let b = match self.unknown_pnl_bound {
+            LowerBound::Unbounded => return LowerBound::Unbounded,
+            LowerBound::Bounded(b) => b,
+        };
+        if b.is_zero() {
+            return LowerBound::Bounded(base);
+        }
+        let Ok(loss) = self.gross_loss_abs_exact.checked_sub(&b) else {
+            return LowerBound::Unbounded;
+        };
+        let gp = self.gross_profit_exact;
+        if loss.is_zero() && gp.is_zero() {
+            return LowerBound::Bounded(RatioStatus::Undefined);
+        }
+        if loss.is_zero() {
+            return LowerBound::Bounded(RatioStatus::NoObservedLosses);
+        }
+        let scale = 10i128.pow(MONEY_SCALE);
+        match gp.scaled_units().checked_mul(scale) {
+            Some(n) => LowerBound::Bounded(RatioStatus::Value {
+                value: Money::from_scaled_units(n.div_euclid(loss.scaled_units())),
+            }),
+            None => LowerBound::Unbounded,
+        }
+    }
+
+    /// ADR-016: [`Self::profit_factor_lower_bound_from`] over this block's own
+    /// profit factor.
+    #[must_use]
+    pub fn profit_factor_lower_bound(&self) -> LowerBound<RatioStatus<Money>> {
+        self.profit_factor_lower_bound_from(self.profit_factor)
+    }
+
     /// ROI as the exact rational `(realized_pnl, consumed_basis)` in scaled
     /// `Money` units; `None` without known closed episodes or a zero basis.
     #[must_use]
@@ -751,6 +905,9 @@ impl QuoteUnitBlock {
             open_episode_known_disposals: 0,
             win_rate: RatioStatus::Undefined,
             profit_factor: RatioStatus::Undefined,
+            gross_profit_exact: Money::ZERO,
+            gross_loss_abs_exact: Money::ZERO,
+            unknown_pnl_bound: LowerBound::Bounded(Money::ZERO),
         }
     }
 }
@@ -760,6 +917,16 @@ impl SolanaWalletLedgerReport {
     #[must_use]
     pub fn unit_block(&self, unit: QuoteUnit) -> Option<&QuoteUnitBlock> {
         self.unit_blocks.iter().find(|b| b.unit == unit)
+    }
+
+    /// ADR-016: `(closed_unknown, closed_known + closed_unknown)`.
+    #[must_use]
+    pub fn unknown_episode_share_parts(&self) -> (u64, u64) {
+        (
+            self.closed_episodes_unknown,
+            self.closed_episodes_known
+                .saturating_add(self.closed_episodes_unknown),
+        )
     }
 }
 
@@ -856,6 +1023,10 @@ struct EpisodeAcc {
     unknown: BTreeSet<UnknownReason>,
     known_disposals: u64,
     left_censored_raw: u128,
+    /// ADR-016: known-basis lots consumed by every disposal, per unit.
+    basis_by_unit: BTreeMap<QuoteUnit, Money>,
+    /// ADR-016: some disposal consumed an unknown-basis lot.
+    consumed_unknown_lot: bool,
 }
 
 struct MintState {
@@ -950,6 +1121,8 @@ impl Builder {
                 unknown: BTreeSet::new(),
                 known_disposals: 0,
                 left_censored_raw: 0,
+                basis_by_unit: BTreeMap::new(),
+                consumed_unknown_lot: false,
             });
         }
         let status = match reason {
@@ -1028,6 +1201,13 @@ impl Builder {
                     context: "dispose without open episode",
                 },
             ))?;
+        for (u, m) in &result.consumed_known_basis_by_unit {
+            let acc = ep.basis_by_unit.entry(*u).or_insert(Money::ZERO);
+            *acc = money_add(*acc, *m)?;
+        }
+        if !result.all_basis_known {
+            ep.consumed_unknown_lot = true;
+        }
         let known_pnl = match (gross, result.realized_trade_pnl) {
             (Some(_), Some(pnl)) => Some(pnl),
             _ => None,
@@ -1120,6 +1300,27 @@ fn close_record(
         (Some(o), Some(c), EpisodeOutcome::ClosedKnown { .. }) if c >= o => c.checked_sub(o),
         _ => None,
     };
+    let consumed_basis_status = if ep.consumed_unknown_lot {
+        ConsumedBasisStatus::PartiallyUnknown
+    } else {
+        ConsumedBasisStatus::Known
+    };
+    let consumed_known_basis_by_unit: Vec<(QuoteUnit, Money)> =
+        ep.basis_by_unit.iter().map(|(u, m)| (*u, *m)).collect();
+    let unknown_pnl_bound = (outcome == EpisodeOutcome::ClosedUnknown).then(|| {
+        if ep.consumed_unknown_lot || consumed_known_basis_by_unit.len() > 1 {
+            return EpisodePnlBound::Unbounded;
+        }
+        let (unit, basis) = consumed_known_basis_by_unit
+            .first()
+            .copied()
+            .unwrap_or((ep.unit.unwrap_or(QuoteUnit::Lamports), Money::ZERO));
+        Money::ZERO
+            .checked_sub(&basis)
+            .map_or(EpisodePnlBound::Unbounded, |lower_bound| {
+                EpisodePnlBound::Bounded { unit, lower_bound }
+            })
+    });
     Ok(EpisodeRecord {
         mint,
         outcome,
@@ -1133,6 +1334,9 @@ fn close_record(
         known_disposal_pnl: ep.pnl,
         known_disposal_consumed_basis: ep.consumed_basis,
         left_censored_amount_raw: ep.left_censored_raw,
+        consumed_basis_status,
+        consumed_known_basis_by_unit,
+        unknown_pnl_bound,
     })
 }
 
@@ -2619,6 +2823,10 @@ impl Builder {
         let mut unit_cohorts: BTreeMap<QuoteUnit, EpisodeCohort> = BTreeMap::new();
         let mut open_pnls: BTreeMap<QuoteUnit, Money> = BTreeMap::new();
         let mut cohort = EpisodeCohort::default();
+        // ADR-016: per-unit worst-case sum of unknown-episode bounds, and
+        // the wallet-wide unbounded taint.
+        let mut unknown_bounds: BTreeMap<QuoteUnit, Money> = BTreeMap::new();
+        let mut any_unbounded = false;
         let mut holds: Vec<i64> = Vec::new();
         for r in &self.records {
             match r.outcome {
@@ -2633,8 +2841,10 @@ impl Builder {
                             r.known_disposal_consumed_basis,
                         )?;
                         if pnl.is_positive() {
+                            b.gross_profit_exact = money_add(b.gross_profit_exact, pnl)?;
                             b.wins += 1;
                         } else if pnl.is_negative() {
+                            b.gross_loss_abs_exact = b.gross_loss_abs_exact.checked_sub(&pnl)?;
                             b.losses += 1;
                         } else {
                             b.breakeven += 1;
@@ -2664,7 +2874,16 @@ impl Builder {
                         holds.push(h);
                     }
                 }
-                EpisodeOutcome::ClosedUnknown => closed_unknown += 1,
+                EpisodeOutcome::ClosedUnknown => {
+                    closed_unknown += 1;
+                    match r.unknown_pnl_bound {
+                        Some(EpisodePnlBound::Bounded { unit, lower_bound }) => {
+                            let acc = unknown_bounds.entry(unit).or_insert(Money::ZERO);
+                            *acc = money_add(*acc, lower_bound)?;
+                        }
+                        Some(EpisodePnlBound::Unbounded) | None => any_unbounded = true,
+                    }
+                }
                 EpisodeOutcome::LeftCensored => left_censored += 1,
                 EpisodeOutcome::Open => {
                     open_eps += 1;
@@ -2689,7 +2908,17 @@ impl Builder {
             let c = unit_cohorts.remove(&b.unit).unwrap_or_default();
             b.win_rate = win_rate(&c)?;
             b.profit_factor = profit_factor(&c)?;
+            b.unknown_pnl_bound = if any_unbounded {
+                LowerBound::Unbounded
+            } else {
+                LowerBound::Bounded(unknown_bounds.get(&b.unit).copied().unwrap_or(Money::ZERO))
+            };
         }
+        let total_closed = closed_known.saturating_add(closed_unknown);
+        let win_rate_lower_bound = (total_closed > 0).then_some(WinRateLowerBound {
+            wins,
+            episodes: total_closed,
+        });
         let win_rate = win_rate(&cohort)?;
         let sol = blocks
             .iter()
@@ -2759,6 +2988,7 @@ impl Builder {
             median_holding_seconds,
             holding_time_samples,
             has_unknown_basis_inventory: open_with_unknown > 0 || closed_unknown > 0,
+            win_rate_lower_bound,
             has_left_censored_inventory: left_censored > 0 || self.left_censored_total > 0,
             open_positions_with_unknown_basis: open_with_unknown,
             open_positions,

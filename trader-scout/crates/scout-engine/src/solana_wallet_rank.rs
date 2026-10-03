@@ -9,7 +9,8 @@
 //! the unit whose known closed episodes feed the PnL / ROI / profit-factor
 //! ranking metrics and the `min_closed_episodes` gate. Figures of other
 //! units are never mixed in; they stay visible on the report's
-//! `unit_blocks`. Unknown-basis gates stay wallet-wide (conservative).
+//! `unit_blocks`. The unknown-episode share gate stays wallet-wide
+//! (conservative).
 //!
 //! # Contract
 //! * Every input wallet lands in exactly one of [`WalletRankReport::ranked`]
@@ -17,8 +18,8 @@
 //! * A wallet may fail several gates: ALL reasons are recorded, the
 //!   primary one is the first in the fixed [`ExclusionReason`] order:
 //!   `provider_error`, `not_scanned`, `incomplete_coverage`, `no_activity`,
-//!   `no_pump_activity`, `unknown_basis`, `metric_unknown`,
-//!   `insufficient_closed_episodes`, `insufficient_active_days`,
+//!   `no_pump_activity`, `unknown_episode_share`, `pnl_unbounded`,
+//!   `metric_unknown`, `insufficient_closed_episodes`, `insufficient_active_days`,
 //!   `activity_unknown`, `activity_ceiling_trades_per_day`,
 //!   `activity_ceiling_mints_per_day`, `open_exposure`, `below_top_n`.
 //!   Wallets whose scan status is not `ok` carry only their status reason
@@ -28,7 +29,30 @@
 //!   goes to the exclusions with `metric_unknown`, it never takes part in
 //!   the numeric sort (also under `--profile none`).
 //!
+//! # Unknown episodes (ADR-016)
+//! * Share gate (`quality`/`insider`): a wallet passes iff
+//!   `closed_unknown * 100 <= max_unknown_episode_share_percent *
+//!   (closed_known + closed_unknown)` (exact integers, all units;
+//!   left-censored episodes are in neither count). Default 10 %; `0` is
+//!   the old strict rule. Failing it records `unknown_episode_share`.
+//!   `has_unknown_basis_inventory` no longer excludes by itself.
+//! * Rank keys are worst-case LOWER BOUNDS (every unknown episode is a
+//!   loss; PnL bound = -known consumed basis): net PnL, cost ROI
+//!   (`lower-bound PnL / (consumed basis + known basis of unknown
+//!   episodes)`) and profit factor. An unknown episode can therefore
+//!   never raise a wallet's keys.
+//! * Tier 1 = bounded wallets (all-known wallets included); tier 2 = a
+//!   wallet with an unbounded unknown episode (consumed lot with unknown
+//!   basis, or lots of several quote units). Tier 2 sorts after every
+//!   tier-1 wallet, by its known-subset values, labelled
+//!   `pnl_status = known_subset_unbounded` / `rank_tier = 2`.
+//!   [`RankPolicy::exclude_unbounded`] drops tier 2 (`pnl_unbounded`).
+//! * Win-rate presentation uses `win_rate_lower_bound`; no gate in this
+//!   module reads a win rate.
+//!
 //! # Sort (ARCHITECTURE §10 "Default rank")
+//! Tier 1 before tier 2, then the keys below (lower bounds in tier 1,
+//! known-subset values in tier 2).
 //! `RealizedNetPnl`: net PnL desc, then `realized_cost_roi` desc (exact
 //! rational), then known closed episode count desc, then wallet key asc.
 //! `RealizedCostRoi` / `ProfitFactor` put their own metric first and then
@@ -40,9 +64,9 @@
 //!
 //! # Profiles (research starting policy, NOT statistical guarantees)
 //! * `quality` (ARCHITECTURE defaults): >= 20 known closed episodes, >= 7
-//!   active UTC days, complete coverage, no unknown-basis episode/inventory.
+//!   active UTC days, complete coverage, unknown-episode share <= 10 %.
 //! * `insider` (P4.3, concentrated discretionary early buyers): >= 5 known
-//!   closed episodes, >= 3 active UTC days, no unknown basis, plus an
+//!   closed episodes, >= 3 active UTC days, unknown-episode share <= 10 %, plus an
 //!   ACTIVITY CEILING of at most 10 distinct mints per active day and at
 //!   most 30 trades per active day. P0.7 measured the K>=2 bonding-curve
 //!   buyer set as HF/sniper dominated, median about 2,000 tokens/30d, about
@@ -54,7 +78,7 @@
 //!   window; `incomplete` wallets additionally carry the activity-ceiling
 //!   reasons when the ceiling is exceeded on fully observed days alone
 //!   (evidence only; `incomplete_coverage` stays primary).
-//! * `none`: no sample/activity/unknown-basis gates. Status gates (scan
+//! * `none`: no sample/activity/unknown-share gates. Status gates (scan
 //!   not `ok`) and `metric_unknown` still apply, and the `pnl_status`
 //!   label (`observed` / `known_subset`) travels with the figure.
 //!
@@ -66,7 +90,7 @@
 //! flag `open_exposure = unvalued` with the position count and raw
 //! amounts; [`RankPolicy::require_no_open`] (`--require-no-open`) is the
 //! strict variant that excludes them with `open_exposure`. An open
-//! position with unknown basis is `unknown_basis` under quality/insider.
+//! position with unknown basis is only reported (ADR-016).
 //!
 //! # Activity metrics
 //! Trades/mints per active day use only trades with a verified event
@@ -79,14 +103,21 @@ use std::collections::BTreeMap;
 use scout_analytics::RatioStatus;
 use scout_core::{MONEY_SCALE, Money, SolanaPubkey};
 
-use crate::solana_wallet_ledger::{OpenPosition, QuoteUnit, SolanaWalletLedgerReport};
+use crate::solana_wallet_ledger::{
+    LowerBound, OpenPosition, QuoteUnit, SolanaWalletLedgerReport, WinRateLowerBound,
+    lamports_to_money, money_to_quote_units_trunc,
+};
 use crate::solana_wallet_stats::{SolanaWalletStats, WalletScanStatus};
 
 /// Default `--top`.
 pub const DEFAULT_TOP: usize = 20;
 
+/// ADR-016 default `--max-unknown-episode-share` (percent).
+pub const DEFAULT_MAX_UNKNOWN_EPISODE_SHARE_PERCENT: u8 = 10;
+
 /// Version tag of the ranking rules for report metadata.
-pub const SOLANA_WALLET_RANK_VERSION: &str = "solana-wallet-rank/2 (ADR-013 --quote)";
+pub const SOLANA_WALLET_RANK_VERSION: &str =
+    "solana-wallet-rank/3 (ADR-013 --quote, ADR-016 unknown-episode lower bounds)";
 
 /// Ranking metric. `period-equity-pnl` needs a price source (P5.2) and is
 /// deliberately not representable.
@@ -142,10 +173,14 @@ pub struct RankPolicy {
     pub max_trades_per_day: Option<u64>,
     /// Ceiling on distinct mints per active day (`None` = no ceiling).
     pub max_mints_per_day: Option<u64>,
-    /// Exclude wallets with any `ClosedUnknown` episode or unknown-basis
-    /// open inventory from IN-WINDOW causes. Left-censoring (ADR-011 §5)
-    /// does not exclude: it is reported, not gated.
-    pub exclude_unknown_basis: bool,
+    /// ADR-016: apply the unknown-episode share gate (`quality`/`insider`).
+    /// Left-censoring (ADR-011 §5) is in neither count.
+    pub unknown_share_gate: bool,
+    /// ADR-016: maximum `closed_unknown / (closed_known + closed_unknown)`
+    /// in integer percent (0..=100); 0 reproduces the strict rule.
+    pub max_unknown_episode_share_percent: u8,
+    /// ADR-016: drop tier-2 wallets (`pnl_unbounded`).
+    pub exclude_unbounded: bool,
     /// Strict variant: exclude wallets with any open position.
     pub require_no_open: bool,
     /// Maximum number of ranked wallets (>= 1).
@@ -170,7 +205,9 @@ impl RankPolicy {
             min_active_days,
             max_trades_per_day: max_trades,
             max_mints_per_day: max_mints,
-            exclude_unknown_basis: unknown,
+            unknown_share_gate: unknown,
+            max_unknown_episode_share_percent: DEFAULT_MAX_UNKNOWN_EPISODE_SHARE_PERCENT,
+            exclude_unbounded: false,
             require_no_open: false,
             top: top.max(1),
             quote: QuoteUnit::Lamports,
@@ -201,7 +238,10 @@ pub enum ExclusionReason {
     IncompleteCoverage,
     NoActivity,
     NoPumpActivity,
-    UnknownBasis,
+    /// ADR-016: too many `ClosedUnknown` episodes.
+    UnknownEpisodeShare,
+    /// ADR-016: `--exclude-unbounded` and the wallet is tier 2.
+    PnlUnbounded,
     MetricUnknown,
     InsufficientClosedEpisodes,
     InsufficientActiveDays,
@@ -223,7 +263,8 @@ impl ExclusionReason {
             Self::IncompleteCoverage => "incomplete_coverage",
             Self::NoActivity => "no_activity",
             Self::NoPumpActivity => "no_pump_activity",
-            Self::UnknownBasis => "unknown_basis",
+            Self::UnknownEpisodeShare => "unknown_episode_share",
+            Self::PnlUnbounded => "pnl_unbounded",
             Self::MetricUnknown => "metric_unknown",
             Self::InsufficientClosedEpisodes => "insufficient_closed_episodes",
             Self::InsufficientActiveDays => "insufficient_active_days",
@@ -316,8 +357,12 @@ fn cmp_wide(a: Wide, b: Wide) -> Ordering {
 pub enum PnlStatus {
     /// Complete coverage and no `ClosedUnknown` episode.
     Observed,
-    /// Known closed episodes only (incomplete coverage and/or unknown episodes).
+    /// Known closed episodes only (incomplete coverage and/or unknown
+    /// episodes whose worst case is bounded, ADR-016).
     KnownSubset,
+    /// ADR-016: an unknown episode has no worst-case bound; the figure is
+    /// the known subset only (tier 2).
+    KnownSubsetUnbounded,
     /// Nothing known to report; never rendered as zero.
     NotAvailable,
 }
@@ -328,6 +373,7 @@ impl PnlStatus {
         match self {
             Self::Observed => "observed",
             Self::KnownSubset => "known_subset",
+            Self::KnownSubsetUnbounded => "known_subset_unbounded",
             Self::NotAvailable => "n_a",
         }
     }
@@ -376,6 +422,22 @@ pub struct WalletRankObservation {
     /// scaled `Money` units on both sides); `None` when undefined.
     pub roi: Option<Ratio>,
     pub open_exposure: OpenExposure,
+    /// ADR-016: 1 = bounded (all-known included), 2 = unbounded unknown episode.
+    pub rank_tier: u8,
+    /// ADR-016: worst-case net PnL (raw units of `quote`); `None` when
+    /// `net_pnl_raw` is N/A. Equals `net_pnl_raw` without unknown episodes.
+    pub net_pnl_lower_bound: Option<LowerBound<i128>>,
+    /// ADR-016: worst-case ROI; `None` when unbounded or undefined.
+    pub roi_lower_bound: Option<Ratio>,
+    /// ADR-016: worst-case profit factor in `quote`; `None` without a block.
+    pub pf_lower_bound: Option<LowerBound<RatioStatus<Money>>>,
+    /// ADR-016: `wins / (closed_known + closed_unknown)`.
+    pub win_rate_lower_bound: Option<WinRateLowerBound>,
+    /// ADR-016 sort keys: lower bounds in tier 1, known-subset values in
+    /// tier 2.
+    pub key_net: Option<i128>,
+    pub key_roi: Option<Ratio>,
+    pub key_pf: Option<RatioStatus<Money>>,
 }
 
 #[derive(Debug, Clone)]
@@ -445,58 +507,121 @@ fn unit_closed_known(l: &SolanaWalletLedgerReport, unit: QuoteUnit) -> u64 {
 }
 
 fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
-    let (pnl_status, net, roi, open) = match &w.ledger {
-        None => (PnlStatus::NotAvailable, None, None, OpenExposure::None),
-        Some(l) => {
-            let block = l.unit_block(quote);
-            let closed = unit_closed_known(l, quote);
-            let net = if quote == QuoteUnit::Lamports {
-                // Failed-trade fees are SOL overhead (ADR-004): SOL only.
-                (closed > 0 || l.failed_trade_fees_lamports != 0)
-                    .then_some(l.realized_net_pnl_lamports)
-            } else {
-                block
-                    .filter(|_| closed > 0)
-                    .map(|b| b.realized_trade_pnl_raw)
-            };
-            let status = match net {
-                None => PnlStatus::NotAvailable,
-                Some(_) if w.coverage_complete() && l.closed_episodes_unknown == 0 => {
-                    PnlStatus::Observed
-                }
-                Some(_) => PnlStatus::KnownSubset,
-            };
-            let roi = block.filter(|_| closed > 0).and_then(|b| {
-                Ratio::new(
-                    b.realized_trade_pnl_exact.scaled_units(),
-                    b.consumed_acquisition_basis_exact.scaled_units(),
-                )
-            });
-            let open = if l.open_positions.is_empty() {
-                OpenExposure::None
-            } else {
-                OpenExposure::Unvalued {
-                    positions: u64::try_from(l.open_positions.len()).unwrap_or(u64::MAX),
-                    positions_unknown_basis: l.open_positions_with_unknown_basis,
-                    details: l.open_positions.clone(),
-                }
-            };
-            (status, net, roi, open)
-        }
-    };
-    WalletRankObservation {
+    let mut obs = WalletRankObservation {
         wallet: w.wallet,
         status: w.status,
         transactions_scanned: w.transactions_scanned,
         error: w.error.clone(),
         incomplete_reasons: w.incomplete_reasons.clone(),
         ledger: w.ledger.clone(),
-        pnl_status,
+        pnl_status: PnlStatus::NotAvailable,
         quote,
-        net_pnl_raw: net,
-        roi,
-        open_exposure: open,
+        net_pnl_raw: None,
+        roi: None,
+        open_exposure: OpenExposure::None,
+        rank_tier: 1,
+        net_pnl_lower_bound: None,
+        roi_lower_bound: None,
+        pf_lower_bound: None,
+        win_rate_lower_bound: None,
+        key_net: None,
+        key_roi: None,
+        key_pf: None,
+    };
+    let Some(l) = &w.ledger else {
+        return obs;
+    };
+    let block = l.unit_block(quote);
+    let closed = unit_closed_known(l, quote);
+    let net = if quote == QuoteUnit::Lamports {
+        // Failed-trade fees are SOL overhead (ADR-004): SOL only.
+        (closed > 0 || l.failed_trade_fees_lamports != 0).then_some(l.realized_net_pnl_lamports)
+    } else {
+        block
+            .filter(|_| closed > 0)
+            .map(|b| b.realized_trade_pnl_raw)
+    };
+    let unbounded = block.is_some_and(|b| b.unknown_pnl_bound == LowerBound::Unbounded);
+    let zero_bound = block.is_none_or(|b| b.unknown_pnl_bound == LowerBound::Bounded(Money::ZERO));
+    obs.rank_tier = if unbounded { 2 } else { 1 };
+    obs.pnl_status = match net {
+        None => PnlStatus::NotAvailable,
+        Some(_) if w.coverage_complete() && l.closed_episodes_unknown == 0 => PnlStatus::Observed,
+        Some(_) if unbounded => PnlStatus::KnownSubsetUnbounded,
+        Some(_) => PnlStatus::KnownSubset,
+    };
+    obs.net_pnl_raw = net;
+    obs.roi = block.filter(|_| closed > 0).and_then(|b| {
+        Ratio::new(
+            b.realized_trade_pnl_exact.scaled_units(),
+            b.consumed_acquisition_basis_exact.scaled_units(),
+        )
+    });
+    // Lower bounds (ADR-016). Without unknown episodes they equal the
+    // known figures exactly.
+    obs.net_pnl_lower_bound = net.map(|n| {
+        if unbounded {
+            return LowerBound::Unbounded;
+        }
+        if zero_bound {
+            return LowerBound::Bounded(n);
+        }
+        let pnl_lb = block.and_then(|b| b.realized_pnl_lower_bound().bounded().copied());
+        let failed = if quote == QuoteUnit::Lamports {
+            lamports_to_money(l.failed_trade_fees_lamports).ok()
+        } else {
+            Some(Money::ZERO)
+        };
+        match pnl_lb.zip(failed).and_then(|(m, f)| m.checked_sub(&f).ok()) {
+            Some(m) => LowerBound::Bounded(money_to_quote_units_trunc(m)),
+            None => LowerBound::Unbounded,
+        }
+    });
+    obs.roi_lower_bound = block.filter(|_| closed > 0).and_then(|b| {
+        if unbounded {
+            return None;
+        }
+        if zero_bound {
+            return obs.roi;
+        }
+        let num = b.realized_pnl_lower_bound().bounded().copied()?;
+        let den = b.consumed_basis_with_unknown_exact()?;
+        Ratio::new(num.scaled_units(), den.scaled_units())
+    });
+    let base_pf = if quote == QuoteUnit::Lamports {
+        Some(l.profit_factor)
+    } else {
+        block.map(|b| b.profit_factor)
+    };
+    obs.pf_lower_bound = block
+        .zip(base_pf)
+        .map(|(b, base)| b.profit_factor_lower_bound_from(base));
+    obs.win_rate_lower_bound = l.win_rate_lower_bound;
+    if unbounded {
+        obs.key_net = net;
+        obs.key_roi = obs.roi;
+        obs.key_pf = base_pf;
+    } else {
+        obs.key_net = match obs.net_pnl_lower_bound {
+            Some(LowerBound::Bounded(v)) => Some(v),
+            _ => None,
+        };
+        obs.key_roi = obs.roi_lower_bound;
+        obs.key_pf = match obs.pf_lower_bound {
+            Some(LowerBound::Bounded(v)) => Some(v),
+            _ => None,
+        };
     }
+    obs.open_exposure = if l.open_positions.is_empty() {
+        OpenExposure::None
+    } else {
+        OpenExposure::Unvalued {
+            positions: u64::try_from(l.open_positions.len()).unwrap_or(u64::MAX),
+            positions_unknown_basis: l.open_positions_with_unknown_basis,
+            details: l.open_positions.clone(),
+        }
+    };
+    obs
 }
 
 fn status_reason(status: WalletScanStatus) -> Option<ExclusionReason> {
@@ -517,12 +642,7 @@ enum PfKey {
     Unbounded,
 }
 
-fn pf_key(l: &SolanaWalletLedgerReport, unit: QuoteUnit) -> Option<PfKey> {
-    let pf = if unit == QuoteUnit::Lamports {
-        l.profit_factor
-    } else {
-        l.unit_block(unit)?.profit_factor
-    };
+fn pf_key(pf: RatioStatus<Money>) -> Option<PfKey> {
     match pf {
         RatioStatus::Value { value } => Some(PfKey::Finite(value.scaled_units())),
         RatioStatus::NoObservedLosses => Some(PfKey::Unbounded),
@@ -556,20 +676,19 @@ fn closed_known(o: &WalletRankObservation) -> u64 {
 
 /// Descending comparator (best first) for the chosen metric.
 fn cmp_best_first(by: RankBy, a: &WalletRankObservation, b: &WalletRankObservation) -> Ordering {
-    let net = |o: &WalletRankObservation| o.net_pnl_raw;
+    let net = |o: &WalletRankObservation| o.key_net;
     let by_net = || match (net(a), net(b)) {
         (Some(x), Some(y)) => y.cmp(&x),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     };
-    let by_roi = || cmp_opt_roi(b.roi, a.roi);
+    let by_roi = || cmp_opt_roi(b.key_roi, a.key_roi);
     let primary = match by {
         RankBy::RealizedNetPnl => by_net().then_with(by_roi),
         RankBy::RealizedCostRoi => by_roi().then_with(by_net),
         RankBy::ProfitFactor => {
-            let key =
-                |o: &WalletRankObservation| o.ledger.as_ref().and_then(|l| pf_key(l, o.quote));
+            let key = |o: &WalletRankObservation| o.key_pf.and_then(pf_key);
             let pf = match (key(a), key(b)) {
                 (Some(x), Some(y)) => cmp_pf(y, x),
                 (Some(_), None) => Ordering::Less,
@@ -579,17 +698,28 @@ fn cmp_best_first(by: RankBy, a: &WalletRankObservation, b: &WalletRankObservati
             pf.then_with(by_net).then_with(by_roi)
         }
     };
-    primary
+    // ADR-016: bounded wallets (tier 1) always precede unbounded ones.
+    a.rank_tier
+        .cmp(&b.rank_tier)
+        .then(primary)
         .then_with(|| closed_known(b).cmp(&closed_known(a)))
         .then_with(|| a.wallet.cmp(&b.wallet))
 }
 
 fn metric_known(by: RankBy, o: &WalletRankObservation) -> bool {
     match by {
-        RankBy::RealizedNetPnl => o.net_pnl_raw.is_some(),
-        RankBy::RealizedCostRoi => o.roi.is_some(),
-        RankBy::ProfitFactor => o.ledger.as_ref().and_then(|l| pf_key(l, o.quote)).is_some(),
+        RankBy::RealizedNetPnl => o.key_net.is_some(),
+        RankBy::RealizedCostRoi => o.key_roi.is_some(),
+        RankBy::ProfitFactor => o.key_pf.and_then(pf_key).is_some(),
     }
+}
+
+/// ADR-016: `closed_unknown * 100 > percent * (closed_known +
+/// closed_unknown)`, exact in `u128`.
+fn exceeds_unknown_share(policy: &RankPolicy, l: &SolanaWalletLedgerReport) -> bool {
+    let (unknown, total) = l.unknown_episode_share_parts();
+    let pct = u128::from(policy.max_unknown_episode_share_percent.min(100));
+    u128::from(unknown) * 100 > pct * u128::from(total)
 }
 
 /// `count / days > max` by cross-multiplication (`days > 0`).
@@ -642,10 +772,11 @@ fn gate_reasons(policy: &RankPolicy, o: &WalletRankObservation) -> Vec<Exclusion
         return vec![ExclusionReason::MetricUnknown];
     };
     let mut out = Vec::new();
-    if policy.exclude_unknown_basis
-        && (l.closed_episodes_unknown > 0 || l.has_unknown_basis_inventory)
-    {
-        out.push(ExclusionReason::UnknownBasis);
+    if policy.unknown_share_gate && exceeds_unknown_share(policy, l) {
+        out.push(ExclusionReason::UnknownEpisodeShare);
+    }
+    if policy.exclude_unbounded && o.rank_tier == 2 {
+        out.push(ExclusionReason::PnlUnbounded);
     }
     if !metric_known(policy.rank_by, o) {
         out.push(ExclusionReason::MetricUnknown);

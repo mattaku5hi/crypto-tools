@@ -23,6 +23,10 @@ pub struct DisposalResult {
     pub realized_trade_pnl: Option<Money>,
     /// True if every lot consumed by this disposal had known basis.
     pub all_basis_known: bool,
+    /// ADR-016: capitalized basis consumed from lots with KNOWN basis, per
+    /// lot quote unit (ascending unit, no duplicates). Unknown-basis lots
+    /// contribute nothing here (their basis is unknown, never zero).
+    pub consumed_known_basis_by_unit: Vec<(QuoteUnit, Money)>,
 }
 
 /// Per-asset FIFO inventory and realized-PnL ledger. One `Ledger` per
@@ -186,6 +190,7 @@ impl Ledger {
         let net_sale_proceeds = gross_proceeds.checked_sub(&sale_fee)?;
         let mut consumed_acquisition_basis = Money::ZERO;
         let mut all_basis_known = true;
+        let mut known_by_unit: BTreeMap<QuoteUnit, Money> = BTreeMap::new();
 
         // Oldest lot first: BTreeMap iteration over u64 keys is already
         // ascending, giving FIFO order for free.
@@ -219,6 +224,9 @@ impl Ledger {
                 consumed_acquisition_basis.checked_add(&lot_basis_consumed)?;
             if matches!(lot.basis_status, BasisStatus::Unknown { .. }) {
                 all_basis_known = false;
+            } else {
+                let acc = known_by_unit.entry(lot.quote_unit).or_insert(Money::ZERO);
+                *acc = acc.checked_add(&lot_basis_consumed)?;
             }
 
             lot.remaining_amount = lot.remaining_amount.checked_sub(&consume_amount).ok_or(
@@ -252,6 +260,7 @@ impl Ledger {
             consumed_acquisition_basis,
             realized_trade_pnl,
             all_basis_known,
+            consumed_known_basis_by_unit: known_by_unit.into_iter().collect(),
         })
     }
 }

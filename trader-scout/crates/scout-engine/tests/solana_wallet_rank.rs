@@ -22,10 +22,10 @@ use scout_api::{
 use scout_core::{AddressBytes, RawPayload, RawSolanaTransaction, SolanaPubkey, WalletKey};
 use scout_dex_solana::{TradeEventPairing, pair_trades_with_events};
 use scout_engine::{
-    ActivityMetrics, DailyActivity, ExclusionReason as R, OpenPosition, RankBy, RankPolicy,
-    RankProfile, SolanaWalletStats, WalletScanStatus, build_solana_wallet_ledger,
-    lamports_to_money, pump_bonding_curve_decoder, rank_solana_wallets, run_solana_wallet_stats,
-    solana_mainnet_chain,
+    ActivityMetrics, DailyActivity, ExclusionReason as R, LowerBound, OpenPosition, RankBy,
+    RankPolicy, RankProfile, SolanaWalletStats, WalletScanStatus, WinRateLowerBound,
+    build_solana_wallet_ledger, lamports_to_money, pump_bonding_curve_decoder, rank_solana_wallets,
+    run_solana_wallet_stats, solana_mainnet_chain,
 };
 use scout_providers::{HeliusProvider, ScanOrder};
 use tokio_util::sync::CancellationToken;
@@ -222,8 +222,9 @@ fn status_gates_unknown_basis_and_open_exposure() {
     );
     assert_partition(&rep);
     // Open exposure with known basis is INCLUDED by default and flagged.
-    // Equal figures: wallet key ascending.
-    assert_eq!(ranked_ids(&rep), vec![1, 8]);
+    // ADR-016: 1 unknown of 26 closed episodes (3.8 % <= 10 %) and unknown
+    // open inventory no longer exclude. Equal figures: wallet key ascending.
+    assert_eq!(ranked_ids(&rep), vec![1, 6, 7, 8]);
     let o = rep
         .ranked
         .iter()
@@ -234,13 +235,19 @@ fn status_gates_unknown_basis_and_open_exposure() {
     assert_eq!(excluded_of(&rep, 3).reasons, vec![R::ProviderError]);
     assert_eq!(excluded_of(&rep, 4).reasons, vec![R::NoActivity]);
     assert_eq!(excluded_of(&rep, 5).reasons, vec![R::NoPumpActivity]);
-    assert_eq!(excluded_of(&rep, 6).reasons, vec![R::UnknownBasis]);
-    assert_eq!(excluded_of(&rep, 7).reasons, vec![R::UnknownBasis]);
+
+    // `--max-unknown-episode-share 0` is the old strict rule for episodes;
+    // unknown open inventory alone still does not exclude.
+    let mut zero = policy(RankProfile::Quality, RankBy::RealizedNetPnl, 20);
+    zero.max_unknown_episode_share_percent = 0;
+    let rep = rank_solana_wallets(&wallets, &zero);
+    assert_eq!(ranked_ids(&rep), vec![1, 7, 8]);
+    assert_eq!(excluded_of(&rep, 6).reasons, vec![R::UnknownEpisodeShare]);
 
     let mut strict = policy(RankProfile::Quality, RankBy::RealizedNetPnl, 20);
     strict.require_no_open = true;
     let rep = rank_solana_wallets(&wallets, &strict);
-    assert_eq!(ranked_ids(&rep), vec![1]);
+    assert_eq!(ranked_ids(&rep), vec![1, 6, 7]);
     assert_eq!(excluded_of(&rep, 8).reasons, vec![R::OpenExposure]);
     assert_partition(&rep);
 
@@ -280,7 +287,7 @@ fn none_profile_never_ranks_unknown_metric_wallets() {
         RankBy::ProfitFactor,
     ] {
         let mut p = policy(RankProfile::None, by, 20);
-        p.exclude_unknown_basis = false;
+        p.unknown_share_gate = false;
         let rep = rank_solana_wallets(&wallets, &p);
         assert_eq!(ranked_ids(&rep), vec![1], "{by:?}");
         assert_eq!(
@@ -628,7 +635,7 @@ fn daily(rows: &[(i64, u64, u64)]) -> Vec<DailyActivity> {
 }
 
 #[test]
-fn left_censoring_alone_does_not_exclude_under_exclude_unknown_basis() {
+fn left_censoring_alone_does_not_exclude_under_the_unknown_share_gate() {
     let mut w = Spec::new(1).build();
     {
         let l = w.ledger.as_mut().unwrap();
@@ -714,4 +721,275 @@ fn quote_unit_selects_the_ranking_unit_and_never_mixes() {
     let sol = rank_solana_wallets(&wallets, &none);
     assert!(sol.ranked.is_empty());
     assert_eq!(sol.excluded.len(), 2);
+}
+
+// ---------------------------------------------------------------------
+// ADR-016: unknown-episode share gate, lower bounds, tiers
+// ---------------------------------------------------------------------
+
+/// Gross profit / gross loss (lamports) of a synthetic wallet: sets the SOL
+/// block parts and the legacy profit factor consistently with them.
+fn with_gross(mut w: SolanaWalletStats, gp: i128, gl: i128) -> SolanaWalletStats {
+    let l = w.ledger.as_mut().unwrap();
+    let b = &mut l.unit_blocks[0];
+    b.gross_profit_exact = lamports_to_money(gp).unwrap();
+    b.gross_loss_abs_exact = lamports_to_money(gl).unwrap();
+    let pf = if gl == 0 {
+        RatioStatus::NoObservedLosses
+    } else {
+        RatioStatus::Value {
+            value: scout_core::Money::from_scaled_units(
+                (lamports_to_money(gp).unwrap().scaled_units() * 100_000_000)
+                    .div_euclid(lamports_to_money(gl).unwrap().scaled_units()),
+            ),
+        }
+    };
+    b.profit_factor = pf;
+    l.profit_factor = pf;
+    w
+}
+
+/// Adds `n` unknown closed episodes. `basis` = known consumed basis of the
+/// unknown episodes in lamports (their worst case is `-basis`), `None` =
+/// unbounded. Win-rate lower bound is `wins / (known + n)` with `wins`.
+fn with_unknown(
+    mut w: SolanaWalletStats,
+    n: u64,
+    basis: Option<i128>,
+    wins: u64,
+) -> SolanaWalletStats {
+    let l = w.ledger.as_mut().unwrap();
+    l.closed_episodes_unknown = n;
+    l.has_unknown_basis_inventory = n > 0;
+    l.win_rate_lower_bound = Some(WinRateLowerBound {
+        wins,
+        episodes: l.closed_episodes_known + n,
+    });
+    l.unit_blocks[0].unknown_pnl_bound = match basis {
+        Some(b) => LowerBound::Bounded(
+            scout_core::Money::ZERO
+                .checked_sub(&lamports_to_money(b).unwrap())
+                .unwrap(),
+        ),
+        None => LowerBound::Unbounded,
+    };
+    w
+}
+
+#[test]
+fn unknown_share_gate_is_exact_integer_comparison() {
+    // 10 unknown of 100 closed = exactly 10 %: passes. 10 of 99: 10.1 % fails.
+    let at = with_unknown(Spec::new(1).closed(90).build(), 10, Some(10), 0);
+    let above = with_unknown(Spec::new(2).closed(89).build(), 10, Some(10), 0);
+    let none = Spec::new(3).closed(90).build();
+    let wallets = vec![at, above, none];
+    let rep = rank_solana_wallets(
+        &wallets,
+        &policy(RankProfile::Quality, RankBy::RealizedNetPnl, 20),
+    );
+    assert_eq!(rep.policy.max_unknown_episode_share_percent, 10);
+    assert_eq!(excluded_of(&rep, 2).reasons, vec![R::UnknownEpisodeShare]);
+    let mut ids = ranked_ids(&rep);
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 3]);
+    assert_partition(&rep);
+    // Insider applies the same gate.
+    let rep = rank_solana_wallets(
+        &wallets,
+        &policy(RankProfile::Insider, RankBy::RealizedNetPnl, 20),
+    );
+    assert_eq!(excluded_of(&rep, 2).reasons, vec![R::UnknownEpisodeShare]);
+    // 0 = strict: any unknown episode excludes; 100 = nothing excludes.
+    let mut zero = policy(RankProfile::Quality, RankBy::RealizedNetPnl, 20);
+    zero.max_unknown_episode_share_percent = 0;
+    let rep = rank_solana_wallets(&wallets, &zero);
+    assert_eq!(ranked_ids(&rep), vec![3]);
+    assert_eq!(excluded_of(&rep, 1).reasons, vec![R::UnknownEpisodeShare]);
+    let mut all = policy(RankProfile::Quality, RankBy::RealizedNetPnl, 20);
+    all.max_unknown_episode_share_percent = 100;
+    assert_eq!(rank_solana_wallets(&wallets, &all).ranked.len(), 3);
+    // `none` profile has no gate.
+    let rep = rank_solana_wallets(
+        &wallets,
+        &policy(RankProfile::None, RankBy::RealizedNetPnl, 20),
+    );
+    assert_eq!(rep.ranked.len(), 3);
+    // Left-censored episodes are in neither count.
+    let mut lc = with_unknown(Spec::new(4).closed(90).build(), 10, Some(10), 0);
+    lc.ledger.as_mut().unwrap().left_censored_episodes = 500;
+    let rep = rank_solana_wallets(
+        &[lc],
+        &policy(RankProfile::Quality, RankBy::RealizedNetPnl, 20),
+    );
+    assert_eq!(ranked_ids(&rep), vec![4]);
+}
+
+#[test]
+fn lower_bounds_feed_the_rank_keys_exactly() {
+    // pnl 1000 / basis 10_000, gross 1500 / 500; unknown episodes consumed 400.
+    let w = with_unknown(
+        with_gross(Spec::new(1).pnl(1_000, 10_000).build(), 1_500, 500),
+        2,
+        Some(400),
+        20,
+    );
+    let rep = rank_solana_wallets(
+        &[w],
+        &policy(RankProfile::Quality, RankBy::RealizedNetPnl, 5),
+    );
+    let o = &rep.ranked[0].observation;
+    assert_eq!(o.rank_tier, 1);
+    assert_eq!(o.pnl_status.label(), "known_subset");
+    // Known-subset figure unchanged; bound = 1000 - 400.
+    assert_eq!(o.net_pnl_raw, Some(1_000));
+    assert_eq!(o.net_pnl_lower_bound, Some(LowerBound::Bounded(600)));
+    assert_eq!(o.key_net, Some(600));
+    // ROI lower bound = 600 / 10_400 (exact rational, Money-scaled units).
+    let roi = o.roi_lower_bound.unwrap();
+    assert_eq!(
+        roi.cmp_exact(&scout_engine::Ratio::new(600, 10_400).unwrap()),
+        std::cmp::Ordering::Equal
+    );
+    // PF lower bound = 1500 / (500 + 400) = 1.66666666 (floored, 8 digits).
+    assert_eq!(
+        o.pf_lower_bound,
+        Some(LowerBound::Bounded(RatioStatus::Value {
+            value: scout_core::Money::from_scaled_units(166_666_666)
+        }))
+    );
+    // Win rate lower bound = 20 / (25 + 2), exact.
+    assert_eq!(
+        o.win_rate_lower_bound,
+        Some(WinRateLowerBound {
+            wins: 20,
+            episodes: 27
+        })
+    );
+    // No profit: PF lower bound is 0, never undefined/NoObservedLosses.
+    let w = with_unknown(
+        with_gross(Spec::new(2).pnl(-100, 1_000).build(), 0, 100),
+        1,
+        Some(50),
+        0,
+    );
+    let rep = rank_solana_wallets(&[w], &policy(RankProfile::None, RankBy::ProfitFactor, 5));
+    assert_eq!(
+        rep.ranked[0].observation.pf_lower_bound,
+        Some(LowerBound::Bounded(RatioStatus::Value {
+            value: scout_core::Money::ZERO
+        }))
+    );
+}
+
+#[test]
+fn bounded_wallet_ranks_by_lower_bound_below_a_clean_one() {
+    // Raw pnl 1000 but worst case 600 < clean 700: the clean wallet leads.
+    let a = with_unknown(Spec::new(1).pnl(1_000, 10_000).build(), 2, Some(400), 0);
+    let b = Spec::new(2).pnl(700, 10_000).build();
+    let rep = rank_solana_wallets(
+        &[a, b],
+        &policy(RankProfile::Quality, RankBy::RealizedNetPnl, 5),
+    );
+    assert_eq!(ranked_ids(&rep), vec![2, 1]);
+}
+
+#[test]
+fn tier_two_ranks_after_tier_one_even_with_better_known_subset() {
+    // Tier 1: known 100, worst case -4900. Tier 2 (unbounded): known 9000.
+    let t1 = with_unknown(Spec::new(1).pnl(100, 10_000).build(), 1, Some(5_000), 0);
+    let t2 = with_unknown(Spec::new(2).pnl(9_000, 10_000).build(), 1, None, 0);
+    let t3 = with_unknown(Spec::new(3).pnl(9_500, 10_000).build(), 1, None, 0);
+    for by in [
+        RankBy::RealizedNetPnl,
+        RankBy::RealizedCostRoi,
+        RankBy::ProfitFactor,
+    ] {
+        let rep = rank_solana_wallets(
+            &[t2.clone(), t1.clone(), t3.clone()],
+            &policy(RankProfile::Quality, by, 5),
+        );
+        // Tier 2 ordered by known-subset value: 3 before 2.
+        assert_eq!(ranked_ids(&rep), vec![1, 3, 2], "{by:?}");
+        let tiers: Vec<u8> = rep.ranked.iter().map(|r| r.observation.rank_tier).collect();
+        assert_eq!(tiers, vec![1, 2, 2]);
+        let o = &rep.ranked[1].observation;
+        assert_eq!(o.pnl_status.label(), "known_subset_unbounded");
+        assert_eq!(o.net_pnl_lower_bound, Some(LowerBound::Unbounded));
+        assert_eq!(o.net_pnl_raw, Some(9_500));
+    }
+    // --exclude-unbounded drops tier 2 with its own reason.
+    let mut p = policy(RankProfile::Quality, RankBy::RealizedNetPnl, 5);
+    p.exclude_unbounded = true;
+    let rep = rank_solana_wallets(&[t1, t2, t3], &p);
+    assert_eq!(ranked_ids(&rep), vec![1]);
+    assert_eq!(excluded_of(&rep, 2).reasons, vec![R::PnlUnbounded]);
+    assert_eq!(excluded_of(&rep, 3).reasons, vec![R::PnlUnbounded]);
+    assert_partition(&rep);
+}
+
+use proptest::prelude::*;
+
+fn key_tuple(
+    w: &SolanaWalletStats,
+    by: RankBy,
+) -> (
+    u8,
+    Option<i128>,
+    Option<scout_engine::Ratio>,
+    Option<RatioStatus<scout_core::Money>>,
+) {
+    let rep = rank_solana_wallets(std::slice::from_ref(w), &policy(RankProfile::None, by, 1));
+    let o = rep
+        .ranked
+        .first()
+        .map(|r| &r.observation)
+        .or_else(|| rep.excluded.first().map(|e| &e.observation))
+        .unwrap();
+    (o.rank_tier, o.key_net, o.key_roi, o.key_pf)
+}
+
+proptest! {
+    /// ADR-016: adding an unknown episode (bounded or not) can never raise
+    /// any rank key nor move a wallet from tier 2 to tier 1.
+    #[test]
+    fn unknown_episode_never_improves_rank_keys(
+        gp in 0i128..1_000_000,
+        gl in 0i128..1_000_000,
+        extra_basis in 1i128..1_000_000,
+        unbounded in any::<bool>(),
+        wins in 0u64..20,
+    ) {
+        prop_assume!(gp + gl > 0);
+        let pnl = gp - gl;
+        let basis = (gp + gl).max(1);
+        let base = with_gross(Spec::new(1).pnl(pnl, basis).build(), gp, gl);
+        let more = with_unknown(
+            base.clone(),
+            1,
+            if unbounded { None } else { Some(extra_basis) },
+            wins.min(25),
+        );
+        for by in [RankBy::RealizedNetPnl, RankBy::RealizedCostRoi, RankBy::ProfitFactor] {
+            let (t0, n0, r0, p0) = key_tuple(&base, by);
+            let (t1, n1, r1, p1) = key_tuple(&more, by);
+            prop_assert!(t1 >= t0);
+            if !unbounded {
+                prop_assert!(n1 <= n0);
+                if let (Some(a), Some(b)) = (r1, r0) {
+                    prop_assert_ne!(a.cmp_exact(&b), std::cmp::Ordering::Greater);
+                }
+                let rank = |s: Option<RatioStatus<scout_core::Money>>| match s {
+                    Some(RatioStatus::Value { value }) => Some(value.scaled_units()),
+                    Some(RatioStatus::NoObservedLosses) => Some(i128::MAX),
+                    _ => None,
+                };
+                if let (Some(a), Some(b)) = (rank(p1), rank(p0)) {
+                    prop_assert!(a <= b);
+                }
+            }
+        }
+        // Win-rate lower bound is never above the known win rate.
+        let wl = more.ledger.as_ref().unwrap().win_rate_lower_bound.unwrap();
+        prop_assert!(wl.episodes >= 26);
+    }
 }
