@@ -15,6 +15,10 @@ pub enum QuoteAsset {
     Sol,
     Usdc,
     Usdt,
+    /// EVM native ETH (Coinbase `ETH-USD`, ADR-020 amendment).
+    Eth,
+    /// USDG valued at par (`usdg_par_assumed`), no market source.
+    Usdg,
 }
 
 impl QuoteAsset {
@@ -24,6 +28,8 @@ impl QuoteAsset {
             Self::Sol => "sol",
             Self::Usdc => "usdc",
             Self::Usdt => "usdt",
+            Self::Eth => "eth",
+            Self::Usdg => "usdg",
         }
     }
 }
@@ -111,6 +117,8 @@ pub enum PriceLabel {
     Stale { minutes: u8 },
     /// USDC valued at exactly 1 USD by assumption (no verified source).
     UsdcParAssumed,
+    /// USDG valued at exactly 1 USD by assumption (ADR-020 amendment).
+    UsdgParAssumed,
     /// No price. Never zero, never interpolated.
     Unknown { reason: UnknownPriceReason },
 }
@@ -122,6 +130,7 @@ impl PriceLabel {
             Self::CexReference1m => "cex_reference_1m".to_string(),
             Self::Stale { minutes } => format!("stale_{minutes}m"),
             Self::UsdcParAssumed => "usdc_par_assumed".to_string(),
+            Self::UsdgParAssumed => "usdg_par_assumed".to_string(),
             Self::Unknown { .. } => "price_unknown".to_string(),
         }
     }
@@ -169,6 +178,22 @@ impl PriceObservation {
             volume: None,
             candle_minute: None,
             label: PriceLabel::Unknown { reason },
+            source,
+        }
+    }
+
+    /// USDG at par.
+    #[must_use]
+    pub fn usdg_par(minute: i64, source: &'static str) -> Self {
+        Self {
+            asset: QuoteAsset::Usdg,
+            minute,
+            value: Some(DecimalPrice::ONE),
+            low: Some(DecimalPrice::ONE),
+            high: Some(DecimalPrice::ONE),
+            volume: None,
+            candle_minute: None,
+            label: PriceLabel::UsdgParAssumed,
             source,
         }
     }

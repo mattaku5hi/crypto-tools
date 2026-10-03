@@ -3170,15 +3170,20 @@ dependencies = [
 name = "scout-app"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "bs58",
  "clap",
  "csv",
+ "scout-api",
  "scout-core",
  "scout-pricing",
+ "scout-providers",
+ "scout-rpc",
  "scout-sdk",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio-util",
  "toml",
 ]
 
@@ -4168,6 +4173,7 @@ dependencies = [
 name = "wallet-rank"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "base64 0.22.1",
  "bs58",
  "clap",
@@ -4192,6 +4198,7 @@ dependencies = [
 name = "wallet-stats"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "base64 0.22.1",
  "bs58",
  "clap",

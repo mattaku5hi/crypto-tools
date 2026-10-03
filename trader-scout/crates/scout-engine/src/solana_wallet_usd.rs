@@ -47,14 +47,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use scout_analytics::{Episode, EpisodeCohort, profit_factor, win_rate};
-use scout_core::{AddressBytes, AssetKey, Money, SolanaPubkey};
+use scout_core::{Money, SolanaPubkey};
 use scout_pricing::{DecimalPrice, PriceLabel, PriceSource, QuoteAsset, minute_start};
 
-use crate::solana_buy_qualification::solana_mainnet_chain;
 use crate::solana_wallet_ledger::{
     EpisodeOutcome, EpisodeRecord, LowerBound, QuoteUnit, QuoteUnitBlock, SolanaWalletLedgerError,
-    SolanaWalletLedgerReport, UnknownReason, WinRateLowerBound, lamports_to_money,
-    quote_unit_decimals,
+    SolanaWalletLedgerReport, UnknownReason, WinRateLowerBound, quote_unit_decimals,
+    quote_units_to_money,
 };
 use crate::solana_wallet_stats::SolanaWalletStats;
 
@@ -245,6 +244,11 @@ pub const fn quote_asset_of(unit: QuoteUnit) -> Option<QuoteAsset> {
         QuoteUnit::Lamports => Some(QuoteAsset::Sol),
         QuoteUnit::UsdcUnits => Some(QuoteAsset::Usdc),
         QuoteUnit::UsdtUnits => Some(QuoteAsset::Usdt),
+        // ADR-020 amendment: EVM native valued through ETH-USD (the native
+        // symbol of Base/Robinhood; BNB chains need their own product once
+        // enabled), USDG at par.
+        QuoteUnit::Wei => Some(QuoteAsset::Eth),
+        QuoteUnit::UsdgUnits => Some(QuoteAsset::Usdg),
         QuoteUnit::ReportCurrency => None,
     }
 }
@@ -400,10 +404,8 @@ impl SolanaWalletLedgerReport {
             }
         }
         for (ts, _) in &self.failed_fee_journal {
-            if let Some(t) = ts {
-                out.entry(QuoteAsset::Sol)
-                    .or_default()
-                    .insert(minute_start(*t));
+            if let (Some(t), Some(native)) = (ts, quote_asset_of(self.chain.native_unit)) {
+                out.entry(native).or_default().insert(minute_start(*t));
             }
         }
         // Open-lot basis minutes: only for positions that are valued (the
@@ -461,10 +463,7 @@ impl SolanaWalletLedgerReport {
                         block.breakeven += 1;
                     }
                     cohort.episodes.push(Episode {
-                        asset: AssetKey::Token(
-                            solana_mainnet_chain(),
-                            AddressBytes::Solana(rec.mint),
-                        ),
+                        asset: self.chain.asset_key(&rec.mint),
                         realized_pnl: pnl,
                         is_closed_within_window: true,
                         opened_before_window: false,
@@ -503,8 +502,8 @@ impl SolanaWalletLedgerReport {
             unpriced_by_reason: BTreeMap::new(),
         };
         for (ts, lamports) in &self.failed_fee_journal {
-            let fee = lamports_to_money(i128::from(*lamports))?;
-            match price_leg(source, QuoteUnit::Lamports, *ts, fee, &mut cov) {
+            let fee = quote_units_to_money(self.chain.native_unit, i128::from(*lamports))?;
+            match price_leg(source, self.chain.native_unit, *ts, fee, &mut cov) {
                 Leg::Priced(m) => {
                     failed_fees.priced_txs += 1;
                     failed_fees.priced_usd = sum(failed_fees.priced_usd, m)?;

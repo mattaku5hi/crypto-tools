@@ -13,9 +13,24 @@ pub const COINBASE_ENDPOINT_ENV: &str = "SCOUT_COINBASE_ENDPOINT";
 pub fn build_coinbase_source(
     max_requests: Option<u64>,
 ) -> Result<(CoinbasePriceSource, bool), String> {
+    build_source_from(CoinbaseConfig::default(), max_requests)
+}
+
+/// [`build_coinbase_source`] for EVM runs (ADR-020 amendment): the policy
+/// lists `ETH-USD` and the USDG par assumption.
+pub fn build_coinbase_source_evm(
+    max_requests: Option<u64>,
+) -> Result<(CoinbasePriceSource, bool), String> {
+    build_source_from(CoinbaseConfig::evm(), max_requests)
+}
+
+fn build_source_from(
+    base: CoinbaseConfig,
+    max_requests: Option<u64>,
+) -> Result<(CoinbasePriceSource, bool), String> {
     let mut cfg = CoinbaseConfig {
         max_requests,
-        ..CoinbaseConfig::default()
+        ..base
     };
     let mut overridden = false;
     if let Ok(url) = std::env::var(COINBASE_ENDPOINT_ENV)

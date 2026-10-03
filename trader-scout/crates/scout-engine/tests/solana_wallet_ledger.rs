@@ -4507,6 +4507,7 @@ async fn usd_apply_pricing_over_stats_cards_prefetches_once_and_sets_views() {
     );
     let ledger = run(&[buy, sell]);
     let mut cards = vec![SolanaWalletStats {
+        chain: scout_engine::SOLANA_DISPLAY,
         wallet: pk(W),
         status: WalletScanStatus::Ok,
         transactions_scanned: Some(2),
@@ -4520,6 +4521,7 @@ async fn usd_apply_pricing_over_stats_cards_prefetches_once_and_sets_views() {
         not_scanned: None,
     }];
     cards.push(SolanaWalletStats {
+        chain: scout_engine::SOLANA_DISPLAY,
         wallet: pk(2),
         status: WalletScanStatus::Error,
         transactions_scanned: None,

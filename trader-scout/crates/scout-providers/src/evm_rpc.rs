@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use futures::stream::{self, StreamExt};
 use scout_api::ProviderError;
 use scout_core::ChainKey;
@@ -241,6 +241,18 @@ pub fn is_range_or_cap_error(err: &ProviderError) -> bool {
     }
 }
 
+/// The block range a provider suggests in a range-cap error, e.g. Alchemy
+/// free tier: `... this block range should work: [0x10, 0x19]`.
+#[must_use]
+pub fn suggested_range(text: &str) -> Option<(u64, u64)> {
+    let tail = text.split_once("should work:")?.1;
+    let inner = tail.split_once('[')?.1.split_once(']')?.0;
+    let (a, b) = inner.split_once(',')?;
+    let hex = |x: &str| u64::from_str_radix(x.trim().strip_prefix("0x")?, 16).ok();
+    let (a, b) = (hex(a)?, hex(b)?);
+    (a <= b).then_some((a, b))
+}
+
 fn is_empty_envelope(err: &ProviderError) -> bool {
     matches!(err, ProviderError::Other(e) if e.to_string().contains("neither `result` nor `error`"))
 }
@@ -354,8 +366,18 @@ impl EvmRpcClient {
         let mut stack = vec![(from, to)];
         let mut out: Vec<scout_core::RawEvmLog> = Vec::new();
         let (mut requests, mut splits) = (0u32, 0u32);
+        // Provider-announced maximum span (blocks) once a range error showed
+        // one: later windows are cut to it up front instead of failing again.
+        let mut span_cap: Option<u64> = None;
         while let Some((a, b)) = stack.pop() {
             if a > b {
+                continue;
+            }
+            if let Some(cap) = span_cap
+                && b - a >= cap
+            {
+                stack.push((a + cap, b));
+                stack.push((a, a + cap - 1));
                 continue;
             }
             match self
@@ -385,6 +407,17 @@ impl EvmRpcClient {
                         });
                     }
                     splits += 1;
+                    // A suggested range that is strictly smaller than the
+                    // failed one fixes the span for the rest of the scan.
+                    if let Some((sa, sb)) = suggested_range(&e.to_string())
+                        && sb >= sa
+                        && sb - sa < b - a
+                    {
+                        span_cap = Some(sb - sa + 1);
+                        stack.push((a + (sb - sa + 1), b));
+                        stack.push((a, a + (sb - sa)));
+                        continue;
+                    }
                     let mid = a + ((b - a) >> 1);
                     stack.push((mid + 1, b));
                     stack.push((a, mid));
@@ -399,6 +432,41 @@ impl EvmRpcClient {
             requests,
             splits,
         })
+    }
+
+    /// Native balance of `account` at the END of `block`
+    /// (`eth_getBalance`). Needs historical state for past blocks; a node
+    /// without it answers with a JSON-RPC error.
+    pub async fn balance_at(&self, account: Address, block: u64) -> Result<U256, EvmSourceError> {
+        let v = self
+            .call_json(
+                "eth_getBalance",
+                json!([format!("{account:#x}"), format!("{block:#x}")]),
+            )
+            .await?;
+        crate::evm_wire::quantity_u256(&v, "eth_getBalance")
+    }
+
+    /// `debug_traceTransaction` with the built-in `callTracer`. The raw frame
+    /// tree is returned as JSON; parsing is `evm_native::parse_call_tree`.
+    pub async fn trace_call_tree(&self, hash: B256) -> Result<Value, EvmSourceError> {
+        self.call_json(
+            "debug_traceTransaction",
+            json!([format!("{hash:#x}"), {"tracer": "callTracer"}]),
+        )
+        .await
+    }
+
+    /// `eth_call` of `decimals()` on an ERC-20 (`0x313ce567`) at `latest`.
+    pub async fn erc20_decimals(&self, token: Address) -> Result<u8, EvmSourceError> {
+        let v = self
+            .call_json(
+                "eth_call",
+                json!([{"to": format!("{token:#x}"), "data": "0x313ce567"}, "latest"]),
+            )
+            .await?;
+        let q = crate::evm_wire::quantity_u256(&v, "decimals()")?;
+        u8::try_from(q).map_err(|_| malformed("decimals()", "does not fit u8"))
     }
 
     /// All receipts of a block (`eth_getBlockReceipts`).
@@ -707,6 +775,66 @@ mod tests {
                 .unwrap();
             assert_eq!(r.splits, 1, "{msg}");
         }
+    }
+
+    #[test]
+    fn suggested_range_is_parsed_from_the_alchemy_message() {
+        let m = "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range. Based on your parameters, this block range should work: [0x64, 0x6d]";
+        assert_eq!(suggested_range(m), Some((100, 109)));
+        assert_eq!(suggested_range("limit exceeded"), None);
+        assert_eq!(suggested_range("should work: [0x9, 0x1]"), None);
+    }
+
+    /// Alchemy free tier: HTTP 400 + JSON-RPC -32600 with a suggested range.
+    /// The scan must follow the suggestion (and then chunk to that span up
+    /// front), not halve blindly from the huge window: exactly one failing
+    /// request, then 10-block requests only.
+    #[tokio::test]
+    async fn alchemy_ten_block_cap_over_http_400_is_followed_not_halved() {
+        use wiremock::{Request, Respond};
+        struct Cap;
+        impl Respond for Cap {
+            fn respond(&self, req: &Request) -> ResponseTemplate {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                let p = &body["params"][0];
+                let from = u64::from_str_radix(
+                    p["fromBlock"].as_str().unwrap().trim_start_matches("0x"),
+                    16,
+                )
+                .unwrap();
+                let to = u64::from_str_radix(
+                    p["toBlock"].as_str().unwrap().trim_start_matches("0x"),
+                    16,
+                )
+                .unwrap();
+                if to - from + 1 > 10 {
+                    let msg = format!(
+                        "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range. Based on your parameters, this block range should work: [{from:#x}, {:#x}]",
+                        from + 9
+                    );
+                    return ResponseTemplate::new(400).set_body_json(
+                        json!({"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":msg}}),
+                    );
+                }
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc":"2.0","id":1,"result":[log_json(from, 0)]}))
+            }
+        }
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Cap)
+            .mount(&s)
+            .await;
+        let r = client(&s, BASE, None)
+            .get_logs(&LogFilter::default(), 1_000, 1_099)
+            .await
+            .unwrap();
+        // 100 blocks -> 10 windows of 10 -> 10 logs, one failed probe.
+        assert_eq!(r.logs.len(), 10);
+        assert_eq!(r.requests, 10);
+        assert_eq!(r.splits, 1);
+        let total = s.received_requests().await.unwrap().len();
+        assert_eq!(total, 11, "one failing request + ten 10-block windows");
     }
 
     #[tokio::test]

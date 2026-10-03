@@ -14,8 +14,14 @@
 //! Every deployment starts at [`VenueVerification::IdlOnly`]: addresses come
 //! from vendor docs (research doc §2), ABI shape is decoded, but no live
 //! golden fixture exists yet. Flip to `FixtureVerified` only together with a
-//! committed fixture. `active_from_block` is `0` ("not pinned") until the
-//! deployment transaction is read from the chain.
+//! committed fixture and its evidence test. Robinhood Chain's Uniswap v4
+//! PoolManager is `FixtureVerified` (ADR-020 step 2: 45 live `Swap` events
+//! of fixture `evm_robinhood_token_aiden_v4_2026-10-03.json`, each matching
+//! the PoolManager's ERC-20 `Transfer` deltas exactly; see
+//! `crates/scout-engine/tests/evm_uniswap_v4_robinhood.rs`). Everything else
+//! stays `IdlOnly`. `active_from_block` is `0` ("not pinned") until the
+//! deployment transaction is read from the chain (the public RPC has no
+//! historical state, so it cannot be derived offline).
 
 use std::collections::BTreeMap;
 
@@ -102,12 +108,28 @@ const fn dep(
     }
 }
 
+const fn dep_fixture_verified(
+    chain_id: u64,
+    venue: SwapVenue,
+    anchor: Address,
+    role: AnchorRole,
+) -> VenueDeployment {
+    VenueDeployment {
+        chain_id,
+        venue,
+        anchor,
+        role,
+        active_from_block: 0,
+        verification: VenueVerification::FixtureVerified,
+    }
+}
+
 /// Deployments by chain. Sources: research doc §2.2-2.4 (Uniswap/Pancake
 /// official deployment pages, 2026-10-03). Robinhood v4/v3 are the first
 /// priority (ADR-020 §4); Base/BSC rows are present but equally IdlOnly.
 pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
-    // Robinhood Chain (4663)
-    dep(
+    // Robinhood Chain (4663): v4 is FixtureVerified (see module docs).
+    dep_fixture_verified(
         4663,
         SwapVenue::UniswapV4,
         address!("8366a39cc670b4001a1121b8f6a443a643e40951"),
@@ -358,16 +380,28 @@ mod tests {
     }
 
     #[test]
-    fn robinhood_pool_manager_is_gated_idl_only() {
+    fn robinhood_pool_manager_is_gated_fixture_verified() {
         let pm = address!("8366a39cc670b4001a1121b8f6a443a643e40951");
         let gate = SwapVenueGate::new(RH);
         match gate.classify(&v4_swap_log(pm)) {
             GateOutcome::Verified(v) => {
                 assert_eq!(v.venue, SwapVenue::UniswapV4);
-                assert_eq!(v.verification, VenueVerification::IdlOnly);
+                assert_eq!(v.verification, VenueVerification::FixtureVerified);
                 assert_eq!(v.emitter, pm);
             }
             other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_robinhood_v4_is_fixture_verified() {
+        for d in VENUE_DEPLOYMENTS {
+            let expected = if d.chain_id == 4663 && d.venue == SwapVenue::UniswapV4 {
+                VenueVerification::FixtureVerified
+            } else {
+                VenueVerification::IdlOnly
+            };
+            assert_eq!(d.verification, expected, "{d:?}");
         }
     }
 

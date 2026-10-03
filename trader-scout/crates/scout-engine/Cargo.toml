@@ -32,6 +32,8 @@ alloy-primitives.workspace = true
 bs58.workspace = true
 
 [dev-dependencies]
+scout-providers = { workspace = true, features = ["test-support"] }
+scout-rpc.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 wiremock.workspace = true

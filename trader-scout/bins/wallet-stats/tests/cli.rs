@@ -41,7 +41,7 @@ fn valid_input_no_provider_is_exit_4() {
     let input = "base:0x1111111111111111111111111111111111111111\n";
     let (code, _stdout, stderr) = run_with_stdin(&["--input", "-"], input);
     assert_eq!(code, 4, "stderr: {stderr}");
-    assert!(stderr.contains("no history provider configured"));
+    assert!(stderr.contains("configuration required"), "{stderr}");
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn solana_input_without_helius_key_is_exit_4_with_message() {
     let (code, stdout, stderr) = run_env(&["--input", "-"], &input, None);
     assert_eq!(code, 4, "stderr: {stderr}");
     assert!(stderr.contains("SCOUT_HELIUS_API_KEY"));
-    assert!(stderr.contains("no history provider configured"));
+    assert!(stderr.contains("configuration required"), "{stderr}");
     assert!(stdout.is_empty());
 }
 
@@ -200,11 +200,13 @@ fn valid_window_options_are_accepted_and_reach_the_key_check() {
 }
 
 #[test]
-fn evm_or_mixed_input_is_exit_4_and_never_silently_dropped() {
+fn mixed_solana_and_evm_input_is_exit_2_and_never_silently_dropped() {
     let input = format!("solana:{SOL_A}\nbase:0x1111111111111111111111111111111111111111\n");
     let (code, stdout, stderr) = run_env(&["--input", "-"], &input, Some("KEYSECRET777"));
-    assert_eq!(code, 4, "{stderr}");
-    assert!(stderr.contains("1 of 2 wallet(s) are EVM"));
+    // ADR-020 step 2: one run = one chain family; mixed input is refused
+    // (usage error) before anything is scanned or printed.
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("mixed Solana and EVM"), "{stderr}");
     assert!(stdout.is_empty());
 }
 

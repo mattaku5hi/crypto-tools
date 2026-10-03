@@ -17,6 +17,10 @@ mod chain;
 mod events;
 mod raw;
 
-pub use chain::{BASE, BSC, EvmChainProfile, ROBINHOOD};
+pub use chain::{
+    BASE, BSC, EvmChainProfile, QuoteAssetSpec, QuoteUsdPolicy, ROBINHOOD, ROBINHOOD_USDG,
+};
 pub use events::*;
-pub use raw::{EvmTxStatus, InternalTransfer, RawEvmLog, RawEvmTransaction};
+pub use raw::{
+    EvmTxStatus, InternalTransfer, NativeBalanceDiff, NativeSource, RawEvmLog, RawEvmTransaction,
+};

@@ -30,10 +30,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_primitives::{Address, B256, I256, U256};
 use scout_api::DecodeOutcome;
-use scout_core::{ChainKey, EvmTxStatus, NetworkId, RawEvmTransaction};
+use scout_core::{ChainKey, EvmTxStatus, NativeSource, NetworkId, RawEvmTransaction};
 use scout_dex_evm::{GateOutcome, SwapVenue, SwapVenueGate, VenueVerification};
 use scout_evm::{
     EvmChainProfile, WrappedNativeKind, decode_erc20_transfer, decode_wrapped_native_event,
+    is_erc721_transfer,
 };
 
 pub use scout_dex_solana::TradeSide;
@@ -75,6 +76,21 @@ impl EvmExtractionConfig {
         self
     }
 
+    /// Config for a chain profile: a fresh venue gate and the profile's pinned
+    /// quote tokens (Robinhood: USDG). Native/wrapped-native is merged and
+    /// needs no entry.
+    #[must_use]
+    pub fn for_profile(profile: EvmChainProfile) -> Self {
+        let mut cfg = Self::new(profile, SwapVenueGate::new(profile.chain_id));
+        for q in profile.quote_assets {
+            cfg.quote_tokens.push(EvmQuoteToken {
+                address: q.address,
+                symbol: q.symbol.to_string(),
+            });
+        }
+        cfg
+    }
+
     fn is_quote_token(&self, token: &Address) -> bool {
         self.quote_tokens.iter().any(|q| q.address == *token)
     }
@@ -92,10 +108,24 @@ pub enum QuoteAsset {
 pub enum NativeLegStatus {
     /// Quote is not native.
     NotInvolved,
-    /// Internal transfers were observed (complete source).
-    Observed,
+    /// Observed through a complete source (trace internal transfers, a
+    /// complete explorer listing, or an archive balance difference).
+    Observed(NativeSource),
     /// Only `tx.value` and logs; internal transfers not observed.
     LogsAndValueOnly,
+}
+
+impl NativeLegStatus {
+    /// Stable label for reports (`not_involved`, `trace`,
+    /// `explorer_internal`, `balance_diff`, `logs_and_value_only`).
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NotInvolved => "not_involved",
+            Self::Observed(s) => s.label(),
+            Self::LogsAndValueOnly => "logs_and_value_only",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +226,12 @@ pub struct EvmTxExtraction {
     pub outcome: EvmTxOutcome,
     /// Swap-shaped logs at non-gated emitters (never evidence, counted).
     pub ungated_swap_logs: u32,
+    /// ERC-721-shaped `Transfer` logs (Uniswap v4 PositionManager NFTs,
+    /// other NFTs): not fungible flows, counted and never used.
+    pub nft_transfer_logs: u32,
+    /// Swap logs of gated, verified venues in the transaction (> 0 makes a
+    /// rejection a "swap-shaped transaction that was not booked").
+    pub gated_swap_logs: u32,
 }
 
 fn fee_of(tx: &RawEvmTransaction, profile: &EvmChainProfile) -> EvmFee {
@@ -249,6 +285,35 @@ fn credit(
     }
 }
 
+/// Owner-keyed ERC-20 net deltas of `wallet` in `tx` (the wrapped native
+/// token is excluded: it is merged into the native quote). ERC-721-shaped and
+/// undecodable `Transfer` logs are skipped. `None` on arithmetic overflow.
+/// Used by the ledger's inventory-continuity check.
+pub(crate) fn wallet_token_deltas(
+    tx: &RawEvmTransaction,
+    wallet: Address,
+    wrapped: Address,
+) -> Option<BTreeMap<Address, I256>> {
+    let mut flows = Flows::default();
+    for log in &tx.logs {
+        if is_erc721_transfer(log) {
+            continue;
+        }
+        let DecodeOutcome::Decoded(t) = decode_erc20_transfer(log) else {
+            continue;
+        };
+        if t.token == wrapped {
+            continue;
+        }
+        if t.from == wallet && t.to != wallet {
+            credit(&mut flows, Some(t.token), t.amount, false)?;
+        } else if t.to == wallet && t.from != wallet {
+            credit(&mut flows, Some(t.token), t.amount, true)?;
+        }
+    }
+    Some(flows.tokens)
+}
+
 /// Extract the trade (if any) of one transaction.
 ///
 /// `wallet = None` means "the signer" (`tx.from`); `Some(w)` with
@@ -264,12 +329,17 @@ pub fn extract_evm_trade(
     let w = wallet.unwrap_or(tx.from);
     let paid_fee = (w == tx.from).then(|| fee_of(tx, &cfg.profile));
     let mut ungated = 0u32;
+    let nft =
+        u32::try_from(tx.logs.iter().filter(|l| is_erc721_transfer(l)).count()).unwrap_or(u32::MAX);
+    let gated = std::cell::Cell::new(0u32);
     let done = |outcome: EvmTxOutcome, ungated_swap_logs: u32| EvmTxExtraction {
         tx_hash: tx.hash,
         wallet: w,
         fee: paid_fee,
         outcome,
         ungated_swap_logs,
+        nft_transfer_logs: nft,
+        gated_swap_logs: gated.get(),
     };
     let no = |reason: NoTradeReason, ungated: u32| done(EvmTxOutcome::NoTrade(reason), ungated);
 
@@ -292,6 +362,11 @@ pub fn extract_evm_trade(
     let mut swaps = Vec::new();
 
     for log in &tx.logs {
+        // ERC-721 mint/burn/transfer (e.g. Uniswap v4 PositionManager
+        // position NFTs = liquidity add/remove): not a fungible flow.
+        if is_erc721_transfer(log) {
+            continue;
+        }
         match decode_erc20_transfer(log) {
             DecodeOutcome::Decoded(t) => {
                 if t.token == wrapped {
@@ -308,7 +383,10 @@ pub fn extract_evm_trade(
             DecodeOutcome::NotMine => {}
         }
         match cfg.gate.classify(log) {
-            GateOutcome::Verified(v) => swaps.push(v),
+            GateOutcome::Verified(v) => {
+                gated.set(gated.get().saturating_add(1));
+                swaps.push(v);
+            }
             GateOutcome::UngatedEmitter { .. } => ungated += 1,
             GateOutcome::Malformed(m) => return no(NoTradeReason::MalformedLog(m), ungated),
             GateOutcome::NotSwap => {}
@@ -342,14 +420,22 @@ pub fn extract_evm_trade(
             return no(NoTradeReason::MalformedLog(m), ungated);
         }
     }
-    // Native: tx.value leaves tx.from (== w); internal transfers when seen.
-    ok = ok.and_then(|()| credit(&mut flows, None, tx.value, false));
-    let internals_observed = tx.internal_transfers.is_some();
-    for it in tx.internal_transfers.iter().flatten() {
-        if it.from == w && it.to != w {
-            ok = ok.and_then(|()| credit(&mut flows, None, it.value, false));
-        } else if it.to == w && it.from != w {
-            ok = ok.and_then(|()| credit(&mut flows, None, it.value, true));
+    // Native: an archive balance difference of the signer is the whole
+    // native movement (value, internal inflows, WETH withdraw proceeds; fee
+    // excluded) and supersedes the pieces below. Otherwise `tx.value`
+    // leaves tx.from (== w) and internal transfers count when observed.
+    let balance_diff = tx.native_balance_diff.filter(|d| d.account == w);
+    let internals_observed = tx.internal_transfers.is_some() || balance_diff.is_some();
+    if let Some(d) = balance_diff {
+        ok = ok.and_then(|()| flows.add_native(d.net_excl_fee));
+    } else {
+        ok = ok.and_then(|()| credit(&mut flows, None, tx.value, false));
+        for it in tx.internal_transfers.iter().flatten() {
+            if it.from == w && it.to != w {
+                ok = ok.and_then(|()| credit(&mut flows, None, it.value, false));
+            } else if it.to == w && it.from != w {
+                ok = ok.and_then(|()| credit(&mut flows, None, it.value, true));
+            }
         }
     }
     if ok.is_none() {
@@ -419,8 +505,10 @@ pub fn extract_evm_trade(
             venue_verification: venue.verification,
         }
     };
-    let native_status = if internals_observed {
-        NativeLegStatus::Observed
+    let native_status = if balance_diff.is_some() {
+        NativeLegStatus::Observed(NativeSource::BalanceDiff)
+    } else if internals_observed {
+        NativeLegStatus::Observed(tx.native_source.unwrap_or(NativeSource::Explorer))
     } else {
         NativeLegStatus::LogsAndValueOnly
     };
@@ -468,6 +556,8 @@ pub fn extract_evm_trade(
 pub struct EvmExtractionSummary {
     pub transactions: u64,
     pub duplicates_ignored: u64,
+    /// ERC-721-shaped `Transfer` logs seen (never fungible flows).
+    pub nft_transfer_logs: u64,
     pub trades: u64,
     pub failed: u64,
     pub unknown_consideration: u64,
@@ -512,6 +602,7 @@ pub fn extract_evm_trades(
         let e = extract_evm_trade(tx, cfg, wallet, token_filter);
         summary.transactions += 1;
         summary.ungated_swap_logs += u64::from(e.ungated_swap_logs);
+        summary.nft_transfer_logs += u64::from(e.nft_transfer_logs);
         match &e.outcome {
             EvmTxOutcome::Trade(t) => {
                 summary.trades += 1;
@@ -617,6 +708,8 @@ mod tests {
             l1_fee: None,
             logs,
             internal_transfers: None,
+            native_source: None,
+            native_balance_diff: None,
         }
     }
 
@@ -653,7 +746,7 @@ mod tests {
         assert_eq!(tr.quote, QuoteAsset::Native);
         assert_eq!(tr.consideration, Consideration::Exact(U256::from(5u8)));
         assert_eq!(tr.venue, SwapVenue::UniswapV4);
-        assert_eq!(tr.venue_verification, VenueVerification::IdlOnly);
+        assert_eq!(tr.venue_verification, VenueVerification::FixtureVerified);
         assert_eq!(tr.fee, EvmFee::Known(U256::from(300u16)));
         assert_eq!(e.fee, Some(tr.fee));
     }
@@ -762,7 +855,10 @@ mod tests {
         let e = extract_evm_trade(&t, &cfg(), None, None);
         let tr = trade(&e);
         assert_eq!(tr.consideration, Consideration::Exact(U256::from(5u8)));
-        assert_eq!(tr.native_leg, NativeLegStatus::Observed);
+        assert_eq!(
+            tr.native_leg,
+            NativeLegStatus::Observed(NativeSource::Explorer)
+        );
         // Observed and empty: nothing came back, so no quote leg at all.
         t.internal_transfers = Some(vec![]);
         let e = extract_evm_trade(&t, &cfg(), None, None);
@@ -908,13 +1004,43 @@ mod tests {
 
     #[test]
     fn malformed_transfer_log_surfaces() {
+        // ERC-20 shape (3 topics) with a truncated amount.
         let bad = lg(
             TOKEN,
-            vec![TRANSFER_TOPIC0, W.into_word(), PM.into_word(), B256::ZERO],
-            vec![],
+            vec![TRANSFER_TOPIC0, W.into_word(), PM.into_word()],
+            vec![0; 31],
         );
         let e = extract_evm_trade(&tx(vec![bad]), &cfg(), None, None);
         assert!(matches!(reason(&e), NoTradeReason::MalformedLog(_)));
+    }
+
+    #[test]
+    fn erc721_transfers_are_counted_and_never_fungible_flows() {
+        // Uniswap v4 PositionManager NFT mint next to a real swap: the NFT
+        // log must neither abort the trade nor count as a token flow.
+        let nft = lg(
+            OTHER,
+            vec![
+                TRANSFER_TOPIC0,
+                Address::ZERO.into_word(),
+                W.into_word(),
+                B256::repeat_byte(7),
+            ],
+            vec![],
+        );
+        let t = tx(vec![
+            transfer(weth(), W, PM, 5),
+            transfer(TOKEN, PM, W, 100),
+            nft.clone(),
+            v4_swap(PM),
+        ]);
+        let e = extract_evm_trade(&t, &cfg(), None, None);
+        assert_eq!(trade(&e).token, TOKEN);
+        assert_eq!(e.nft_transfer_logs, 1);
+        // Alone (an LP add/remove): no fungible flow at all.
+        let e = extract_evm_trade(&tx(vec![nft]), &cfg(), None, None);
+        assert_eq!(reason(&e), &NoTradeReason::NoTradedToken);
+        assert_eq!(e.nft_transfer_logs, 1);
     }
 
     #[test]

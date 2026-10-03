@@ -64,6 +64,7 @@ use scout_providers::{
 use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
 use tokio_util::sync::CancellationToken;
 
+mod evm;
 mod output;
 
 use output::{Detail, RunMetaInput, SortMode};
@@ -197,6 +198,12 @@ struct Args {
     #[arg(long)]
     no_valuation: bool,
 
+    /// EVM only: run a chain whose venue/quote set is not verified yet
+    /// (Base, BSC). Without it such a run exits 4. Every trade there is
+    /// IdlOnly, so the run is partial.
+    #[arg(long)]
+    allow_unverified_chain: bool,
+
     /// Analysis window start, UTC RFC 3339 `2026-08-01T00:00:00Z` (inclusive;
     /// no offsets). Window `[since, until)`; see ADR-011. Conflicts with --period.
     #[arg(long, conflicts_with = "period")]
@@ -277,6 +284,32 @@ fn main() -> ExitCode {
         );
     }
 
+    // A run is about ONE chain family (never a silent partial list).
+    let family = match scout_app::run_family(wallets.iter().map(|w| &w.chain), "wallet-stats") {
+        Ok(f) => f,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    if let scout_app::RunFamily::Evm(chain) = &family {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(err) => {
+                eprintln!("wallet-stats: could not start async runtime: {err}");
+                return ExitCode::from(4);
+            }
+        };
+        return evm::run_evm(
+            &rt,
+            &wallets,
+            chain,
+            &args,
+            &window,
+            parsed.duplicate_count,
+            upstream_complete,
+        );
+    }
     let solana: Vec<SolanaPubkey> = wallets
         .iter()
         .filter_map(|w| match (&w.chain.family, &w.address) {
@@ -284,15 +317,6 @@ fn main() -> ExitCode {
             _ => None,
         })
         .collect();
-    if solana.len() != wallets.len() {
-        let evm = wallets.len() - solana.len();
-        eprintln!(
-            "wallet-stats: {evm} of {} wallet(s) are EVM; no history provider configured for EVM \
-             (SCOUT_EVM_HISTORY_API_KEY): refusing to print a partial list",
-            wallets.len()
-        );
-        return ExitCode::from(4);
-    }
 
     let Some(api_key) = std::env::var(HELIUS_KEY_ENV)
         .ok()
@@ -348,7 +372,7 @@ impl PricingOutcome {
 
 /// ADR-018: value every wallet ledger in USD (unless `--no-usd`): collect
 /// the needed minutes of all wallets, prefetch once, apply the views.
-fn price_wallets(
+pub(crate) fn price_wallets(
     rt: &tokio::runtime::Runtime,
     report: &mut SolanaWalletStatsReport,
     args: &Args,
@@ -363,7 +387,12 @@ fn price_wallets(
     if args.no_usd {
         return out;
     }
-    match scout_app::build_coinbase_source(args.max_price_requests) {
+    let built = if report.evm.is_some() {
+        scout_app::build_coinbase_source_evm(args.max_price_requests)
+    } else {
+        scout_app::build_coinbase_source(args.max_price_requests)
+    };
+    match built {
         Ok((source, overridden)) => {
             out.endpoint_overridden = overridden;
             out.policy = Some(source.policy());
@@ -378,7 +407,7 @@ fn price_wallets(
     out
 }
 
-fn redact(text: &str, secret: &str) -> String {
+pub(crate) fn redact(text: &str, secret: &str) -> String {
     let replaced = if secret.is_empty() {
         text.to_string()
     } else {
@@ -397,7 +426,7 @@ fn redact_table_line(text: &str, secret: &str) -> String {
     }
 }
 
-fn limit_text(limit: Option<u64>) -> String {
+pub(crate) fn limit_text(limit: Option<u64>) -> String {
     limit.map_or_else(|| "unlimited".to_string(), |n| n.to_string())
 }
 
@@ -412,7 +441,7 @@ fn rate_limited_text(retry_after_secs: Option<u64>) -> String {
 }
 
 /// Run start in unix seconds (pinned once per run as `as_of`).
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()

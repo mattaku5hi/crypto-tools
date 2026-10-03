@@ -15,6 +15,9 @@
 
 mod accounts;
 mod evm_blockscout;
+mod evm_native;
+#[cfg(feature = "test-support")]
+pub mod evm_replay;
 mod evm_rpc;
 mod evm_scan;
 mod evm_wire;
@@ -27,9 +30,13 @@ pub use evm_blockscout::{
     BlockscoutApiKey, BlockscoutEvmConfig, BlockscoutEvmSource, BlockscoutInternal,
     BlockscoutTokenTransfer, BlockscoutTx, Closest, Listing,
 };
+pub use evm_native::{
+    Capability, NativeLegCapabilities, NativeLegOutcome, NativeLegPolicy, NativeLegResolver,
+    NativeLegRun, TraceParseError, Unobserved, parse_call_tree,
+};
 pub use evm_rpc::{
     CallRecorder, EvmRpcClient, EvmRpcConfig, EvmSourceError, LogFilter, LogsResult,
-    is_range_or_cap_error,
+    is_range_or_cap_error, suggested_range,
 };
 pub use evm_scan::{
     EvmHistoryScanner, InternalIndex, ReceiptMode, ScanLimits, TokenScanOutput, WalletScanOutput,

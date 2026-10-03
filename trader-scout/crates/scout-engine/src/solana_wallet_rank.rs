@@ -120,10 +120,11 @@ use std::collections::BTreeMap;
 use scout_analytics::RatioStatus;
 use scout_core::{MONEY_SCALE, Money, SolanaPubkey};
 
+use crate::chain_display::ChainDisplay;
 use crate::solana_open_valuation::{OpenValuationTotals, OpenValuationView};
 use crate::solana_wallet_ledger::{
     LowerBound, OpenPosition, QuoteUnit, SolanaWalletLedgerReport, WinRateLowerBound,
-    lamports_to_money, money_to_unit_raw,
+    money_to_unit_raw, quote_units_to_money,
 };
 use crate::solana_wallet_stats::{SolanaWalletStats, WalletScanStatus};
 
@@ -259,6 +260,8 @@ pub enum ExclusionReason {
     IncompleteCoverage,
     NoActivity,
     NoPumpActivity,
+    /// ADR-020: an EVM wallet with transactions but no booked trade.
+    NoTradeActivity,
     /// ADR-016: too many `ClosedUnknown` episodes.
     UnknownEpisodeShare,
     /// ADR-016: `--exclude-unbounded` and the wallet is tier 2.
@@ -286,6 +289,7 @@ impl ExclusionReason {
             Self::IncompleteCoverage => "incomplete_coverage",
             Self::NoActivity => "no_activity",
             Self::NoPumpActivity => "no_pump_activity",
+            Self::NoTradeActivity => "no_trade_activity",
             Self::UnknownEpisodeShare => "unknown_episode_share",
             Self::PnlUnbounded => "pnl_unbounded",
             Self::MetricUnknown => "metric_unknown",
@@ -455,6 +459,8 @@ impl OpenExposure {
 #[derive(Debug, Clone)]
 pub struct WalletRankObservation {
     pub wallet: SolanaPubkey,
+    /// Chain of the wallet key / units (ADR-020).
+    pub chain: ChainDisplay,
     pub status: WalletScanStatus,
     pub transactions_scanned: Option<u64>,
     /// Sanitized scan error text.
@@ -560,6 +566,7 @@ fn unit_closed_known(l: &SolanaWalletLedgerReport, unit: QuoteUnit) -> u64 {
 fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
     let mut obs = WalletRankObservation {
         wallet: w.wallet,
+        chain: w.chain,
         status: w.status,
         transactions_scanned: w.transactions_scanned,
         error: w.error.clone(),
@@ -592,8 +599,10 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
     } else {
         (l.closed_episodes_unknown, l.win_rate_lower_bound)
     };
-    let net = if quote == QuoteUnit::Lamports {
-        // Failed-trade fees are SOL overhead (ADR-004): SOL only.
+    // The chain's native unit (lamports / wei): its net is fee-inclusive.
+    let native = quote == l.quote_unit;
+    let net = if native {
+        // Failed-trade fees are native overhead (ADR-004): native only.
         (closed > 0 || l.failed_trade_fees_lamports != 0).then_some(l.realized_net_pnl_lamports)
     } else if quote == QuoteUnit::ReportCurrency {
         // ADR-004 in USD: realized - priced failed fees; unpriced fees make
@@ -641,8 +650,8 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
             return LowerBound::Bounded(n);
         }
         let pnl_lb = block.and_then(|b| b.realized_pnl_lower_bound().bounded().copied());
-        let failed = if quote == QuoteUnit::Lamports {
-            lamports_to_money(l.failed_trade_fees_lamports).ok()
+        let failed = if native {
+            quote_units_to_money(l.quote_unit, l.failed_trade_fees_lamports).ok()
         } else if quote == QuoteUnit::ReportCurrency {
             l.usd.as_ref().map(|u| u.failed_fees.priced_usd)
         } else {
@@ -664,7 +673,7 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
         let den = b.consumed_basis_with_unknown_exact()?;
         Ratio::new(num.scaled_units(), den.scaled_units())
     });
-    let base_pf = if quote == QuoteUnit::Lamports {
+    let base_pf = if native {
         Some(l.profit_factor)
     } else {
         block.map(|b| b.profit_factor)
@@ -709,6 +718,7 @@ fn status_reason(status: WalletScanStatus) -> Option<ExclusionReason> {
         WalletScanStatus::Incomplete => Some(ExclusionReason::IncompleteCoverage),
         WalletScanStatus::NoActivity => Some(ExclusionReason::NoActivity),
         WalletScanStatus::NoPumpActivity => Some(ExclusionReason::NoPumpActivity),
+        WalletScanStatus::NoTradeActivity => Some(ExclusionReason::NoTradeActivity),
     }
 }
 

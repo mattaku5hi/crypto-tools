@@ -87,6 +87,7 @@ pub use scout_ledger::QuoteUnit;
 use scout_ledger::{BasisStatus, Ledger};
 use scout_normalize::{SolanaBalanceAggregationError, solana_owner_net_deltas};
 
+use crate::chain_display::{ChainDisplay, SOLANA_DISPLAY};
 use crate::decode_evidence::{DecodeEvidence, VenueEventDiagnostics, scan_tx_evidence};
 use crate::solana_buy_qualification::{
     VariantPolicy, default_variant_policy, solana_mainnet_chain,
@@ -114,6 +115,15 @@ pub const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 /// Seconds in the activity "day" bucket (UTC, `ts.div_euclid(86_400)`).
 const SECONDS_PER_DAY: i64 = 86_400;
 
+// ADR-020 step 2: the EVM ledger is a child module so it can drive the
+// private, chain-generalized `Builder` (see its module docs).
+#[path = "evm_wallet_ledger.rs"]
+mod evm_wallet_ledger;
+pub use evm_wallet_ledger::{
+    EVM_WALLET_LEDGER_SCOPE, EVM_WALLET_LEDGER_VERSION, EvmLedgerExtras, EvmTradeRecord,
+    build_evm_wallet_ledger,
+};
+
 /// Typed failure of the ledger build. Malformed *data* never lands here
 /// (it is counted in the report); only arithmetic overflow and internal
 /// inconsistency do.
@@ -139,7 +149,9 @@ pub enum SolanaWalletLedgerError {
 pub const fn quote_unit_decimals(unit: QuoteUnit) -> Option<u32> {
     match unit {
         QuoteUnit::Lamports => Some(9),
-        QuoteUnit::UsdcUnits | QuoteUnit::UsdtUnits => Some(6),
+        QuoteUnit::UsdcUnits | QuoteUnit::UsdtUnits | QuoteUnit::UsdgUnits => Some(6),
+        // ADR-020 amendment: EVM native in wei (18 dp); WETH merged.
+        QuoteUnit::Wei => Some(18),
         // ADR-018: the USD view is `Money` itself (scale `MONEY_SCALE`); its
         // "raw" figure is the scaled integer (1e-8 USD).
         QuoteUnit::ReportCurrency => Some(MONEY_SCALE),
@@ -153,6 +165,8 @@ pub const fn quote_unit_label(unit: QuoteUnit) -> &'static str {
         QuoteUnit::Lamports => "sol",
         QuoteUnit::UsdcUnits => "usdc",
         QuoteUnit::UsdtUnits => "usdt",
+        QuoteUnit::Wei => "eth",
+        QuoteUnit::UsdgUnits => "usdg",
         QuoteUnit::ReportCurrency => "usd",
     }
 }
@@ -275,6 +289,13 @@ pub enum UnknownReason {
     /// ADR-013 §1: the paired event is one hop of a route, not the wallet's
     /// price, and the route rule did not apply. Never a partial-hop price.
     RouteLegNotWalletPrice,
+    /// ADR-020: EVM native-currency proceeds of a sell arrived through an
+    /// internal transfer that no source (trace, archive balance difference,
+    /// complete explorer listing) observed. Proceeds unknown, never 0.
+    NativeLegNotObserved,
+    /// ADR-020: the transaction fee cannot be established exactly (Base
+    /// receipt without `l1Fee`), so the basis is unknown, never partial.
+    FeeNotObserved,
 }
 
 impl UnknownReason {
@@ -294,6 +315,10 @@ impl UnknownReason {
             }
             Self::CrossQuoteUnit => "basis and proceeds in different quote units",
             Self::RouteLegNotWalletPrice => "event is a route leg, not the wallet's price",
+            Self::NativeLegNotObserved => {
+                "native proceeds not observed (no trace / archive balance source)"
+            }
+            Self::FeeNotObserved => "transaction fee not observed exactly",
         }
     }
 }
@@ -470,6 +495,9 @@ pub struct QuoteUnitCounts {
     pub sol: u64,
     pub usdc: u64,
     pub usdt: u64,
+    /// ADR-020: EVM native (wei) and USDG.
+    pub wei: u64,
+    pub usdg: u64,
 }
 
 impl QuoteUnitCounts {
@@ -478,6 +506,8 @@ impl QuoteUnitCounts {
             QuoteUnit::Lamports => self.sol += 1,
             QuoteUnit::UsdcUnits => self.usdc += 1,
             QuoteUnit::UsdtUnits => self.usdt += 1,
+            QuoteUnit::Wei => self.wei += 1,
+            QuoteUnit::UsdgUnits => self.usdg += 1,
             QuoteUnit::ReportCurrency => {}
         }
     }
@@ -488,6 +518,8 @@ impl QuoteUnitCounts {
             QuoteUnit::Lamports => self.sol,
             QuoteUnit::UsdcUnits => self.usdc,
             QuoteUnit::UsdtUnits => self.usdt,
+            QuoteUnit::Wei => self.wei,
+            QuoteUnit::UsdgUnits => self.usdg,
             QuoteUnit::ReportCurrency => 0,
         }
     }
@@ -637,6 +669,11 @@ pub struct TradeCounts {
     /// Paired, SOL-quoted, consideration computed.
     pub priced: u64,
     pub unpaired: u64,
+    /// ADR-020: EVM trades whose native proceeds were not observed
+    /// (Unknown consideration), a consideration bucket of its own.
+    pub native_leg_not_observed: u64,
+    /// ADR-020: EVM trades whose fee is not exactly known (Unknown basis).
+    pub fee_not_observed: u64,
     pub mismatched: u64,
     pub unsupported_quote: u64,
     pub malformed_consideration: u64,
@@ -786,7 +823,12 @@ pub struct ActivityMetrics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolanaWalletLedgerReport {
     pub ledger_version: &'static str,
+    /// Native unit of the chain: the legacy `*_lamports` figures below are
+    /// the native block's raw base units (lamports for Solana, wei for an
+    /// EVM chain, ADR-020 step 2).
     pub quote_unit: QuoteUnit,
+    /// Chain identity: how `wallet`/`mint` keys and units are rendered.
+    pub chain: ChainDisplay,
     pub wallet: SolanaPubkey,
     pub trades: TradeCounts,
     /// Per `(venue, variant)` trade counts with verification status
@@ -881,6 +923,9 @@ pub struct SolanaWalletLedgerReport {
     /// until [`apply_open_valuation`](crate::apply_open_valuation) ran.
     /// Realized figures never read it.
     pub open_valuation: Option<OpenValuationView>,
+    /// ADR-020: EVM-only facts (trade audit trail, extraction counters,
+    /// native-leg sources); `None` for Solana.
+    pub evm: Option<EvmLedgerExtras>,
 }
 
 /// Audit record of one booked route swap (ADR-013 §2): the wallet's own
@@ -1197,7 +1242,9 @@ struct Builder {
     wallet: SolanaPubkey,
     left_censoring: bool,
     left_censored_total: u128,
-    chain_asset: fn(SolanaPubkey) -> AssetKey,
+    chain_asset: Box<dyn Fn(SolanaPubkey) -> AssetKey + Send + Sync>,
+    /// Chain identity of the report (Solana, or an EVM chain, ADR-020).
+    chain: ChainDisplay,
     quote_mints: QuoteMints,
     route_log: Vec<RouteSwapRecord>,
     mints: BTreeMap<SolanaPubkey, MintState>,
@@ -1223,7 +1270,7 @@ fn asset_of(mint: SolanaPubkey) -> AssetKey {
     AssetKey::Token(solana_mainnet_chain(), AddressBytes::Solana(mint))
 }
 
-fn raw(amount: u64) -> RawAmount {
+fn raw(amount: u128) -> RawAmount {
     RawAmount::from_u256(U256::from(amount))
 }
 
@@ -1247,6 +1294,39 @@ impl MintState {
 }
 
 impl Builder {
+    /// A fresh builder for one wallet of one chain (Solana, or an EVM chain
+    /// whose 20-byte addresses are left-padded into the 32-byte keys).
+    fn new(
+        wallet: SolanaPubkey,
+        chain: ChainDisplay,
+        left_censoring: bool,
+        chain_asset: Box<dyn Fn(SolanaPubkey) -> AssetKey + Send + Sync>,
+    ) -> Result<Self, SolanaWalletLedgerError> {
+        Ok(Self {
+            wallet,
+            left_censoring,
+            left_censored_total: 0,
+            chain_asset,
+            chain,
+            quote_mints: QuoteMints::new()?,
+            route_log: Vec::new(),
+            mints: BTreeMap::new(),
+            records: Vec::new(),
+            diag: LedgerDiagnostics::default(),
+            counts: TradeCounts::default(),
+            variant_counts: BTreeMap::new(),
+            unknown_lots: 0,
+            failed_fees: 0,
+            failed_fee_txs: 0,
+            failed_fee_journal: Vec::new(),
+            stamped: Vec::new(),
+            traded: BTreeSet::new(),
+            evidence_samples: Vec::new(),
+            price_ts: None,
+            fees: BTreeMap::new(),
+        })
+    }
+
     fn state(&mut self, mint: SolanaPubkey) -> &mut MintState {
         self.mints.entry(mint).or_insert_with(|| MintState {
             ledger: Ledger::with_quote_unit(QuoteUnit::Lamports),
@@ -1260,7 +1340,7 @@ impl Builder {
     fn acquire(
         &mut self,
         mint: SolanaPubkey,
-        amount: u64,
+        amount: u128,
         basis: Option<Money>,
         unit: QuoteUnit,
         reason: Option<UnknownReason>,
@@ -1275,7 +1355,7 @@ impl Builder {
             self.unknown_lots += 1;
         }
         if reason == Some(UnknownReason::LeftCensored) {
-            self.left_censored_total = self.left_censored_total.saturating_add(u128::from(amount));
+            self.left_censored_total = self.left_censored_total.saturating_add(amount);
         }
         let price_ts = self.price_ts;
         let state = self.state(mint);
@@ -1300,8 +1380,7 @@ impl Builder {
                 if let Some(ep) = state.episode.as_mut() {
                     ep.unknown.insert(r);
                     if r == UnknownReason::LeftCensored {
-                        ep.left_censored_raw =
-                            ep.left_censored_raw.saturating_add(u128::from(amount));
+                        ep.left_censored_raw = ep.left_censored_raw.saturating_add(amount);
                     }
                 }
                 BasisStatus::Unknown {
@@ -1325,7 +1404,7 @@ impl Builder {
     fn dispose(
         &mut self,
         mint: SolanaPubkey,
-        amount: u64,
+        amount: u128,
         gross: Option<Money>,
         unit: QuoteUnit,
         sale_fee: Money,
@@ -1337,10 +1416,9 @@ impl Builder {
             return Ok(());
         }
         let open = self.state(mint).open_u128()?;
-        let need = u128::from(amount);
+        let need = amount;
         if open < need {
-            let shortfall = u64::try_from(need.saturating_sub(open))
-                .map_err(|_| SolanaWalletLedgerError::Overflow("shortfall"))?;
+            let shortfall = need.saturating_sub(open);
             let reason = if self.left_censoring {
                 self.diag.left_censored_disposals += 1;
                 UnknownReason::LeftCensored
@@ -1431,7 +1509,14 @@ impl Builder {
             self.diag.unknown_disposals += 1;
         }
         if let Some(ep) = closed {
-            self.records.push(close_record(mint, ep, ts, loc, false)?);
+            self.records.push(close_record(
+                mint,
+                ep,
+                ts,
+                loc,
+                false,
+                self.chain.native_unit,
+            )?);
         }
         Ok(())
     }
@@ -1476,6 +1561,7 @@ fn close_record(
     closed_at: Option<i64>,
     _loc: Location,
     open: bool,
+    native: QuoteUnit,
 ) -> Result<EpisodeRecord, SolanaWalletLedgerError> {
     let outcome = if open {
         EpisodeOutcome::Open
@@ -1505,7 +1591,7 @@ fn close_record(
         let (unit, basis) = consumed_known_basis_by_unit
             .first()
             .copied()
-            .unwrap_or((ep.unit.unwrap_or(QuoteUnit::Lamports), Money::ZERO));
+            .unwrap_or((ep.unit.unwrap_or(native), Money::ZERO));
         Money::ZERO
             .checked_sub(&basis)
             .map_or(EpisodePnlBound::Unbounded, |lower_bound| {
@@ -2643,28 +2729,12 @@ pub fn build_solana_wallet_ledger_venues(
     options: LedgerOptions,
 ) -> Result<SolanaWalletLedgerReport, SolanaWalletLedgerError> {
     let qm = QuoteMints::new()?;
-    let mut b = Builder {
-        wallet: *wallet,
-        left_censoring: options.left_censoring,
-        left_censored_total: 0,
-        chain_asset: asset_of,
-        quote_mints: QuoteMints::new()?,
-        route_log: Vec::new(),
-        mints: BTreeMap::new(),
-        records: Vec::new(),
-        diag: LedgerDiagnostics::default(),
-        counts: TradeCounts::default(),
-        variant_counts: BTreeMap::new(),
-        unknown_lots: 0,
-        failed_fees: 0,
-        failed_fee_txs: 0,
-        failed_fee_journal: Vec::new(),
-        stamped: Vec::new(),
-        traded: BTreeSet::new(),
-        evidence_samples: Vec::new(),
-        price_ts: None,
-        fees: BTreeMap::new(),
-    };
+    let mut b = Builder::new(
+        *wallet,
+        SOLANA_DISPLAY,
+        options.left_censoring,
+        Box::new(asset_of),
+    )?;
 
     // §7: canonical order, independent of input order; dedup by signature.
     let mut ordered: Vec<&RawSolanaTransaction> = txs.iter().collect();
@@ -2883,7 +2953,10 @@ impl Builder {
                             QuoteUnit::UsdtUnits => {
                                 route_quote_mints.insert(self.quote_mints.usdt);
                             }
-                            QuoteUnit::Lamports | QuoteUnit::ReportCurrency => {}
+                            QuoteUnit::Lamports
+                            | QuoteUnit::ReportCurrency
+                            | QuoteUnit::Wei
+                            | QuoteUnit::UsdgUnits => {}
                         }
                     }
                     let signed = i128::from(token_amount);
@@ -2897,7 +2970,7 @@ impl Builder {
                             )?;
                             self.acquire(
                                 t.mint,
-                                token_amount,
+                                u128::from(token_amount),
                                 Some(quote_units_to_money(unit, basis_l)?),
                                 unit,
                                 None,
@@ -2912,7 +2985,7 @@ impl Builder {
                         TradeSide::Sell => {
                             self.dispose(
                                 t.mint,
-                                token_amount,
+                                u128::from(token_amount),
                                 Some(quote_units_to_money(unit, i128::from(amount))?),
                                 unit,
                                 quote_units_to_money(unit, i128::from(fee_share))?,
@@ -2964,7 +3037,7 @@ impl Builder {
                                 TradeSide::Buy => {
                                     self.acquire(
                                         t.mint,
-                                        amount,
+                                        u128::from(amount),
                                         None,
                                         QuoteUnit::Lamports,
                                         Some(reason),
@@ -2976,7 +3049,7 @@ impl Builder {
                                 TradeSide::Sell => {
                                     self.dispose(
                                         t.mint,
-                                        amount,
+                                        u128::from(amount),
                                         None,
                                         QuoteUnit::Lamports,
                                         Money::ZERO,
@@ -3043,7 +3116,7 @@ impl Builder {
                     unverified_reason.unwrap_or(UnknownReason::UnexplainedInboundTokenMovement);
                 self.acquire(
                     mint,
-                    amount,
+                    u128::from(amount),
                     None,
                     QuoteUnit::Lamports,
                     Some(reason),
@@ -3055,7 +3128,7 @@ impl Builder {
                     unverified_reason.unwrap_or(UnknownReason::UnexplainedOutboundTokenMovement);
                 self.dispose(
                     mint,
-                    amount,
+                    u128::from(amount),
                     None,
                     QuoteUnit::Lamports,
                     Money::ZERO,
@@ -3200,7 +3273,7 @@ impl Builder {
                     basis_known: matches!(lot.basis_status, BasisStatus::Known),
                 });
                 if matches!(lot.basis_status, BasisStatus::Known)
-                    && lot.quote_unit == QuoteUnit::Lamports
+                    && lot.quote_unit == self.chain.native_unit
                 {
                     known_sol_basis = money_add(known_sol_basis, lot.remaining_basis)?;
                 } else {
@@ -3230,8 +3303,14 @@ impl Builder {
                 },
                 lots: usd_lots,
             });
-            self.records
-                .push(close_record(mint, ep, None, (0, 0), true)?);
+            self.records.push(close_record(
+                mint,
+                ep,
+                None,
+                (0, 0),
+                true,
+                self.chain.native_unit,
+            )?);
         }
         self.records.sort_by_key(|r| (r.opened_location, r.mint));
 
@@ -3240,7 +3319,10 @@ impl Builder {
         let mut left_censored = 0u64;
         let mut open_eps = 0u64;
         let (mut wins, mut losses, mut breakeven) = (0u64, 0u64, 0u64);
-        let mut blocks: Vec<QuoteUnitBlock> = SOLANA_QUOTE_UNITS
+        let native = self.chain.native_unit;
+        let mut blocks: Vec<QuoteUnitBlock> = self
+            .chain
+            .quote_units()
             .iter()
             .map(|u| QuoteUnitBlock::empty(*u))
             .collect();
@@ -3256,7 +3338,7 @@ impl Builder {
             match r.outcome {
                 EpisodeOutcome::ClosedKnown { pnl } => {
                     closed_known += 1;
-                    let unit = r.quote_unit.unwrap_or(QuoteUnit::Lamports);
+                    let unit = r.quote_unit.unwrap_or(native);
                     if let Some(b) = blocks.iter_mut().find(|b| b.unit == unit) {
                         b.closed_episodes_known += 1;
                         b.realized_trade_pnl_exact = money_add(b.realized_trade_pnl_exact, pnl)?;
@@ -3282,7 +3364,7 @@ impl Builder {
                         breakeven += 1;
                     }
                     let ep = Episode {
-                        asset: asset_of(r.mint),
+                        asset: (self.chain_asset)(r.mint),
                         realized_pnl: pnl,
                         is_closed_within_window: true,
                         opened_before_window: false,
@@ -3313,7 +3395,7 @@ impl Builder {
                     open_eps += 1;
                     // An open episode that mixed units has no single PnL.
                     if !r.unknown_reasons.contains(&UnknownReason::CrossQuoteUnit) {
-                        let unit = r.quote_unit.unwrap_or(QuoteUnit::Lamports);
+                        let unit = r.quote_unit.unwrap_or(native);
                         let acc = open_pnls.entry(unit).or_insert(Money::ZERO);
                         *acc = money_add(*acc, r.known_disposal_pnl)?;
                         if let Some(b) = blocks.iter_mut().find(|b| b.unit == unit) {
@@ -3346,9 +3428,9 @@ impl Builder {
         let win_rate = win_rate(&cohort)?;
         let sol = blocks
             .iter()
-            .find(|b| b.unit == QuoteUnit::Lamports)
+            .find(|b| b.unit == native)
             .cloned()
-            .unwrap_or_else(|| QuoteUnitBlock::empty(QuoteUnit::Lamports));
+            .unwrap_or_else(|| QuoteUnitBlock::empty(native));
         let pnl_sum = sol.realized_trade_pnl_exact;
         let basis_sum = sol.consumed_acquisition_basis_exact;
         let profit_factor = sol.profit_factor;
@@ -3356,7 +3438,7 @@ impl Builder {
         let median_holding_seconds = median(&holds);
         let holding_time_samples = u64::try_from(holds.len()).unwrap_or(u64::MAX);
 
-        let failed = lamports_to_money(self.failed_fees)?;
+        let failed = quote_units_to_money(native, self.failed_fees)?;
         let net = pnl_sum.checked_sub(&failed)?;
 
         let open_with_unknown = u64::try_from(
@@ -3372,7 +3454,8 @@ impl Builder {
 
         Ok(SolanaWalletLedgerReport {
             ledger_version: SOLANA_WALLET_LEDGER_VERSION,
-            quote_unit: QuoteUnit::Lamports,
+            quote_unit: native,
+            chain: self.chain,
             wallet: self.wallet,
             trades: self.counts,
             variant_trades: self
@@ -3427,6 +3510,7 @@ impl Builder {
             usd: None,
             open_venues,
             open_valuation: None,
+            evm: None,
         })
     }
 }

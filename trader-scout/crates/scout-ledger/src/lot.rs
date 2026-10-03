@@ -19,6 +19,14 @@ pub enum QuoteUnit {
     UsdcUnits,
     /// Raw USDT base units (6 decimals; ADR-013 §3).
     UsdtUnits,
+    /// EVM native currency in wei (ETH/BNB; 18 decimals; WETH/WBNB merged,
+    /// ADR-020 amendment). One wei is `10^MONEY_SCALE` scaled `Money` units,
+    /// exact like lamports. The chain (and so ETH vs BNB) comes from the
+    /// ledger's chain identity, never from this tag.
+    Wei,
+    /// Raw USDG base units (6 decimals, ADR-020 amendment). Valued at par
+    /// in USD and labelled `usdg_par_assumed`; never equal to USDC/USDT.
+    UsdgUnits,
 }
 
 /// Whether a lot's acquisition cost is known or must be treated as

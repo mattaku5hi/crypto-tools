@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use alloy_primitives::U256;
 use scout_core::{AssetKey, Money, RawAmount, ScoutError};
 
 use crate::lot::{BasisStatus, Lot, LotProvenance, QuoteUnit};
@@ -305,30 +306,25 @@ fn proportional_money(
         return Ok(total);
     }
     // For a partial consumption we need total * numerator / denominator.
-    // Both RawAmount values fit in U256; total.scaled_units() is i128.
-    // Since numerator/denominator both come from the same RawAmount
-    // domain (on-chain token units), we can safely reduce them to a
-    // u128 ratio for this multiplication — token supplies never
-    // approach U256::MAX in practice, and any case that would overflow
-    // here is exactly the "extreme amount values" case that must
-    // produce a typed error, not a silent wrap.
-    let num_u128 =
-        u128::try_from(numerator.as_u256()).map_err(|_| ScoutError::ArithmeticOverflow {
-            context: "proportional_money: numerator exceeds u128",
-        })?;
-    let den_u128 =
-        u128::try_from(denominator.as_u256()).map_err(|_| ScoutError::ArithmeticOverflow {
-            context: "proportional_money: denominator exceeds u128",
-        })?;
+    // The product is formed in U256 (EVM wei bases are ~10^26 scaled units
+    // and token amounts reach 10^27 raw units: their product exceeds i128
+    // and u128). A product beyond U256 stays a typed error. The quotient is
+    // <= |total| because numerator < denominator, so it always fits i128.
     let total_units = total.scaled_units();
-    let total_units_u128 = total_units.unsigned_abs();
-
-    let product = total_units_u128
-        .checked_mul(num_u128)
+    let product = U256::from(total_units.unsigned_abs())
+        .checked_mul(numerator.as_u256())
         .ok_or(ScoutError::ArithmeticOverflow {
             context: "proportional_money: total * numerator overflow",
         })?;
-    let quotient = product.div_euclid(den_u128);
+    let quotient =
+        product
+            .checked_div(denominator.as_u256())
+            .ok_or(ScoutError::ArithmeticOverflow {
+                context: "proportional_money: zero denominator",
+            })?;
+    let quotient = u128::try_from(quotient).map_err(|_| ScoutError::ArithmeticOverflow {
+        context: "proportional_money: quotient exceeds u128",
+    })?;
     let signed = i128::try_from(quotient).map_err(|_| ScoutError::ArithmeticOverflow {
         context: "proportional_money: quotient exceeds i128",
     })?;

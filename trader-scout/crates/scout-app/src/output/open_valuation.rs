@@ -127,9 +127,13 @@ fn venue_label(v: Venue) -> &'static str {
     v.label()
 }
 
-fn position_dto(p: &OpenPosition, v: Option<&PositionValuation>) -> OpenPositionDto {
+fn position_dto(
+    p: &OpenPosition,
+    v: Option<&PositionValuation>,
+    chain: &scout_sdk::engine::ChainDisplay,
+) -> OpenPositionDto {
     let mut d = OpenPositionDto {
-        mint: bs58::encode(p.mint).into_string(),
+        mint: chain.address(&p.mint),
         open_amount_raw: p.open_amount_raw.to_string(),
         unknown_basis_amount_raw: p.unknown_basis_amount_raw.to_string(),
         basis_known_lamports: None,
@@ -249,7 +253,7 @@ pub fn open_positions_dto(l: &SolanaWalletLedgerReport) -> Vec<OpenPositionDto> 
                 .open_valuation
                 .as_ref()
                 .and_then(|view| view.positions.iter().find(|x| x.mint == p.mint));
-            position_dto(p, v)
+            position_dto(p, v, &l.chain)
         })
         .collect()
 }

@@ -296,6 +296,30 @@ impl RpcClient {
 
         let status = response.status();
 
+        // Providers (Alchemy) answer plan limits with HTTP 400 and a JSON-RPC
+        // error body ("up to a 10 block range", "not available on the Free
+        // tier"). Keep that message (bounded read; no URL in it) instead of
+        // a bare `HTTP 400`, so callers can react to range/plan errors.
+        if status.is_client_error() && !matches!(status.as_u16(), 401 | 403 | 429) {
+            let fallback = Classified::Terminal(ProviderError::Other(Box::new(
+                std::io::Error::other(format!("HTTP {status}")),
+            )));
+            let Ok(bytes) = read_capped(response, 16 * 1024).await else {
+                return Err(fallback);
+            };
+            return Err(
+                match serde_json::from_slice::<JsonRpcResponse<serde_json::Value>>(&bytes)
+                    .ok()
+                    .and_then(|e| e.into_result().err())
+                {
+                    Some(JsonRpcEnvelopeError::Rpc(rpc_err)) => Classified::Terminal(
+                        ProviderError::Other(Box::new(RpcErrorAdapter(rpc_err))),
+                    ),
+                    _ => fallback,
+                },
+            );
+        }
+
         if let Some(classified) = map_status(status, &response) {
             return Err(classified);
         }

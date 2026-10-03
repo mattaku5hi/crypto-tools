@@ -7,7 +7,7 @@
 //! move is mechanical, not a behavior or API change for existing
 //! callers.
 
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, I256, U256};
 
 /// One decoded-from-JSON-RPC log entry, prior to any protocol-specific
 /// interpretation. `topics[0]` is the event signature hash when present;
@@ -37,6 +37,44 @@ pub struct InternalTransfer {
     pub from: Address,
     pub to: Address,
     pub value: U256,
+}
+
+/// Which source established the native (ETH/BNB) legs of a transaction
+/// (ADR-020 section 2 amendment). `None` on the transaction = not observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NativeSource {
+    /// Internal value transfers parsed from a `debug_traceTransaction`
+    /// `callTracer` frame tree.
+    Trace,
+    /// Internal transfers from an explorer listing that reported complete
+    /// processing (`internal_transfers` holds the data).
+    Explorer,
+    /// Archive balance difference of the wallet around the block
+    /// (`native_balance_diff` holds the data).
+    BalanceDiff,
+}
+
+impl NativeSource {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Trace => "trace",
+            Self::Explorer => "explorer_internal",
+            Self::BalanceDiff => "balance_diff",
+        }
+    }
+}
+
+/// Exact native-balance movement of one account across a transaction,
+/// fee excluded: `balance(block) - balance(block - 1) + fee` (the fee is
+/// added back when the account paid it). Only valid when the account had
+/// exactly one transaction in the block (ADR-020 amendment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeBalanceDiff {
+    pub account: Address,
+    /// Wei, signed; includes `-tx.value`, internal inflows and WETH
+    /// `withdraw` proceeds, never the transaction fee.
+    pub net_excl_fee: I256,
 }
 
 /// A transaction with everything the EVM trade extraction needs (ADR-020 §1):
@@ -71,6 +109,12 @@ pub struct RawEvmTransaction {
     /// Receipt logs in log-index order.
     pub logs: Vec<RawEvmLog>,
     pub internal_transfers: Option<Vec<InternalTransfer>>,
+    /// Provenance of `internal_transfers` when `Some` (`Trace` or
+    /// `Explorer`); `None` when internals were not observed.
+    pub native_source: Option<NativeSource>,
+    /// Archive balance difference of `from` (when established); it
+    /// supersedes `tx.value` and `internal_transfers` for that account.
+    pub native_balance_diff: Option<NativeBalanceDiff>,
 }
 
 /// A 32-byte Solana address (program id, mint, or account pubkey). Kept

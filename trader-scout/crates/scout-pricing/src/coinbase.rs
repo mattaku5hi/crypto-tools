@@ -59,6 +59,23 @@ pub struct CoinbaseConfig {
     pub max_cached_pages: usize,
     /// First backoff step (ms); doubles per attempt.
     pub retry_base_delay_ms: u64,
+    /// Products listed in the price policy of `run_meta` (the assets a run of
+    /// this family can ask for). Solana: SOL-USD + USDT-USD; EVM: ETH-USD.
+    pub policy_products: Vec<&'static str>,
+    /// Text of the par assumption(s) in the policy.
+    pub par_assumption: &'static str,
+}
+
+impl CoinbaseConfig {
+    /// EVM runs (ADR-020 amendment): ETH-USD candles, USDG at par.
+    #[must_use]
+    pub fn evm() -> Self {
+        Self {
+            policy_products: vec!["ETH-USD"],
+            par_assumption: "usdg_par_assumed: USDG valued at exactly 1 USD (no keyless historical USDG/USD source verified)",
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for CoinbaseConfig {
@@ -71,6 +88,8 @@ impl Default for CoinbaseConfig {
             max_response_bytes: 1024 * 1024,
             max_cached_pages: 1_024,
             retry_base_delay_ms: 250,
+            policy_products: vec!["SOL-USD", "USDT-USD"],
+            par_assumption: "usdc_par_assumed: USDC valued at exactly 1 USD (no keyless historical USDC/USD source verified)",
         }
     }
 }
@@ -120,7 +139,8 @@ fn product_of(asset: QuoteAsset) -> Option<&'static str> {
     match asset {
         QuoteAsset::Sol => Some("SOL-USD"),
         QuoteAsset::Usdt => Some("USDT-USD"),
-        QuoteAsset::Usdc => None,
+        QuoteAsset::Eth => Some("ETH-USD"),
+        QuoteAsset::Usdc | QuoteAsset::Usdg => None,
     }
 }
 
@@ -322,10 +342,10 @@ impl PriceSource for CoinbasePriceSource {
         PricePolicy {
             policy_version: PRICE_POLICY_VERSION,
             source: COINBASE_SOURCE_ID,
-            products: vec!["SOL-USD", "USDT-USD"],
+            products: self.cfg.policy_products.clone(),
             granularity_seconds: 60,
             staleness_limit_minutes: STALENESS_LIMIT_MINUTES,
-            usdc_assumption: "usdc_par_assumed: USDC valued at exactly 1 USD (no keyless historical USDC/USD source verified)",
+            usdc_assumption: self.cfg.par_assumption,
             price_field: "close",
         }
     }
@@ -395,6 +415,9 @@ impl PriceSource for CoinbasePriceSource {
     fn usd_price(&self, asset: QuoteAsset, t: i64) -> PriceObservation {
         if asset == QuoteAsset::Usdc {
             return PriceObservation::usdc_par(minute_start(t), COINBASE_SOURCE_ID);
+        }
+        if asset == QuoteAsset::Usdg {
+            return PriceObservation::usdg_par(minute_start(t), COINBASE_SOURCE_ID);
         }
         let pages = self.pages_read();
         resolve(asset, t, COINBASE_SOURCE_ID, |m| {

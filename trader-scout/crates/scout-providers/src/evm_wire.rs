@@ -160,6 +160,10 @@ pub struct EvmReceiptInfo {
     /// `gas_used` and is intentionally not separated.
     pub l1_fee: Option<U256>,
     pub logs: Vec<RawEvmLog>,
+    /// Receipt `from` / `to` when present (needed to decide whether an
+    /// account is touched by other transactions of the same block).
+    pub from: Option<Address>,
+    pub to: Option<Address>,
 }
 
 pub(crate) fn parse_receipt(v: &Value) -> Result<EvmReceiptInfo, EvmSourceError> {
@@ -183,6 +187,8 @@ pub(crate) fn parse_receipt(v: &Value) -> Result<EvmReceiptInfo, EvmSourceError>
             .map(|g| quantity_u256(g, W))
             .transpose()?,
         logs,
+        from: opt_field(v, "from").map(|a| address(a, W)).transpose()?,
+        to: opt_field(v, "to").map(|a| address(a, W)).transpose()?,
     })
 }
 

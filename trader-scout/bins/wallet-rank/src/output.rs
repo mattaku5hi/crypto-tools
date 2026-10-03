@@ -15,15 +15,25 @@ use scout_engine::{
     RankedWallet, Ratio, SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION,
     SOLANA_WALLET_RANK_VERSION, ScanStop, SolanaProtocolScope, WalletRankObservation,
     WalletRankReport, format_quote_money, format_scaled_decimal, lamports_to_sol_string,
-    money_exact_sol_string, quote_unit_decimals, quote_unit_label, quote_units_to_money,
-    rational_to_decimal_string,
+    quote_unit_decimals, quote_unit_label, quote_units_to_money, rational_to_decimal_string,
 };
 use serde::Serialize;
 
-const CHAIN: &str = "solana";
-
 fn addr(o: &WalletRankObservation) -> String {
-    bs58::encode(o.wallet).into_string()
+    o.chain.address(&o.wallet)
+}
+
+/// Exact decimal of raw native base units (lamports / wei).
+fn native_str(c: &scout_engine::ChainDisplay, raw: i128) -> String {
+    format_scaled_decimal(raw, quote_unit_decimals(c.native_unit).unwrap_or(9))
+}
+
+/// Exact native amount of a base-unit-scaled `Money`.
+fn money_exact_native(c: &scout_engine::ChainDisplay, m: Money) -> String {
+    format_scaled_decimal(
+        m.scaled_units(),
+        MONEY_SCALE + quote_unit_decimals(c.native_unit).unwrap_or(9),
+    )
 }
 
 fn money_str(m: Money) -> String {
@@ -112,7 +122,7 @@ fn row(r: &RankedWallet, profile: &str) -> Vec<String> {
     vec![
         r.rank.to_string(),
         addr(o),
-        CHAIN.to_string(),
+        o.chain.name.to_string(),
         pnl,
         roi_cell(o),
         closed.to_string(),
@@ -662,10 +672,12 @@ pub struct StopDto {
     pub retry_after_secs: Option<u64>,
 }
 
-fn amount(lamports: i128) -> AmountDto {
+/// `lamports`/`sol` are the Solana-era key names; the EVM spelling pass
+/// renames them to `wei`/`eth` (amounts are already in the chain's decimals).
+fn amount(chain: &scout_engine::ChainDisplay, lamports: i128) -> AmountDto {
     AmountDto {
         lamports: lamports.to_string(),
-        sol: lamports_to_sol_string(lamports),
+        sol: native_str(chain, lamports),
     }
 }
 
@@ -815,14 +827,17 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
     // Legacy SOL ROI fields keep their SOL meaning whatever the rank unit
     // (the ranking-unit ROI is in `quote_units`).
     let sol_roi = l
-        .unit_block(QuoteUnit::Lamports)
+        .unit_block(l.quote_unit)
         .and_then(|b| b.roi_parts())
         .and_then(|(n, d)| Ratio::new(n, d));
     let roi = match sol_roi {
         Some(r) => RoiDto {
             status: "value",
-            numerator_sol_exact: Some(money_exact_sol_string(l.realized_trade_pnl_exact)),
-            denominator_sol_exact: Some(money_exact_sol_string(l.consumed_acquisition_basis_exact)),
+            numerator_sol_exact: Some(money_exact_native(&l.chain, l.realized_trade_pnl_exact)),
+            denominator_sol_exact: Some(money_exact_native(
+                &l.chain,
+                l.consumed_acquisition_basis_exact,
+            )),
             percent_2dp: r.percent_string(2),
         },
         None => RoiDto {
@@ -845,7 +860,7 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
         ),
     };
     let open_status = o.open_exposure.label();
-    let sol_only = |v: Option<String>| v.filter(|_| o.quote == QuoteUnit::Lamports);
+    let sol_only = |v: Option<String>| v.filter(|_| o.quote == l.quote_unit);
     let t = &l.trades;
     Some(MetricsDto {
         quote: quote_unit_label(o.quote),
@@ -876,7 +891,7 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
         }),
         route: RouteCountsDto {
             route_swaps: t.route_swaps,
-            route_swaps_sol: t.route_swaps_by_quote.sol,
+            route_swaps_sol: t.route_swaps_by_quote.sol + t.route_swaps_by_quote.wei,
             route_swaps_usdc: t.route_swaps_by_quote.usdc,
             route_swaps_usdt: t.route_swaps_by_quote.usdt,
             route_swaps_evidence_curve: t.route_swaps_by_evidence.curve,
@@ -916,10 +931,10 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             raw: o.net_pnl_raw.map(|v| v.to_string()),
             decimal: o.net_pnl_raw.and_then(|v| raw_decimal(o.quote, v)),
             lamports: sol_only(o.net_pnl_raw.map(|v| v.to_string())),
-            sol: sol_only(o.net_pnl_raw.map(lamports_to_sol_string)),
+            sol: sol_only(o.net_pnl_raw.map(|v| native_str(&l.chain, v))),
             sol_exact: sol_only(
                 o.net_pnl_raw
-                    .map(|_| money_exact_sol_string(l.realized_net_pnl_exact)),
+                    .map(|_| money_exact_native(&l.chain, l.realized_net_pnl_exact)),
             ),
         },
         rank_tier: o.rank_tier,
@@ -951,8 +966,8 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
                     .and_then(|r| r.percent_string(2)),
             }
         },
-        realized_trade_pnl: amount(l.realized_trade_pnl_lamports),
-        consumed_acquisition_basis: amount(l.consumed_acquisition_basis_lamports),
+        realized_trade_pnl: amount(&l.chain, l.realized_trade_pnl_lamports),
+        consumed_acquisition_basis: amount(&l.chain, l.consumed_acquisition_basis_lamports),
         realized_cost_roi: roi,
         closed_episodes_known: l.closed_episodes_known,
         closed_episodes_unknown: l.closed_episodes_unknown,
@@ -964,7 +979,7 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
         breakeven: l.breakeven,
         win_rate: ratio_dto(&l.win_rate, l.closed_episodes_known),
         profit_factor: ratio_dto(&l.profit_factor, l.closed_episodes_known),
-        failed_trade_fees: amount(l.failed_trade_fees_lamports),
+        failed_trade_fees: amount(&l.chain, l.failed_trade_fees_lamports),
         has_unknown_basis_inventory: l.has_unknown_basis_inventory,
         has_left_censored_inventory: l.has_left_censored_inventory,
         open_exposure: OpenExposureDto {
@@ -1003,6 +1018,8 @@ pub struct RunMetaInput<'a> {
     pub pricing: PricingMetaDto,
     /// ADR-019 valuation run facts (disabled with `--no-valuation`).
     pub open_valuation: scout_app::OpenValuationMetaDto,
+    /// EVM run facts (`None` for Solana).
+    pub evm: Option<&'a scout_engine::EvmRunInfo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1102,7 +1119,7 @@ pub fn rank_record(r: &RankedWallet, report: &WalletRankReport) -> Option<Wallet
         kind: "wallet_rank",
         rank: r.rank,
         wallet: WalletDto {
-            chain: CHAIN,
+            chain: r.observation.chain.name,
             address: addr(&r.observation),
         },
         rank_by: report.policy.rank_by.label(),
@@ -1122,7 +1139,7 @@ pub fn excluded_record(
         schema_version: SCHEMA_VERSION,
         kind: "wallet_excluded",
         wallet: WalletDto {
-            chain: CHAIN,
+            chain: o.chain.name,
             address: addr(o),
         },
         primary_reason: e.primary_reason().label(),
@@ -1192,21 +1209,106 @@ pub fn jsonl_lines(
     summary: SummaryInput<'_>,
     redact: &dyn Fn(&str) -> String,
 ) -> Result<Vec<String>, String> {
-    let ser = |r: Result<String, serde_json::Error>| r.map_err(|e| e.to_string());
-    let mut lines = Vec::with_capacity(report.ranked.len() + report.excluded.len() + 2);
-    lines.push(ser(serde_json::to_string(&run_meta_record(meta, report)))?);
+    let Some(evm) = meta.evm else {
+        let ser = |r: Result<String, serde_json::Error>| r.map_err(|e| e.to_string());
+        let mut lines = Vec::with_capacity(report.ranked.len() + report.excluded.len() + 2);
+        lines.push(ser(serde_json::to_string(&run_meta_record(meta, report)))?);
+        for r in &report.ranked {
+            let rec = rank_record(r, report)
+                .ok_or_else(|| "ranked wallet without ledger (internal error)".to_string())?;
+            lines.push(ser(serde_json::to_string(&rec))?);
+        }
+        for e in &report.excluded {
+            lines.push(ser(serde_json::to_string(&excluded_record(e, redact)))?);
+        }
+        lines.push(ser(serde_json::to_string(&run_summary_record(
+            report, summary,
+        )))?);
+        return Ok(lines);
+    };
+    let val = |r: Result<serde_json::Value, serde_json::Error>| r.map_err(|e| e.to_string());
+    let mut records: Vec<serde_json::Value> = Vec::new();
+    let mut run_meta = val(serde_json::to_value(run_meta_record(meta, report)))?;
+    patch_evm_run_meta(&mut run_meta, evm, &meta.window);
+    records.push(run_meta);
     for r in &report.ranked {
         let rec = rank_record(r, report)
             .ok_or_else(|| "ranked wallet without ledger (internal error)".to_string())?;
-        lines.push(ser(serde_json::to_string(&rec))?);
+        records.push(val(serde_json::to_value(&rec))?);
     }
     for e in &report.excluded {
-        lines.push(ser(serde_json::to_string(&excluded_record(e, redact)))?);
+        records.push(val(serde_json::to_value(excluded_record(e, redact)))?);
     }
-    lines.push(ser(serde_json::to_string(&run_summary_record(
+    records.push(val(serde_json::to_value(run_summary_record(
         report, summary,
     )))?);
-    Ok(lines)
+    for r in &mut records {
+        scout_app::evm_spelling(r, evm.chain.native_label);
+    }
+    records
+        .iter()
+        .map(|r| serde_json::to_string(r).map_err(|e| e.to_string()))
+        .collect()
+}
+
+/// EVM `run_meta` facts replace the Solana scope/scan/version fields.
+fn patch_evm_run_meta(
+    v: &mut serde_json::Value,
+    info: &scout_engine::EvmRunInfo,
+    window: &AnalysisWindow,
+) {
+    use serde_json::json;
+    v["protocol_scope"] = json!(
+        "swap events of FixtureVerified venue deployments only (see scope.venues); the trade is the transaction signer's own owner-keyed net flow: one traded token and one quote asset (native/wrapped-native merged, USDG) with opposite signs"
+    );
+    v["not_decoded"] = json!(
+        "every venue not listed as FixtureVerified, smart-wallet/AA ownership, wallets that do not sign the transaction"
+    );
+    v["programs"] = json!([]);
+    v["scope"] = json!({
+        "chain": info.chain.name,
+        "chain_id": info.chain.chain_id,
+        "extraction_version": info.extraction_version,
+        "venues": info.venues.iter().map(|x| json!({
+            "venue": x.venue, "anchor": x.anchor, "role": x.role,
+            "verification": x.verification, "active_from_block": x.active_from_block,
+        })).collect::<Vec<_>>(),
+        "quote_assets": info.quote_assets.iter().map(|q| json!({
+            "symbol": q.symbol, "address": q.address, "decimals": q.decimals,
+            "decimals_check": q.decimals_check,
+        })).collect::<Vec<_>>(),
+        "native_leg": {
+            "policy": info.native_leg_text(),
+            "trace": info.trace,
+            "archive_state": info.archive_state,
+            "trades_by_source": info.native_leg_counts,
+        },
+    });
+    v["ledger_version"] = json!(info.ledger_version);
+    v["ledger_scope"] = json!(info.ledger_scope);
+    v["quote_unit"] = json!("lamports");
+    let (max_requests, requests_made) = (
+        v.get("scan")
+            .and_then(|x| x.get("max_requests"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        v.get("scan")
+            .and_then(|x| x.get("requests_made"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    v["scan"] = json!({
+        "provider": "evm_rpc",
+        "history_source": info.history_source,
+        "block_range": info.block_range.map(|(a, b)| json!([a, b])),
+        "max_requests": max_requests,
+        "requests_made": requests_made,
+        "window": if window.is_bounded() {
+            "block range resolved from the window by block timestamps"
+        } else {
+            "full available history (no time window)"
+        },
+    });
 }
 
 #[cfg(test)]
@@ -1241,6 +1343,7 @@ mod tests {
         l.activity.timestamped_trades = 6;
         l.activity.mint_day_pairs = 3;
         SolanaWalletStats {
+            chain: scout_engine::SOLANA_DISPLAY,
             wallet: [b; 32],
             status: WalletScanStatus::Ok,
             transactions_scanned: Some(6),
@@ -1268,6 +1371,7 @@ mod tests {
 
     fn meta<'a>() -> RunMetaInput<'a> {
         RunMetaInput {
+            evm: None,
             run_id: "wallet-rank-t",
             captured_at: "2026-10-02T00:00:00Z",
             max_pages_per_wallet: 10,

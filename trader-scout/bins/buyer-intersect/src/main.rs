@@ -75,6 +75,7 @@ use scout_providers::{
 use scout_rpc::{DEFAULT_MAX_RETRY_AFTER, RequestBudgetExhausted};
 use tokio_util::sync::CancellationToken;
 
+mod evm;
 mod output;
 
 use output::RunBudget;
@@ -205,6 +206,12 @@ struct Args {
     /// complete iff every slice is; truncated slices are named.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=16))]
     slices: Option<u32>,
+
+    /// EVM only: run a chain whose venue set is not verified yet (Base,
+    /// BSC); without it such a run exits 4. Every trade is then IdlOnly:
+    /// no wallet qualifies and the run is partial.
+    #[arg(long)]
+    allow_unverified_chain: bool,
 }
 
 /// Library default is sequential; the CLI default.
@@ -300,6 +307,22 @@ fn main() -> ExitCode {
         }
     };
 
+    let token_chains: Vec<&scout_core::ChainKey> = input_tokens
+        .iter()
+        .map(|t| match t {
+            AssetKey::Token(c, _) | AssetKey::Native(c) => c,
+        })
+        .collect();
+    let family = match scout_app::run_family(token_chains, "buyer-intersect") {
+        Ok(f) => f,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    if let scout_app::RunFamily::Evm(chain) = &family {
+        return evm::run_evm(&rt, &input_tokens, chain, &args, &window);
+    }
     let all_solana = input_tokens.iter().all(|t| {
         matches!(
             t,
@@ -428,7 +451,7 @@ fn rate_limited_text(retry_after: Option<std::time::Duration>) -> String {
     }
 }
 
-fn limit_text(limit: Option<u64>) -> String {
+pub(crate) fn limit_text(limit: Option<u64>) -> String {
     limit.map_or_else(|| "unlimited".to_string(), |n| n.to_string())
 }
 

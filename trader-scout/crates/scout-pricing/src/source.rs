@@ -136,7 +136,7 @@ impl InMemoryPriceSource {
     /// Add candles of `asset` (USDC candles are ignored: USDC is par).
     #[must_use]
     pub fn with_candles(mut self, asset: QuoteAsset, candles: &[Candle]) -> Self {
-        if asset != QuoteAsset::Usdc {
+        if asset != QuoteAsset::Usdc && asset != QuoteAsset::Usdg {
             let book = self.candles.entry(asset).or_default();
             for c in candles {
                 book.insert(c.time, *c);
@@ -174,6 +174,9 @@ impl PriceSource for InMemoryPriceSource {
     fn usd_price(&self, asset: QuoteAsset, t: i64) -> PriceObservation {
         if asset == QuoteAsset::Usdc {
             return PriceObservation::usdc_par(minute_start(t), IN_MEMORY_SOURCE_ID);
+        }
+        if asset == QuoteAsset::Usdg {
+            return PriceObservation::usdg_par(minute_start(t), IN_MEMORY_SOURCE_ID);
         }
         if let Some(class) = self.failed.get(&asset) {
             return PriceObservation::unknown(

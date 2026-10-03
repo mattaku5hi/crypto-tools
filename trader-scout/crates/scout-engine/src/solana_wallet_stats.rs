@@ -58,6 +58,8 @@ use scout_dex_solana::BondingCurveBuyDecoder;
 use tokio_util::sync::CancellationToken;
 
 use crate::analysis_window::AnalysisWindow;
+use crate::chain_display::{ChainDisplay, SOLANA_DISPLAY};
+use crate::evm_wallet_stats::EvmRunInfo;
 use crate::solana_buy_qualification::solana_mainnet_chain;
 use crate::solana_buyer_intersect::{
     ScanFailureKind, ScanStop, SolanaProtocolScope, classify_provider_error, sanitize_provider_text,
@@ -72,6 +74,8 @@ pub enum WalletScanStatus {
     Ok,
     NoActivity,
     NoPumpActivity,
+    /// EVM (ADR-020): transactions exist but none is a booked trade.
+    NoTradeActivity,
     Incomplete,
     Error,
     /// No request was made: the run stopped earlier.
@@ -85,6 +89,7 @@ impl WalletScanStatus {
             Self::Ok => "ok",
             Self::NoActivity => "no_activity",
             Self::NoPumpActivity => "no_pump_activity",
+            Self::NoTradeActivity => "no_trade_activity",
             Self::Incomplete => "incomplete",
             Self::Error => "error",
             Self::NotScanned => "not_scanned",
@@ -95,7 +100,11 @@ impl WalletScanStatus {
 /// One wallet's card source.
 #[derive(Debug, Clone)]
 pub struct SolanaWalletStats {
+    /// Wallet key (Solana pubkey, or an EVM address left-padded to 32 bytes;
+    /// see `chain`).
     pub wallet: SolanaPubkey,
+    /// Chain identity: how `wallet` and the ledger's units/keys are read.
+    pub chain: ChainDisplay,
     pub status: WalletScanStatus,
     /// `None` when the scan failed (unknown, not zero).
     pub transactions_scanned: Option<u64>,
@@ -120,12 +129,25 @@ pub struct SolanaWalletStats {
 }
 
 impl SolanaWalletStats {
-    /// Wallet identity as a `WalletKey` (Solana mainnet).
+    /// Wallet identity as a `WalletKey` (Solana mainnet, or the EVM chain of
+    /// the card with an unverified genesis fingerprint).
     #[must_use]
     pub fn wallet_key(&self) -> WalletKey {
-        WalletKey {
-            chain: solana_mainnet_chain(),
-            address: AddressBytes::Solana(self.wallet),
+        match self.chain.chain_id {
+            Some(id) if self.chain.is_evm() => WalletKey {
+                chain: scout_core::ChainKey {
+                    family: scout_core::ChainFamily::Evm,
+                    network_id: scout_core::NetworkId::EvmChainId(id),
+                    genesis_identity: scout_core::GenesisIdentity::Unverified,
+                },
+                address: AddressBytes::Evm(
+                    crate::chain_display::evm_address_of_key(&self.wallet).into_array(),
+                ),
+            },
+            _ => WalletKey {
+                chain: solana_mainnet_chain(),
+                address: AddressBytes::Solana(self.wallet),
+            },
         }
     }
 
@@ -149,6 +171,9 @@ pub struct SolanaWalletStatsReport {
     pub stop: Option<ScanStop>,
     /// Effective max wallets scanned at once (1 = sequential).
     pub concurrency: usize,
+    /// ADR-020: EVM run facts (sources, capabilities, quote assets); `None`
+    /// for Solana runs (whose `scope` is the pump scope).
+    pub evm: Option<EvmRunInfo>,
 }
 
 impl SolanaWalletStatsReport {
@@ -156,7 +181,7 @@ impl SolanaWalletStatsReport {
     pub fn incomplete_reasons(&self) -> Vec<String> {
         let mut out = Vec::new();
         for w in &self.wallets {
-            let label = bs58::encode(w.wallet).into_string();
+            let label = w.chain.address(&w.wallet);
             if let Some(e) = &w.error {
                 out.push(format!("wallet {label}: scan failed: {e}"));
             }
@@ -276,6 +301,52 @@ pub async fn run_solana_wallet_stats_concurrent(
     concurrency: usize,
     cancel: CancellationToken,
 ) -> Result<SolanaWalletStatsReport, ProviderError> {
+    let cards = run_wallet_cards(
+        wallets,
+        SOLANA_DISPLAY,
+        concurrency,
+        cancel,
+        |wallet, token| async move { scan_wallet(provider, wallet, decoders, window, &token).await },
+    )
+    .await?;
+    Ok(SolanaWalletStatsReport {
+        scope: if decoders.amm.is_some() {
+            SolanaProtocolScope::pump_wallet_ledger()
+        } else {
+            SolanaProtocolScope::pump_bonding_curve()
+        },
+        wallets: cards.wallets,
+        cancelled: cards.cancelled,
+        stop: cards.stop,
+        concurrency: cards.concurrency,
+        evm: None,
+    })
+}
+
+/// Merged result of a bounded multi-wallet scan (chain-agnostic).
+pub(crate) struct WalletCards {
+    pub wallets: Vec<SolanaWalletStats>,
+    pub cancelled: bool,
+    pub stop: Option<ScanStop>,
+    pub concurrency: usize,
+}
+
+/// The chain-agnostic driver of a stats run: bounded `buffer_unordered`
+/// over the distinct wallets, a run-terminal stop cancels the rest, and the
+/// cards are merged in input order only (see the function above for the
+/// invariants). `scan` runs ONE wallet: `Ok(Some(card))` done, `Ok(None)`
+/// cut by cancellation, `Err` only for `ConfigurationRequired`.
+pub(crate) async fn run_wallet_cards<F, Fut>(
+    wallets: &[SolanaPubkey],
+    chain: ChainDisplay,
+    concurrency: usize,
+    cancel: CancellationToken,
+    scan: F,
+) -> Result<WalletCards, ProviderError>
+where
+    F: Fn(SolanaPubkey, CancellationToken) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<SolanaWalletStats>, ProviderError>>,
+{
     let concurrency = concurrency.clamp(1, MAX_WALLET_CONCURRENCY);
     let mut seen: BTreeSet<SolanaPubkey> = BTreeSet::new();
     let distinct: Vec<SolanaPubkey> = wallets
@@ -290,12 +361,13 @@ pub async fn run_solana_wallet_stats_concurrent(
     let mut ends: Vec<Option<WalletEnd>> = (0..distinct.len()).map(|_| None).collect();
     {
         let run_ref = &run;
+        let scan_ref = &scan;
         let mut pending = futures::stream::iter(distinct.iter().copied().enumerate())
             .map(|(index, wallet)| async move {
                 if run_ref.is_cancelled() {
                     return (index, Ok(WalletEnd::NotStarted));
                 }
-                let end = match scan_wallet(provider, wallet, decoders, window, run_ref).await {
+                let end = match scan_ref(wallet, run_ref.clone()).await {
                     Ok(Some(card)) => Ok(WalletEnd::Done(Box::new(card))),
                     Ok(None) => Ok(WalletEnd::Interrupted),
                     Err(err) => Err(err),
@@ -328,16 +400,17 @@ pub async fn run_solana_wallet_stats_concurrent(
         out.push(match end.unwrap_or(WalletEnd::NotStarted) {
             WalletEnd::Done(card) => *card,
             WalletEnd::NotStarted => match stop {
-                Some(reason) => not_scanned_card(wallet, reason),
+                Some(reason) => not_scanned_card(wallet, chain, reason),
                 None => {
                     cancelled = true;
-                    failed_card(wallet, "not scanned: run cancelled".to_string())
+                    failed_card(wallet, chain, "not scanned: run cancelled".to_string())
                 }
             },
             WalletEnd::Interrupted => match stop {
                 Some(reason) if !user_cancelled => {
                     let mut card = failed_card(
                         wallet,
+                        chain,
                         format!("interrupted in flight: {}", reason.describe()),
                     );
                     card.failure = Some(match reason {
@@ -352,17 +425,12 @@ pub async fn run_solana_wallet_stats_concurrent(
                 }
                 _ => {
                     cancelled = true;
-                    failed_card(wallet, "scan interrupted: run cancelled".to_string())
+                    failed_card(wallet, chain, "scan interrupted: run cancelled".to_string())
                 }
             },
         });
     }
-    Ok(SolanaWalletStatsReport {
-        scope: if decoders.amm.is_some() {
-            SolanaProtocolScope::pump_wallet_ledger()
-        } else {
-            SolanaProtocolScope::pump_bonding_curve()
-        },
+    Ok(WalletCards {
         wallets: out,
         cancelled,
         stop,
@@ -370,9 +438,14 @@ pub async fn run_solana_wallet_stats_concurrent(
     })
 }
 
-fn not_scanned_card(wallet: SolanaPubkey, reason: ScanStop) -> SolanaWalletStats {
+pub(crate) fn not_scanned_card(
+    wallet: SolanaPubkey,
+    chain: ChainDisplay,
+    reason: ScanStop,
+) -> SolanaWalletStats {
     SolanaWalletStats {
         wallet,
+        chain,
         status: WalletScanStatus::NotScanned,
         transactions_scanned: None,
         transactions_in_window: None,
@@ -388,14 +461,23 @@ fn not_scanned_card(wallet: SolanaPubkey, reason: ScanStop) -> SolanaWalletStats
 
 /// Error card for a provider failure, typed through the shared classifier.
 fn provider_error_card(wallet: SolanaPubkey, err: &ProviderError) -> SolanaWalletStats {
-    let mut card = failed_card(wallet, sanitize_provider_text(&err.to_string()));
+    let mut card = failed_card(
+        wallet,
+        SOLANA_DISPLAY,
+        sanitize_provider_text(&err.to_string()),
+    );
     card.failure = Some(classify_provider_error(err));
     card
 }
 
-fn failed_card(wallet: SolanaPubkey, error: String) -> SolanaWalletStats {
+pub(crate) fn failed_card(
+    wallet: SolanaPubkey,
+    chain: ChainDisplay,
+    error: String,
+) -> SolanaWalletStats {
     SolanaWalletStats {
         wallet,
+        chain,
         status: WalletScanStatus::Error,
         transactions_scanned: None,
         transactions_in_window: None,
@@ -492,6 +574,7 @@ async fn scan_wallet(
         Err(err) => {
             return Ok(Some(failed_card(
                 wallet,
+                SOLANA_DISPLAY,
                 sanitize_provider_text(&format!("ledger build failed: {err}")),
             )));
         }
@@ -600,6 +683,7 @@ async fn scan_wallet(
     };
     Ok(Some(SolanaWalletStats {
         wallet,
+        chain: SOLANA_DISPLAY,
         status,
         transactions_scanned: Some(scanned),
         transactions_in_window: bounded.then_some(in_window),

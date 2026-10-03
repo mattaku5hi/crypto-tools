@@ -52,6 +52,7 @@ use scout_providers::{
 use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
 use tokio_util::sync::CancellationToken;
 
+mod evm;
 mod output;
 
 use output::{RunMetaInput, SummaryInput};
@@ -110,12 +111,13 @@ struct Args {
     rank_by: String,
 
     /// Quote unit of the ranking metrics and the closed-episode gate
-    /// (ADR-013): `sol` (lamports, default), `usdc` or `usdt` (6-dp raw
+    /// (ADR-013): the chain's native unit (`sol` = lamports, default; `eth` = wei on
+    /// EVM chains, where the default `sol` also means native), EVM `usdg`, `usdc` or `usdt` (6-dp raw
     /// units) -- never mixed or converted -- or `usd` (ADR-018): every
     /// leg valued in USD with Coinbase Exchange 1m candles (USDC at par,
     /// labelled), so SOL- and USDC-quoted wallets compare in one column;
     /// the run then also fetches prices (see --max-price-requests).
-    #[arg(long, default_value = "sol", value_parser = ["sol", "usdc", "usdt", "usd"])]
+    #[arg(long, default_value = "sol", value_parser = ["sol", "eth", "usdc", "usdt", "usdg", "usd"])]
     quote: String,
 
     /// Total HTTP request budget for PRICE candles under `--quote usd`
@@ -181,6 +183,11 @@ struct Args {
     /// `getMultipleAccounts` requests; open positions stay unvalued).
     #[arg(long)]
     no_valuation: bool,
+
+    /// EVM only: run a chain whose venue/quote set is not verified yet
+    /// (Base, BSC); without it such a run exits 4.
+    #[arg(long)]
+    allow_unverified_chain: bool,
 
     /// Provider page budget PER WALLET (Helius full mode: 100 transactions
     /// per page). Newest-first: a wallet needing more pages is `incomplete`
@@ -300,8 +307,27 @@ fn policy_from(args: &Args) -> Result<RankPolicy, String> {
     p.quote = match args.quote.as_str() {
         "usdc" => QuoteUnit::UsdcUnits,
         "usdt" => QuoteUnit::UsdtUnits,
+        "usdg" => QuoteUnit::UsdgUnits,
         "usd" => QuoteUnit::ReportCurrency,
+        "eth" => QuoteUnit::Wei,
         _ => QuoteUnit::Lamports,
+    };
+    Ok(p)
+}
+
+/// The run's ranking unit on an EVM chain: native (`sol` default or `eth`)
+/// -> wei, `usdg`, `usd`; Solana-only units are a usage error there.
+fn evm_policy(mut p: RankPolicy) -> Result<RankPolicy, String> {
+    p.quote = match p.quote {
+        QuoteUnit::Lamports | QuoteUnit::Wei => QuoteUnit::Wei,
+        QuoteUnit::UsdgUnits => QuoteUnit::UsdgUnits,
+        QuoteUnit::ReportCurrency => QuoteUnit::ReportCurrency,
+        other => {
+            return Err(format!(
+                "--quote {} is not a quote unit of an EVM chain (use eth, usdg or usd)",
+                scout_engine::quote_unit_label(other)
+            ));
+        }
     };
     Ok(p)
 }
@@ -379,6 +405,43 @@ fn main() -> ExitCode {
         );
     }
 
+    let family = match scout_app::run_family(wallets.iter().map(|w| &w.chain), "wallet-rank") {
+        Ok(f) => f,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
+    if let scout_app::RunFamily::Evm(chain) = &family {
+        let policy = match evm_policy(policy) {
+            Ok(p) => p,
+            Err(message) => {
+                eprintln!("wallet-rank: {message}");
+                return ExitCode::from(2);
+            }
+        };
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(err) => {
+                eprintln!("wallet-rank: could not start async runtime: {err}");
+                return ExitCode::from(4);
+            }
+        };
+        return evm::run_evm(
+            &rt,
+            &wallets,
+            chain,
+            &args,
+            &policy,
+            &window,
+            parsed.duplicate_count,
+            upstream_complete,
+        );
+    }
+    if matches!(policy.quote, QuoteUnit::Wei | QuoteUnit::UsdgUnits) {
+        eprintln!("wallet-rank: --quote eth/usdg is only valid for EVM input");
+        return ExitCode::from(2);
+    }
     let solana: Vec<SolanaPubkey> = wallets
         .iter()
         .filter_map(|w| match (&w.chain.family, &w.address) {
@@ -386,15 +449,6 @@ fn main() -> ExitCode {
             _ => None,
         })
         .collect();
-    if solana.len() != wallets.len() {
-        let evm = wallets.len() - solana.len();
-        eprintln!(
-            "wallet-rank: {evm} of {} wallet(s) are EVM; no history provider configured for EVM \
-             (SCOUT_EVM_HISTORY_API_KEY): refusing to rank a partial universe",
-            wallets.len()
-        );
-        return ExitCode::from(4);
-    }
 
     let Some(api_key) = std::env::var(HELIUS_KEY_ENV)
         .ok()
@@ -430,7 +484,7 @@ fn main() -> ExitCode {
 }
 
 /// Outcome of the ADR-018 pricing step (all `None` unless `--quote usd`).
-struct PricingOutcome {
+pub(crate) struct PricingOutcome {
     policy: Option<scout_pricing::PricePolicy>,
     endpoint_overridden: bool,
     requests_made: u64,
@@ -452,7 +506,7 @@ impl PricingOutcome {
 
 /// ADR-018: when `enabled`, collect the needed minutes of all wallets,
 /// prefetch once and apply the USD views.
-fn price_wallets(
+pub(crate) fn price_wallets(
     rt: &tokio::runtime::Runtime,
     stats: &mut SolanaWalletStatsReport,
     args: &Args,
@@ -468,7 +522,12 @@ fn price_wallets(
     if !enabled {
         return out;
     }
-    match scout_app::build_coinbase_source(args.max_price_requests) {
+    let built = if stats.evm.is_some() {
+        scout_app::build_coinbase_source_evm(args.max_price_requests)
+    } else {
+        scout_app::build_coinbase_source(args.max_price_requests)
+    };
+    match built {
         Ok((source, overridden)) => {
             out.endpoint_overridden = overridden;
             out.policy = Some(source.policy());
@@ -491,11 +550,11 @@ fn redact_table_line(text: &str, secret: &str) -> String {
     }
 }
 
-fn limit_text(limit: Option<u64>) -> String {
+pub(crate) fn limit_text(limit: Option<u64>) -> String {
     limit.map_or_else(|| "unlimited".to_string(), |n| n.to_string())
 }
 
-fn redact(text: &str, secret: &str) -> String {
+pub(crate) fn redact(text: &str, secret: &str) -> String {
     let replaced = if secret.is_empty() {
         text.to_string()
     } else {
@@ -506,7 +565,7 @@ fn redact(text: &str, secret: &str) -> String {
 
 /// Terminal `RateLimited`: the transport refused to wait out a
 /// `Retry-After` above its cap.
-fn rate_limited_text(retry_after_secs: Option<u64>) -> String {
+pub(crate) fn rate_limited_text(retry_after_secs: Option<u64>) -> String {
     let cap = DEFAULT_MAX_RETRY_AFTER.as_secs();
     match retry_after_secs {
         Some(s) => format!("rate limited; server asked to retry after {s}s (cap {cap}s)"),
@@ -708,6 +767,7 @@ fn run_solana(
             window: *window,
             pricing: scout_app::pricing_meta(&pricing_input),
             open_valuation: scout_app::open_valuation_meta(valuation.as_ref(), window.as_of),
+            evm: None,
         };
         let summary = SummaryInput {
             run_id: &run_id,

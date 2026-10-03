@@ -26,8 +26,11 @@
 
 mod analysis_window;
 mod buyer_intersect;
+mod chain_display;
 mod decode_evidence;
+mod evm_buyer_intersect;
 mod evm_trade_extraction;
+mod evm_wallet_stats;
 mod solana_buy_qualification;
 mod solana_buyer_intersect;
 mod solana_open_valuation;
@@ -41,15 +44,23 @@ pub use analysis_window::{
     parse_rfc3339_utc,
 };
 pub use buyer_intersect::{BuyerIntersectReport, BuyerMatch, run_buyer_intersect};
+pub use chain_display::{ChainDisplay, SOLANA_DISPLAY, evm_address_of_key, evm_asset, evm_key};
 pub use decode_evidence::{
     DecodeEvidence, EvidenceKind, MAX_EVIDENCE_SAMPLES, merge_evidence, program_name,
 };
 pub use decode_evidence::{VenueDiag, VenueEventDiagnostics};
+pub use evm_buyer_intersect::{
+    EVM_BUYER_INTERSECT_VERSION, EvmBuyerIntersectReport, EvmSideEvidence, EvmTokenScanSummary,
+    EvmTokenSideHits, run_evm_buyer_intersect,
+};
 pub use evm_trade_extraction::{
     Consideration, EVM_TRADE_EXTRACTION_VERSION, EvmAttributedTrade, EvmExtractionConfig,
     EvmExtractionSummary, EvmFee, EvmQuoteToken, EvmTxExtraction, EvmTxOutcome, NativeLegStatus,
     NoTradeReason, QuoteAsset, UnknownConsideration, UnknownFee, extract_evm_trade,
     extract_evm_trades,
+};
+pub use evm_wallet_stats::{
+    EvmQuoteInfo, EvmRunInfo, EvmStatsSources, EvmVenueInfo, run_evm_wallet_stats,
 };
 pub use scout_dex_solana::{PumpTradeVariant, TradeSide, VariantVerification};
 pub use solana_buy_qualification::{
@@ -75,17 +86,18 @@ pub use solana_open_valuation::{
     value_position, window_is_live,
 };
 pub use solana_wallet_ledger::{
-    ActivityMetrics, ConsumedBasisStatus, DailyActivity, EpisodeOutcome, EpisodePnlBound,
-    EpisodeRecord, LedgerDecoders, LedgerDiagnostics, LedgerOptions, LowerBound, OkxOrderPolicy,
+    ActivityMetrics, ConsumedBasisStatus, DailyActivity, EVM_WALLET_LEDGER_SCOPE,
+    EVM_WALLET_LEDGER_VERSION, EpisodeOutcome, EpisodePnlBound, EpisodeRecord, EvmLedgerExtras,
+    EvmTradeRecord, LedgerDecoders, LedgerDiagnostics, LedgerOptions, LowerBound, OkxOrderPolicy,
     OpenPosition, QuoteUnit, QuoteUnitBlock, QuoteUnitCounts, RouteEvidenceCounts, RouteRejections,
     RouteSwapRecord, SOLANA_QUOTE_UNITS, SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION,
     SWAP_VENUE_PROGRAM_IDS, SolanaWalletLedgerError, SolanaWalletLedgerReport, TradeCounts,
     USDC_MINT, USDT_MINT, UnknownReason, VariantTradeCount, Venue, VenueSideCounts, WSOL_MINT,
-    WinRateLowerBound, allocate_fee_proportionally, build_solana_wallet_ledger,
-    build_solana_wallet_ledger_venues, build_solana_wallet_ledger_with_options,
-    default_okx_order_policy, format_quote_money, lamports_to_money, money_to_lamports_trunc,
-    money_to_quote_units_trunc, money_to_unit_raw, pump_amm_decoder, quote_unit_decimals,
-    quote_unit_label, quote_units_to_money,
+    WinRateLowerBound, allocate_fee_proportionally, build_evm_wallet_ledger,
+    build_solana_wallet_ledger, build_solana_wallet_ledger_venues,
+    build_solana_wallet_ledger_with_options, default_okx_order_policy, format_quote_money,
+    lamports_to_money, money_to_lamports_trunc, money_to_quote_units_trunc, money_to_unit_raw,
+    pump_amm_decoder, quote_unit_decimals, quote_unit_label, quote_units_to_money,
 };
 pub use solana_wallet_rank::{
     DEFAULT_MAX_UNKNOWN_EPISODE_SHARE_PERCENT, DEFAULT_TOP, ExcludedWallet, ExclusionReason,

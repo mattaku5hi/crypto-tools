@@ -25,5 +25,6 @@ tokio-util.workspace = true
 
 
 [dev-dependencies]
+scout-providers = { workspace = true, features = ["test-support"] }
 wiremock.workspace = true
 serde_json.workspace = true

@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use alloy_primitives::{Address, B256, U256};
-use scout_core::{ChainKey, InternalTransfer, RawEvmTransaction};
+use scout_core::{ChainKey, InternalTransfer, NativeSource, RawEvmTransaction};
 use scout_evm::TRANSFER_TOPIC0;
 
 use crate::evm_blockscout::{BlockscoutEvmSource, BlockscoutInternal, Listing};
@@ -343,6 +343,8 @@ impl EvmHistoryScanner {
                 l1_fee: r.l1_fee,
                 logs: r.logs,
                 internal_transfers: internals.map(|i| i.for_tx(&t.hash)),
+                native_source: internals.map(|_| NativeSource::Explorer),
+                native_balance_diff: None,
             });
         }
         out.sort_by_key(|t| (t.block_number, t.transaction_index));

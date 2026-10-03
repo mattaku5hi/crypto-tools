@@ -163,6 +163,7 @@ async fn account_requests(server: &MockServer) -> usize {
 
 fn card(ledger: scout_engine::SolanaWalletLedgerReport, wallet: u8) -> SolanaWalletStats {
     SolanaWalletStats {
+        chain: scout_engine::SOLANA_DISPLAY,
         wallet: pk(wallet),
         status: WalletScanStatus::Ok,
         transactions_scanned: Some(1),

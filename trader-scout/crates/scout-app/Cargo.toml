@@ -12,6 +12,11 @@ workspace = true
 [dependencies]
 scout-core.workspace = true
 scout-pricing.workspace = true
+scout-rpc.workspace = true
+scout-providers.workspace = true
+scout-api.workspace = true
+alloy-primitives.workspace = true
+tokio-util.workspace = true
 scout-sdk = { workspace = true, features = ["full"] }
 clap.workspace = true
 csv.workspace = true

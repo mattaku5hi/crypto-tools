@@ -99,6 +99,7 @@ impl Spec {
             value: lamports_to_money(2).unwrap(),
         };
         SolanaWalletStats {
+            chain: scout_engine::SOLANA_DISPLAY,
             wallet: [self.b; 32],
             status: WalletScanStatus::Ok,
             transactions_scanned: Some(self.trades),

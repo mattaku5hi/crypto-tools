@@ -5,6 +5,27 @@
 use alloy_primitives::{Address, B256, address, b256};
 use scout_core::{ChainFamily, ChainKey, GenesisIdentity, NetworkId};
 
+/// How a quote token is valued in USD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuoteUsdPolicy {
+    /// Valued at exactly 1 USD and labelled `<symbol>_par_assumed` (no FX,
+    /// like USDC in ADR-018). The depeg risk is the user's, and visible.
+    ParAssumed,
+}
+
+/// A stable quote token pinned for one chain (ADR-020 amendment). Native
+/// ETH/BNB and its wrapped form are NOT listed here: they are merged and
+/// handled by `EvmChainProfile::wrapped_native`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuoteAssetSpec {
+    pub symbol: &'static str,
+    pub address: Address,
+    /// ERC-20 decimals the ledger scales by. A run preflight compares this
+    /// with the live `decimals()` and refuses to run on a mismatch.
+    pub decimals: u8,
+    pub usd: QuoteUsdPolicy,
+}
+
 /// Static profile of one supported EVM chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EvmChainProfile {
@@ -18,7 +39,21 @@ pub struct EvmChainProfile {
     /// `true` for OP-stack chains whose receipts carry a separate `l1Fee`
     /// that is NOT part of `gasUsed * effectiveGasPrice` (Base).
     pub l1_fee_separate: bool,
+    /// Pinned stable quote tokens (empty = none verified yet: the chain's
+    /// trades quote only in native/wrapped-native until addresses are
+    /// verified; Base/BSC are deliberately empty, ADR-020 amendment).
+    pub quote_assets: &'static [QuoteAssetSpec],
 }
+
+/// Robinhood Chain stable quote: USDG (Global Dollar). The address is the
+/// one seen in the busiest v4 swaps of the 2026-10-03 live fixture; its
+/// decimals (6) are checked live by the run preflight.
+pub const ROBINHOOD_USDG: QuoteAssetSpec = QuoteAssetSpec {
+    symbol: "USDG",
+    address: address!("5fc5360d0400a0fd4f2af552add042d716f1d168"),
+    decimals: 6,
+    usd: QuoteUsdPolicy::ParAssumed,
+};
 
 pub const ROBINHOOD: EvmChainProfile = EvmChainProfile {
     name: "robinhood",
@@ -28,6 +63,7 @@ pub const ROBINHOOD: EvmChainProfile = EvmChainProfile {
     wrapped_native: address!("0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"),
     // Arbitrum Orbit: gasUsed already includes gasUsedForL1.
     l1_fee_separate: false,
+    quote_assets: &[ROBINHOOD_USDG],
 };
 
 pub const BASE: EvmChainProfile = EvmChainProfile {
@@ -37,6 +73,8 @@ pub const BASE: EvmChainProfile = EvmChainProfile {
     native_symbol: "ETH",
     wrapped_native: address!("4200000000000000000000000000000000000006"),
     l1_fee_separate: true,
+    // TODO(ADR-020 step 3): USDC/USDbC addresses are not verified on-chain yet.
+    quote_assets: &[],
 };
 
 pub const BSC: EvmChainProfile = EvmChainProfile {
@@ -46,6 +84,8 @@ pub const BSC: EvmChainProfile = EvmChainProfile {
     native_symbol: "BNB",
     wrapped_native: address!("bb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"),
     l1_fee_separate: false,
+    // TODO(ADR-020 step 3): USDT/USDC (18-decimals on BSC!) not verified yet.
+    quote_assets: &[],
 };
 
 impl EvmChainProfile {
@@ -62,6 +102,12 @@ impl EvmChainProfile {
         [ROBINHOOD, BASE, BSC]
             .into_iter()
             .find(|p| p.chain_id == chain_id)
+    }
+
+    /// Pinned quote asset by address.
+    #[must_use]
+    pub fn quote_asset(&self, token: &Address) -> Option<&'static QuoteAssetSpec> {
+        self.quote_assets.iter().find(|q| q.address == *token)
     }
 
     /// `ChainKey` with the genesis fingerprint marked verified. Only call
@@ -97,5 +143,15 @@ mod tests {
         assert_eq!(EvmChainProfile::by_chain_id(1), None);
         assert_ne!(BASE.verified_chain_key(), ROBINHOOD.verified_chain_key());
         assert_ne!(BASE.verified_chain_key(), BASE.unverified_chain_key());
+    }
+
+    #[test]
+    fn robinhood_pins_usdg_and_other_chains_pin_nothing_yet() {
+        assert_eq!(ROBINHOOD.quote_assets.len(), 1);
+        let usdg = ROBINHOOD.quote_asset(&ROBINHOOD_USDG.address).unwrap();
+        assert_eq!((usdg.symbol, usdg.decimals), ("USDG", 6));
+        // Native-wrapped is merged, never a quote token entry.
+        assert!(ROBINHOOD.quote_asset(&ROBINHOOD.wrapped_native).is_none());
+        assert!(BASE.quote_assets.is_empty() && BSC.quote_assets.is_empty());
     }
 }

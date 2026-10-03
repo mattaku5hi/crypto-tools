@@ -27,6 +27,12 @@ bs58.workspace = true
 base64.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
+wiremock = { workspace = true, optional = true }
+
+[features]
+# Offline replay of recorded EVM JSON-RPC fixtures through wiremock (tests of
+# downstream crates/binaries). Not part of any production build.
+test-support = ["dep:wiremock"]
 
 [dev-dependencies]
 tokio.workspace = true

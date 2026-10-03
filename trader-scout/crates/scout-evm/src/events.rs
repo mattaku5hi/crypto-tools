@@ -91,6 +91,15 @@ pub fn decode_erc20_transfer(log: &RawEvmLog) -> DecodeOutcome<Erc20Transfer> {
     })
 }
 
+/// ERC-721-shaped `Transfer` (same topic0, 4 topics, empty data): an NFT
+/// mint/burn/transfer. Not a fungible flow; callers count and ignore it
+/// (Uniswap v4 PositionManager position NFTs are minted/burned on liquidity
+/// add/remove).
+#[must_use]
+pub fn is_erc721_transfer(log: &RawEvmLog) -> bool {
+    log.topics.first() == Some(&TRANSFER_TOPIC0) && log.topics.len() == 4 && log.data.is_empty()
+}
+
 /// Decode a WETH9 `Deposit`/`Withdrawal`.
 #[must_use]
 pub fn decode_wrapped_native_event(log: &RawEvmLog) -> DecodeOutcome<WrappedNativeEvent> {
@@ -180,6 +189,26 @@ mod tests {
             vec![],
         );
         assert!(decode_erc20_transfer(&l).is_malformed());
+    }
+
+    #[test]
+    fn erc721_shape_predicate_is_exact() {
+        let a = Address::repeat_byte(1);
+        let nft = log(
+            a,
+            vec![TRANSFER_TOPIC0, topic(a), topic(a), B256::ZERO],
+            vec![],
+        );
+        assert!(is_erc721_transfer(&nft));
+        // Four topics with data, or three topics, are not NFT-shaped.
+        let odd = log(
+            a,
+            vec![TRANSFER_TOPIC0, topic(a), topic(a), B256::ZERO],
+            vec![0; 32],
+        );
+        assert!(!is_erc721_transfer(&odd));
+        let erc20 = log(a, vec![TRANSFER_TOPIC0, topic(a), topic(a)], vec![0; 32]);
+        assert!(!is_erc721_transfer(&erc20));
     }
 
     #[test]
