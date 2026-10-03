@@ -21,13 +21,14 @@ mod uniswap;
 mod v2_swap;
 
 pub use gate::{
-    AnchorRole, GateOutcome, SwapVenue, SwapVenueGate, VENUE_DEPLOYMENTS, VenueDeployment,
-    VenueVerification, VerifiedSwap,
+    AnchorRole, GateOutcome, PoolMetadata, PoolRejection, SwapVenue, SwapVenueGate,
+    UNISWAP_V2_CANONICAL_INIT_CODE_HASH, UNISWAP_V3_CANONICAL_INIT_CODE_HASH, VENUE_DEPLOYMENTS,
+    VenueDeployment, VenueVerification, VerifiedSwap,
 };
 pub use uniswap::{
     V2_PAIR_CREATED_TOPIC0, V2PairCreated, V3_POOL_CREATED_TOPIC0, V3_SWAP_TOPIC0, V3PoolCreated,
     V3Swap, V4_INITIALIZE_TOPIC0, V4_SWAP_TOPIC0, V4Initialize, V4Swap, decode_v2_pair_created,
     decode_v3_pool_created, decode_v3_swap, decode_v4_initialize, decode_v4_swap,
-    v3_pool_address_create2,
+    v2_pair_address_create2, v3_pool_address_create2,
 };
 pub use v2_swap::{DecodedSwap, V2_SWAP_EVENT_SIGNATURE, V2SwapDecoder, decode_v2_style_swap};

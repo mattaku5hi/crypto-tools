@@ -284,9 +284,9 @@ pub fn decode_v2_pair_created(log: &RawEvmLog) -> DecodeOutcome<V2PairCreated> {
 /// `keccak256(0xff ++ factory ++ keccak256(abi.encode(token0, token1, fee)) ++ init_code_hash)[12..]`.
 ///
 /// `init_code_hash` is **per deployment** (it differs between chains and
-/// forks) and is not pinned for Robinhood/Base/BSC yet, so the gate verifies
-/// pools through the factory's `PoolCreated` log instead; this function is
-/// the offline cross-check once a hash is pinned from a fixture.
+/// forks); the gate pins one only where it reproduces every fixture pool
+/// ([`crate::VenueDeployment::init_code_hash`]). Without a pinned hash the
+/// gate relies on the factory's `getPool` answer instead.
 #[must_use]
 pub fn v3_pool_address_create2(
     factory: Address,
@@ -306,6 +306,26 @@ pub fn v3_pool_address_create2(
         s.copy_from_slice(&U256::from(fee).to_be_bytes::<32>());
     }
     factory.create2(alloy_primitives::keccak256(enc), init_code_hash)
+}
+
+/// CREATE2 address of a Uniswap-v2-style pair:
+/// `keccak256(0xff ++ factory ++ keccak256(token0 ++ token1) ++ init_code_hash)[12..]`
+/// (tokens packed, 20 bytes each, `token0 < token1`).
+#[must_use]
+pub fn v2_pair_address_create2(
+    factory: Address,
+    token0: Address,
+    token1: Address,
+    init_code_hash: B256,
+) -> Address {
+    let mut packed = [0u8; 40];
+    if let Some(s) = packed.get_mut(..20) {
+        s.copy_from_slice(token0.as_slice());
+    }
+    if let Some(s) = packed.get_mut(20..) {
+        s.copy_from_slice(token1.as_slice());
+    }
+    factory.create2(alloy_primitives::keccak256(packed), init_code_hash)
 }
 
 #[cfg(test)]
@@ -500,5 +520,17 @@ mod tests {
             b256!("e34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54"),
         );
         assert_eq!(got, address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"));
+    }
+
+    #[test]
+    fn create2_matches_known_uniswap_v2_mainnet_pair() {
+        // Uniswap v2 mainnet USDC/WETH pair; canonical init code hash.
+        let got = v2_pair_address_create2(
+            address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            b256!("96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f"),
+        );
+        assert_eq!(got, address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"));
     }
 }

@@ -30,6 +30,7 @@ use crate::chain_display::{ChainDisplay, evm_key};
 use crate::evm_trade_extraction::{
     EVM_TRADE_EXTRACTION_VERSION, EvmExtractionConfig, EvmTxOutcome, QuoteAsset, extract_evm_trades,
 };
+use crate::pool_admission::{DEFAULT_MAX_POOL_LOOKUPS, learn_pools};
 use crate::solana_buyer_intersect::ScanStop;
 use crate::solana_buyer_intersect::SolanaProtocolScope;
 use crate::solana_buyer_intersect::{
@@ -440,6 +441,21 @@ async fn scan_evm_wallet(
         txs.retain(|t| i64::try_from(t.block_time).is_ok_and(|ts| window.contains(ts)));
     }
     let in_window = u64::try_from(txs.len()).unwrap_or(u64::MAX);
+
+    // Learn the v2/v3 pools of this wallet's transactions (cached per RPC
+    // client family; this wallet's gate copy only).
+    let mut local_cfg = cfg.clone();
+    if let Err(e) = learn_pools(
+        &mut local_cfg.gate,
+        sources.scanner.rpc(),
+        &txs,
+        DEFAULT_MAX_POOL_LOOKUPS,
+    )
+    .await
+    {
+        return Ok(Some(evm_error_card(wallet, chain, &e)));
+    }
+    let cfg = &local_cfg;
 
     // Native legs: only for native-quoted trades whose internals no complete
     // source already provided.

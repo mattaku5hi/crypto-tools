@@ -35,6 +35,7 @@ use crate::evm_trade_extraction::{
     EvmExtractionConfig, EvmExtractionSummary, EvmTxOutcome, TradeSide, extract_evm_trades,
 };
 use crate::evm_wallet_stats::EvmRunInfo;
+use crate::pool_admission::{DEFAULT_MAX_POOL_LOOKUPS, learn_pools};
 use crate::solana_buyer_intersect::{
     ScanFailureKind, ScanStop, SideFilter, TokenScanStatus, classify_provider_error,
     sanitize_provider_text,
@@ -80,6 +81,12 @@ pub struct EvmTokenScanSummary {
     /// Swap-shaped logs at non-gated emitters in the token's transactions.
     /// COVERAGE GAP (an unverified venue traded the token).
     pub ungated_swap_logs: u64,
+    /// v2/v3 emitters of this token's transactions admitted as pools of a
+    /// pinned factory (chain `eth_call`s, see `pool_admission`).
+    pub pools_admitted: u64,
+    /// v2/v3 emitters checked on chain and refused (not a pool of a pinned
+    /// factory): their swaps stay in `ungated_swap_logs`.
+    pub pools_refused: u64,
     pub log_splits: u32,
 }
 
@@ -131,8 +138,9 @@ impl EvmBuyerIntersectReport {
             if t.ungated_swap_logs > 0 {
                 out.push(format!(
                     "token {label}: {} swap-shaped log(s) at emitters outside the verified venue \
-                     set (e.g. Uniswap v3/v2 pools): trades there are not decoded",
-                    t.ungated_swap_logs
+                     set (pools not admitted by a pinned factory, or venues without one; {} \
+                     emitter(s) refused on chain): trades there are not decoded",
+                    t.ungated_swap_logs, t.pools_refused
                 ));
             }
             if let Some(ex) = &t.extraction {
@@ -196,6 +204,10 @@ pub async fn run_evm_buyer_intersect(
     let mut info = info;
     info.block_range = blocks;
 
+    // Pools admitted for one token stay admitted for the next (one gate per
+    // run), and the lookup cap is per run.
+    let mut run_cfg = cfg.clone();
+    let mut lookups_left = DEFAULT_MAX_POOL_LOOKUPS;
     let mut per_token: Vec<EvmTokenScanSummary> = Vec::with_capacity(input_tokens.len());
     let mut hits: BTreeMap<WalletKey, BTreeMap<AssetKey, EvmTokenSideHits>> = BTreeMap::new();
     let mut stop: Option<ScanStop> = None;
@@ -222,6 +234,8 @@ pub async fn run_evm_buyer_intersect(
             qualified_wallets: 0,
             idl_only_trades: 0,
             ungated_swap_logs: 0,
+            pools_admitted: 0,
+            pools_refused: 0,
             log_splits: 0,
         };
         if let Some(reason) = stop {
@@ -260,8 +274,33 @@ pub async fn run_evm_buyer_intersect(
                 } else {
                     txs.clone()
                 };
-                let (extractions, summary) = extract_evm_trades(&in_window, cfg, None, Some(token));
+                let admission =
+                    match learn_pools(&mut run_cfg.gate, scanner.rpc(), &in_window, lookups_left)
+                        .await
+                    {
+                        Ok(a) => a,
+                        Err(e) => {
+                            let kind = match &e {
+                                EvmSourceError::Provider(p) => classify_provider_error(p),
+                                _ => ScanFailureKind::Other,
+                            };
+                            if let Some(s) = kind.stop() {
+                                stop = Some(s);
+                            }
+                            per_token.push(blank(TokenScanStatus::Failed {
+                                kind,
+                                message: sanitize_provider_text(&format!("pool admission: {e}")),
+                            }));
+                            continue;
+                        }
+                    };
+                lookups_left =
+                    lookups_left.saturating_sub(usize::try_from(admission.lookups).unwrap_or(0));
+                let (extractions, summary) =
+                    extract_evm_trades(&in_window, &run_cfg, None, Some(token));
                 let mut s = blank(TokenScanStatus::Ok);
+                s.pools_admitted = admission.admitted;
+                s.pools_refused = u64::try_from(admission.refused.len()).unwrap_or(u64::MAX);
                 s.transfer_logs = Some(u64::try_from(out.transfer_logs).unwrap_or(u64::MAX));
                 s.transactions_scanned = Some(u64::try_from(txs.len()).unwrap_or(u64::MAX));
                 s.log_splits = out.log_splits;

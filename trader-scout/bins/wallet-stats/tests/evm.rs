@@ -198,7 +198,7 @@ async fn jsonl_cards_for_two_fixture_wallets_with_scope_and_no_secrets() {
     assert!(
         venues
             .iter()
-            .any(|v| v["venue"] == "uniswap_v3" && v["verification"] == "IdlOnly")
+            .any(|v| v["venue"] == "uniswap_v3" && v["verification"] == "FixtureVerified")
     );
     assert_eq!(meta["scope"]["quote_assets"][0]["symbol"], "USDG");
     assert_eq!(

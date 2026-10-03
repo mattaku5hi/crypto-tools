@@ -209,6 +209,90 @@ pub struct EvmRpcClient {
     block_cache: Arc<Mutex<BlockReceiptCache>>,
     /// Logical calls by JSON-RPC method (a retry is not a new call).
     call_counts: Arc<Mutex<BTreeMap<String, u64>>>,
+    /// Pool identities already read (immutable on chain), shared by clones:
+    /// one lookup per pool per run. Bounded by [`MAX_CACHED_POOLS`].
+    pool_cache: Arc<Mutex<BTreeMap<(Address, PoolKind), PoolOnchainMetadata>>>,
+}
+
+/// Max cached pool identities (no eviction: further pools are just re-read).
+const MAX_CACHED_POOLS: usize = 8_192;
+
+/// `factory()`.
+pub const SEL_FACTORY: [u8; 4] = [0xc4, 0x5a, 0x01, 0x55];
+/// `token0()`.
+pub const SEL_TOKEN0: [u8; 4] = [0x0d, 0xfe, 0x16, 0x81];
+/// `token1()`.
+pub const SEL_TOKEN1: [u8; 4] = [0xd2, 0x12, 0x20, 0xa7];
+/// `fee()` (Uniswap v3 pools).
+pub const SEL_FEE: [u8; 4] = [0xdd, 0xca, 0x3f, 0x43];
+/// `getPool(address,address,uint24)` (Uniswap v3 factory).
+pub const SEL_GET_POOL: [u8; 4] = [0x16, 0x98, 0xee, 0x82];
+/// `getPair(address,address)` (Uniswap v2 factory).
+pub const SEL_GET_PAIR: [u8; 4] = [0xe6, 0xa4, 0x39, 0x05];
+
+/// Which pool ABI a swap emitter is expected to have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PoolKind {
+    V2,
+    V3,
+}
+
+/// What a v2/v3 swap emitter reports about itself and what its claimed
+/// factory says about it. Every field is `None` when the call reverted, had
+/// no code, or returned a non-address/non-uint word: the emitter is then not
+/// a pool of that kind (provider data is external input, invariant #17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolOnchainMetadata {
+    pub emitter: Address,
+    pub kind: PoolKind,
+    pub factory: Option<Address>,
+    pub token0: Option<Address>,
+    pub token1: Option<Address>,
+    /// v3 only.
+    pub fee: Option<u32>,
+    /// `factory.getPool(token0, token1, fee)` / `getPair(token0, token1)`;
+    /// `None` = not asked, reverted, or the zero address.
+    pub registered_pool: Option<Address>,
+}
+
+fn word_address(bytes: &[u8]) -> Option<Address> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    let (head, tail) = bytes.split_at(12);
+    if head.iter().any(|b| *b != 0) {
+        return None;
+    }
+    let a = Address::from_slice(tail);
+    (a != Address::ZERO).then_some(a)
+}
+
+fn word_u32(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    u32::try_from(U256::from_be_slice(bytes)).ok()
+}
+
+fn call_data(selector: [u8; 4], words: &[[u8; 32]]) -> String {
+    let mut out = String::from("0x");
+    for b in selector {
+        out.push_str(&format!("{b:02x}"));
+    }
+    for w in words {
+        for b in w {
+            out.push_str(&format!("{b:02x}"));
+        }
+    }
+    out
+}
+
+fn address_word(a: Address) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    if let Some(t) = w.get_mut(12..) {
+        t.copy_from_slice(a.as_slice());
+    }
+    w
 }
 
 /// Max receipts held in the shared block cache (oldest blocks evicted).
@@ -305,6 +389,7 @@ impl EvmRpcClient {
             recorder: None,
             block_cache: Arc::new(Mutex::new(BlockReceiptCache::default())),
             call_counts: Arc::new(Mutex::new(BTreeMap::new())),
+            pool_cache: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -559,6 +644,130 @@ impl EvmRpcClient {
             .await?;
         let q = crate::evm_wire::quantity_u256(&v, "decimals()")?;
         u8::try_from(q).map_err(|_| malformed("decimals()", "does not fit u8"))
+    }
+
+    /// One `eth_call` (`to`, calldata `data`, block tag/number `block`).
+    /// `Ok(None)` = the call reverted ("execution reverted"); any other RPC
+    /// failure (budget, rate limit, transport) is an `Err`. An empty `0x`
+    /// result (no code at `to`) is `Ok(Some(vec![]))`.
+    pub async fn eth_call(
+        &self,
+        to: Address,
+        data: &str,
+        block: &str,
+    ) -> Result<Option<Vec<u8>>, EvmSourceError> {
+        let v = match self
+            .call_json(
+                "eth_call",
+                json!([{"to": format!("{to:#x}"), "data": data}, block]),
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(EvmSourceError::Provider(ProviderError::Other(e)))
+                if e.downcast_ref::<RequestBudgetExhausted>().is_none()
+                    && e.to_string().to_ascii_lowercase().contains("revert") =>
+            {
+                // Recorded as a marker so a replay answers "reverted" too.
+                if let Some(r) = &self.recorder {
+                    r.record(
+                        "eth_call",
+                        &json!([{"to": format!("{to:#x}"), "data": data}, block]),
+                        &json!({"reverted": true}),
+                    );
+                }
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
+        crate::evm_wire::bytes(&v, "eth_call result").map(|b| Some(b.to_vec()))
+    }
+
+    /// What `emitter` reports about itself (`factory()`, `token0()`,
+    /// `token1()`, and `fee()` for v3) at `block`. Cached per client family:
+    /// a pool's identity is immutable. 3 or 4 requests per uncached pool.
+    pub async fn pool_identity(
+        &self,
+        emitter: Address,
+        kind: PoolKind,
+        block: &str,
+    ) -> Result<PoolOnchainMetadata, EvmSourceError> {
+        if let Some(hit) = self
+            .pool_cache
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&(emitter, kind)).cloned())
+        {
+            return Ok(hit);
+        }
+        let ask = |sel: [u8; 4]| async move {
+            self.eth_call(emitter, &call_data(sel, &[]), block)
+                .await
+                .map(Option::unwrap_or_default)
+        };
+        let (factory, token0, token1) =
+            futures::try_join!(ask(SEL_FACTORY), ask(SEL_TOKEN0), ask(SEL_TOKEN1))?;
+        let fee = match kind {
+            PoolKind::V3 => word_u32(&ask(SEL_FEE).await?),
+            PoolKind::V2 => None,
+        };
+        let meta = PoolOnchainMetadata {
+            emitter,
+            kind,
+            factory: word_address(&factory),
+            token0: word_address(&token0),
+            token1: word_address(&token1),
+            fee,
+            registered_pool: None,
+        };
+        if let Ok(mut c) = self.pool_cache.lock()
+            && c.len() < MAX_CACHED_POOLS
+        {
+            c.insert((emitter, kind), meta.clone());
+        }
+        Ok(meta)
+    }
+
+    /// The factory's own record for the pool `meta` describes:
+    /// `getPool(token0, token1, fee)` (v3) / `getPair(token0, token1)` (v2).
+    /// `None` when `meta` lacks factory/tokens/fee, the call reverted, or the
+    /// factory returned the zero address (it knows no such pool).
+    pub async fn registered_pool(
+        &self,
+        meta: &PoolOnchainMetadata,
+        block: &str,
+    ) -> Result<Option<Address>, EvmSourceError> {
+        let (Some(factory), Some(t0), Some(t1)) = (meta.factory, meta.token0, meta.token1) else {
+            return Ok(None);
+        };
+        let data = match (meta.kind, meta.fee) {
+            (PoolKind::V3, Some(fee)) => call_data(
+                SEL_GET_POOL,
+                &[
+                    address_word(t0),
+                    address_word(t1),
+                    U256::from(fee).to_be_bytes::<32>(),
+                ],
+            ),
+            (PoolKind::V3, None) => return Ok(None),
+            (PoolKind::V2, _) => call_data(SEL_GET_PAIR, &[address_word(t0), address_word(t1)]),
+        };
+        Ok(self
+            .eth_call(factory, &data, block)
+            .await?
+            .and_then(|b| word_address(&b)))
+    }
+
+    /// [`Self::pool_identity`] plus [`Self::registered_pool`].
+    pub async fn pool_metadata(
+        &self,
+        emitter: Address,
+        kind: PoolKind,
+        block: &str,
+    ) -> Result<PoolOnchainMetadata, EvmSourceError> {
+        let mut meta = self.pool_identity(emitter, kind, block).await?;
+        meta.registered_pool = self.registered_pool(&meta, block).await?;
+        Ok(meta)
     }
 
     /// All receipts of a block (`eth_getBlockReceipts`).
@@ -1136,6 +1345,146 @@ mod tests {
         assert_eq!(calls[0]["method"], "eth_chainId");
         assert_eq!(calls[0]["result"], "0x2105");
         assert!(!calls[0].to_string().contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn selectors_are_the_keccak_prefixes_of_the_signatures() {
+        for (sig, sel) in [
+            ("factory()", SEL_FACTORY),
+            ("token0()", SEL_TOKEN0),
+            ("token1()", SEL_TOKEN1),
+            ("fee()", SEL_FEE),
+            ("getPool(address,address,uint24)", SEL_GET_POOL),
+            ("getPair(address,address)", SEL_GET_PAIR),
+        ] {
+            assert_eq!(alloy_primitives::keccak256(sig)[..4], sel, "{sig}");
+        }
+    }
+
+    fn word(a: Address) -> String {
+        format!("0x{}", hex_of(&address_word(a)))
+    }
+
+    fn hex_of(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// A fake v3 pool + factory answering by selector.
+    struct FakePool {
+        factory: Address,
+        t0: Address,
+        t1: Address,
+    }
+    impl wiremock::Respond for FakePool {
+        fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            assert_eq!(body["method"], "eth_call");
+            let to = body["params"][0]["to"].as_str().unwrap();
+            let data = body["params"][0]["data"].as_str().unwrap();
+            let sel = &data[2..10];
+            if to.ends_with("bb") && sel == hex_of(&SEL_GET_POOL) {
+                // The factory knows the pool 0x..aa for fee 500 only.
+                let fee_word = &data[2 + 8 + 128..];
+                return if fee_word.ends_with("01f4") {
+                    ok(json!(word(Address::repeat_byte(0xaa))))
+                } else {
+                    ok(json!(word(Address::ZERO)))
+                };
+            }
+            if to.ends_with("dd") {
+                return err(3, "execution reverted");
+            }
+            if to.ends_with("ee") {
+                return ok(json!("0x"));
+            }
+            let r = if sel == hex_of(&SEL_FACTORY) {
+                word(self.factory)
+            } else if sel == hex_of(&SEL_TOKEN0) {
+                word(self.t0)
+            } else if sel == hex_of(&SEL_TOKEN1) {
+                word(self.t1)
+            } else if sel == hex_of(&SEL_FEE) {
+                format!("0x{:064x}", 500)
+            } else {
+                panic!("unexpected selector {sel}")
+            };
+            ok(json!(r))
+        }
+    }
+
+    #[tokio::test]
+    async fn pool_metadata_reads_identity_and_factory_record_and_caches() {
+        let s = MockServer::start().await;
+        let factory = Address::repeat_byte(0xbb);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+        Mock::given(method("POST"))
+            .respond_with(FakePool { factory, t0, t1 })
+            .mount(&s)
+            .await;
+        let c = client(&s, ROBINHOOD, None);
+        let pool = Address::repeat_byte(0xaa);
+        let m = c.pool_metadata(pool, PoolKind::V3, "latest").await.unwrap();
+        assert_eq!(
+            (m.factory, m.token0, m.token1, m.fee, m.registered_pool),
+            (Some(factory), Some(t0), Some(t1), Some(500), Some(pool))
+        );
+        // v2: no fee() call, getPair is asked of the same fake (which only
+        // answers getPool): its selector is not `getPool`, so it panics in the
+        // fake; use identity only.
+        let v2 = c
+            .pool_identity(Address::repeat_byte(0xaa), PoolKind::V2, "latest")
+            .await
+            .unwrap();
+        assert_eq!(v2.fee, None);
+        // Identity is cached: asking again makes no request.
+        let before = c.calls_by_method().get("eth_call").copied();
+        c.pool_identity(pool, PoolKind::V3, "latest").await.unwrap();
+        assert_eq!(c.calls_by_method().get("eth_call").copied(), before);
+    }
+
+    #[tokio::test]
+    async fn reverting_or_codeless_emitters_report_nothing_and_a_wrong_fee_has_no_record() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(FakePool {
+                factory: Address::repeat_byte(0xbb),
+                t0: Address::repeat_byte(1),
+                t1: Address::repeat_byte(2),
+            })
+            .mount(&s)
+            .await;
+        let c = client(&s, ROBINHOOD, None);
+        for emitter in [Address::repeat_byte(0xdd), Address::repeat_byte(0xee)] {
+            let m = c
+                .pool_metadata(emitter, PoolKind::V3, "latest")
+                .await
+                .unwrap();
+            assert_eq!(
+                (m.factory, m.token0, m.token1, m.fee, m.registered_pool),
+                (None, None, None, None, None),
+                "{emitter}"
+            );
+        }
+        // A pool whose claimed fee is not the factory's record: getPool = 0.
+        let mut m = c
+            .pool_identity(Address::repeat_byte(0xaa), PoolKind::V3, "latest")
+            .await
+            .unwrap();
+        m.fee = Some(3000);
+        assert_eq!(c.registered_pool(&m, "latest").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn eth_call_budget_exhaustion_is_an_error_not_a_revert() {
+        let s = MockServer::start().await;
+        mount_method(&s, "eth_call", ok(json!("0x"))).await;
+        let c = client(&s, ROBINHOOD, Some(0));
+        let e = c
+            .eth_call(Address::repeat_byte(1), "0x", "latest")
+            .await
+            .unwrap_err();
+        assert!(e.is_budget_exhausted(), "{e}");
     }
 
     async fn methods_called(server: &MockServer) -> Vec<String> {

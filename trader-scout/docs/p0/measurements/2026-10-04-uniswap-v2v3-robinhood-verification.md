@@ -1,0 +1,101 @@
+# Uniswap v3 (and the v2 Swap shape) on Robinhood Chain: pool admission and verification (2026-10-04)
+
+Fixtures (every `docs/p0/measurements/fixtures/evm_robinhood_*.json`, data-driven): `evm_robinhood_token_aiden_v4_2026-10-03.json` (96 whole-block receipt calls, 692 transactions) and `evm_robinhood_token_pwplt_v2v3v4_2026-10-04.json` (11 whole blocks, 75 transactions). Test: `crates/scout-engine/tests/evm_uniswap_v2v3_robinhood.rs` (regenerate the table with `--nocapture`); engine path: `crates/scout-engine/tests/evm_pool_admission_e2e.rs`, `crates/scout-engine/src/pool_admission.rs`; gate: `crates/scout-dex-evm/src/gate.rs`.
+
+## Admission rule (replaces "factory `PoolCreated` logs must be fed")
+
+A v2/v3 swap emitter is a pool of a venue iff, from what the emitter reports on chain through bounded `eth_call`s (`factory()`, `token0()`, `token1()`, `fee()` for v3):
+
+1. `factory()` equals a pinned official factory of this chain and venue (Robinhood v3: `0x1f7d7550b1b028f7571e69a784071f0205fd2efa`, developers.uniswap.org Robinhood deployments page, research doc section 2.4), AND
+2. when the deployment pins a CREATE2 init-code hash: its address equals `CREATE2(factory, keccak(token0, token1, fee), init_code_hash)` (tokens strictly ordered; a recorded `getPool` answer, when fetched, may only agree); when no hash is pinned: the factory's own `getPool(token0, token1, fee)` / `getPair(token0, token1)` answer is the emitter. The record is fetched only in the second case (saves 1 request per pool).
+
+Admitted pools take the verification level of their deployment; everything else (fork pools, non-pools, venues without a pinned factory) stays `UngatedEmitter`, a coverage gap, and is never looked up twice in a run. Live cost: 3 requests (v2) / 4 (v3) per new emitter (+1 record where no hash is pinned), cached per client family, capped at `DEFAULT_MAX_POOL_LOOKUPS = 256` emitters per run (buyer-intersect) / per wallet (wallet-stats), counted in `--max-requests`. A run-terminal failure during admission (budget, rate limit) fails that token/wallet like a failed scan. Emitters of a venue with no pinned factory on the chain (Robinhood v2) cost no request.
+
+## Which init-code hash reproduces
+
+- v3 canonical `0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54`: pinned for Robinhood. It reproduces **23 of 23** pools that were admitted from the two fixtures (31 + 8 swap groups; the factory is the pinned one, token0/token1 from the pool's ERC-20 flows, fee found among the tiers 100/500/2500/3000/10000). Caveat, stated plainly: the two older fixtures carry no `factory()` answers, so this is a derivation (the pinned factory is assumed and the CREATE2 equality is the proof: another factory or another init code gives another address), not a recorded check. **7 other v3-shaped emitters (9 swap groups) do not reproduce** from the pinned factory with the canonical hash, and not from the PancakeSwap v3 factory `0x0BFbCF9f...1865` with its hash either; their `factory()` is unknown offline (almost certainly forks: they are refused, not "wrong"). The orchestrator's `--swaps` capture records `factory()` of all of them; the test then asserts that no pool that REPORTS the pinned factory fails to reproduce (the condition for keeping the pinned hash) and that the recorded `eth_call`s replay to the recorded rows.
+- v2 canonical `0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f`: reproduces nothing; no Robinhood v2 factory is pinned in the research doc (Uniswap v2 Robinhood: not listed; PancakeSwap v2 factory `0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E` is listed as "same as Base", volume unknown), and neither it with the Pancake hash `0x00fb7f63...9bd5` nor the Uniswap hash reproduces the one pair of the PWPLT fixture (`0x8803c117...`). Result: **v2 on Robinhood stays unpinned / `IdlOnly` in the sense of "not gated at all"**: there is no deployment row, v2-shaped swaps are `UngatedEmitter` and count as a coverage gap.
+
+## Verification
+
+For every `Swap` of a v2/v3 emitter in every recorded receipt (not only the capture's token): the pool's ERC-20 net flow in the transaction (Transfers to minus from the pool) equals the event, exactly. v3: `amount0/amount1` are the POOL's view, `net_into_pool(token_i) == amount_i` (positive = the pool received). v2: `net_into_pool(token_i) == amount_iIn - amount_iOut`. Several swaps of one pool in one transaction are compared as a group (none occurs in these fixtures: every group has 1 swap).
+
+Result:
+
+- **v3: 48 swap groups; 39 admitted (23 distinct pools), 39 of 39 match exactly (n = 39)**: aiden 31, pwplt 8. Both directions occur (token0 into the pool 18, out of the pool 21). All 48 v3 groups (admitted or not) match their pool flows exactly, which confirms the sign convention independent of admission; the 9 unadmitted groups (7 pools) are not evidence for the venue.
+- Because every admitted sample passes and there are >= 1, the Robinhood Uniswap v3 factory deployment (`0x1f7d7550...2efa`) is **`FixtureVerified`** with `init_code_hash` = canonical v3. `active_from_block` stays 0 (not derivable offline).
+- **v2 shape: 6 swaps at 6 distinct pairs, 6 of 6 match** `amountIn - amountOut` against the pair's ERC-20 flows exactly; informational only, none is admitted (no pinned factory), no promotion.
+- Native ETH is WETH (an ERC-20) in these pools, so both sides are visible in logs; a fee-on-transfer token would show as a mismatch (none seen).
+
+The effect on the engine: `buyer-intersect` over the PWPLT window (e2e test) admits the v3 pool (`pools_admitted 1`), books 1 trade (1 qualified buyer) and keeps the v2-shaped swap as the only remaining gap (`ungated_swap_logs 1`); without pool metadata the same run reports both swap logs as ungated and `pools_refused 1`.
+
+## Evidence table
+
+`metadata`: `derived` = tokens from pool flows + fee search + pinned factory assumed (see above); `-` = not admitted.
+
+| # | fixture | tx | pool | kind | metadata | admitted | swaps | event amount0 | pool net0 | event amount1 | pool net1 | exact |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | aiden | `0x02a39c14ccca84a34a31db0cf8c70ad499bdf6613a9deda01f3a9fbe50676de6` | `0xe187cdf6ca397ff1cae8c35ad1b6b0e2e3f0bafa` | V3 | derived | true | 1 | -46781621063174597 | -46781621063174597 | 1633003124323771453398385 | 1633003124323771453398385 | true |
+| 2 | aiden | `0x059065c6161feae87f91e4fd563c7482f53bfcef5736c2a4fd2ccdac639155ea` | `0x7a35168956f129c032ec035cc47383a605a71df0` | V3 | - | false | 1 | 40673151326346005 | 40673151326346005 | -109367879 | -109367879 | true |
+| 3 | aiden | `0x0c53b3ee4536c4e42400e85234b3f3f17c2838f04f008d23fe3b7b22883a2c7c` | `0xa213ec692b2d6d37d075e7cb67577a1acae3f3a3` | V3 | derived | true | 1 | 19850339 | 19850339 | -451917918034250629 | -451917918034250629 | true |
+| 4 | aiden | `0x0fcd373a59ae1103ef8d8903a86e721c5beddeab71aabfa2d082bbd16461a3a6` | `0x6e8a6a1af8ec53f3f09c7303e5403558dee42d0a` | V3 | derived | true | 1 | -9448553408485626 | -9448553408485626 | 2180644018314356724022 | 2180644018314356724022 | true |
+| 5 | aiden | `0x1693ca5476051fde56e16c77b5fe5de6f49e417c0282fad457fb0e301c24df42` | `0x82a211005aa2a93da5c218173da935c155bbcf96` | V3 | derived | true | 1 | 20000000000000000 | 20000000000000000 | -240053426827578337784269 | -240053426827578337784269 | true |
+| 6 | aiden | `0x17a64f502f46af1411afcbb743ee2783225cab5412f25b35bedb8a0d5a41d8b0` | `0x1650ed40d8d506b9b29199e9d7e934805f4bdafa` | V2 | - | false | 1 | 245692575301895 | 245692575301895 | -12948311855562577823258 | -12948311855562577823258 | true |
+| 7 | aiden | `0x1fc3554ece5cb7fe7a89241a7a5a5fb66ce86e8f28ba0ab53e34da2663072c14` | `0x7a35168956f129c032ec035cc47383a605a71df0` | V3 | - | false | 1 | -16622088272290132 | -16622088272290132 | 44691733 | 44691733 | true |
+| 8 | aiden | `0x20e207f2e1d6110d0e4904b03e4fdc7431809e0286a9afbef281e05f08c0fba1` | `0x88bd914cb545e77d252e1b4773cec10e36dc21f9` | V3 | derived | true | 1 | -171157460035908 | -171157460035908 | 16127169221467068956672 | 16127169221467068956672 | true |
+| 9 | aiden | `0x2d21262a533b1d0b040fc8f5b5be3921a2eef5f3f242779bcb325ca0fcbf8c1f` | `0x67e877a12755dca78e8e4a763dda84e936792b53` | V3 | derived | true | 1 | 2970000000000000 | 2970000000000000 | -21962206286111071557579 | -21962206286111071557579 | true |
+| 10 | aiden | `0x33333b484d524eb070870d5f6158ed02290207093c9ff5abaea05df3cfae8c14` | `0x2edb30a98903d8ea440877b2d554ae4962c40723` | V2 | - | false | 1 | 150666880000000000 | 150666880000000000 | -43770492375776923 | -43770492375776923 | true |
+| 11 | aiden | `0x353756a8f8a4b0e274f1c06bc796a20a26feace6a4fc58020271dcc331d634e8` | `0x67e877a12755dca78e8e4a763dda84e936792b53` | V3 | derived | true | 1 | 351450000000000 | 351450000000000 | -1550710536047138709954 | -1550710536047138709954 | true |
+| 12 | aiden | `0x35a71041260efea7dcccd432e65d04d9ecefa84214c928f63071f96ca6e1af68` | `0x09df115d3bb42c7af3864b75769f9c301623ccb6` | V3 | derived | true | 1 | -295461292573502887548830 | -295461292573502887548830 | 622156724066824119 | 622156724066824119 | true |
+| 13 | aiden | `0x3c9eb6203efea3b70b846a4913d468dab694d68d21e5d95479de1629f36d6fb7` | `0x67e877a12755dca78e8e4a763dda84e936792b53` | V3 | derived | true | 1 | 199557934922436220 | 199557934922436220 | -1364504748014465688199529 | -1364504748014465688199529 | true |
+| 14 | aiden | `0x42058db9ffbb281a90ec42dd2dfb54220ffd11f342e12ce1ce55de182e88d86d` | `0x4cfb58fa2a846b3b9ed8c1dc0124d1092ccf0c65` | V3 | derived | true | 1 | 82071574807190833 | 82071574807190833 | -485042466001726178028165 | -485042466001726178028165 | true |
+| 15 | aiden | `0x452ef7d255083df634a904143a701d1482b4d70832af44d6adedf4caa591d808` | `0x52e65b17fb6e5ba00ed806f37afcd2daa50271ca` | V3 | derived | true | 1 | -3673235132698657 | -3673235132698657 | 9875966 | 9875966 | true |
+| 16 | aiden | `0x452ef7d255083df634a904143a701d1482b4d70832af44d6adedf4caa591d808` | `0xf8996e22ac7a67fae741830ad83b3b4d5e5de203` | V3 | - | false | 1 | 3673235132698657 | 3673235132698657 | -42074979528404006 | -42074979528404006 | true |
+| 17 | aiden | `0x46803be3906caddc10fb1e1f715d3b15bc48a360f76dece35734c7bb5623c9a8` | `0x6e8a6a1af8ec53f3f09c7303e5403558dee42d0a` | V3 | derived | true | 1 | -9384207016478125 | -9384207016478125 | 2196596797029184949833 | 2196596797029184949833 | true |
+| 18 | aiden | `0x482e686489ebad7557fa7a446dd4834a57dc35a132046acdaf1b0935f21eff48` | `0xf5e6ea931d211561350aa15b48b1118045fcb32d` | V3 | derived | true | 1 | 222963958383459 | 222963958383459 | -2730251047311812275089 | -2730251047311812275089 | true |
+| 19 | aiden | `0x54f522bffc3f927588008b84a587d71009573c0d141ed42e204787488b1a1c99` | `0x13f501cbfd47a07ccee7e9ef4134bb0e770d138f` | V3 | - | false | 1 | 89082038872509784730 | 89082038872509784730 | -5290651788308724 | -5290651788308724 | true |
+| 20 | aiden | `0x54f522bffc3f927588008b84a587d71009573c0d141ed42e204787488b1a1c99` | `0xd8b750f564321ce68b4b3d8498616da96fad798d` | V3 | derived | true | 1 | 11055411092387907 | 11055411092387907 | -1408376494836823857977 | -1408376494836823857977 | true |
+| 21 | aiden | `0x54f522bffc3f927588008b84a587d71009573c0d141ed42e204787488b1a1c99` | `0xf043803fac16b1b839b9bd53da01815d89150864` | V2 | - | false | 1 | 37530800649274004603 | 37530800649274004603 | -2231536503945752 | -2231536503945752 | true |
+| 22 | aiden | `0x56331b8e8478a43368179e29ea898de358ef8357865b038e3e88e1cf3f461ac6` | `0xd05d2c3d696fcb893aee6607e3652accd2aedf97` | V2 | - | false | 1 | -15693161103788 | -15693161103788 | 130839429442 | 130839429442 | true |
+| 23 | aiden | `0x66b729d11cd3b031107feaaa746bf3fc34a7218f455679146389cad76e52f13c` | `0xd1faf86966b362626a91dda50e6913c14c02ef5f` | V3 | derived | true | 1 | -21847262507903 | -21847262507903 | 157001680448790912 | 157001680448790912 | true |
+| 24 | aiden | `0x6f42a0e6e96c3413770a9a9d249c1ca658be0e9087766263eb357160e11b1042` | `0x94fc447f9e93b05af8ad8fbcac3549508cda0346` | V3 | derived | true | 1 | -43157767536735 | -43157767536735 | 1182307642126710865920 | 1182307642126710865920 | true |
+| 25 | aiden | `0x6f5e69166c896a148c5fb00f830e70f1b2160e5e4da4ec3b5bd0218cc730c262` | `0x67e877a12755dca78e8e4a763dda84e936792b53` | V3 | derived | true | 1 | 129308139682572070 | 129308139682572070 | -1246288775888785206297745 | -1246288775888785206297745 | true |
+| 26 | aiden | `0x6f5fbcffe6c56d57bb930f3e9e9ec5b06501ccabd2df18929b59f615fc5808a5` | `0xfe1ad7c84b3e0fda41286562c339cf89278f8f1a` | V2 | - | false | 1 | 483600000000000000 | 483600000000000000 | -68931624505849018578499728 | -68931624505849018578499728 | true |
+| 27 | aiden | `0x789d06115fb91635829991d7e967283f9db6043ae95605739d77f07cab57ffda` | `0x34f73f488309208b8cb6012eb47ffeb086ca1c2d` | V3 | derived | true | 1 | 594000000000000 | 594000000000000 | -15725296486419386943 | -15725296486419386943 | true |
+| 28 | aiden | `0x7e54b9e7b4d146bcce6f5e67def0f55812d5641bcb9561906db98835734004d9` | `0x7a35168956f129c032ec035cc47383a605a71df0` | V3 | - | false | 1 | 12929813840000000 | 12929813840000000 | -34758177 | -34758177 | true |
+| 29 | aiden | `0x7f8c45599fab0ce5bd7085d92e6e6a6a8e632a3e92df5076aa5483906a6d4e15` | `0x445016b5b50f836684227ea6b46571672236eefb` | V3 | - | false | 1 | 67181328967440654 | 67181328967440654 | -13684034 | -13684034 | true |
+| 30 | aiden | `0x9865f736069ffb19646e3c3737a472cc32bbb44308d7a6a50b4792f30b3c8008` | `0x67e877a12755dca78e8e4a763dda84e936792b53` | V3 | derived | true | 1 | 351450000000000 | 351450000000000 | -1550638139055080438108 | -1550638139055080438108 | true |
+| 31 | aiden | `0xa0867bbaf1f5f139748ca217fadc88582be3cec865acd7d0d87e51ffe29d147c` | `0x4cfb58fa2a846b3b9ed8c1dc0124d1092ccf0c65` | V3 | derived | true | 1 | 96780831684161209 | 96780831684161209 | -564269576816718126960276 | -564269576816718126960276 | true |
+| 32 | aiden | `0xa137eee2c3e4a0da5427f029f560b63cfc502e01064f58303d46de6bf6c044d5` | `0xa213ec692b2d6d37d075e7cb67577a1acae3f3a3` | V3 | derived | true | 1 | -24859295 | -24859295 | 563897739363734464 | 563897739363734464 | true |
+| 33 | aiden | `0xa2424cc3bcfd541fb56c08430570441ba36f76b8c21566808f11941ab5f8a77e` | `0xe163485cabfb8b1c2d9922cc410bfc77a50714fc` | V3 | - | false | 1 | -19772717378839390 | -19772717378839390 | 53160283 | 53160283 | true |
+| 34 | aiden | `0xa4aa90064ff33ae50392fc2d00b929744de5f23aa4b9df02a52aca95b31e7ca8` | `0x67b43c90c123e71aec92fa1e33e44073684b44e7` | V3 | derived | true | 1 | 68664538000000 | 68664538000000 | -165347908938664451835 | -165347908938664451835 | true |
+| 35 | aiden | `0xa556c9132e7bfea0b242eec49cbb28ad8c0fffc857084aeb368ca18505ed2c1f` | `0x6e8a6a1af8ec53f3f09c7303e5403558dee42d0a` | V3 | derived | true | 1 | -9372952464344447 | -9372952464344447 | 2194591990240443706897 | 2194591990240443706897 | true |
+| 36 | aiden | `0xa98ee9364ab04e94c347437b2f6e74e19060ca30ba74fd2e90f8d059ff151262` | `0x6e8a6a1af8ec53f3f09c7303e5403558dee42d0a` | V3 | derived | true | 1 | 130030462242939020 | 130030462242939020 | -30145800905511147919552 | -30145800905511147919552 | true |
+| 37 | aiden | `0xacda607b1464520730de74a55c2559d0adc017ec57c0b5a6d96a7cb5173c24fd` | `0x67e877a12755dca78e8e4a763dda84e936792b53` | V3 | derived | true | 1 | -116747457717405868 | -116747457717405868 | 591452078181239491620108 | 591452078181239491620108 | true |
+| 38 | aiden | `0xb6c1b55fae4de88dd41fe459478703ad4f11f106ce6f35b8be5551a459e988db` | `0x67e877a12755dca78e8e4a763dda84e936792b53` | V3 | derived | true | 1 | -600003370069875632 | -600003370069875632 | 5570339824693131526383163 | 5570339824693131526383163 | true |
+| 39 | aiden | `0xc86f05dc45ee93beecd938ad582146e00841c81f1dd4c78a8f4e2ee4d37123c8` | `0x67e877a12755dca78e8e4a763dda84e936792b53` | V3 | derived | true | 1 | -119587753896972826 | -119587753896972826 | 616162522687026706733151 | 616162522687026706733151 | true |
+| 40 | aiden | `0xccfe8017dbe54775a564b6f23a63152b2ebf505ba8f2c491b1852219727a103d` | `0xe187cdf6ca397ff1cae8c35ad1b6b0e2e3f0bafa` | V3 | derived | true | 1 | -44322400904957444 | -44322400904957444 | 1532066237766956421818050 | 1532066237766956421818050 | true |
+| 41 | aiden | `0xcd6f1d65aaf581780b84402de48cbb3bfad2eebb6b4a5079215bd79f5ae905e1` | `0xdac1904d823f7d6bcaaf431ceee40c934fed321b` | V3 | - | false | 1 | 1000000000 | 1000000000 | -4259909288037555971 | -4259909288037555971 | true |
+| 42 | aiden | `0xd13fa2baccbf578e5b438ad0c47b9082ba091184a96d69efebf08e0758160de0` | `0x6e8a6a1af8ec53f3f09c7303e5403558dee42d0a` | V3 | derived | true | 1 | -2072809130744148 | -2072809130744148 | 482473822604517576657 | 482473822604517576657 | true |
+| 43 | aiden | `0xd319fec4fd1cae3ea8d22dc16e354fbe1c6cfd66b2efa9feb18e218263008cf4` | `0x0d3a5699534abefe19d0d55c399d93a9ac6a9437` | V3 | derived | true | 1 | -33829714443137 | -33829714443137 | 2245069250930719850496 | 2245069250930719850496 | true |
+| 44 | aiden | `0xd530724d4192fd3fdfcfe3df9142c44320d85ec8d708fe9a58fc07515b27a1cf` | `0x319d7f2008b77c097d324221404f060654547f6c` | V3 | derived | true | 1 | -54793032966929 | -54793032966929 | 1108511115491475718144 | 1108511115491475718144 | true |
+| 45 | pwplt | `0x0211716f709631082e703ecef7b0ba2ef3cc290d79cc6e06a78941d546c7fb14` | `0x137d06965750756fcc72badf73cdca5057781083` | V3 | derived | true | 1 | -109229412120763994 | -109229412120763994 | 433975050207100378053436 | 433975050207100378053436 | true |
+| 46 | pwplt | `0x34ba4e4af34e0c3fd53e258d16a94614eb13006b336478c4c14b7489499a282b` | `0x52e65b17fb6e5ba00ed806f37afcd2daa50271ca` | V3 | derived | true | 1 | -119963996538228 | -119963996538228 | 322341 | 322341 | true |
+| 47 | pwplt | `0x3c97ed04a859327b5e4ec0819d058485a49b450c6524f1ad57ab67855f6d100f` | `0xeb1646dbfbeacf76483df1092c208388c029c534` | V3 | derived | true | 1 | 201896516298947 | 201896516298947 | -16406125223380114553521 | -16406125223380114553521 | true |
+| 48 | pwplt | `0x4453b7659e76b1afcdf8bd568146db9c3c722bf8961ad599194944ee3c449a57` | `0x40521592c1698c730b85f2e0f3c1a59b33ae2f98` | V3 | - | false | 1 | 1914970 | 1914970 | -18579616162506103548 | -18579616162506103548 | true |
+| 49 | pwplt | `0x57956fc37ada61908ffa3412805c9be1bb07401197a02a079b881e09cec93961` | `0x781d6a6d63dd7bacd7974e440dcf14bf0b9ac768` | V3 | derived | true | 1 | 267951888576834700 | 267951888576834700 | -1501970294594984028576816 | -1501970294594984028576816 | true |
+| 50 | pwplt | `0x57b6bf4d37e20676beb185855a1c987ee2e5f4d774bdebfd8ac981ef4fd542a3` | `0x781d6a6d63dd7bacd7974e440dcf14bf0b9ac768` | V3 | derived | true | 1 | 159409084659017740 | 159409084659017740 | -865574618594849649054628 | -865574618594849649054628 | true |
+| 51 | pwplt | `0x7764d3976ab9d47e4fb844013ed4165108cb1ab30429c9bae600cbe193cc7e7d` | `0x8803c117ccae7b5146297876c2a25df135141c4d` | V2 | - | false | 1 | -67425424164540 | -67425424164540 | 181123 | 181123 | true |
+| 52 | pwplt | `0x89e696f521bba632ba003e7fde1fc404a71ee06c3b733d76ce5cc4a90bef5b92` | `0x9087277a97a6f91c18829f480929280e9ac052a5` | V3 | derived | true | 1 | -1047282320859035254 | -1047282320859035254 | 2189768060840238674090605 | 2189768060840238674090605 | true |
+| 53 | pwplt | `0x971c5a34014cf5de7a195477efa38218c8817373d0ec175bd728258cf959dbf8` | `0xf736ff6d7790366a235d4056de8ba2ee73883d0e` | V3 | derived | true | 1 | -368357914390354 | -368357914390354 | 367884352267751609354037 | 367884352267751609354037 | true |
+| 54 | pwplt | `0xc1377e7ed9320be7593d4b7393d031a71d2e99dcd9a7463836e9481defd60b79` | `0xd1301745973ed5deffd9e8d013f7f76eb57c06e9` | V3 | derived | true | 1 | 2872329011331264 | 2872329011331264 | -184761943876841018964335 | -184761943876841018964335 | true |
+
+## Capture for the next fixture
+
+```
+SCOUT_ROBINHOOD_RPC_URL=... evm-capture --chain robinhood --rpc-url-env SCOUT_ROBINHOOD_RPC_URL \
+  --swaps all --since <ISO> --until <ISO> --max-txs 500 --max-pools 200 \
+  --out docs/p0/measurements/fixtures/evm_robinhood_swaps_all_<date>.json
+```
+
+The fixture gets a top-level `pool_metadata` array (`emitter`, `kind`, `block`, `factory`, `token0`, `token1`, `fee`, `registered_pool`) and the `eth_call`s in `calls` (a revert is recorded as `{"reverted": true}`); the data-driven test picks it up by the `evm_robinhood_` prefix.

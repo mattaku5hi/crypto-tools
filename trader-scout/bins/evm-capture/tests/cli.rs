@@ -331,3 +331,261 @@ async fn wallet_mode_uses_blockscout_and_never_leaks_its_key() {
     );
     assert!(!out.stdout.contains("BLOCKSCOUTKEY999") && !out.stderr.contains("BLOCKSCOUTKEY999"));
 }
+
+// ---- swap-topic mode ------------------------------------------------------
+
+const V3_SWAP: &str = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+const V3_FACTORY: &str = "0x1f7d7550b1b028f7571e69a784071f0205fd2efa";
+const T0: &str = "0x0000000000000000000000000000000000000011";
+const T1: &str = "0x0000000000000000000000000000000000000022";
+/// An emitter with the v3 topic that is no pool (its calls revert).
+const FAKE: &str = "0x00000000000000000000000000000000000000fa";
+
+fn v3_pool() -> String {
+    let p = scout_dex_evm::v3_pool_address_create2(
+        V3_FACTORY.parse().unwrap(),
+        T0.parse().unwrap(),
+        T1.parse().unwrap(),
+        500,
+        scout_dex_evm::UNISWAP_V3_CANONICAL_INIT_CODE_HASH,
+    );
+    format!("{p:#x}")
+}
+
+/// Block 7, tx 0xa1.. at index 1 holds two v3-topic swaps: one at the real
+/// pool, one at `FAKE`. `eth_call` answers by selector.
+struct SwapChain;
+
+impl SwapChain {
+    fn swap_log(addr: &str, log_index: u64) -> Value {
+        json!({"address": addr, "topics":[V3_SWAP, topic_addr(PM), topic_addr(WALLET)],
+            "data": format!("0x{}", "00".repeat(160)), "blockNumber":"0x7",
+            "transactionIndex":"0x1","logIndex":format!("{log_index:#x}")})
+    }
+}
+
+impl Respond for SwapChain {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let h = format!("0x{}", "a1".repeat(32));
+        let pool = v3_pool();
+        let result = match body["method"].as_str().unwrap() {
+            "eth_chainId" => json!("0x1237"),
+            "eth_blockNumber" => json!("0x10"),
+            "eth_getBlockByNumber" if body["params"][0] == "0x0" => {
+                json!({"hash": GENESIS, "timestamp": "0x3e8"})
+            }
+            "eth_getBlockByNumber" => json!({"timestamp": "0x3e8"}),
+            "eth_getLogs" => {
+                if body["params"][0].get("address").is_some() {
+                    json!([{"address": PM, "topics":[V4_SWAP, word(1), topic_addr(PM)],
+                        "data": format!("0x{}", "00".repeat(192)), "blockNumber":"0x7",
+                        "transactionIndex":"0x1","logIndex":"0x2"}])
+                } else {
+                    json!([Self::swap_log(&pool, 0), Self::swap_log(FAKE, 1)])
+                }
+            }
+            "eth_getBlockReceipts" => json!([{"transactionHash": h, "blockNumber":"0x7",
+                "transactionIndex":"0x1","status":"0x1","gasUsed":"0x64","effectiveGasPrice":"0x2",
+                "logs":[Self::swap_log(&pool, 0), Self::swap_log(FAKE, 1)]}]),
+            "eth_getTransactionByHash" => json!({"hash": h, "from": WALLET, "to": PM,
+                "value":"0x0", "blockNumber":"0x7","transactionIndex":"0x1"}),
+            "eth_call" => {
+                let to = body["params"][0]["to"]
+                    .as_str()
+                    .unwrap()
+                    .to_ascii_lowercase();
+                let data = body["params"][0]["data"].as_str().unwrap().to_string();
+                if to == FAKE {
+                    return ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0",
+                        "id":1,"error":{"code":3,"message":"execution reverted"}}));
+                }
+                let addr_word = |a: &str| format!("0x{:0>64}", a.trim_start_matches("0x"));
+                match &data[..10] {
+                    "0xc45a0155" => json!(addr_word(V3_FACTORY)),
+                    "0x0dfe1681" => json!(addr_word(T0)),
+                    "0xd21220a7" => json!(addr_word(T1)),
+                    "0xddca3f43" => json!(word(500)),
+                    "0x1698ee82" => json!(addr_word(&pool)),
+                    other => panic!("unexpected selector {other}"),
+                }
+            }
+            other => panic!("unexpected {other}"),
+        };
+        ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":1,"result":result}))
+    }
+}
+
+#[tokio::test]
+async fn swaps_flag_is_exclusive_with_token_and_wallet() {
+    for other in [["--token", TOKEN], ["--wallet", WALLET]] {
+        let out = run(
+            vec![],
+            base_args(&[
+                "--swaps",
+                "uniswap-v3",
+                other[0],
+                other[1],
+                "--from-block",
+                "1",
+                "--to-block",
+                "2",
+            ]),
+        )
+        .await;
+        assert_eq!(out.code, 2, "{}", out.stderr);
+    }
+    let bad = run(
+        vec![],
+        base_args(&[
+            "--swaps",
+            "uniswap-v9",
+            "--from-block",
+            "1",
+            "--to-block",
+            "2",
+        ]),
+    )
+    .await;
+    assert_eq!(bad.code, 2);
+}
+
+#[tokio::test]
+async fn swap_scan_records_pool_metadata_and_prints_factories() {
+    let s = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(SwapChain)
+        .mount(&s)
+        .await;
+    let out_path = tmp("swaps.json");
+    let out = run(
+        rpc_env(&s),
+        base_args(&[
+            "--swaps",
+            "uniswap-v3",
+            "--from-block",
+            "0",
+            "--to-block",
+            "16",
+            "--out",
+            &out_path,
+        ]),
+    )
+    .await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    for text in [&out.stdout, &out.stderr] {
+        assert!(!text.contains(SECRET), "{text}");
+    }
+    let pool = v3_pool();
+    assert!(
+        out.stdout.contains("transactions=1 logs=2"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout
+            .contains("swap_scan: swap_logs=2 txs_before_cap=1 txs_kept=1"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout
+            .contains(&format!("v3_swap {pool} count=1 gate=gated")),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout
+            .contains(&format!("v3_swap {FAKE} count=1 gate=ungated")),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout
+            .contains(&format!("factory {V3_FACTORY} pools=1")),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("admitted=1 refused=1"),
+        "{}",
+        out.stdout
+    );
+
+    // The v3 scan has no address filter and asks topic0 = v3 Swap only.
+    let reqs = s.received_requests().await.unwrap();
+    let logs: Vec<Value> = reqs
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter(|b| b["method"] == "eth_getLogs")
+        .collect();
+    assert_eq!(logs.len(), 1);
+    assert!(logs[0]["params"][0].get("address").is_none());
+    assert_eq!(logs[0]["params"][0]["topics"], json!([V3_SWAP]));
+
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(v["scope"]["swaps"], "uniswap-v3");
+    assert_eq!(v["incomplete"], false);
+    let rows = v["pool_metadata"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    let real = rows.iter().find(|r| r["emitter"] == pool.as_str()).unwrap();
+    assert_eq!(real["kind"], "v3");
+    assert_eq!(real["factory"], V3_FACTORY);
+    assert_eq!(real["fee"], 500);
+    assert_eq!(real["registered_pool"], pool.as_str());
+    assert_eq!(real["block"], "0x10");
+    let fake = rows.iter().find(|r| r["emitter"] == FAKE).unwrap();
+    assert!(fake["factory"].is_null() && fake["fee"].is_null());
+    // The eth_calls are in `calls` (a revert as a marker) so a replay can
+    // answer them offline.
+    let calls = v["calls"].as_array().unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c["method"] == "eth_call" && c["result"] == json!({"reverted": true}))
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c["method"] == "eth_call" && c["result"] == word(500))
+    );
+}
+
+#[tokio::test]
+async fn swaps_all_adds_the_pool_manager_scan_and_max_pools_bounds_lookups() {
+    let s = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(SwapChain)
+        .mount(&s)
+        .await;
+    let out = run(
+        rpc_env(&s),
+        base_args(&[
+            "--swaps",
+            "all",
+            "--max-pools",
+            "1",
+            "--from-block",
+            "0",
+            "--to-block",
+            "16",
+        ]),
+    )
+    .await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("swap_logs=3"), "{}", out.stdout);
+    assert!(
+        out.stdout
+            .contains("emitters_read=1 skipped_over_max_pools=1"),
+        "{}",
+        out.stdout
+    );
+    let reqs = s.received_requests().await.unwrap();
+    let logs: Vec<Value> = reqs
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter(|b| b["method"] == "eth_getLogs")
+        .collect();
+    assert_eq!(logs.len(), 2);
+    assert!(logs.iter().any(|l| l["params"][0]["address"] == PM));
+}

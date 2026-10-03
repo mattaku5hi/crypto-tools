@@ -1487,6 +1487,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "clap",
+ "futures",
  "scout-core",
  "scout-dex-evm",
  "scout-engine",

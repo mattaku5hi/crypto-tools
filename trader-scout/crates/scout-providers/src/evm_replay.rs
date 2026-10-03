@@ -47,6 +47,18 @@ fn key(method: &str, params: &Value) -> String {
     format!("{method}|{params}")
 }
 
+/// `eth_call` key without the block parameter: pool metadata (`factory()`,
+/// `token0()`, ...) is immutable, so a fixture recorded at the capture's head
+/// block answers the same call at `latest`.
+fn call_key(params: &Value) -> Option<String> {
+    let call = params.get(0)?;
+    Some(format!(
+        "eth_call*|{}|{}",
+        call.get("to")?.as_str()?.to_ascii_lowercase(),
+        call.get("data").or_else(|| call.get("input"))?.as_str()?
+    ))
+}
+
 impl EvmFixtureReplay {
     /// From a parsed `evm-capture` fixture (`{"calls": [{method, params,
     /// result}, ..]}`). Malformed entries are skipped (a test then fails on
@@ -63,6 +75,11 @@ impl EvmFixtureReplay {
                     c.get("result"),
                 ) {
                     recorded.insert(key(m, p), r.clone());
+                    if m == "eth_call"
+                        && let Some(k) = call_key(p)
+                    {
+                        recorded.entry(k).or_insert_with(|| r.clone());
+                    }
                     if m == "eth_getBlockReceipts"
                         && let Some(rs) = r.as_array()
                     {
@@ -109,7 +126,19 @@ impl EvmFixtureReplay {
         if let Some(r) = self.handler.as_ref().and_then(|h| h(method, params)) {
             return r;
         }
-        if let Some(v) = self.recorded.get(&key(method, params)) {
+        let hit = self.recorded.get(&key(method, params)).or_else(|| {
+            (method == "eth_call")
+                .then(|| call_key(params).and_then(|k| self.recorded.get(&k)))
+                .flatten()
+        });
+        if let Some(v) = hit {
+            // A recorded revert (`{"reverted": true}`, see `eth_call`).
+            if method == "eth_call" && v.get("reverted").and_then(Value::as_bool) == Some(true) {
+                return ReplayReply::Error {
+                    code: 3,
+                    message: "execution reverted".to_string(),
+                };
+            }
             return ReplayReply::Result(v.clone());
         }
         if method == "eth_getTransactionReceipt"

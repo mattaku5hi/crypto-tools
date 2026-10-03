@@ -53,6 +53,19 @@ impl Default for ScanLimits {
     }
 }
 
+/// Result of [`EvmHistoryScanner::scan_swap_logs`].
+#[derive(Debug, Clone)]
+pub struct SwapScanOutput {
+    /// The newest `max_txs` distinct transactions, canonical order.
+    pub transactions: Vec<RawEvmTransaction>,
+    /// Matching logs in the window (all of them, before the cap).
+    pub swap_logs: usize,
+    /// Distinct transactions with a matching log, before the cap.
+    pub txs_before_cap: usize,
+    pub log_requests: u32,
+    pub log_splits: u32,
+}
+
 /// Native internal transfers keyed by transaction, with their provenance.
 #[derive(Debug, Clone, Default)]
 pub struct InternalIndex {
@@ -176,20 +189,80 @@ impl EvmHistoryScanner {
         let logs = self.rpc.get_logs(&filter, from_block, to_block).await?;
         // The topic filter also matches ERC-721 `Transfer`; assembly keeps
         // all logs of the tx and extraction rejects malformed ones.
-        let mut hashes: Vec<(u64, u64, B256)> = Vec::new();
-        let mut seen = BTreeSet::new();
-        for l in &logs.logs {
-            // RawEvmLog does not carry the tx hash; resolve (block, index)
-            // to hashes through block receipts below.
-            seen.insert((l.block_number, l.transaction_index));
+        // RawEvmLog does not carry the tx hash; (block, index) is resolved to
+        // hashes through block receipts.
+        let seen: BTreeSet<(u64, u64)> = logs
+            .logs
+            .iter()
+            .map(|l| (l.block_number, l.transaction_index))
+            .collect();
+        if seen.len() > self.limits.max_transactions {
+            // Cheap early exit: no receipt request for an oversized scan.
+            return Err(EvmSourceError::TooManyTransactions {
+                cap: self.limits.max_transactions,
+            });
         }
+        let transactions = self.transactions_at(&seen).await?;
+        Ok(TokenScanOutput {
+            transactions,
+            transfer_logs: logs.logs.len(),
+            log_requests: logs.requests,
+            log_splits: logs.splits,
+        })
+    }
+
+    /// Swap-topic scan: every log matching `filters` (each an `eth_getLogs`
+    /// filter, results unioned) in `[from_block, to_block]`, then receipts and
+    /// transactions of the NEWEST `max_txs` distinct transactions. Older
+    /// transactions are dropped and reported (`txs_before_cap`), never an
+    /// error: the caller asked for a bounded sample.
+    pub async fn scan_swap_logs(
+        &self,
+        filters: &[LogFilter],
+        from_block: u64,
+        to_block: u64,
+        max_txs: usize,
+    ) -> Result<SwapScanOutput, EvmSourceError> {
+        let max_txs = max_txs.min(self.limits.max_transactions);
+        let mut seen: BTreeSet<(u64, u64)> = BTreeSet::new();
+        let (mut swap_logs, mut log_requests, mut log_splits) = (0usize, 0u32, 0u32);
+        for f in filters {
+            let logs = self.rpc.get_logs(f, from_block, to_block).await?;
+            swap_logs = swap_logs.saturating_add(logs.logs.len());
+            log_requests = log_requests.saturating_add(logs.requests);
+            log_splits = log_splits.saturating_add(logs.splits);
+            seen.extend(
+                logs.logs
+                    .iter()
+                    .map(|l| (l.block_number, l.transaction_index)),
+            );
+        }
+        let txs_before_cap = seen.len();
+        while seen.len() > max_txs {
+            seen.pop_first();
+        }
+        let transactions = self.transactions_at(&seen).await?;
+        Ok(SwapScanOutput {
+            transactions,
+            swap_logs,
+            txs_before_cap,
+            log_requests,
+            log_splits,
+        })
+    }
+
+    /// Receipts + transactions of the transactions at `(block, index)`
+    /// positions, canonical order.
+    async fn transactions_at(
+        &self,
+        seen: &BTreeSet<(u64, u64)>,
+    ) -> Result<Vec<RawEvmTransaction>, EvmSourceError> {
         let blocks: Vec<u64> = seen
             .iter()
             .map(|(b, _)| *b)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        // Map (block, tx_index) -> hash via the block's receipts.
         let receipts = self.rpc.receipts_by_blocks(&blocks).await?;
         let mut receipt_by_pos: HashMap<(u64, u64), EvmReceiptInfo> = HashMap::new();
         for (_, rs) in receipts {
@@ -197,35 +270,22 @@ impl EvmHistoryScanner {
                 receipt_by_pos.insert((r.block_number, r.transaction_index), r);
             }
         }
-        // Keep only the receipts of transactions that have a token log
-        // (whole-block receipts are dropped here, bounding memory).
+        // Keep only the receipts of the wanted transactions (whole-block
+        // receipts are dropped here, bounding memory).
+        let mut hashes: Vec<B256> = Vec::with_capacity(seen.len());
         let mut needed: Vec<EvmReceiptInfo> = Vec::with_capacity(seen.len());
-        for key in &seen {
+        for key in seen {
             let r = receipt_by_pos.remove(key).ok_or_else(|| {
                 malformed(
                     "eth_getBlockReceipts",
                     format!("no receipt at block {} index {}", key.0, key.1),
                 )
             })?;
-            hashes.push((key.0, key.1, r.tx_hash));
+            hashes.push(r.tx_hash);
             needed.push(r);
         }
-        if hashes.len() > self.limits.max_transactions {
-            return Err(EvmSourceError::TooManyTransactions {
-                cap: self.limits.max_transactions,
-            });
-        }
-        let hash_list: Vec<B256> = hashes.iter().map(|(_, _, h)| *h).collect();
-        let transactions = self
-            // The needed receipts are already in hand: no second fetch.
-            .build(&hash_list, None, Some(needed), None)
-            .await?;
-        Ok(TokenScanOutput {
-            transactions,
-            transfer_logs: logs.logs.len(),
-            log_requests: logs.requests,
-            log_splits: logs.splits,
-        })
+        // The needed receipts are already in hand: no second fetch.
+        self.build(&hashes, None, Some(needed), None).await
     }
 
     /// Wallet-centric scan through the indexer listings (never a window-wide
@@ -830,6 +890,31 @@ mod tests {
         );
         assert_eq!(t.internal_transfers, None);
         assert_eq!(t.chain, ROBINHOOD.verified_chain_key());
+    }
+
+    #[tokio::test]
+    async fn swap_scan_keeps_the_newest_transactions_and_reports_the_cap() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Chain)
+            .mount(&s)
+            .await;
+        let sc = scanner(&s, ScanLimits::default()).await;
+        let filter = LogFilter {
+            addresses: vec![],
+            topics: [Some(vec![TRANSFER_TOPIC0]), None, None, None],
+        };
+        let out = sc
+            .scan_swap_logs(std::slice::from_ref(&filter), 0, 10, 1)
+            .await
+            .unwrap();
+        assert_eq!((out.swap_logs, out.txs_before_cap), (3, 2));
+        // Newest first: the (block 7, index 1) transaction survives.
+        assert_eq!(out.transactions.len(), 1);
+        assert_eq!(out.transactions[0].hash, h(0xa1));
+        let all = sc.scan_swap_logs(&[filter], 0, 10, 10).await.unwrap();
+        let order: Vec<_> = all.transactions.iter().map(|t| t.block_number).collect();
+        assert_eq!(order, vec![5, 7]);
     }
 
     #[tokio::test]

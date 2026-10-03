@@ -31,6 +31,7 @@ mod decode_evidence;
 mod evm_buyer_intersect;
 mod evm_trade_extraction;
 mod evm_wallet_stats;
+mod pool_admission;
 mod solana_buy_qualification;
 mod solana_buyer_intersect;
 mod solana_open_valuation;
@@ -61,6 +62,10 @@ pub use evm_trade_extraction::{
 };
 pub use evm_wallet_stats::{
     EvmQuoteInfo, EvmRunInfo, EvmStatsSources, EvmVenueInfo, run_evm_wallet_stats,
+};
+pub use pool_admission::{
+    DEFAULT_MAX_POOL_LOOKUPS, PoolAdmissionReport, admit_recorded, gate_metadata, learn_pools,
+    pool_kind, pool_venue,
 };
 pub use scout_dex_solana::{PumpTradeVariant, TradeSide, VariantVerification};
 pub use solana_buy_qualification::{
