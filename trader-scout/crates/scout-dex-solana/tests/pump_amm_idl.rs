@@ -341,6 +341,7 @@ fn decodes_each_variant_with_idl_positions() {
     for (disc, len, accounts, variant) in [
         (AMM_BUY_DISCRIMINATOR, 24, 23, PumpAmmTradeVariant::Buy),
         (AMM_BUY_DISCRIMINATOR, 25, 26, PumpAmmTradeVariant::Buy),
+        (AMM_BUY_DISCRIMINATOR, 26, 26, PumpAmmTradeVariant::Buy),
         (
             AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR,
             24,
@@ -351,6 +352,12 @@ fn decodes_each_variant_with_idl_positions() {
             AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR,
             25,
             25,
+            PumpAmmTradeVariant::BuyExactQuoteIn,
+        ),
+        (
+            AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR,
+            26,
+            24,
             PumpAmmTradeVariant::BuyExactQuoteIn,
         ),
         (AMM_SELL_DISCRIMINATOR, 24, 21, PumpAmmTradeVariant::Sell),
@@ -370,7 +377,7 @@ fn decodes_each_variant_with_idl_positions() {
         assert_eq!(t.args[0].value, 7);
         assert_eq!(t.args[1].value, 9);
         assert_eq!(t.args[0].name, variant.spec().arg_names[0]);
-        assert_eq!(t.track_volume, if len == 25 { Some(1) } else { None });
+        assert_eq!(t.track_volume, if len >= 25 { Some(1) } else { None });
         assert_eq!(
             (t.slot, t.transaction_index, t.instruction_index),
             (11, 22, 3)
@@ -384,9 +391,10 @@ fn malformed_lengths_and_account_counts_are_counted_never_guessed() {
     let d = decoder();
     for (disc, len, accounts) in [
         (AMM_BUY_DISCRIMINATOR, 23, 23),
-        (AMM_BUY_DISCRIMINATOR, 26, 23),
+        (AMM_BUY_DISCRIMINATOR, 27, 23),
         (AMM_BUY_DISCRIMINATOR, 24, 22),
-        (AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR, 26, 23),
+        (AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR, 27, 23),
+        (AMM_SELL_DISCRIMINATOR, 26, 21),
         (AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR, 16, 23),
         (AMM_SELL_DISCRIMINATOR, 25, 21),
         (AMM_SELL_DISCRIMINATOR, 24, 20),
@@ -403,6 +411,24 @@ fn malformed_lengths_and_account_counts_are_counted_never_guessed() {
             ),
             "len {len} accounts {accounts}: {out:?}"
         );
+    }
+    // 26 bytes with an invalid Option<bool> tail stays malformed (ADR-009
+    // amendment 2026-10-03); `trade_ix` pads with 0x01, so patch bytes 24/25.
+    for disc in [AMM_BUY_DISCRIMINATOR, AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR] {
+        for tail in [[0u8, 1], [0, 0], [2, 1], [1, 2]] {
+            let mut ix = trade_ix(amm(), disc, 26, 26);
+            ix.data[24..26].copy_from_slice(&tail);
+            assert!(
+                matches!(
+                    d.classify(&ix, 0, 0),
+                    PumpAmmInstructionOutcome::Malformed {
+                        variant: Some(_),
+                        ..
+                    }
+                ),
+                "{tail:?}"
+            );
+        }
     }
     // fewer than 8 data bytes
     let mut short = trade_ix(amm(), AMM_SELL_DISCRIMINATOR, 24, 21);

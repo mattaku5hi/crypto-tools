@@ -74,3 +74,32 @@ The decoded `user` nets zero and the final recipient has no instruction evidence
 buyer (ADR-003 router hop, invariant #2). Such buyers are a known source of undercount until
 route/ownership normalization exists (P3.3/P4.3-equivalent for Solana, see TICKETS P0.18); they
 surface in `positive_delta_without_instruction`.
+
+## Amendment 2026-10-03: PumpSwap 26-byte track_volume encoding
+
+Live `buyer-intersect` run (2026-10-03, 8 tokens) reported 23 PumpSwap `malformed_trades` and
+exactly 23 `orphan_events` (exit 3 on every run). Cause: some clients encode `track_volume` of
+PumpSwap `buy` / `buy_exact_quote_in` as the 2 trailing bytes `0x01 0x01` (26 bytes total: 8
+discriminator + u64 + u64 + 2) instead of the IDL one-byte `OptionBool` struct (25) or nothing
+(24). The program accepts them (successful transactions).
+
+Evidence: fixture `docs/p0/measurements/fixtures/pumpswap_buy_26byte_live_2026-10-03.json`, 9
+transactions from three mints (`FFrRBPP9…`, `458eEcXu…`, `9pJWJdpP…`), each with exactly one
+26-byte trade instruction, tail `01 01` in all 9: 7 successful (sig prefixes `4A5TdxV6`,
+`4gcSwEbV`, `2i6zrXCL`, `2McC4KPu`, `4yQRCGeA`, `3keov4Gp`, `3mshLbL7`) and 2 failed (`4mcVs7X1`,
+`47UYcoGM`). 5 `buy`, 2 `buy_exact_quote_in` among the successful ones. All 7 successful pair 1:1
+with a `BuyEvent`, base leg reconciles exactly (residual 0), quote leg is `QuoteResidual`
+(rent/platform fees, -0.7M to -7.0M lamports, same class as before); the 2 failed ones decode but
+have no events and attribute no user. No fixture shows tag `0x00` + padding.
+
+**Policy (extends the PumpSwap rows of the arg-length policy above):** for `buy` and
+`buy_exact_quote_in`, data length 26 is accepted only when byte 24 is `0x01` (`Some` tag) and byte
+25 is `0x00` or `0x01`; `track_volume = Some(byte 25)`. Anything else of length 26 (including tag
+`0x00`, which no fixture shows), and any length 27+ stays `Malformed`. `sell` stays exactly 24
+bytes. The decoded trade carries `track_volume_encoding` (`Absent` / `OneByte` /
+`TwoByteOption`) and the raw `trailing_arg_bytes`. Accounts beyond the IDL minimum (24-26 for
+buy/sell in live data) already decoded (`min_accounts`) and are unaffected.
+
+Consequences: these trades now qualify in `buyer-intersect` (`solana-trade-qualification/v6`)
+and are priced in the wallet ledger (`solana-wallet-ledger/5`); malformed_trades and
+orphan_events are 0 over the fixture (tests in `crates/scout-engine/tests/pump_amm_fixtures.rs`).

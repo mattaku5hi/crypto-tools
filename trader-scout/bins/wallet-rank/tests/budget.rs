@@ -210,7 +210,7 @@ async fn period_window_stops_paging_at_the_boundary_page_and_is_echoed_in_run_me
         lines[0]["ledger_version"]
             .as_str()
             .unwrap()
-            .starts_with("solana-wallet-ledger/4")
+            .starts_with("solana-wallet-ledger/5")
     );
 }
 

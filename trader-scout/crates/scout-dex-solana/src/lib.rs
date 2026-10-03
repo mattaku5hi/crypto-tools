@@ -41,8 +41,9 @@ pub use pump_amm::{
     POOL_IDX, PUMP_AMM_IDL_COMMIT, PUMP_AMM_IDL_SHA256, PUMP_AMM_PROGRAM_ID,
     PUMP_AMM_PROGRAM_ID_BYTES, PumpAmmDecoder, PumpAmmInstruction, PumpAmmInstructionOutcome,
     PumpAmmTradeSpec, PumpAmmTradeVariant, QUOTE_MINT_IDX, TRADE_DATA_LEN_REQUIRED,
-    USER_BASE_TOKEN_ACCOUNT_IDX, USER_IDX, USER_QUOTE_TOKEN_ACCOUNT_IDX, WRAPPED_SOL_MINT,
-    classify_pump_amm_instruction, pump_amm_mainnet_scope,
+    TRADE_DATA_LEN_TWO_BYTE_OPTION, TrackVolumeEncoding, USER_BASE_TOKEN_ACCOUNT_IDX, USER_IDX,
+    USER_QUOTE_TOKEN_ACCOUNT_IDX, WRAPPED_SOL_MINT, classify_pump_amm_instruction,
+    pump_amm_mainnet_scope,
 };
 pub use pump_amm_event::{
     AMM_BUY_EVENT_DISCRIMINATOR, AMM_EVENT_CPI_HEADER_LEN, AMM_EVENT_REQUIRED_LEN,

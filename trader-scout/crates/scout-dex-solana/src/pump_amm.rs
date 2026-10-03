@@ -28,7 +28,13 @@
 //! Live fixtures contain both 24 and 25 byte buys (Anchor tolerates the
 //! absent trailing `OptionBool`). Accepted: 24 or 25 bytes for the two buy
 //! variants (25 => `track_volume = Some(raw byte)`), exactly 24 for
-//! `sell`. Anything else is Malformed and counted, never guessed.
+//! `sell`. ADR-009 amendment 2026-10-03: some clients send `track_volume`
+//! as a 2-byte `Option<bool>` (`0x01`, bool) = 26 bytes; accepted for the
+//! two buy variants ONLY when byte 24 is the `Some` tag `0x01` and byte 25
+//! is a bool (`0x00`/`0x01`); the bool is recorded in `track_volume`. A
+//! `None` tag (`0x00`) + padding is NOT accepted (no fixture shows it).
+//! Anything else is Malformed and counted, never guessed. The encoding and
+//! raw trailing bytes stay visible on the decoded trade.
 //!
 //! ## Accounts
 //!
@@ -73,6 +79,9 @@ pub const WRAPPED_SOL_MINT: SolanaPubkey = [
 
 /// Data length without the trailing optional `track_volume`.
 pub const TRADE_DATA_LEN_REQUIRED: usize = 24;
+/// Data length of the buy variants with the 2-byte `Option<bool>`
+/// `track_volume` encoding (ADR-009 amendment 2026-10-03).
+pub const TRADE_DATA_LEN_TWO_BYTE_OPTION: usize = 26;
 
 /// `buy` (`66063d1201daebea`).
 pub const AMM_BUY_DISCRIMINATOR: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
@@ -311,6 +320,18 @@ impl PumpAmmTradeVariant {
     }
 }
 
+/// How `track_volume` was encoded in the instruction data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackVolumeEncoding {
+    /// 24 bytes: no trailing bytes (`track_volume` is `None`).
+    Absent,
+    /// 25 bytes: the IDL `OptionBool` struct (one raw byte).
+    OneByte,
+    /// 26 bytes: `Option<bool>` as tag `0x01` + bool (ADR-009 amendment
+    /// 2026-10-03).
+    TwoByteOption,
+}
+
 /// A decoded PumpSwap trade instruction.
 ///
 /// `args` are the declared sizes/limits (not executed amounts). `side` is
@@ -328,8 +349,12 @@ pub struct DecodedPumpAmmTrade {
     pub user_base_token_account: SolanaPubkey,
     pub user_quote_token_account: SolanaPubkey,
     pub args: [NamedU64; 2],
-    /// Raw `OptionBool` byte: `Some` only for a 25-byte buy.
+    /// Raw bool byte (0/1 for the 26-byte form, any raw byte for the
+    /// 25-byte `OptionBool`): `Some` only for a 25/26-byte buy.
     pub track_volume: Option<u8>,
+    pub track_volume_encoding: TrackVolumeEncoding,
+    /// Raw bytes after the 24 required ones (empty, 1 or 2 bytes).
+    pub trailing_arg_bytes: Vec<u8>,
     pub slot: u64,
     pub transaction_index: u64,
     pub instruction_index: u32,
@@ -501,18 +526,37 @@ fn decode_trade(
     let spec = variant.spec();
     let name = spec.name;
     let len = instruction.data.len();
-    let length_ok =
-        len == TRADE_DATA_LEN_REQUIRED || (spec.has_track_volume && len == spec.data_len);
+    let length_ok = len == TRADE_DATA_LEN_REQUIRED
+        || (spec.has_track_volume
+            && (len == spec.data_len || len == TRADE_DATA_LEN_TWO_BYTE_OPTION));
     if !length_ok {
         return Err(format!(
             "instruction matches {name} discriminator but data has {len} bytes; accepted: {TRADE_DATA_LEN_REQUIRED}{} (IDL commit {PUMP_AMM_IDL_COMMIT})",
             if spec.has_track_volume {
-                format!(" or {}", spec.data_len)
+                format!(
+                    ", {} or {TRADE_DATA_LEN_TWO_BYTE_OPTION} (tag 0x01 + bool)",
+                    spec.data_len
+                )
             } else {
                 String::new()
             }
         ));
     }
+    let trailing_arg_bytes = instruction
+        .data
+        .get(TRADE_DATA_LEN_REQUIRED..)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default();
+    let (track_volume, track_volume_encoding) = match trailing_arg_bytes.as_slice() {
+        [] => (None, TrackVolumeEncoding::Absent),
+        [raw] => (Some(*raw), TrackVolumeEncoding::OneByte),
+        [0x01, b @ (0x00 | 0x01)] => (Some(*b), TrackVolumeEncoding::TwoByteOption),
+        other => {
+            return Err(format!(
+                "instruction matches {name} discriminator but the 2 trailing bytes {other:02x?} are not a valid Option<bool> (tag 0x01 + bool 0x00/0x01)"
+            ));
+        }
+    };
     if instruction.accounts.len() < spec.min_accounts {
         return Err(format!(
             "instruction matches {name} discriminator but has {} accounts, expected at least {} per the official IDL",
@@ -525,16 +569,6 @@ fn decode_trade(
         .ok_or_else(|| format!("{name}: {arg0_name} is unreadable"))?;
     let arg1 = read_u64_le(&instruction.data, 16)
         .ok_or_else(|| format!("{name}: {arg1_name} is unreadable"))?;
-    let track_volume = if len == spec.data_len && spec.has_track_volume {
-        Some(
-            *instruction
-                .data
-                .get(TRADE_DATA_LEN_REQUIRED)
-                .ok_or_else(|| format!("{name}: track_volume byte is unreadable"))?,
-        )
-    } else {
-        None
-    };
     let account = |idx: usize, what: &str| -> Result<SolanaPubkey, String> {
         instruction
             .accounts
@@ -565,6 +599,8 @@ fn decode_trade(
             },
         ],
         track_volume,
+        track_volume_encoding,
+        trailing_arg_bytes,
         slot,
         transaction_index,
         instruction_index: instruction.instruction_index,
@@ -575,4 +611,91 @@ fn read_u64_le(data: &[u8], offset: usize) -> Option<u64> {
     let slice = data.get(offset..offset.checked_add(8)?)?;
     let array: [u8; 8] = slice.try_into().ok()?;
     Some(u64::from_le_bytes(array))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ix(disc: [u8; 8], tail: &[u8], accounts: usize) -> RawSolanaInstruction {
+        let mut data = disc.to_vec();
+        data.extend_from_slice(&5u64.to_le_bytes());
+        data.extend_from_slice(&7u64.to_le_bytes());
+        data.extend_from_slice(tail);
+        RawSolanaInstruction {
+            program_id: PUMP_AMM_PROGRAM_ID_BYTES,
+            accounts: (0..accounts)
+                .map(|i| [u8::try_from(i).unwrap_or(0); 32])
+                .collect(),
+            data,
+            instruction_index: 0,
+        }
+    }
+
+    fn classify(i: &RawSolanaInstruction) -> PumpAmmInstructionOutcome {
+        classify_pump_amm_instruction(i, 1, 2)
+    }
+
+    #[test]
+    fn buy_accepts_24_25_and_26_byte_option_bool() {
+        for disc in [AMM_BUY_DISCRIMINATOR, AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR] {
+            let cases: [(&[u8], Option<u8>, TrackVolumeEncoding); 6] = [
+                (&[], None, TrackVolumeEncoding::Absent),
+                (&[1], Some(1), TrackVolumeEncoding::OneByte),
+                (&[0], Some(0), TrackVolumeEncoding::OneByte),
+                (&[1, 1], Some(1), TrackVolumeEncoding::TwoByteOption),
+                (&[1, 0], Some(0), TrackVolumeEncoding::TwoByteOption),
+                (&[7], Some(7), TrackVolumeEncoding::OneByte),
+            ];
+            for (tail, tv, enc) in cases {
+                let PumpAmmInstructionOutcome::Trade(t) = classify(&ix(disc, tail, 26)) else {
+                    panic!("{tail:?} must decode");
+                };
+                assert_eq!((t.track_volume, t.track_volume_encoding), (tv, enc));
+                assert_eq!(t.trailing_arg_bytes, tail);
+            }
+        }
+    }
+
+    #[test]
+    fn bad_26_byte_tail_and_27_bytes_are_malformed() {
+        for disc in [AMM_BUY_DISCRIMINATOR, AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR] {
+            for tail in [
+                &[0u8, 0][..],
+                &[0, 1],
+                &[2, 1],
+                &[1, 2],
+                &[1, 0xff],
+                &[1, 1, 1],
+                &[1, 1, 1, 1],
+            ] {
+                assert!(
+                    matches!(
+                        classify(&ix(disc, tail, 26)),
+                        PumpAmmInstructionOutcome::Malformed { .. }
+                    ),
+                    "{tail:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sell_accepts_only_24_bytes_and_extra_accounts_decode() {
+        assert!(matches!(
+            classify(&ix(AMM_SELL_DISCRIMINATOR, &[], 26)),
+            PumpAmmInstructionOutcome::Trade(_)
+        ));
+        for tail in [&[1u8][..], &[1, 1]] {
+            assert!(matches!(
+                classify(&ix(AMM_SELL_DISCRIMINATOR, tail, 26)),
+                PumpAmmInstructionOutcome::Malformed { .. }
+            ));
+        }
+        // Too few accounts stays malformed even with a valid 26-byte tail.
+        assert!(matches!(
+            classify(&ix(AMM_BUY_DISCRIMINATOR, &[1, 1], 22)),
+            PumpAmmInstructionOutcome::Malformed { .. }
+        ));
+    }
 }

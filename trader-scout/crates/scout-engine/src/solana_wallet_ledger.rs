@@ -85,7 +85,7 @@ use crate::solana_buy_qualification::{
 };
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
-pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/4 (ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units)";
+pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/5 (ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced)";
 
 /// Scope text for report metadata (invariant #10): allowed quote units and
 /// the route-swap rule of ADR-013.

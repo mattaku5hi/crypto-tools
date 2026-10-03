@@ -74,7 +74,7 @@ pub const SOLANA_BUY_QUALIFICATION_VERSION: &str = "pump-bonding-curve-buy/idl-e
 /// (ADR-014): bonding-curve buys and sells, PumpSwap trades and ADR-013
 /// route swaps, side in token terms.
 pub const SOLANA_TRADE_QUALIFICATION_VERSION: &str =
-    "solana-trade-qualification/v5 (curve+pumpswap+route, ADR-014)";
+    "solana-trade-qualification/v6 (curve+pumpswap+route, ADR-014, ADR-009 26-byte track_volume)";
 
 /// Why the confirmed deployment scope could not be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
