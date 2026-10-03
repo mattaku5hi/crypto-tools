@@ -76,3 +76,16 @@ Next levers, in order of measured impact: (1) verified swap evidence for aggrega
 (Jupiter v6 route event) and the major undecoded venues (DLMM, Raydium CLMM/CPMM, Whirlpool), so
 the ADR-013 route rule can book them; (2) an explicit, reported materiality policy for unknown
 episodes in quality gates (today any `ClosedUnknown` excludes a wallet).
+
+## Re-run with Jupiter + DFlow leg evidence and verified provider defaults (commit `6b4e870`, 2026-10-03)
+
+`wallet-rank --profile insider --quote sol|usdc --period 3d --max-pages-per-wallet 5
+--max-requests 250` (page 500, `tokenAccounts=balanceChanged`, server-side window): 157 requests,
+exit 3, 0 eligible. Window-complete wallets 19/39 (was 15). Primary exclusions (sol):
+`incomplete_coverage` 20, `unknown_basis` 17, activity ceiling 1, insufficient days 1; any-reason
+activity ceilings **26/39** (trades/day 26, mints/day 24) — most GMGN leaderboard wallets are
+themselves high-frequency (e.g. 257, 264, 137, 124 trades per active day).
+
+Complete wallets now carry mostly known episodes, e.g. known/unknown closed: 48/2, 49/3, 52/1,
+28/2, 28/4, 10/1, 57/5, 112/16, 97/19 (outliers 33/64, 3/6). The binding constraint for eligibility
+is now the strict rule "any `ClosedUnknown` episode excludes the wallet" (P4.10), not decoding.
