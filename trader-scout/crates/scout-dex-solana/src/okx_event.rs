@@ -1,6 +1,6 @@
 //! OKX DEX Router (`proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u`, "OKX: DEX
 //! Router") events, decoded from Anchor event-CPI self-invocations
-//! (ADR-017 draft, see the engineering report; ADR-009 verification levels).
+//! (ADR-017, see the engineering report; ADR-009 verification levels).
 //!
 //! ## How the events are emitted
 //!
@@ -131,21 +131,24 @@ impl OkxOrderEventKind {
         }
     }
 
-    /// Evidence level (ADR-009). The rule is strict: `FixtureVerified` only
-    /// if every committed live sample of the variant has
-    /// `source_token_change` / `destination_token_change` **exactly** equal
-    /// to the owner-keyed net deltas of the named owner and mint.
+    /// Evidence level (ADR-009; OKX criterion, orchestrator decision
+    /// 2026-10-03, the one already used for Jupiter/DFlow legs): on every
+    /// committed live sample (a) the non-quote token side equals the
+    /// owner-keyed delta exactly, (b) the quote side is never better for the
+    /// owner than the event (paid >= `source_token_change`, received <=
+    /// `destination_token_change`; the gap is fees paid to other owners), and
+    /// consideration is always the wallet's own delta.
     ///
-    /// Result of `scout-engine/tests/okx_router_legs.rs` over every fixture
-    /// holding the router: 24 successful `SwapWithFeesCpiEvent2` samples and
-    /// none of the other five variants. The non-quote side is exact in every
-    /// checkable sample, but the stablecoin side is exact in only 7 of 20 (the
-    /// wallet also pays or loses fees to other owners that the event does not
-    /// carry), so `SwapWithFeesCpiEvent2` stays `IdlOnly`; the other five have
-    /// no sample at all.
+    /// `scout-engine/tests/okx_router_legs.rs`: 24 `SwapWithFeesCpiEvent2`
+    /// samples, token side 24/24 exact, quote side 2/22 exact and 20/22 worse
+    /// for the owner, 0 contradictions. The other five variants have no sample
+    /// and stay `IdlOnly`.
     #[must_use]
     pub const fn verification(self) -> VariantVerification {
-        VariantVerification::IdlOnly
+        match self {
+            Self::SwapWithFeesCpiEvent2 => VariantVerification::FixtureVerified,
+            _ => VariantVerification::IdlOnly,
+        }
     }
 }
 
@@ -642,9 +645,14 @@ mod tests {
     }
 
     #[test]
-    fn verification_is_idl_only_until_every_sample_reconciles() {
+    fn only_the_sampled_variant_is_fixture_verified() {
         for k in OkxOrderEventKind::ALL {
-            assert_eq!(k.verification(), VariantVerification::IdlOnly);
+            assert_eq!(
+                k.verification() == VariantVerification::FixtureVerified,
+                k == OkxOrderEventKind::SwapWithFeesCpiEvent2,
+                "{}",
+                k.name()
+            );
         }
     }
 

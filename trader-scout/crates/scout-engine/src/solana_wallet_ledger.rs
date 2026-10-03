@@ -90,11 +90,11 @@ use crate::solana_buy_qualification::{
 };
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
-pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/9 (OKX DEX Router order-event legs + ownership evidence (ADR-017 draft), ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
+pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/10 (OKX DEX Router SwapWithFeesCpiEvent2 FixtureVerified legs + ownership evidence (ADR-017), ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
 
 /// Scope text for report metadata (invariant #10): allowed quote units and
 /// the route-swap rule of ADR-013.
-pub const SOLANA_WALLET_LEDGER_SCOPE: &str = "quote units: SOL (lamports, native+wSOL), USDC (6 dp raw), USDT (6 dp raw); no FX, per-unit PnL never summed; route swap = signer wallet, FixtureVerified decoded leg (pump curve/PumpSwap, or a Jupiter v6 / DFlow Aggregator v4 swap event hop trading the token, ADR-015, or a FixtureVerified OKX DEX Router order event of the signer that trades the token, ADR-017 draft; an order event with a distinct receiver is attributed to nobody), exactly one traded token and one quote asset with opposite signs, other leg users non-signing zero-net pass-through (ADR-013 section 2)";
+pub const SOLANA_WALLET_LEDGER_SCOPE: &str = "quote units: SOL (lamports, native+wSOL), USDC (6 dp raw), USDT (6 dp raw); no FX, per-unit PnL never summed; route swap = signer wallet, FixtureVerified decoded leg (pump curve/PumpSwap, or a Jupiter v6 / DFlow Aggregator v4 swap event hop trading the token, ADR-015, or a FixtureVerified OKX DEX Router order event of the signer that trades the token, ADR-017; an order event with a distinct receiver is attributed to nobody), exactly one traded token and one quote asset with opposite signs, other leg users non-signing zero-net pass-through (ADR-013 section 2)";
 
 /// Wrapped SOL, the only non-native quote asset treated as SOL (ADR-010 §3).
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -499,7 +499,7 @@ pub struct RouteEvidenceCounts {
     /// ADR-015 amendment: DFlow Aggregator v4 swap-event legs.
     pub dflow: u64,
     pub dflow_only: u64,
-    /// ADR-017 draft: OKX DEX Router order-event legs (owner = wallet or a
+    /// ADR-017: OKX DEX Router order-event legs (owner = wallet or a
     /// zero-net pass-through), and the swaps booked ONLY because of one.
     pub okx: u64,
     pub okx_only: u64,
@@ -636,7 +636,7 @@ pub struct LedgerDiagnostics {
     pub dflow_malformed_events: u64,
     /// DFlow event-CPIs with a discriminator outside the known set.
     pub dflow_unknown_events: u64,
-    /// ADR-017 draft: OKX DEX Router event-CPIs that did not decode exactly
+    /// ADR-017: OKX DEX Router event-CPIs that did not decode exactly
     /// (never trusted as swap evidence). COVERAGE GAP.
     pub okx_malformed_events: u64,
     /// OKX event-CPIs with a discriminator outside the IDL events.
@@ -1650,7 +1650,7 @@ fn extract_dflow_legs(tx: &RawSolanaTransaction, work: &mut TxWork<'_>) {
     }
 }
 
-/// ADR-017 draft: collect OKX DEX Router order events as swap legs (program
+/// ADR-017: collect OKX DEX Router order events as swap legs (program
 /// id, event-authority and exact-length gated). Only events of a variant the
 /// policy rates `FixtureVerified` AND naming ONE owner for both token
 /// accounts become legs; the owner is carried as ownership evidence. An
@@ -2317,7 +2317,7 @@ fn route_candidate(
             l.source == src && l.fixture_verified && (l.input_mint == mint || l.output_mint == mint)
         })
     };
-    // ADR-017 draft: an OKX order event is evidence for the wallet only when
+    // ADR-017: an OKX order event is evidence for the wallet only when
     // it trades the token AND its single owner is the wallet, or a
     // non-signing zero-net pass-through (checked in the owner rule below).
     let okx_trades_token = |owner_is_wallet: Option<bool>| {

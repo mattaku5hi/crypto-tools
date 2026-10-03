@@ -613,7 +613,7 @@ fn ledger(wallet: &str, txs: &[RawSolanaTransaction]) -> SolanaWalletLedgerRepor
     let decoders = LedgerDecoders {
         curve: &curve,
         amm: Some(&amm),
-        okx_order_policy: scout_engine::default_okx_order_policy,
+        okx_order_policy: okx_idl_only,
     };
     let opts = LedgerOptions {
         left_censoring: true,
@@ -768,3 +768,10 @@ const EXPECT_EDGES: (usize, usize, usize, usize) = (78, 78, 0, 78);
 /// (exact, total): USDC `FeeEvent` explains the signer's USDC edge. Informational
 /// only (the rest are other platform fees / quote routing); FeeEvent is never a leg.
 const EXPECT_FEE: (usize, usize) = (17, 44);
+
+/// These Jupiter/DFlow measurements are about their own evidence: OKX order
+/// events are kept out (`IdlOnly`) so the historical numbers stay comparable;
+/// the OKX effect is measured in `okx_router_legs.rs`.
+fn okx_idl_only(_: scout_dex_solana::OkxOrderEventKind) -> scout_dex_solana::VariantVerification {
+    scout_dex_solana::VariantVerification::IdlOnly
+}

@@ -2347,7 +2347,7 @@ async fn router_wallet_pages_contain_no_atomic_round_trips() {
             a.trades.unsupported_quote,
             a.diagnostics.router_forward_trades_not_attributed,
         ),
-        (49, 49, 49, 0, 0, 0, 0)
+        (51, 51, 51, 0, 0, 0, 0)
     );
     assert_eq!(
         (
@@ -2359,7 +2359,7 @@ async fn router_wallet_pages_contain_no_atomic_round_trips() {
             b.trades.unsupported_quote,
             b.diagnostics.router_forward_trades_not_attributed,
         ),
-        (77, 77, 77, 0, 0, 0, 0)
+        (79, 79, 79, 0, 0, 0, 0)
     );
 }
 
@@ -2479,7 +2479,9 @@ async fn router_pages_are_booked_wallet_side_in_usdc() {
         ),
         // ledger/6 had (5, 0, 5, -24_745_390_534, 62_532_744_053); the DFlow-evidenced
         // route swaps (ADR-015 amendment) close two more episodes, one in profit.
-        (7, 1, 6, -12_846_411_594, 70_832_744_053)
+        // ledger/10: the two OKX-evidenced route swaps (FixtureVerified
+        // `SwapWithFeesCpiEvent2`) close one more episode: 8 / 2 / 6.
+        (8, 2, 6, -12_628_779_234, 71_832_744_053)
     );
     let ub = b.unit_block(QuoteUnit::UsdcUnits).unwrap();
     assert_eq!(
@@ -2496,7 +2498,7 @@ async fn router_pages_are_booked_wallet_side_in_usdc() {
     );
     assert_eq!(
         format_quote_money(QuoteUnit::UsdcUnits, ua.realized_trade_pnl_exact).unwrap(),
-        "-12846.411594"
+        "-12628.779234"
     );
 }
 
@@ -3418,7 +3420,7 @@ fn evidence_samples_are_bounded_and_locate_malformed_and_orphan_items() {
 }
 
 // ---------------------------------------------------------------------
-// ADR-017 draft: OKX DEX Router order events as route evidence + ownership.
+// ADR-017: OKX DEX Router order events as route evidence + ownership.
 // ---------------------------------------------------------------------
 
 /// The injected policy of the verified path: every order-event variant is
@@ -3426,6 +3428,10 @@ fn evidence_samples_are_bounded_and_locate_malformed_and_orphan_items() {
 /// `okx_router_legs.rs`).
 fn okx_all_verified(_: OkxOrderEventKind) -> scout_dex_solana::VariantVerification {
     scout_dex_solana::VariantVerification::FixtureVerified
+}
+
+fn okx_all_idl_only(_: OkxOrderEventKind) -> scout_dex_solana::VariantVerification {
+    scout_dex_solana::VariantVerification::IdlOnly
 }
 
 fn run_okx(txs: &[RawSolanaTransaction], policy: OkxOrderPolicy) -> SolanaWalletLedgerReport {
@@ -3502,9 +3508,9 @@ fn okx_buy_tx(sig: u8, ixs: Vec<RawSolanaInstruction>) -> RawSolanaTransaction {
 }
 
 #[test]
-fn okx_order_event_is_idl_only_by_default_and_never_evidence() {
+fn okx_order_event_of_an_idl_only_variant_is_never_evidence() {
     let tx = okx_buy_tx(1, vec![okx_order_ix(usdc(), pk(M1), pk(W), pk(W), 3, &[])]);
-    let r = run_okx(&[tx], scout_engine::default_okx_order_policy);
+    let r = run_okx(&[tx], okx_all_idl_only);
     assert_eq!(r.trades.route_swaps, 0);
     assert_eq!(r.trades.route_swaps_by_evidence.okx, 0);
     assert_eq!(r.diagnostics.okx_idl_only_order_events, 1);
@@ -3717,4 +3723,22 @@ fn okx_does_not_change_the_other_evidence_counts() {
         ),
         (1, 1, 0, 1, 0)
     );
+}
+
+#[test]
+fn production_policy_books_swap_with_fees_event2_and_keeps_the_other_variants_idl_only() {
+    let tx = okx_buy_tx(1, vec![okx_order_ix(usdc(), pk(M1), pk(W), pk(W), 3, &[])]);
+    let r = run_okx(&[tx], scout_engine::default_okx_order_policy);
+    assert_eq!(r.trades.route_swaps, 1);
+    assert_eq!(r.trades.route_swaps_by_evidence.okx_only, 1);
+    // Another variant (`SwapCpiEvent2`, 160 bytes, no tail) stays IdlOnly.
+    let mut ix = okx_order_ix(usdc(), pk(M1), pk(W), pk(W), 3, &[]);
+    ix.data[8..16].copy_from_slice(&OkxOrderEventKind::SwapCpiEvent2.discriminator());
+    ix.data.truncate(16 + 160);
+    let r = run_okx(
+        &[okx_buy_tx(2, vec![ix])],
+        scout_engine::default_okx_order_policy,
+    );
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.diagnostics.okx_idl_only_order_events, 1);
 }

@@ -543,7 +543,7 @@ fn ledger(wallet: &str, txs: &[RawSolanaTransaction]) -> SolanaWalletLedgerRepor
     let decoders = LedgerDecoders {
         curve: &curve,
         amm: Some(&amm),
-        okx_order_policy: scout_engine::default_okx_order_policy,
+        okx_order_policy: okx_idl_only,
     };
     let opts = LedgerOptions {
         left_censoring: true,
@@ -663,4 +663,11 @@ async fn jupiter_legs_book_additional_route_swaps_on_the_router_pages() {
         assert_eq!(with_j, 0);
         assert_eq!(n, unbooked, "{name}");
     }
+}
+
+/// These Jupiter/DFlow measurements are about their own evidence: OKX order
+/// events are kept out (`IdlOnly`) so the historical numbers stay comparable;
+/// the OKX effect is measured in `okx_router_legs.rs`.
+fn okx_idl_only(_: scout_dex_solana::OkxOrderEventKind) -> scout_dex_solana::VariantVerification {
+    scout_dex_solana::VariantVerification::IdlOnly
 }

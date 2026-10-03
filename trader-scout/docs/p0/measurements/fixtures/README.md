@@ -23,5 +23,5 @@ the account is owned by the program itself (published by its upgrade authority).
 
 Checked by: `scout-dex-solana` (`jupiter_event` and `okx_event` IDL-equality tests: event set, discriminators
 `sha256("event:<Name>")[:8]`, field order and types; for OKX the whole `Dex` enum) and, over the committed live
-fixtures, `scout-engine/tests/okx_router_legs.rs` (order events vs owner-keyed deltas, hops vs venue CPIs) and
+fixtures, `scout-engine/tests/okx_router_legs.rs` (order events vs owner-keyed deltas, criterion: token side exact, quote side never better for the owner; hops vs venue CPIs; `SwapWithFeesCpiEvent2` FixtureVerified on 24 samples, other five order events IdlOnly) and
 `jupiter_swap_legs.rs`.

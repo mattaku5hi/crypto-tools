@@ -82,3 +82,12 @@ Jupiter transactions, 111 hops.
 - Effect: route swaps 38→49 (9oC3), 68→77 (tAwv); remaining unbooked route-shaped txs 2 / 2, all via
   `proVF4pM…` (no verified events). §4's example of an unevidenced router is now `proVF4pM…`.
   Ledger/7, trade qualification v8.
+
+## Amendment — Jupiter on-chain IDL (2026-10-03)
+
+The on-chain Anchor IDL of `JUP6…` (`fixtures/jupiter_v6_onchain_idl_2026-10-03.json`, sha256
+`12a08561…cdca8`) defines `SwapsEvent { swap_events: Vec<SwapEventV2> }`, `SwapEventV2 { input_mint,
+input_amount u64, output_mint, output_amount u64, amm }` — exactly the layout derived from live data
+above. `SwapsEvent` is now IDL-confirmed and fixture-verified; IDL-equality tests pin it.
+`CandidateSwapResults`, `CandidateSwapQuoteError`, `BestSwapOutAmountViolation` are known non-leg
+events (gated, named, never legs).

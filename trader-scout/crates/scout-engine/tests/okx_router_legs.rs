@@ -547,13 +547,20 @@ fn verification_table() {
             .filter(|(s, c)| *c != "token" && *s != Side::NoTokenAccount)
             .collect();
         let quote_exact = quote.iter().filter(|(s, _)| *s == Side::Exact).count();
-        let all_exact = !rows.is_empty() && exact == checkable;
+        // Criterion (orchestrator decision 2026-10-03, as for Jupiter/DFlow): the
+        // token side is exact on every sample, and no quote side favours the
+        // owner (`Contradiction`). Quote gaps (fees to other owners) are allowed.
+        let token_all_exact = token_side.iter().all(|(s, _)| *s == Side::Exact);
+        let quote_never_better = sides
+            .iter()
+            .all(|(s, _)| !matches!(s, Side::Contradiction(_)));
+        let meets = !rows.is_empty() && token_all_exact && quote_never_better;
         let verdict = if rows.is_empty() {
             "IdlOnly (no sample)"
-        } else if all_exact {
-            "every sample exact"
+        } else if meets {
+            "criterion met"
         } else {
-            "NOT every sample exact"
+            "criterion NOT met"
         };
         println!(
             "{:<32} samples {:>2} | sides exact {exact}/{checkable} | token side exact {token_exact}/{} | quote side exact {quote_exact}/{} | {verdict} -> {:?}",
@@ -563,10 +570,12 @@ fn verification_table() {
             quote.len(),
             kind.verification()
         );
-        // The code may only say FixtureVerified when the table says so.
+        // The code may only say FixtureVerified when the criterion holds on
+        // the samples; this fails on an inexact token side or a quote side
+        // that favours the owner.
         assert_eq!(
             kind.verification() == scout_dex_solana::VariantVerification::FixtureVerified,
-            all_exact,
+            meets,
             "{}",
             kind.name()
         );
@@ -832,14 +841,17 @@ fn unbooked_route_shaped(
     out
 }
 
-/// Router pages: the production status keeps every order event `IdlOnly`
-/// (no change to booking); the injected `FixtureVerified` status is the
-/// what-if that shows what promotion would book.
+fn idl_only(_: OkxOrderEventKind) -> scout_dex_solana::VariantVerification {
+    scout_dex_solana::VariantVerification::IdlOnly
+}
+
+/// Router pages: before = every order event injected as `IdlOnly`, after =
+/// production status (`SwapWithFeesCpiEvent2` FixtureVerified).
 #[tokio::test]
-async fn router_pages_default_and_promoted_status() {
-    // (page, wallet, route swaps now, order events of the page, route swaps if
-    // promoted, unbooked route-shaped now / if promoted)
-    for (name, wallet, swaps, orders, promoted_swaps, unbooked) in [
+async fn router_pages_before_and_after_promotion() {
+    // (page, wallet, route swaps before, order events, route swaps after,
+    // unbooked route-shaped before)
+    for (name, wallet, before_swaps, orders, after_swaps, unbooked_before) in [
         (
             "router_wallet_9oC3_page_2026-10-02.json",
             ROUTER_WALLET_9OC3,
@@ -858,81 +870,65 @@ async fn router_pages_default_and_promoted_status() {
         ),
     ] {
         let txs = fixture_txs(name).await;
-        let now = ledger(wallet, &txs, default_okx_order_policy);
-        let promoted = ledger(wallet, &txs, all_verified);
-        let booked_now: BTreeSet<[u8; 64]> =
-            now.route_swap_log.iter().map(|r| r.signature).collect();
-        let booked_promoted: BTreeSet<[u8; 64]> = promoted
-            .route_swap_log
-            .iter()
-            .map(|r| r.signature)
-            .collect();
-        let left_now = unbooked_route_shaped(wallet, &txs, &booked_now);
-        let left_promoted = unbooked_route_shaped(wallet, &txs, &booked_promoted);
-        let (e, p) = (
-            promoted.trades.route_swaps_by_evidence,
-            now.trades.route_swaps_by_evidence,
+        let before = ledger(wallet, &txs, idl_only);
+        let after = ledger(wallet, &txs, default_okx_order_policy);
+        let booked = |r: &SolanaWalletLedgerReport| -> BTreeSet<[u8; 64]> {
+            r.route_swap_log.iter().map(|x| x.signature).collect()
+        };
+        let (booked_before, booked_after) = (booked(&before), booked(&after));
+        let left_before = unbooked_route_shaped(wallet, &txs, &booked_before);
+        let left_after = unbooked_route_shaped(wallet, &txs, &booked_after);
+        let (e, b) = (
+            after.trades.route_swaps_by_evidence,
+            before.trades.route_swaps_by_evidence,
         );
         println!(
-            "{name}: route swaps {} -> {} if promoted (okx {} / okx_only {} / owner==wallet {}); \
-             route-shaped unbooked {} -> {} (now: {left_now:?}); okx order events not used {} ; receiver {} ; rejected {:?}",
-            now.trades.route_swaps,
-            promoted.trades.route_swaps,
+            "{name}: route swaps {} -> {} (okx {} / okx_only {} / owner==wallet {}); \
+             route-shaped unbooked {} -> {} (before: {left_before:?}); idl-only events before {}; receiver {}; rejected {:?}",
+            before.trades.route_swaps,
+            after.trades.route_swaps,
             e.okx,
             e.okx_only,
             e.okx_owner_is_wallet,
-            left_now.len(),
-            left_promoted.len(),
-            now.diagnostics.okx_idl_only_order_events,
-            now.diagnostics.okx_swap_with_receiver_not_attributed,
-            promoted.diagnostics.route_rejected,
+            left_before.len(),
+            left_after.len(),
+            before.diagnostics.okx_idl_only_order_events,
+            after.diagnostics.okx_swap_with_receiver_not_attributed,
+            after.diagnostics.route_rejected,
         );
-        // Production: unchanged by the OKX decoder.
-        assert_eq!(now.trades.route_swaps, swaps, "{name}");
-        assert_eq!((p.okx, p.okx_only), (0, 0));
-        assert_eq!(now.diagnostics.okx_idl_only_order_events, orders, "{name}");
-        assert_eq!(now.diagnostics.okx_swap_with_receiver_not_attributed, 0);
+        assert_eq!(before.trades.route_swaps, before_swaps, "{name}");
+        assert_eq!((b.okx, b.okx_only), (0, 0));
         assert_eq!(
-            (
-                now.diagnostics.okx_malformed_events,
-                now.diagnostics.okx_unknown_events
-            ),
-            (0, 0)
+            before.diagnostics.okx_idl_only_order_events, orders,
+            "{name}"
         );
-        assert_eq!(now.diagnostics.route_rejected, RouteRejections::default());
-        assert_eq!(left_now.len(), unbooked, "{name}");
-        // The remaining unbooked route-shaped transactions, all via the router.
-        let mut left_sigs: Vec<&str> = left_now.iter().map(|(s, _)| s.as_str()).collect();
-        left_sigs.sort_unstable();
-        let mut expect: Vec<&str> = if name.contains("9oC3") {
+        assert_eq!(left_before.len(), unbooked_before, "{name}");
+        let mut sigs: Vec<&str> = left_before.iter().map(|(s, _)| s.as_str()).collect();
+        sigs.sort_unstable();
+        let expect: Vec<&str> = if name.contains("9oC3") {
             vec!["3K8mjYT6", "55nGGQdf"]
         } else {
             vec!["4uuSP9kT", "53FC5swy"]
         };
-        expect.sort_unstable();
-        assert_eq!(left_sigs, expect, "{name}");
-        assert!(
-            left_now.iter().all(|(_, via)| *via),
-            "{name}: unbooked but not via the router"
-        );
-        // What-if.
-        assert_eq!(promoted.trades.route_swaps, promoted_swaps, "{name}");
+        assert_eq!(sigs, expect, "{name}");
+        assert!(left_before.iter().all(|(_, via)| *via), "{name}");
+        // After promotion: exactly those two are booked, 0 unbooked.
+        assert_eq!(after.trades.route_swaps, after_swaps, "{name}");
+        assert_eq!(after.trades.route_swaps - before.trades.route_swaps, 2);
+        assert_eq!(e.okx_only, 2, "{name}");
+        assert_eq!(e.okx_owner_is_wallet, e.okx, "{name}");
+        assert_eq!(after.diagnostics.okx_idl_only_order_events, 0);
+        assert_eq!(after.diagnostics.okx_swap_with_receiver_not_attributed, 0);
         assert_eq!(
-            e.okx_only,
-            promoted.trades.route_swaps - now.trades.route_swaps
+            (
+                after.diagnostics.okx_malformed_events,
+                after.diagnostics.okx_unknown_events
+            ),
+            (0, 0)
         );
-        assert_eq!(e.okx_owner_is_wallet, e.okx);
-        assert_eq!(promoted.diagnostics.okx_idl_only_order_events, 0);
-        assert_eq!(
-            promoted.diagnostics.route_rejected,
-            RouteRejections::default()
-        );
-        assert!(booked_now.is_subset(&booked_promoted));
-        assert_eq!(
-            left_promoted.len(),
-            unbooked - usize::try_from(promoted_swaps - swaps).unwrap(),
-            "{name}"
-        );
+        assert_eq!(after.diagnostics.route_rejected, RouteRejections::default());
+        assert!(booked_before.is_subset(&booked_after));
+        assert!(left_after.is_empty(), "{name}: {left_after:?}");
     }
 }
 

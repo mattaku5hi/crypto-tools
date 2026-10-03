@@ -159,14 +159,14 @@ impl SolanaProtocolScope {
                          are not attributed); route swaps (ADR-013 rule: signer wallet, \
                          FixtureVerified swap leg = pump leg, Jupiter v6 SwapEvent/SwapsEvent or \
                          DFlow v4 SwapEvent hop trading the token (ADR-015, evidence only, no ownership) or an OKX DEX Router order event of a \
-                         FixtureVerified variant naming the wallet as owner (ADR-017 draft; every variant is IdlOnly today), one \
+                         FixtureVerified variant naming the wallet as owner (ADR-017; only SwapWithFeesCpiEvent2 is verified), one \
                          traded token vs one SOL/USDC/USDT quote, pass-through leg users \
                          netting zero; side = sign of the wallet's own delta). Never transfers or airdrops, never routers, relayers or fee \
                          payers. IdlOnly variants are decoded but never qualify (counted, \
                          coverage incomplete)",
             not_decoded: "Raydium, Meteora (DLMM), Orca Whirlpool and Jupiter's venue hops \
                           themselves (routes without a pump leg or a Jupiter v6 / DFlow v4 swap event, \
-                          e.g. OKX DEX Router routes while its order events are IdlOnly), PumpSwap liquidity/non-trade instructions \
+                          e.g. OKX DEX Router routes whose order event is not SwapWithFeesCpiEvent2), PumpSwap liquidity/non-trade instructions \
                           and every other venue; the wallet set is a lower bound (a wallet that \
                           traded only there is not found)",
         }
@@ -192,7 +192,7 @@ impl SolanaProtocolScope {
                          attributed only when the wallet's own owner-keyed legs reconcile \
                          (ADR-012); route swaps (ADR-013: signer wallet, FixtureVerified swap \
                          leg = pump leg, Jupiter v6 SwapEvent/SwapsEvent or DFlow v4 SwapEvent hop \
-                         trading the token (ADR-015) or a FixtureVerified OKX order event of the wallet (ADR-017 draft), one traded token vs one SOL/USDC/USDT quote asset, \
+                         trading the token (ADR-015) or a FixtureVerified OKX order event of the wallet (ADR-017), one traded token vs one SOL/USDC/USDT quote asset, \
                          pass-through leg users netting zero) are booked from the wallet's own deltas in the \
                          quote's unit; PnL is per quote unit (SOL, USDC, USDT), never mixed; \
                          one FIFO per (wallet, mint) across venues",
@@ -302,7 +302,7 @@ pub struct TradeAttributionDiagnostics {
     /// ADR-015 amendment: the same for DFlow Aggregator v4 events.
     pub dflow_malformed_events: u64,
     pub dflow_unknown_events: u64,
-    /// ADR-017 draft: OKX DEX Router events that did not decode exactly /
+    /// ADR-017: OKX DEX Router events that did not decode exactly /
     /// have an unknown discriminator (never trusted). COVERAGE GAP.
     pub okx_malformed_events: u64,
     pub okx_unknown_events: u64,

@@ -1129,8 +1129,7 @@ async fn okx_order_event_makes_a_signer_route_swap_a_hit_in_buyer_intersect() {
     assert_eq!(r.trade.okx_idl_only_order_events, 0);
     // Relayer (fee payer), the router and the receiver are never attributed.
     assert_eq!(r.side_hits.len(), 1);
-    // Production status (IdlOnly): the same stream yields no hit at all, and
-    // every decoded order is counted as not used.
+    // Production status: `SwapWithFeesCpiEvent2` is FixtureVerified, same result.
     let r = run_solana_trade_intersect(
         &provider,
         &assets,
@@ -1140,6 +1139,10 @@ async fn okx_order_event_makes_a_signer_route_swap_a_hit_in_buyer_intersect() {
     )
     .await
     .unwrap();
+    assert_eq!(r.base.matches.len(), 1);
+    assert_eq!(r.trade.okx_idl_only_order_events, 0);
+    // An IdlOnly status yields no hit, and every decoded order is counted.
+    let r = run_with(|_| VariantVerification::IdlOnly).await.unwrap();
     assert!(r.base.matches.is_empty());
     assert_eq!(r.trade.okx_idl_only_order_events, 4);
     assert_eq!(r.trade.okx_swap_with_receiver_not_attributed, 1);
