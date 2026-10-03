@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use scout_analytics::RatioStatus;
-use scout_app::SCHEMA_VERSION;
+use scout_app::{PriceCoverageDto, PricingMetaDto, SCHEMA_VERSION};
 use scout_core::{MONEY_SCALE, Money};
 use scout_engine::{
     AnalysisWindow, ExcludedWallet, LowerBound, OpenExposure, QuoteUnit, QuoteUnitBlock,
@@ -148,6 +148,7 @@ pub fn table_lines(
     report: &WalletRankReport,
     partial: bool,
     window: &AnalysisWindow,
+    pricing_note: Option<&str>,
 ) -> Vec<String> {
     let profile = report.policy.profile.label();
     let rows: Vec<Vec<String>> = report.ranked.iter().map(|r| row(r, profile)).collect();
@@ -209,6 +210,9 @@ pub fn table_lines(
         "# unknown episodes (ADR-016): pnl/roi/win_rate/profit_factor are worst-case lower bounds (tier 1); tier 2 = unbounded, known-subset values, ranked after tier 1; max_unknown_episode_share={}% exclude_unbounded={}",
         p.max_unknown_episode_share_percent, p.exclude_unbounded
     ));
+    if let Some(note) = pricing_note {
+        out.push(format!("# {note}"));
+    }
     if report
         .ranked
         .iter()
@@ -323,6 +327,11 @@ pub struct RunMetaRecord {
     pub input_wallet_count: usize,
     pub input_duplicates: usize,
     pub upstream_complete: bool,
+    /// ADR-018: price source, policy version, staleness limit, USDC
+    /// assumption, price request counters and coverage.
+    pub pricing: PricingMetaDto,
+    /// HTTP attempts for USD price candles (separate from `scan.requests_made`).
+    pub requests_made_prices: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -373,6 +382,17 @@ pub struct UnitMetricsDto {
     pub profit_factor_lower_bound: RatioBoundDto,
     /// `null` when unbounded or undefined.
     pub realized_cost_roi_lower_bound: Option<UnitRoiDto>,
+}
+
+/// ADR-018: the USD view's episode counts and price coverage.
+#[derive(Debug, Serialize)]
+pub struct UsdSummaryDto {
+    pub version: &'static str,
+    pub closed_known: u64,
+    pub closed_unknown: u64,
+    pub left_censored: u64,
+    pub open_unvalued: u64,
+    pub price_coverage: PriceCoverageDto,
 }
 
 /// ADR-016: a worst-case lower bound that may not exist. `status` is
@@ -513,8 +533,12 @@ pub struct MetricsDto {
     /// `closed_known_in_quote` and the gates use this unit.
     pub quote: &'static str,
     pub closed_known_in_quote: u64,
-    /// All units side by side.
+    /// All units side by side; with a USD view (ADR-018) a `usd` entry
+    /// (decimals 8) follows `sol`, `usdc`, `usdt`.
     pub quote_units: Vec<UnitMetricsDto>,
+    /// ADR-018: USD view summary; `null` without prices (`--quote` other
+    /// than `usd`, or pricing failed).
+    pub usd: Option<UsdSummaryDto>,
     pub route: RouteCountsDto,
     pub realized_net_pnl: MoneyDto,
     /// ADR-016: 1 bounded, 2 unbounded (`known_subset_unbounded`).
@@ -596,6 +620,7 @@ pub struct RunSummaryRecord {
     pub excluded_by_primary_reason: BTreeMap<&'static str, usize>,
     pub excluded_by_any_reason: BTreeMap<&'static str, usize>,
     pub requests_made: u64,
+    pub requests_made_prices: u64,
     /// Run-terminal stop (budget / rate limit), if any.
     pub stop: Option<StopDto>,
     pub incomplete_reasons: Vec<String>,
@@ -805,7 +830,20 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
     Some(MetricsDto {
         quote: quote_unit_label(o.quote),
         closed_known_in_quote: unit_block_of(o).map_or(0, |b| b.closed_episodes_known),
-        quote_units: l.unit_blocks.iter().map(unit_metrics_dto).collect(),
+        quote_units: l
+            .unit_blocks
+            .iter()
+            .chain(l.usd.as_ref().map(|u| &u.block))
+            .map(unit_metrics_dto)
+            .collect(),
+        usd: l.usd.as_ref().map(|u| UsdSummaryDto {
+            version: u.version,
+            closed_known: u.block.closed_episodes_known,
+            closed_unknown: u.closed_episodes_unknown,
+            left_censored: u.left_censored_episodes,
+            open_unvalued: u.open_episodes,
+            price_coverage: PriceCoverageDto::from_coverage(&u.coverage),
+        }),
         route: RouteCountsDto {
             route_swaps: t.route_swaps,
             route_swaps_sol: t.route_swaps_by_quote.sol,
@@ -865,7 +903,11 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
                 .and_then(|r| r.percent_string(2)),
         }),
         unknown_episode_share: {
-            let (unknown, total) = l.unknown_episode_share_parts();
+            // ADR-018: under `--quote usd` the share is the USD view's.
+            let (unknown, total) = match (&l.usd, o.quote) {
+                (Some(u), QuoteUnit::ReportCurrency) => u.unknown_episode_share_parts(),
+                _ => l.unknown_episode_share_parts(),
+            };
             UnknownShareDto {
                 closed_unknown: unknown,
                 closed_known_and_unknown: total,
@@ -918,6 +960,8 @@ pub struct RunMetaInput<'a> {
     pub input_duplicates: usize,
     pub upstream_complete: bool,
     pub window: AnalysisWindow,
+    /// ADR-018 price source / policy / coverage (disabled unless `--quote usd`).
+    pub pricing: PricingMetaDto,
 }
 
 #[derive(Debug, Serialize)]
@@ -1003,6 +1047,8 @@ pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMe
         input_wallet_count: m.input_wallet_count,
         input_duplicates: m.input_duplicates,
         upstream_complete: m.upstream_complete,
+        pricing: m.pricing.clone(),
+        requests_made_prices: m.pricing.requests_made_prices,
     }
 }
 
@@ -1052,6 +1098,7 @@ pub struct SummaryInput<'a> {
     pub cancelled: bool,
     pub stop: Option<ScanStop>,
     pub requests_made: u64,
+    pub requests_made_prices: u64,
     pub incomplete_reasons: Vec<String>,
 }
 
@@ -1087,6 +1134,7 @@ pub fn run_summary_record(report: &WalletRankReport, s: SummaryInput<'_>) -> Run
         excluded_by_primary_reason: primary_counts(report),
         excluded_by_any_reason: all_counts(report),
         requests_made: s.requests_made,
+        requests_made_prices: s.requests_made_prices,
         stop: s.stop.map(stop_dto),
         incomplete_reasons: s.incomplete_reasons,
     }
@@ -1187,6 +1235,13 @@ mod tests {
             input_duplicates: 0,
             upstream_complete: true,
             window: AnalysisWindow::none(1_790_000_000),
+            pricing: scout_app::pricing_meta(&scout_app::PricingMetaInput {
+                policy: None,
+                endpoint_overridden: false,
+                requests_made: 0,
+                max_requests: None,
+                run: None,
+            }),
         }
     }
 
@@ -1202,6 +1257,7 @@ mod tests {
                 cancelled: false,
                 stop: None,
                 requests_made: 4,
+                requests_made_prices: 0,
                 incomplete_reasons: vec!["wallet x: scan failed".into()],
             },
             &|t| t.to_string(),
@@ -1246,7 +1302,7 @@ mod tests {
 
     #[test]
     fn table_has_header_rows_and_exclusion_summary() {
-        let lines = table_lines(&report(), true, &AnalysisWindow::none(0));
+        let lines = table_lines(&report(), true, &AnalysisWindow::none(0), None);
         assert!(lines[0].starts_with("rank"));
         assert!(lines[1].contains("0.000157000"), "{}", lines[1]);
         assert!(lines[1].contains("15.39%"), "{}", lines[1]);
@@ -1268,7 +1324,7 @@ mod tests {
             as_of: 1_790_000_000,
             source: WindowSource::Period,
         };
-        let lines = table_lines(&report(), false, &w);
+        let lines = table_lines(&report(), false, &w, None);
         assert!(lines[0].starts_with("# window [2026-08-01T00:00:00Z, 2026-09-01T00:00:00Z)"));
         assert!(lines[1].starts_with("rank"));
         let mut m = meta();

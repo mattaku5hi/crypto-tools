@@ -10,6 +10,12 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-scout-core.workspace = true
+scout-rpc.workspace = true
 thiserror.workspace = true
-serde.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }

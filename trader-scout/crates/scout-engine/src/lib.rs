@@ -32,6 +32,7 @@ mod solana_buyer_intersect;
 mod solana_wallet_ledger;
 mod solana_wallet_rank;
 mod solana_wallet_stats;
+mod solana_wallet_usd;
 
 pub use analysis_window::{
     AnalysisWindow, MAX_PERIOD_DAYS, WindowError, WindowSource, parse_period_days,
@@ -67,8 +68,8 @@ pub use solana_wallet_ledger::{
     WinRateLowerBound, allocate_fee_proportionally, build_solana_wallet_ledger,
     build_solana_wallet_ledger_venues, build_solana_wallet_ledger_with_options,
     default_okx_order_policy, format_quote_money, lamports_to_money, money_to_lamports_trunc,
-    money_to_quote_units_trunc, pump_amm_decoder, quote_unit_decimals, quote_unit_label,
-    quote_units_to_money,
+    money_to_quote_units_trunc, money_to_unit_raw, pump_amm_decoder, quote_unit_decimals,
+    quote_unit_label, quote_units_to_money,
 };
 pub use solana_wallet_rank::{
     DEFAULT_MAX_UNKNOWN_EPISODE_SHARE_PERCENT, DEFAULT_TOP, ExcludedWallet, ExclusionReason,
@@ -80,4 +81,9 @@ pub use solana_wallet_stats::{
     SolanaWalletStats, SolanaWalletStatsReport, WalletScanStatus, format_scaled_decimal,
     lamports_to_sol_string, rational_to_decimal_string, run_solana_wallet_stats,
     run_solana_wallet_stats_windowed, run_solana_wallet_stats_windowed_venues,
+};
+pub use solana_wallet_usd::{
+    SOLANA_WALLET_USD_VERSION, UsdCoverage, UsdDisposal, UsdEpisode, UsdJournal, UsdLedgerView,
+    UsdLotSlice, UsdOutcome, UsdPricingRun, apply_usd_pricing, convert_quote_to_usd,
+    quote_asset_of,
 };

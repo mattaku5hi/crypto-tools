@@ -3157,6 +3157,7 @@ dependencies = [
  "clap",
  "csv",
  "scout-core",
+ "scout-pricing",
  "scout-sdk",
  "serde",
  "serde_json",
@@ -3234,6 +3235,7 @@ dependencies = [
  "scout-dex-solana",
  "scout-ledger",
  "scout-normalize",
+ "scout-pricing",
  "scout-providers",
  "scout-rpc",
  "scout-scan",
@@ -3282,9 +3284,12 @@ dependencies = [
 name = "scout-pricing"
 version = "0.1.0"
 dependencies = [
- "scout-core",
- "serde",
+ "async-trait",
+ "reqwest",
+ "scout-rpc",
  "thiserror",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -4146,6 +4151,7 @@ dependencies = [
  "scout-app",
  "scout-core",
  "scout-engine",
+ "scout-pricing",
  "scout-providers",
  "scout-rpc",
  "serde",
@@ -4166,6 +4172,7 @@ dependencies = [
  "scout-app",
  "scout-core",
  "scout-engine",
+ "scout-pricing",
  "scout-providers",
  "scout-rpc",
  "serde",

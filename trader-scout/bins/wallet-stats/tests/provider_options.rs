@@ -30,7 +30,7 @@ struct Out {
 async fn run(endpoint: String, extra: Vec<String>) -> Out {
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new(BIN);
-        cmd.args(["--input", "-", "--format", "jsonl"])
+        cmd.args(["--input", "-", "--format", "jsonl", "--no-usd"])
             .args(extra)
             .env("SCOUT_HELIUS_API_KEY", KEY)
             .env("SCOUT_WALLET_STATS_ENDPOINT", endpoint)

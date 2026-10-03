@@ -4,8 +4,12 @@
 
 mod evidence;
 mod jsonl;
+mod pricing;
 mod writer;
 
 pub use evidence::{DecodeEvidenceDto, evidence_dtos, evidence_line};
 pub use jsonl::{JsonlRecord, RunStatus, SCHEMA_VERSION, Window};
+pub use pricing::{
+    PrefetchDto, PriceCoverageDto, PricingMetaDto, PricingMetaInput, pricing_line, pricing_meta,
+};
 pub use writer::{WriteOutcome, write_lines_to_stdout};

@@ -88,9 +88,10 @@ use crate::decode_evidence::{DecodeEvidence, scan_tx_evidence};
 use crate::solana_buy_qualification::{
     VariantPolicy, default_variant_policy, solana_mainnet_chain,
 };
+use crate::solana_wallet_usd::{UsdDisposal, UsdJournal, UsdLedgerView, UsdLotSlice};
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
-pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/10 (OKX DEX Router SwapWithFeesCpiEvent2 FixtureVerified legs + ownership evidence (ADR-017), ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
+pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/11 (ADR-018 USD execution-pricing journal + USD view, OKX DEX Router SwapWithFeesCpiEvent2 FixtureVerified legs + ownership evidence (ADR-017), ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
 
 /// Scope text for report metadata (invariant #10): allowed quote units and
 /// the route-swap rule of ADR-013.
@@ -127,13 +128,15 @@ pub enum SolanaWalletLedgerError {
 }
 
 /// Decimal places of one raw base unit of a Solana quote unit (SOL 9,
-/// USDC/USDT 6). `None` for `ReportCurrency`, which has no base unit.
+/// USDC/USDT 6; `ReportCurrency` = the USD view, `MONEY_SCALE` digits).
 #[must_use]
 pub const fn quote_unit_decimals(unit: QuoteUnit) -> Option<u32> {
     match unit {
         QuoteUnit::Lamports => Some(9),
         QuoteUnit::UsdcUnits | QuoteUnit::UsdtUnits => Some(6),
-        QuoteUnit::ReportCurrency => None,
+        // ADR-018: the USD view is `Money` itself (scale `MONEY_SCALE`); its
+        // "raw" figure is the scaled integer (1e-8 USD).
+        QuoteUnit::ReportCurrency => Some(MONEY_SCALE),
     }
 }
 
@@ -144,7 +147,7 @@ pub const fn quote_unit_label(unit: QuoteUnit) -> &'static str {
         QuoteUnit::Lamports => "sol",
         QuoteUnit::UsdcUnits => "usdc",
         QuoteUnit::UsdtUnits => "usdt",
-        QuoteUnit::ReportCurrency => "report_currency",
+        QuoteUnit::ReportCurrency => "usd",
     }
 }
 
@@ -164,6 +167,10 @@ pub const SOLANA_QUOTE_UNITS: [QuoteUnit; 3] = [
 pub fn quote_units_to_money(unit: QuoteUnit, raw: i128) -> Result<Money, SolanaWalletLedgerError> {
     if quote_unit_decimals(unit).is_none() {
         return Err(SolanaWalletLedgerError::UnsupportedQuoteUnit(unit));
+    }
+    if unit == QuoteUnit::ReportCurrency {
+        // USD view: "raw" is already the scaled `Money` integer.
+        return Ok(Money::from_scaled_units(raw));
     }
     let scaled = raw
         .checked_mul(10i128.pow(MONEY_SCALE))
@@ -192,13 +199,25 @@ pub fn money_to_quote_units_trunc(money: Money) -> i128 {
     }
 }
 
+/// `Money` of a ledger of `unit` -> its "raw" figure: whole base units
+/// truncated toward zero for SOL/USDC/USDT, the scaled integer itself for
+/// the USD view (`ReportCurrency`, no truncation).
+#[must_use]
+pub fn money_to_unit_raw(unit: QuoteUnit, money: Money) -> i128 {
+    if unit == QuoteUnit::ReportCurrency {
+        money.scaled_units()
+    } else {
+        money_to_quote_units_trunc(money)
+    }
+}
+
 /// Exact decimal string of `Money` of a ledger of `unit` (SOL 9 dp, USDC /
-/// USDT 6 dp). Sub-base-unit proration remainders (< 10^-8 base unit) are
-/// truncated toward zero. `None` for `ReportCurrency`.
+/// USDT 6 dp, USD `MONEY_SCALE` dp). Sub-base-unit proration remainders
+/// (< 10^-8 base unit) are truncated toward zero.
 #[must_use]
 pub fn format_quote_money(unit: QuoteUnit, money: Money) -> Option<String> {
     let decimals = quote_unit_decimals(unit)?;
-    let raw = money_to_quote_units_trunc(money);
+    let raw = money_to_unit_raw(unit, money);
     let neg = raw.is_negative();
     let mag = raw.unsigned_abs();
     let div = 10u128.pow(decimals);
@@ -383,6 +402,9 @@ pub struct EpisodeRecord {
     pub consumed_known_basis_by_unit: Vec<(QuoteUnit, Money)>,
     /// ADR-016: worst-case PnL bound; `Some` exactly for `ClosedUnknown`.
     pub unknown_pnl_bound: Option<EpisodePnlBound>,
+    /// ADR-018: native-unit legs with the pricing time of each, the input of
+    /// the USD view (empty for a window with no disposals).
+    pub usd_journal: UsdJournal,
 }
 
 /// One open position at the end of history. Never carries a value.
@@ -791,6 +813,10 @@ pub struct SolanaWalletLedgerReport {
     /// unknown discriminators and orphan events, so a coverage gap can be
     /// located (signature, program, discriminator, lengths, reason).
     pub evidence_samples: Vec<DecodeEvidence>,
+    /// ADR-018: the USD view; `None` until prices were applied
+    /// ([`SolanaWalletLedgerReport::apply_usd_prices`]). Native figures above
+    /// never change when it is set.
+    pub usd: Option<UsdLedgerView>,
 }
 
 /// Audit record of one booked route swap (ADR-013 §2): the wallet's own
@@ -856,7 +882,7 @@ impl QuoteUnitBlock {
     #[must_use]
     pub fn realized_pnl_lower_bound_raw(&self) -> LowerBound<i128> {
         match self.realized_pnl_lower_bound() {
-            LowerBound::Bounded(m) => LowerBound::Bounded(money_to_quote_units_trunc(m)),
+            LowerBound::Bounded(m) => LowerBound::Bounded(money_to_unit_raw(self.unit, m)),
             LowerBound::Unbounded => LowerBound::Unbounded,
         }
     }
@@ -921,7 +947,7 @@ impl QuoteUnitBlock {
             .then_some((self.realized_trade_pnl_exact.scaled_units(), den))
     }
 
-    fn empty(unit: QuoteUnit) -> Self {
+    pub(crate) fn empty(unit: QuoteUnit) -> Self {
         Self {
             unit,
             closed_episodes_known: 0,
@@ -946,7 +972,13 @@ impl QuoteUnitBlock {
 impl SolanaWalletLedgerReport {
     /// The block of `unit`, if it is a Solana quote unit.
     #[must_use]
+    ///
+    /// `QuoteUnit::ReportCurrency` selects the ADR-018 USD block (`None`
+    /// until prices were applied).
     pub fn unit_block(&self, unit: QuoteUnit) -> Option<&QuoteUnitBlock> {
+        if unit == QuoteUnit::ReportCurrency {
+            return self.usd.as_ref().map(|u| &u.block);
+        }
         self.unit_blocks.iter().find(|b| b.unit == unit)
     }
 
@@ -1064,11 +1096,15 @@ struct EpisodeAcc {
     basis_by_unit: BTreeMap<QuoteUnit, Money>,
     /// ADR-016: some disposal consumed an unknown-basis lot.
     consumed_unknown_lot: bool,
+    /// ADR-018: native legs of every disposal, for the USD view.
+    usd_disposals: Vec<UsdDisposal>,
 }
 
 struct MintState {
     ledger: Ledger,
     episode: Option<EpisodeAcc>,
+    /// ADR-018: pricing time of each lot, by `Lot::acquisition_sequence`.
+    lot_price_ts: BTreeMap<u64, Option<i64>>,
 }
 
 struct Builder {
@@ -1089,6 +1125,9 @@ struct Builder {
     stamped: Vec<(i64, SolanaPubkey)>,
     traded: BTreeSet<SolanaPubkey>,
     evidence_samples: Vec<DecodeEvidence>,
+    /// ADR-018: pricing time (block time, else event timestamp) of the trade
+    /// being booked; set before every `acquire`/`dispose` of a trade.
+    price_ts: Option<i64>,
 }
 
 fn asset_of(mint: SolanaPubkey) -> AssetKey {
@@ -1123,6 +1162,7 @@ impl Builder {
         self.mints.entry(mint).or_insert_with(|| MintState {
             ledger: Ledger::with_quote_unit(QuoteUnit::Lamports),
             episode: None,
+            lot_price_ts: BTreeMap::new(),
         })
     }
 
@@ -1147,6 +1187,7 @@ impl Builder {
         if reason == Some(UnknownReason::LeftCensored) {
             self.left_censored_total = self.left_censored_total.saturating_add(u128::from(amount));
         }
+        let price_ts = self.price_ts;
         let state = self.state(mint);
         if state.episode.is_none() {
             state.episode = Some(EpisodeAcc {
@@ -1160,6 +1201,7 @@ impl Builder {
                 left_censored_raw: 0,
                 basis_by_unit: BTreeMap::new(),
                 consumed_unknown_lot: false,
+                usd_disposals: Vec::new(),
             });
         }
         let status = match reason {
@@ -1177,13 +1219,14 @@ impl Builder {
                 }
             }
         };
-        state.ledger.acquire_in_unit(
+        let sequence = state.ledger.acquire_in_unit(
             asset,
             raw(amount),
             basis.unwrap_or(Money::ZERO),
             status,
             unit,
         );
+        state.lot_price_ts.insert(sequence, price_ts);
         Ok(())
     }
 
@@ -1217,9 +1260,16 @@ impl Builder {
             };
             self.acquire(mint, shortfall, None, unit, Some(reason), ts, loc)?;
         }
+        let price_ts = self.price_ts;
         let state = self.state(mint);
         let (_, consumes_other_unknown, cross_unit) =
             consumed_unknown_kinds(&state.ledger, need, unit)?;
+        // ADR-018: the native proceeds survive the cross-unit override below
+        // (the USD view can value a cross-quote disposal).
+        let usd_net_proceeds = match gross {
+            Some(g) => Some((unit, g.checked_sub(&sale_fee)?)),
+            None => None,
+        };
         // ADR-013 §4: proceeds in one unit against basis in another has no
         // PnL; the disposal is Unknown { CrossQuoteUnit }.
         let (gross, unknown_reason) = if gross.is_some() && cross_unit {
@@ -1242,6 +1292,20 @@ impl Builder {
             let acc = ep.basis_by_unit.entry(*u).or_insert(Money::ZERO);
             *acc = money_add(*acc, *m)?;
         }
+        ep.usd_disposals.push(UsdDisposal {
+            price_ts,
+            net_proceeds: usd_net_proceeds,
+            slices: result
+                .consumed_slices
+                .iter()
+                .map(|sl| UsdLotSlice {
+                    unit: sl.quote_unit,
+                    acquired_price_ts: state.lot_price_ts.get(&sl.lot_sequence).copied().flatten(),
+                    basis: sl.basis,
+                    basis_known: sl.basis_known,
+                })
+                .collect(),
+        });
         if !result.all_basis_known {
             ep.consumed_unknown_lot = true;
         }
@@ -1374,6 +1438,9 @@ fn close_record(
         consumed_basis_status,
         consumed_known_basis_by_unit,
         unknown_pnl_bound,
+        usd_journal: UsdJournal {
+            disposals: ep.usd_disposals,
+        },
     })
 }
 
@@ -2429,6 +2496,7 @@ pub fn build_solana_wallet_ledger_venues(
         stamped: Vec::new(),
         traded: BTreeSet::new(),
         evidence_samples: Vec::new(),
+        price_ts: None,
     };
 
     // §7: canonical order, independent of input order; dedup by signature.
@@ -2598,6 +2666,7 @@ impl Builder {
                 self.stamped.push((ts, t.mint));
                 tx_ts = tx_ts.or(Some(ts));
             }
+            self.price_ts = tx.block_time.or(t.timestamp);
             let fee_share = share_of.get(&i).copied().unwrap_or(0);
             match t.consideration {
                 Consideration::Verified {
@@ -2774,6 +2843,7 @@ impl Builder {
             if diff == 0 {
                 continue;
             }
+            self.price_ts = tx.block_time.or(tx_ts);
             let unverified_reason = unverified_mints.get(&mint).copied();
             let unverified = unverified_reason.is_some();
             if !unverified {
@@ -3118,6 +3188,7 @@ impl Builder {
             unit_blocks: blocks,
             route_swap_log: self.route_log,
             evidence_samples: self.evidence_samples,
+            usd: None,
         })
     }
 }

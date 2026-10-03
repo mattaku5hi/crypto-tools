@@ -14,6 +14,7 @@
 mod config;
 mod input;
 mod output;
+mod price_source;
 mod time;
 
 pub use config::{
@@ -26,7 +27,9 @@ pub use input::{
     resolve_token_assets, resolve_wallet_keys,
 };
 pub use output::{
-    DecodeEvidenceDto, JsonlRecord, RunStatus, SCHEMA_VERSION, Window, WriteOutcome, evidence_dtos,
-    evidence_line, write_lines_to_stdout,
+    DecodeEvidenceDto, JsonlRecord, PrefetchDto, PriceCoverageDto, PricingMetaDto,
+    PricingMetaInput, RunStatus, SCHEMA_VERSION, Window, WriteOutcome, evidence_dtos,
+    evidence_line, pricing_line, pricing_meta, write_lines_to_stdout,
 };
+pub use price_source::{COINBASE_ENDPOINT_ENV, build_coinbase_source};
 pub use time::{format_unix_utc, now_utc_rfc3339};

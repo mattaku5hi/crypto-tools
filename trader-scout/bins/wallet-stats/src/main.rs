@@ -14,6 +14,13 @@
 //! later wallets are `not_scanned` (`stop_reason`), no further request is
 //! made, every input wallet stays in the output.
 //!
+//! USD (ADR-018): unless `--no-usd`, the ledger's realized figures are also
+//! valued in USD (Coinbase Exchange public 1m candles; `--max-price-requests`
+//! bounds the price HTTP attempts, counted apart as `requests_made_prices`;
+//! `SCOUT_COINBASE_ENDPOINT` overrides the URL for tests). A leg without a
+//! price is `price_unknown`, never zero; unpriced legs are NOT a failure
+//! (like unknown basis), a spent price budget is (exit 3).
+//!
 //! `--period <N>d` / `--since` / `--until` (ADR-011) restrict the run to a UTC
 //! window `[since, until)`: the scan stops at the first page older than the
 //! window start, pre-window inventory is left-censored.
@@ -50,6 +57,7 @@ use scout_engine::{
     AnalysisWindow, LedgerDecoders, ScanStop, SolanaWalletStatsReport, pump_amm_decoder,
     pump_bonding_curve_decoder, run_solana_wallet_stats_windowed_venues, sanitize_provider_text,
 };
+use scout_pricing::PriceSource as _;
 use scout_providers::{
     HeliusProvider, HeliusRequestOptions, MAX_PAGE_LIMIT, ScanOrder, TokenAccountsFilter,
 };
@@ -155,6 +163,19 @@ struct Args {
     /// is `error`, the rest `not_scanned`; exit 3.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
+
+    /// Skip USD pricing (ADR-018). By default the realized figures are also
+    /// valued in USD with Coinbase Exchange one-minute candles (SOL-USD,
+    /// USDT-USD; USDC at par, labelled), cached per 300-minute page.
+    #[arg(long)]
+    no_usd: bool,
+
+    /// Total HTTP request budget for PRICE candles (retries included), N >= 1.
+    /// Separate from --max-requests (`requests_made_prices` is counted
+    /// apart). When exhausted the remaining legs are `price_unknown`
+    /// (`request_budget_exhausted`), the run is incomplete (exit 3).
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    max_price_requests: Option<u64>,
 
     /// Analysis window start, UTC RFC 3339 `2026-08-01T00:00:00Z` (inclusive;
     /// no offsets). Window `[since, until)`; see ADR-011. Conflicts with --period.
@@ -284,6 +305,59 @@ fn main() -> ExitCode {
     )
 }
 
+/// Outcome of the ADR-018 pricing step (all `None` with `--no-usd`).
+struct PricingOutcome {
+    policy: Option<scout_pricing::PricePolicy>,
+    endpoint_overridden: bool,
+    requests_made: u64,
+    max_requests: Option<u64>,
+    run: Option<scout_engine::UsdPricingRun>,
+}
+
+impl PricingOutcome {
+    fn input(&self) -> scout_app::PricingMetaInput<'_> {
+        scout_app::PricingMetaInput {
+            policy: self.policy.as_ref(),
+            endpoint_overridden: self.endpoint_overridden,
+            requests_made: self.requests_made,
+            max_requests: self.max_requests,
+            run: self.run.as_ref(),
+        }
+    }
+}
+
+/// ADR-018: value every wallet ledger in USD (unless `--no-usd`): collect
+/// the needed minutes of all wallets, prefetch once, apply the views.
+fn price_wallets(
+    rt: &tokio::runtime::Runtime,
+    report: &mut SolanaWalletStatsReport,
+    args: &Args,
+) -> PricingOutcome {
+    let mut out = PricingOutcome {
+        policy: None,
+        endpoint_overridden: false,
+        requests_made: 0,
+        max_requests: args.max_price_requests,
+        run: None,
+    };
+    if args.no_usd {
+        return out;
+    }
+    match scout_app::build_coinbase_source(args.max_price_requests) {
+        Ok((source, overridden)) => {
+            out.endpoint_overridden = overridden;
+            out.policy = Some(source.policy());
+            out.run = Some(rt.block_on(scout_engine::apply_usd_pricing(
+                &mut report.wallets,
+                &source,
+            )));
+            out.requests_made = source.requests_made();
+        }
+        Err(message) => eprintln!("wallet-stats: {message}; continuing without USD figures"),
+    }
+    out
+}
+
 fn redact(text: &str, secret: &str) -> String {
     let replaced = if secret.is_empty() {
         text.to_string()
@@ -291,6 +365,16 @@ fn redact(text: &str, secret: &str) -> String {
         text.replace(secret, "<redacted>")
     };
     sanitize_provider_text(&replaced)
+}
+
+/// Table lines are built from our own typed values: strip the secret only.
+/// (`redact` also caps length at 300 chars, which would cut the wide table.)
+fn redact_table_line(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(secret, "<redacted>")
+    }
 }
 
 fn limit_text(limit: Option<u64>) -> String {
@@ -415,7 +499,7 @@ fn run_solana(
         CancellationToken::new(),
     ));
     let requests_made = provider.total_requests_made();
-    let report = match result {
+    let mut report = match result {
         Ok(r) => r,
         Err(err) => {
             eprintln!(
@@ -436,8 +520,29 @@ fn run_solana(
     } else {
         SortMode::Input
     };
+    let pricing = price_wallets(rt, &mut report, args);
+    let pricing_input = pricing.input();
+    eprintln!(
+        "{}",
+        scout_app::pricing_line("wallet-stats", &pricing_input)
+    );
+    let mut price_reasons: Vec<String> = Vec::new();
+    if let Some(run) = &pricing.run
+        && run.prefetch.pages_skipped_budget > 0
+    {
+        price_reasons.push(format!(
+            "price request budget exhausted ({} page(s) not fetched, max_price_requests={}): \
+             affected legs are price_unknown",
+            run.prefetch.pages_skipped_budget,
+            limit_text(args.max_price_requests)
+        ));
+    }
     print_diagnostics(&report, api_key, args, window, requests_made);
-    let incomplete = report.is_coverage_incomplete() || !upstream_complete;
+    for r in &price_reasons {
+        eprintln!("wallet-stats: {r}");
+    }
+    let incomplete =
+        report.is_coverage_incomplete() || !upstream_complete || !price_reasons.is_empty();
     let captured_at = scout_app::now_utc_rfc3339();
     let lines = if args.format == "jsonl" {
         let compact: String = captured_at
@@ -459,6 +564,8 @@ fn run_solana(
             requests_made,
             max_requests: args.max_requests,
             window: *window,
+            pricing: scout_app::pricing_meta(&pricing_input),
+            price_incomplete_reasons: price_reasons.clone(),
         };
         match output::jsonl_lines(&meta, &report, incomplete, &|t| redact(t, api_key)) {
             Ok(l) => l,
@@ -470,7 +577,7 @@ fn run_solana(
     } else {
         output::table_lines(&report, detail, sort, window)
             .into_iter()
-            .map(|l| redact(&l, api_key))
+            .map(|l| redact_table_line(&l, api_key))
             .collect()
     };
     let outcome = write_lines_to_stdout(lines);

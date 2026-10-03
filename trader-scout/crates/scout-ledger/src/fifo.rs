@@ -27,6 +27,21 @@ pub struct DisposalResult {
     /// lot quote unit (ascending unit, no duplicates). Unknown-basis lots
     /// contribute nothing here (their basis is unknown, never zero).
     pub consumed_known_basis_by_unit: Vec<(QuoteUnit, Money)>,
+    /// ADR-018: every lot slice this disposal consumed, FIFO order (the
+    /// per-lot detail behind the aggregates above).
+    pub consumed_slices: Vec<ConsumedSlice>,
+}
+
+/// One lot slice consumed by a disposal (ADR-018 USD view input).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsumedSlice {
+    /// `Lot::acquisition_sequence` of the lot.
+    pub lot_sequence: u64,
+    /// Capitalized basis of the consumed slice, in `quote_unit`.
+    pub basis: Money,
+    pub quote_unit: QuoteUnit,
+    /// The lot's basis status was `Known`.
+    pub basis_known: bool,
 }
 
 /// Per-asset FIFO inventory and realized-PnL ledger. One `Ledger` per
@@ -191,6 +206,7 @@ impl Ledger {
         let mut consumed_acquisition_basis = Money::ZERO;
         let mut all_basis_known = true;
         let mut known_by_unit: BTreeMap<QuoteUnit, Money> = BTreeMap::new();
+        let mut consumed_slices: Vec<ConsumedSlice> = Vec::new();
 
         // Oldest lot first: BTreeMap iteration over u64 keys is already
         // ascending, giving FIFO order for free.
@@ -222,6 +238,12 @@ impl Ledger {
 
             consumed_acquisition_basis =
                 consumed_acquisition_basis.checked_add(&lot_basis_consumed)?;
+            consumed_slices.push(ConsumedSlice {
+                lot_sequence: sequence,
+                basis: lot_basis_consumed,
+                quote_unit: lot.quote_unit,
+                basis_known: !matches!(lot.basis_status, BasisStatus::Unknown { .. }),
+            });
             if matches!(lot.basis_status, BasisStatus::Unknown { .. }) {
                 all_basis_known = false;
             } else {
@@ -261,6 +283,7 @@ impl Ledger {
             realized_trade_pnl,
             all_basis_known,
             consumed_known_basis_by_unit: known_by_unit.into_iter().collect(),
+            consumed_slices,
         })
     }
 }

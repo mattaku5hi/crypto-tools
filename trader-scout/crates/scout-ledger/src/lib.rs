@@ -14,5 +14,5 @@
 mod fifo;
 mod lot;
 
-pub use fifo::{DisposalResult, Ledger};
+pub use fifo::{ConsumedSlice, DisposalResult, Ledger};
 pub use lot::{BasisStatus, Lot, LotProvenance, QuoteUnit};

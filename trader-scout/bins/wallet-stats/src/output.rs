@@ -7,14 +7,16 @@
 
 use scout_analytics::RatioStatus;
 use scout_app::SCHEMA_VERSION;
+use scout_app::{PriceCoverageDto, PricingMetaDto};
 use scout_core::MONEY_SCALE;
 use scout_core::Money;
 use scout_engine::{
     AnalysisWindow, EpisodeOutcome, EpisodePnlBound, EpisodeRecord, LowerBound, OpenPosition,
     QuoteUnit, QuoteUnitBlock, Ratio, SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION,
     ScanFailureKind, ScanStop, SolanaProtocolScope, SolanaWalletLedgerReport, SolanaWalletStats,
-    SolanaWalletStatsReport, format_quote_money, format_scaled_decimal, lamports_to_sol_string,
-    quote_unit_decimals, quote_unit_label, rational_to_decimal_string,
+    SolanaWalletStatsReport, UsdEpisode, UsdLedgerView, UsdOutcome, format_quote_money,
+    format_scaled_decimal, lamports_to_sol_string, quote_unit_decimals, quote_unit_label,
+    rational_to_decimal_string,
 };
 use serde::Serialize;
 
@@ -144,12 +146,13 @@ fn ratio_cell(r: &RatioStatus<Money>, what: &str) -> String {
 // Table
 // ---------------------------------------------------------------------
 
-const HEADER: [&str; 24] = [
+const HEADER: [&str; 27] = [
     "wallet",
     "status",
     "realized_net_pnl_sol",
     "realized_pnl_usdc",
     "realized_pnl_usdt",
+    "realized_pnl_usd",
     "route_swaps",
     "closed_known/unknown",
     "left_censored",
@@ -159,6 +162,7 @@ const HEADER: [&str; 24] = [
     "profit_factor",
     "win_rate_lower_bound",
     "pnl_lower_bound_sol",
+    "pnl_lower_bound_usd",
     "unknown_share",
     "median_hold_s",
     "trades",
@@ -168,6 +172,7 @@ const HEADER: [&str; 24] = [
     "failed_fees_sol",
     "unknown_basis",
     "unexplained_native_sol",
+    "usd_price_coverage",
     "coverage",
 ];
 
@@ -210,6 +215,7 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
             for unit in [QuoteUnit::UsdcUnits, QuoteUnit::UsdtUnits] {
                 cells.push(unit_pnl_cell(w, l, unit));
             }
+            cells.push(usd_pnl_cell(w, l));
             cells.push(l.trades.route_swaps.to_string());
             let ratios_ok = w.coverage_complete();
             cells.push(format!(
@@ -231,6 +237,7 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
             });
             cells.push(win_rate_lb_cell(l));
             cells.push(pnl_lb_cell(l));
+            cells.push(usd_pnl_lb_cell(l));
             cells.push(share_cell(l));
             cells.push(
                 l.median_holding_seconds
@@ -259,6 +266,7 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
             cells.push(lamports_to_sol_string(
                 l.diagnostics.unexplained_native_flow_lamports,
             ));
+            cells.push(usd_coverage_cell(l));
         }
     }
     cells.push(coverage);
@@ -300,6 +308,64 @@ fn pnl_lb_cell(l: &SolanaWalletLedgerReport) -> String {
     }
 }
 
+const USD_NOT_PRICED: &str = "usd not priced";
+
+/// ADR-018 realized USD PnL of the known closed episodes (exact, 8 dp);
+/// labelled when it is a known subset, N/A without a known USD episode.
+fn usd_pnl_cell(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> String {
+    let Some(u) = &l.usd else {
+        return na(USD_NOT_PRICED);
+    };
+    if u.block.closed_episodes_known == 0 {
+        return na("no known closed USD episodes");
+    }
+    let v = money_str(u.block.realized_trade_pnl_exact);
+    if usd_observed(w, u) {
+        v
+    } else {
+        format!("N/A (known subset: {v})")
+    }
+}
+
+/// `observed`: complete coverage, no unknown USD episode, every leg priced.
+fn usd_observed(w: &SolanaWalletStats, u: &UsdLedgerView) -> bool {
+    w.coverage_complete() && u.closed_episodes_unknown == 0 && u.coverage.unpriced == 0
+}
+
+/// ADR-016 in USD: worst-case realized PnL (known + unknown-episode bounds).
+fn usd_pnl_lb_cell(l: &SolanaWalletLedgerReport) -> String {
+    let Some(u) = &l.usd else {
+        return na(USD_NOT_PRICED);
+    };
+    match u.block.realized_pnl_lower_bound() {
+        LowerBound::Unbounded => "unbounded".to_string(),
+        LowerBound::Bounded(m) => {
+            if u.block.closed_episodes_known == 0 && m.is_zero() {
+                na("no known closed USD episodes")
+            } else {
+                format!(">= {}", money_str(m))
+            }
+        }
+    }
+}
+
+/// ADR-018: `priced/legs (pct%)`, plus the USDC-par leg count when non-zero.
+fn usd_coverage_cell(l: &SolanaWalletLedgerReport) -> String {
+    let Some(u) = &l.usd else {
+        return na(USD_NOT_PRICED);
+    };
+    let c = PriceCoverageDto::from_coverage(&u.coverage);
+    let Some(pct) = c.priced_percent_2dp else {
+        return "0/0 (no priced legs)".to_string();
+    };
+    let par = if c.usdc_par_legs > 0 {
+        format!(" usdc_par={}", c.usdc_par_legs)
+    } else {
+        String::new()
+    };
+    format!("{}/{} ({pct}%){par}", c.priced, c.legs)
+}
+
 /// ADR-016: `closed_unknown / (closed_known + closed_unknown)`.
 fn share_cell(l: &SolanaWalletLedgerReport) -> String {
     let (u, t) = l.unknown_episode_share_parts();
@@ -333,15 +399,16 @@ fn detail_lines(w: &SolanaWalletStats, out: &mut Vec<String>) {
         out.push(format!("    gap: {r}"));
     }
     let Some(l) = &w.ledger else { return };
-    for ep in &l.episodes {
-        out.push(format!("    episode {}", episode_text(ep)));
+    for (i, ep) in l.episodes.iter().enumerate() {
+        let usd_ep = l.usd.as_ref().and_then(|u| u.episodes.get(i));
+        out.push(format!("    episode {}", episode_text(ep, usd_ep)));
     }
     for p in &l.open_positions {
         out.push(format!("    open {}", open_text(p)));
     }
 }
 
-fn episode_text(ep: &EpisodeRecord) -> String {
+fn episode_text(ep: &EpisodeRecord, usd_ep: Option<&UsdEpisode>) -> String {
     let mint = bs58::encode(ep.mint).into_string();
     let (kind, _) = outcome_parts(&ep.outcome);
     let unit = episode_unit(ep);
@@ -352,6 +419,18 @@ fn episode_text(ep: &EpisodeRecord) -> String {
         _ => "N/A".to_string(),
     };
     let reasons: Vec<&str> = ep.unknown_reasons.iter().map(|r| r.label()).collect();
+    let usd = usd_ep.map_or_else(String::new, |u| {
+        let v = match u.outcome {
+            UsdOutcome::ClosedKnown { pnl, .. } => money_str(pnl),
+            _ => "N/A".to_string(),
+        };
+        let b = match u.unknown_pnl_bound {
+            Some(LowerBound::Bounded(m)) => format!(" usd_pnl_lower_bound={}", money_str(m)),
+            Some(LowerBound::Unbounded) => " usd_pnl_lower_bound=unbounded".to_string(),
+            None => String::new(),
+        };
+        format!(" usd_outcome={} pnl_usd={v}{b}", u.outcome.label())
+    });
     let bound = match ep.unknown_pnl_bound {
         Some(EpisodePnlBound::Bounded { unit, lower_bound }) => format!(
             " pnl_lower_bound_{}={}",
@@ -362,7 +441,7 @@ fn episode_text(ep: &EpisodeRecord) -> String {
         None => String::new(),
     };
     format!(
-        "mint={mint} outcome={kind} pnl_{}={pnl} hold_s={} consumed_basis={} unknown_reasons=[{}]{bound}",
+        "mint={mint} outcome={kind} pnl_{}={pnl} hold_s={} consumed_basis={} unknown_reasons=[{}]{bound}{usd}",
         quote_unit_label(unit),
         ep.holding_seconds
             .map_or_else(|| "N/A".to_string(), |s| s.to_string()),
@@ -562,12 +641,17 @@ pub struct RunMetaRecord {
     /// Total HTTP attempts made (retries included).
     pub requests_made: u64,
     pub budget: BudgetDto,
+    /// HTTP attempts for USD price candles (separate from `requests_made`).
+    pub requests_made_prices: u64,
+    pub pricing: PricingMetaDto,
 }
 
 /// Run request budget (`--max-requests`; `null` = unlimited).
 #[derive(Debug, Serialize)]
 pub struct BudgetDto {
     pub max_requests: Option<u64>,
+    /// `--max-price-requests` (`null` = unlimited).
+    pub max_price_requests: Option<u64>,
 }
 
 /// Typed run-stop reason / failure kind: `budget_exhausted`,
@@ -851,6 +935,34 @@ pub struct RouteDto {
     pub route_rejected_passthrough_nonzero: u64,
 }
 
+/// ADR-018: figures of the USD view (`Money` at 8 dp; open positions are
+/// never valued here). Unknown is `null`/a status, never zero.
+#[derive(Debug, Serialize)]
+pub struct UsdStatsDto {
+    pub version: &'static str,
+    /// `observed`, `known_subset` or `n_a` (no known closed USD episode).
+    pub status: &'static str,
+    pub closed_known: u64,
+    pub closed_unknown: u64,
+    pub left_censored: u64,
+    pub open_unvalued: u64,
+    pub wins: u64,
+    pub losses: u64,
+    pub breakeven: u64,
+    /// Exact USD, decimal string at 8 dp; `raw` is the 1e-8 USD integer.
+    pub realized_trade_pnl: Option<UnitAmountDto>,
+    pub consumed_acquisition_basis: Option<UnitAmountDto>,
+    pub realized_cost_roi: Option<RoiDto>,
+    pub win_rate: RatioDto,
+    pub profit_factor: RatioDto,
+    /// ADR-016 in USD.
+    pub realized_pnl_lower_bound: BoundDto,
+    pub profit_factor_lower_bound: RatioBoundDto,
+    pub win_rate_lower_bound: Option<WinRateBoundDto>,
+    pub unknown_episode_share: UnknownShareDto,
+    pub price_coverage: PriceCoverageDto,
+}
+
 #[derive(Debug, Serialize)]
 pub struct StatsDto {
     pub ledger_version: &'static str,
@@ -860,6 +972,8 @@ pub struct StatsDto {
     /// ADR-013: one entry per quote unit (sol, usdc, usdt); never summed.
     pub quote_units: Vec<QuoteUnitDto>,
     pub route: RouteDto,
+    /// ADR-018 USD view; `null` with `--no-usd` or when pricing failed.
+    pub usd: Option<UsdStatsDto>,
     pub realized_net_pnl: MoneyDto,
     /// SUM A: realized PnL of known closed episodes (before failed-tx fees).
     pub realized_trade_pnl: AmountDto,
@@ -942,6 +1056,63 @@ pub struct EpisodeDto {
     pub consumed_basis_status: &'static str,
     /// ADR-016: `closed_unknown` only; `null` otherwise.
     pub unknown_pnl_lower_bound: Option<EpisodeBoundDto>,
+    /// ADR-018 USD view of the episode; omitted without a USD view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usd: Option<EpisodeUsdDto>,
+}
+
+/// ADR-018: one episode in USD.
+#[derive(Debug, Serialize)]
+pub struct EpisodeUsdDto {
+    /// `closed_known`, `closed_unknown`, `left_censored` or `open`.
+    pub outcome: &'static str,
+    /// Exact USD (8 dp), `closed_known` only.
+    pub pnl_decimal: Option<String>,
+    pub consumed_basis_decimal: Option<String>,
+    /// Native causes (other than cross-quote) plus unpriced-leg reasons.
+    pub unknown_reasons: Vec<String>,
+    /// ADR-016 in USD; `closed_unknown` only.
+    pub unknown_pnl_lower_bound: Option<EpisodeBoundDto>,
+    pub legs_priced: u64,
+    pub legs_unpriced: u64,
+}
+
+fn episode_usd_dto(u: &UsdEpisode) -> EpisodeUsdDto {
+    let (pnl, basis) = match u.outcome {
+        UsdOutcome::ClosedKnown {
+            pnl,
+            consumed_basis,
+        } => (Some(money_str(pnl)), Some(money_str(consumed_basis))),
+        _ => (None, None),
+    };
+    let mut reasons: Vec<String> = u
+        .native_unknown_reasons
+        .iter()
+        .map(|r| r.label().to_string())
+        .collect();
+    reasons.extend(u.price_unknown_reasons.iter().cloned());
+    EpisodeUsdDto {
+        outcome: u.outcome.label(),
+        pnl_decimal: pnl,
+        consumed_basis_decimal: basis,
+        unknown_reasons: reasons,
+        unknown_pnl_lower_bound: u.unknown_pnl_bound.map(|b| match b {
+            LowerBound::Bounded(m) => EpisodeBoundDto {
+                status: "bounded",
+                unit: Some("usd"),
+                raw: Some(m.scaled_units().to_string()),
+                decimal: Some(money_str(m)),
+            },
+            LowerBound::Unbounded => EpisodeBoundDto {
+                status: "unbounded",
+                unit: None,
+                raw: None,
+                decimal: None,
+            },
+        }),
+        legs_priced: u.legs_priced,
+        legs_unpriced: u.legs_unpriced,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -987,6 +1158,7 @@ pub struct RunSummaryRecord {
     pub status: &'static str,
     pub cancelled: bool,
     pub requests_made: u64,
+    pub requests_made_prices: u64,
     pub stop: Option<ReasonDto>,
     pub records: usize,
     pub incomplete_reasons: Vec<String>,
@@ -1172,6 +1344,80 @@ fn net_pnl_lower_bound_dto(l: &SolanaWalletLedgerReport) -> BoundDto {
     }
 }
 
+fn usd_stats_dto(w: &SolanaWalletStats, u: &UsdLedgerView) -> UsdStatsDto {
+    let b = &u.block;
+    let usd = QuoteUnit::ReportCurrency;
+    let known = b.closed_episodes_known > 0;
+    let amt = |raw: i128, exact: Money| UnitAmountDto {
+        raw: raw.to_string(),
+        decimal: format_quote_money(usd, exact).unwrap_or_default(),
+    };
+    let (unknown, total) = u.unknown_episode_share_parts();
+    UsdStatsDto {
+        version: u.version,
+        status: if !known {
+            "n_a"
+        } else if usd_observed(w, u) {
+            "observed"
+        } else {
+            "known_subset"
+        },
+        closed_known: b.closed_episodes_known,
+        closed_unknown: u.closed_episodes_unknown,
+        left_censored: u.left_censored_episodes,
+        open_unvalued: u.open_episodes,
+        wins: b.wins,
+        losses: b.losses,
+        breakeven: b.breakeven,
+        realized_trade_pnl: known
+            .then(|| amt(b.realized_trade_pnl_raw, b.realized_trade_pnl_exact)),
+        consumed_acquisition_basis: known.then(|| {
+            amt(
+                b.consumed_acquisition_basis_raw,
+                b.consumed_acquisition_basis_exact,
+            )
+        }),
+        realized_cost_roi: b
+            .roi_parts()
+            .and_then(|(n, d)| Ratio::new(n, d))
+            .map(|r| RoiDto {
+                numerator_exact: money_str(b.realized_trade_pnl_exact),
+                denominator_exact: money_str(b.consumed_acquisition_basis_exact),
+                percent_2dp: r.percent_string(2),
+            }),
+        win_rate: ratio_dto(&b.win_rate, b.closed_episodes_known),
+        profit_factor: ratio_dto(&b.profit_factor, b.closed_episodes_known),
+        realized_pnl_lower_bound: match b.realized_pnl_lower_bound() {
+            LowerBound::Unbounded => BoundDto {
+                status: "unbounded",
+                unit: "usd",
+                raw: None,
+                decimal: None,
+            },
+            LowerBound::Bounded(m) => BoundDto {
+                status: "bounded",
+                unit: "usd",
+                raw: Some(m.scaled_units().to_string()),
+                decimal: Some(money_str(m)),
+            },
+        },
+        profit_factor_lower_bound: ratio_bound_dto(b.profit_factor_lower_bound()),
+        win_rate_lower_bound: u.win_rate_lower_bound.map(|x| WinRateBoundDto {
+            wins: x.wins,
+            episodes: x.episodes,
+            percent_2dp: Ratio::new(i128::from(x.wins), i128::from(x.episodes))
+                .and_then(|r| r.percent_string(2)),
+        }),
+        unknown_episode_share: UnknownShareDto {
+            closed_unknown: unknown,
+            closed_known_and_unknown: total,
+            percent_2dp: Ratio::new(i128::from(unknown), i128::from(total))
+                .and_then(|r| r.percent_string(2)),
+        },
+        price_coverage: PriceCoverageDto::from_coverage(&u.coverage),
+    }
+}
+
 fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
     let pnl = pnl_view(w);
     let d = &l.diagnostics;
@@ -1211,6 +1457,7 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
             route_rejected_no_verified_leg: d.route_rejected.no_verified_leg,
             route_rejected_passthrough_nonzero: d.route_rejected.passthrough_nonzero,
         },
+        usd: l.usd.as_ref().map(|u| usd_stats_dto(w, u)),
         realized_net_pnl: MoneyDto {
             status: pnl.status,
             lamports: pnl.lamports.map(|v| v.to_string()),
@@ -1343,7 +1590,7 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
     }
 }
 
-fn episode_dto(ep: &EpisodeRecord) -> EpisodeDto {
+fn episode_dto(ep: &EpisodeRecord, usd: Option<&UsdEpisode>) -> EpisodeDto {
     let (outcome, pnl) = outcome_parts(&ep.outcome);
     let unit = episode_unit(ep);
     let is_sol = unit == QuoteUnit::Lamports;
@@ -1391,6 +1638,7 @@ fn episode_dto(ep: &EpisodeRecord) -> EpisodeDto {
                 decimal: None,
             },
         }),
+        usd: usd.map(episode_usd_dto),
     }
 }
 
@@ -1427,11 +1675,13 @@ pub fn wallet_record(
             incomplete_reasons: w.incomplete_reasons.iter().map(|r| redact(r)).collect(),
         },
         stats: w.ledger.as_ref().map(|l| stats_dto(w, l)),
-        episodes: w
-            .ledger
-            .as_ref()
-            .filter(|_| full)
-            .map(|l| l.episodes.iter().map(episode_dto).collect()),
+        episodes: w.ledger.as_ref().filter(|_| full).map(|l| {
+            l.episodes
+                .iter()
+                .enumerate()
+                .map(|(i, ep)| episode_dto(ep, l.usd.as_ref().and_then(|u| u.episodes.get(i))))
+                .collect()
+        }),
         open_positions: w
             .ledger
             .as_ref()
@@ -1454,6 +1704,10 @@ pub struct RunMetaInput<'a> {
     pub requests_made: u64,
     pub max_requests: Option<u64>,
     pub window: AnalysisWindow,
+    /// ADR-018 price source / policy / coverage of the run.
+    pub pricing: PricingMetaDto,
+    /// Why the run is incomplete because of pricing (spent price budget).
+    pub price_incomplete_reasons: Vec<String>,
 }
 
 pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
@@ -1519,7 +1773,10 @@ pub fn run_meta_record(m: &RunMetaInput<'_>) -> RunMetaRecord {
         requests_made: m.requests_made,
         budget: BudgetDto {
             max_requests: m.max_requests,
+            max_price_requests: m.pricing.max_price_requests,
         },
+        requests_made_prices: m.pricing.requests_made_prices,
+        pricing: m.pricing.clone(),
     }
 }
 
@@ -1528,6 +1785,7 @@ pub fn run_summary_record(
     report: &SolanaWalletStatsReport,
     incomplete: bool,
     requests_made: u64,
+    price: (u64, &[String]),
     redact: &dyn Fn(&str) -> String,
 ) -> RunSummaryRecord {
     RunSummaryRecord {
@@ -1537,11 +1795,13 @@ pub fn run_summary_record(
         status: if incomplete { "partial" } else { "complete" },
         cancelled: report.cancelled,
         requests_made,
+        requests_made_prices: price.0,
         stop: report.stop.map(stop_dto),
         records: report.wallets.len(),
         incomplete_reasons: report
             .incomplete_reasons()
             .iter()
+            .chain(price.1.iter())
             .map(|r| redact(r))
             .collect(),
         wallets: report
@@ -1579,6 +1839,10 @@ pub fn jsonl_lines(
         report,
         incomplete,
         meta.requests_made,
+        (
+            meta.pricing.requests_made_prices,
+            &meta.price_incomplete_reasons,
+        ),
         redact,
     )))?);
     Ok(lines)
@@ -1658,6 +1922,14 @@ mod tests {
             requests_made: 0,
             max_requests: None,
             window: AnalysisWindow::none(1_790_000_000),
+            pricing: scout_app::pricing_meta(&scout_app::PricingMetaInput {
+                policy: None,
+                endpoint_overridden: false,
+                requests_made: 0,
+                max_requests: None,
+                run: None,
+            }),
+            price_incomplete_reasons: Vec::new(),
         }
     }
 

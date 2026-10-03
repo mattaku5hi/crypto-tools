@@ -3742,3 +3742,797 @@ fn production_policy_books_swap_with_fees_event2_and_keeps_the_other_variants_id
     assert_eq!(r.trades.route_swaps, 0);
     assert_eq!(r.diagnostics.okx_idl_only_order_events, 1);
 }
+
+// ---------------------------------------------------------------------
+// ADR-018: USD view. Hand-computed goldens over the orchestrator-recorded
+// Coinbase SOL-USD candles (2026-10-03 recording of 2026-10-02 12:00-12:05):
+//   12:00 close 121.89, 12:04 close 121.74, 12:05 close 121.75;
+//   12:01-12:03 are absent from the recording (stale / gap cases).
+// ---------------------------------------------------------------------
+
+use scout_engine::{
+    SolanaWalletStats, UsdOutcome, WalletScanStatus, apply_usd_pricing, convert_quote_to_usd,
+};
+use scout_pricing::{
+    Candle, DecimalPrice, InMemoryPriceSource, PriceErrorClass, QuoteAsset, parse_candles,
+};
+
+const T0: i64 = 1_790_942_400; // 2026-10-02T12:00:00Z
+const BUY_TS: i64 = T0 + 30; // minute 12:00, close 121.89
+const SELL_TS: i64 = T0 + 310; // minute 12:05, close 121.75
+
+fn sol_candles() -> Vec<Candle> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/p0/measurements/fixtures")
+        .join("coinbase_sol_usd_candles_1m_2026-10-02T1200Z_recorded.json");
+    parse_candles(&std::fs::read(path).unwrap()).unwrap()
+}
+
+fn sol_source() -> InMemoryPriceSource {
+    InMemoryPriceSource::new().with_candles(QuoteAsset::Sol, &sol_candles())
+}
+
+fn flat_candle(time: i64, close: &str) -> Candle {
+    let p = DecimalPrice::parse(close).unwrap();
+    Candle {
+        time,
+        low: p,
+        high: p,
+        open: p,
+        close: p,
+        volume: DecimalPrice::ONE,
+    }
+}
+
+fn at(mut tx: RawSolanaTransaction, block_time: i64) -> RawSolanaTransaction {
+    tx.block_time = Some(block_time);
+    tx
+}
+
+fn usd_run(txs: &[RawSolanaTransaction], src: &InMemoryPriceSource) -> SolanaWalletLedgerReport {
+    let mut r = run(txs);
+    r.apply_usd_prices(src).unwrap();
+    r
+}
+
+fn usd(scaled: i128) -> Money {
+    Money::from_scaled_units(scaled)
+}
+
+#[test]
+fn usd_conversion_is_half_even_exactly_once() {
+    let p = DecimalPrice::parse("121.75").unwrap();
+    // 20 lamports * 121.75 = 2.435e-6 USD = 243.5 scaled units: tie -> even (244).
+    assert_eq!(
+        convert_quote_to_usd(QuoteUnit::Lamports, lam(20), &p).unwrap(),
+        usd(244)
+    );
+    // 1020 lamports -> 12418.5: tie -> even (12418).
+    assert_eq!(
+        convert_quote_to_usd(QuoteUnit::Lamports, lam(1020), &p).unwrap(),
+        usd(12_418)
+    );
+    // 60 lamports -> 730.5 -> 730; 22 lamports -> 267.85 -> 268 (not a tie).
+    assert_eq!(
+        convert_quote_to_usd(QuoteUnit::Lamports, lam(60), &p).unwrap(),
+        usd(730)
+    );
+    assert_eq!(
+        convert_quote_to_usd(QuoteUnit::Lamports, lam(22), &p).unwrap(),
+        usd(268)
+    );
+    // Sign symmetric.
+    assert_eq!(
+        convert_quote_to_usd(QuoteUnit::Lamports, lam(-20), &p).unwrap(),
+        usd(-244)
+    );
+    // 1 SOL at 121.89 is exact; USDC units use 6 decimals.
+    let q = DecimalPrice::parse("121.89").unwrap();
+    assert_eq!(
+        convert_quote_to_usd(QuoteUnit::Lamports, lam(1_000_000_000), &q).unwrap(),
+        usd(12_189_000_000)
+    );
+    assert_eq!(
+        convert_quote_to_usd(
+            QuoteUnit::UsdcUnits,
+            scout_engine::quote_units_to_money(QuoteUnit::UsdcUnits, 5_000_000).unwrap(),
+            &DecimalPrice::ONE
+        )
+        .unwrap(),
+        usd(500_000_000)
+    );
+    // The USD unit itself is not convertible.
+    assert!(convert_quote_to_usd(QuoteUnit::ReportCurrency, lam(1), &q).is_err());
+}
+
+#[test]
+fn usd_golden_sol_round_trip_exact_numbers_and_native_untouched() {
+    // Buy 1 SOL + 5_000 fee -> basis 1_000_005_000 lamports at 121.89:
+    //   1.000005 * 121.89 = 121.89060945 USD.
+    // Sell 1.1 SOL - 5_000 fee -> net 1_099_995_000 lamports at 121.75:
+    //   1.099995 * 121.75 = 133.92439125 USD.
+    // USD PnL = 133.92439125 - 121.89060945 = 12.0337818.
+    let buy = at(
+        trade_tx(
+            1,
+            100,
+            TradeSide::Buy,
+            M1,
+            1000,
+            0,
+            1_000_000_000,
+            0,
+            0,
+            BUY_TS,
+            5_000,
+            W,
+        ),
+        BUY_TS,
+    );
+    let sell = at(
+        trade_tx(
+            2,
+            101,
+            TradeSide::Sell,
+            M1,
+            1000,
+            1000,
+            1_100_000_000,
+            0,
+            0,
+            SELL_TS,
+            5_000,
+            W,
+        ),
+        SELL_TS,
+    );
+    let txs = [buy, sell];
+    let native = run(&txs);
+    let r = usd_run(&txs, &sol_source());
+    // Native figures identical with and without the USD view.
+    assert_eq!(r.realized_trade_pnl_lamports, 99_990_000);
+    assert_eq!(r.unit_blocks, native.unit_blocks);
+    assert_eq!(r.episodes, native.episodes);
+    let u = r.usd.as_ref().unwrap();
+    let EpisodeOutcome::ClosedKnown { .. } = r.episodes[0].outcome else {
+        panic!()
+    };
+    assert_eq!(
+        u.episodes[0].outcome,
+        UsdOutcome::ClosedKnown {
+            pnl: usd(1_203_378_180),
+            consumed_basis: usd(12_189_060_945),
+        }
+    );
+    let b = r.unit_block(QuoteUnit::ReportCurrency).unwrap();
+    assert_eq!(b.closed_episodes_known, 1);
+    assert_eq!((b.wins, b.losses, b.breakeven), (1, 0, 0));
+    assert_eq!(b.realized_trade_pnl_exact, usd(1_203_378_180));
+    assert_eq!(b.consumed_acquisition_basis_exact, usd(12_189_060_945));
+    assert_eq!(b.realized_trade_pnl_raw, 1_203_378_180);
+    assert_eq!(b.roi_parts(), Some((1_203_378_180, 12_189_060_945)));
+    assert_eq!(
+        format_quote_money(QuoteUnit::ReportCurrency, b.realized_trade_pnl_exact).unwrap(),
+        "12.03378180"
+    );
+    assert_eq!(
+        b.win_rate,
+        RatioStatus::Value {
+            value: usd(100_000_000)
+        }
+    );
+    assert_eq!(b.profit_factor, RatioStatus::NoObservedLosses);
+    assert_eq!(
+        b.realized_pnl_lower_bound(),
+        LowerBound::Bounded(usd(1_203_378_180))
+    );
+    // Coverage: 1 proceeds leg + 1 basis slice, both exact-minute candles.
+    assert_eq!(
+        (u.coverage.legs, u.coverage.priced, u.coverage.unpriced),
+        (2, 2, 0)
+    );
+    assert_eq!(u.coverage.by_label.get("cex_reference_1m"), Some(&2));
+    assert_eq!(u.coverage.usdc_par_legs, 0);
+    assert_eq!(
+        u.win_rate_lower_bound,
+        Some(WinRateLowerBound {
+            wins: 1,
+            episodes: 1
+        })
+    );
+}
+
+#[test]
+fn usd_golden_half_even_ties_inside_an_episode() {
+    // Buy for 500 lamports (no fee) at 121.89: 500 * 12189 / 1000 = 6094.5 -> 6094.
+    // Sell for 1020 lamports at 121.75: 12418.5 -> 12418. PnL = 6324 scaled.
+    let buy = at(
+        trade_tx(1, 100, TradeSide::Buy, M1, 1000, 0, 500, 0, 0, BUY_TS, 0, W),
+        BUY_TS,
+    );
+    let sell = at(
+        trade_tx(
+            2,
+            101,
+            TradeSide::Sell,
+            M1,
+            1000,
+            1000,
+            1020,
+            0,
+            0,
+            SELL_TS,
+            0,
+            W,
+        ),
+        SELL_TS,
+    );
+    let r = usd_run(&[buy, sell], &sol_source());
+    assert_eq!(r.realized_trade_pnl_lamports, 520);
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(
+        u.episodes[0].outcome,
+        UsdOutcome::ClosedKnown {
+            pnl: usd(6_324),
+            consumed_basis: usd(6_094),
+        }
+    );
+    assert_eq!(
+        format_quote_money(QuoteUnit::ReportCurrency, usd(6_324)).unwrap(),
+        "0.00006324"
+    );
+}
+
+#[test]
+fn usd_stale_price_within_five_minutes_is_labelled() {
+    // Sell at 12:08:10: no candle at 12:08/12:07/12:06 -> the 12:05 close
+    // (121.75) as stale_3m. Net 1_099_995_000 lamports -> 133.92439125 again.
+    let t = T0 + 8 * 60 + 10;
+    let buy = at(
+        trade_tx(
+            1,
+            100,
+            TradeSide::Buy,
+            M1,
+            1000,
+            0,
+            1_000_000_000,
+            0,
+            0,
+            BUY_TS,
+            5_000,
+            W,
+        ),
+        BUY_TS,
+    );
+    let sell = at(
+        trade_tx(
+            2,
+            101,
+            TradeSide::Sell,
+            M1,
+            1000,
+            1000,
+            1_100_000_000,
+            0,
+            0,
+            t,
+            5_000,
+            W,
+        ),
+        t,
+    );
+    let r = usd_run(&[buy, sell], &sol_source());
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(
+        u.episodes[0].outcome,
+        UsdOutcome::ClosedKnown {
+            pnl: usd(1_203_378_180),
+            consumed_basis: usd(12_189_060_945),
+        }
+    );
+    assert_eq!(u.coverage.by_label.get("stale_3m"), Some(&1));
+    assert_eq!(u.coverage.by_label.get("cex_reference_1m"), Some(&1));
+}
+
+#[test]
+fn usd_price_gap_over_five_minutes_is_unknown_with_bound_never_zero() {
+    // Sell at 12:11:10 (6 minutes after the last candle): proceeds unpriced.
+    let t = T0 + 11 * 60 + 10;
+    let buy = at(
+        trade_tx(
+            1,
+            100,
+            TradeSide::Buy,
+            M1,
+            1000,
+            0,
+            1_000_000_000,
+            0,
+            0,
+            BUY_TS,
+            5_000,
+            W,
+        ),
+        BUY_TS,
+    );
+    let sell = at(
+        trade_tx(
+            2,
+            101,
+            TradeSide::Sell,
+            M1,
+            1000,
+            1000,
+            1_100_000_000,
+            0,
+            0,
+            t,
+            5_000,
+            W,
+        ),
+        t,
+    );
+    let r = usd_run(&[buy, sell], &sol_source());
+    // Native episode stays exactly known.
+    assert_eq!(r.closed_episodes_known, 1);
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(u.episodes[0].outcome, UsdOutcome::ClosedUnknown);
+    assert!(
+        u.episodes[0]
+            .price_unknown_reasons
+            .contains("no_candle_within_5m")
+    );
+    assert_eq!(
+        (u.coverage.legs, u.coverage.priced, u.coverage.unpriced),
+        (2, 1, 1)
+    );
+    assert_eq!(u.coverage.by_label.get("price_unknown"), Some(&1));
+    assert_eq!(
+        u.coverage.unpriced_by_reason.get("no_candle_within_5m"),
+        Some(&1)
+    );
+    let b = r.unit_block(QuoteUnit::ReportCurrency).unwrap();
+    // No known USD episode: nothing is rendered as zero; ADR-016 bound = -basis.
+    assert_eq!(b.closed_episodes_known, 0);
+    assert_eq!(u.closed_episodes_unknown, 1);
+    assert_eq!(
+        u.episodes[0].unknown_pnl_bound,
+        Some(LowerBound::Bounded(usd(-12_189_060_945)))
+    );
+    assert_eq!(
+        b.realized_pnl_lower_bound(),
+        LowerBound::Bounded(usd(-12_189_060_945))
+    );
+    assert_eq!(
+        b.profit_factor_lower_bound(),
+        LowerBound::Bounded(RatioStatus::Value { value: Money::ZERO })
+    );
+    assert_eq!(
+        u.win_rate_lower_bound,
+        Some(WinRateLowerBound {
+            wins: 0,
+            episodes: 1
+        })
+    );
+    assert_eq!(u.unknown_episode_share_parts(), (1, 1));
+}
+
+#[test]
+fn usd_unpriced_basis_slice_makes_the_bound_unbounded() {
+    // Buy at 12:30 (no candle within 5 minutes) -> basis unpriced.
+    let bt = T0 + 30 * 60;
+    let buy = at(
+        trade_tx(
+            1,
+            100,
+            TradeSide::Buy,
+            M1,
+            1000,
+            0,
+            1_000_000_000,
+            0,
+            0,
+            bt,
+            0,
+            W,
+        ),
+        bt,
+    );
+    let sell = at(
+        trade_tx(
+            2,
+            101,
+            TradeSide::Sell,
+            M1,
+            1000,
+            1000,
+            1_100_000_000,
+            0,
+            0,
+            SELL_TS + 1800,
+            0,
+            W,
+        ),
+        SELL_TS,
+    );
+    let r = usd_run(&[buy, sell], &sol_source());
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(u.episodes[0].outcome, UsdOutcome::ClosedUnknown);
+    assert_eq!(u.episodes[0].unknown_pnl_bound, Some(LowerBound::Unbounded));
+    let b = r.unit_block(QuoteUnit::ReportCurrency).unwrap();
+    assert_eq!(b.unknown_pnl_bound, LowerBound::Unbounded);
+}
+
+#[test]
+fn usd_cross_quote_usdc_buy_sol_sell_is_known_in_usd() {
+    // Buy 1000 tokens for 5 USDC (par, 5.00000000 USD); sell them for
+    // 40_000_000 - 5_000 fee = 39_995_000 lamports at 121.75:
+    //   0.039995 * 121.75 = 4.86939125 USD. PnL = 4.86939125 - 5 = -0.13060875.
+    let buy = at(
+        route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W),
+        BUY_TS,
+    );
+    let sell = at(
+        trade_tx(
+            2,
+            2,
+            TradeSide::Sell,
+            M1,
+            1000,
+            1000,
+            40_000_000,
+            0,
+            0,
+            SELL_TS,
+            5_000,
+            W,
+        ),
+        SELL_TS,
+    );
+    let r = usd_run(&[buy, sell], &sol_source());
+    // Native: cross-quote episode is unknown, every native block empty.
+    assert_eq!((r.closed_episodes_known, r.closed_episodes_unknown), (0, 1));
+    for b in &r.unit_blocks {
+        assert_eq!(b.closed_episodes_known, 0);
+    }
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(
+        u.episodes[0].outcome,
+        UsdOutcome::ClosedKnown {
+            pnl: usd(-13_060_875),
+            consumed_basis: usd(500_000_000),
+        }
+    );
+    assert!(u.episodes[0].native_unknown_reasons.is_empty());
+    let b = r.unit_block(QuoteUnit::ReportCurrency).unwrap();
+    assert_eq!((b.closed_episodes_known, b.wins, b.losses), (1, 0, 1));
+    assert_eq!(b.realized_trade_pnl_exact, usd(-13_060_875));
+    assert_eq!(u.closed_episodes_unknown, 0);
+    assert_eq!(u.coverage.usdc_par_legs, 1);
+    assert_eq!(u.coverage.by_label.get("usdc_par_assumed"), Some(&1));
+    assert_eq!(u.coverage.by_label.get("cex_reference_1m"), Some(&1));
+    assert_eq!(b.profit_factor, RatioStatus::Value { value: Money::ZERO });
+}
+
+#[test]
+fn usd_usdt_is_priced_through_its_own_candles() {
+    // USDT buy 5.000000 at 0.9998 -> 4.99900000 USD; sell 7.250000 at 1.0003
+    // -> 7.25217500 USD; PnL 2.25317500 USD (native USDT PnL: 2.250000).
+    let src = InMemoryPriceSource::new().with_candles(
+        QuoteAsset::Usdt,
+        &[flat_candle(T0, "0.9998"), flat_candle(T0 + 300, "1.0003")],
+    );
+    let usdt = pubkey(USDT_MINT);
+    let buy = at(
+        route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdt, 5_000_000, W),
+        BUY_TS,
+    );
+    let sell = at(
+        route_tx(2, 2, TradeSide::Sell, M1, 1000, 1000, usdt, 7_250_000, W),
+        SELL_TS,
+    );
+    let r = usd_run(&[buy, sell], &src);
+    assert_eq!(
+        r.unit_block(QuoteUnit::UsdtUnits)
+            .unwrap()
+            .realized_trade_pnl_raw,
+        2_250_000
+    );
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(
+        u.episodes[0].outcome,
+        UsdOutcome::ClosedKnown {
+            pnl: usd(225_317_500),
+            consumed_basis: usd(499_900_000),
+        }
+    );
+    assert_eq!(u.coverage.usdc_par_legs, 0);
+}
+
+#[test]
+fn usd_provider_failure_is_unknown_with_the_error_class() {
+    let src = InMemoryPriceSource::new().with_failure(QuoteAsset::Usdt, PriceErrorClass::NotFound);
+    let usdt = pubkey(USDT_MINT);
+    let buy = at(
+        route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdt, 5_000_000, W),
+        BUY_TS,
+    );
+    let sell = at(
+        route_tx(2, 2, TradeSide::Sell, M1, 1000, 1000, usdt, 7_250_000, W),
+        SELL_TS,
+    );
+    let r = usd_run(&[buy, sell], &src);
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(u.episodes[0].outcome, UsdOutcome::ClosedUnknown);
+    assert!(
+        u.episodes[0]
+            .price_unknown_reasons
+            .contains("provider_http_404")
+    );
+    assert_eq!(u.coverage.priced, 0);
+    // The native USDT block is untouched and exact.
+    assert_eq!(
+        r.unit_block(QuoteUnit::UsdtUnits)
+            .unwrap()
+            .realized_trade_pnl_raw,
+        2_250_000
+    );
+}
+
+#[test]
+fn usd_trade_far_from_any_candle_is_unknown_not_zero() {
+    // Event timestamps near the 0 epoch (no block time): the minutes have no
+    // candle -> unknown, never zero.
+    let buy = trade_tx(
+        1,
+        100,
+        TradeSide::Buy,
+        M1,
+        1000,
+        0,
+        1_000_000,
+        0,
+        0,
+        10,
+        0,
+        W,
+    );
+    let sell = trade_tx(
+        2,
+        101,
+        TradeSide::Sell,
+        M1,
+        1000,
+        1000,
+        1_200_000,
+        0,
+        0,
+        20,
+        0,
+        W,
+    );
+    let r = usd_run(&[buy, sell], &sol_source());
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(u.episodes[0].outcome, UsdOutcome::ClosedUnknown);
+    assert_eq!(r.closed_episodes_known, 1);
+}
+
+#[test]
+fn usd_adr016_mixed_unit_unknown_episode_is_bounded_in_usd_but_not_natively() {
+    // Lots in two units (5 USDC par + 0.5 SOL at 121.89 = 5 + 60.945) are
+    // then forwarded out without a decoded sale: unknown proceeds. Natively
+    // the bound is Unbounded (two units); in USD it is exactly -(basis sum).
+    let b_usdc = at(
+        route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W),
+        BUY_TS,
+    );
+    let b_sol = at(
+        trade_tx(
+            2,
+            2,
+            TradeSide::Buy,
+            M1,
+            1000,
+            1000,
+            500_000_000,
+            0,
+            0,
+            BUY_TS + 5,
+            0,
+            W,
+        ),
+        BUY_TS + 5,
+    );
+    let out = at(
+        Tx {
+            sig: 3,
+            slot: 3,
+            index: 0,
+            ixs: vec![],
+            bals: vec![bal(M1, W, 2000, 0)],
+            fee: 0,
+            payer: OTHER,
+            native: vec![],
+            ok: true,
+        }
+        .build(),
+        SELL_TS,
+    );
+    let r = usd_run(&[b_usdc, b_sol, out], &sol_source());
+    assert_eq!(r.closed_episodes_unknown, 1);
+    assert_eq!(
+        r.episodes[0].unknown_pnl_bound,
+        Some(EpisodePnlBound::Unbounded)
+    );
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(u.episodes[0].outcome, UsdOutcome::ClosedUnknown);
+    // 5.00000000 + 0.5 * 121.89 (= 60.94500000) = 65.94500000 USD.
+    assert_eq!(
+        u.episodes[0].unknown_pnl_bound,
+        Some(LowerBound::Bounded(usd(-6_594_500_000)))
+    );
+    let b = r.unit_block(QuoteUnit::ReportCurrency).unwrap();
+    assert_eq!(
+        b.unknown_pnl_bound,
+        LowerBound::Bounded(usd(-6_594_500_000))
+    );
+    assert_eq!(
+        b.consumed_basis_with_unknown_exact(),
+        Some(usd(6_594_500_000))
+    );
+}
+
+#[test]
+fn usd_left_censored_and_open_episodes_are_not_valued() {
+    // Windowed sell-only -> left-censored; a second mint stays open.
+    let sell = at(
+        trade_tx(
+            1,
+            100,
+            TradeSide::Sell,
+            M1,
+            1000,
+            1000,
+            1_200_000,
+            0,
+            0,
+            SELL_TS,
+            0,
+            W,
+        ),
+        SELL_TS,
+    );
+    let open_buy = at(
+        trade_tx(
+            2,
+            101,
+            TradeSide::Buy,
+            M2,
+            1000,
+            0,
+            1_000_000,
+            0,
+            0,
+            BUY_TS,
+            0,
+            W,
+        ),
+        BUY_TS,
+    );
+    let mut r = run_windowed(&[sell, open_buy]);
+    r.apply_usd_prices(&sol_source()).unwrap();
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!((u.left_censored_episodes, u.open_episodes), (1, 1));
+    assert_eq!(u.coverage.legs, 0, "unvalued episodes make no price leg");
+    assert!(r.usd_price_requirements().is_empty());
+    assert_eq!(
+        r.unit_block(QuoteUnit::ReportCurrency)
+            .unwrap()
+            .closed_episodes_known,
+        0
+    );
+}
+
+#[test]
+fn usd_price_requirements_are_minute_aligned_per_asset_and_skip_usdc() {
+    let buy = at(
+        route_tx(1, 1, TradeSide::Buy, M1, 1000, 0, usdc(), 5_000_000, W),
+        BUY_TS,
+    );
+    let sell = at(
+        trade_tx(
+            2,
+            2,
+            TradeSide::Sell,
+            M1,
+            1000,
+            1000,
+            40_000_000,
+            0,
+            0,
+            SELL_TS,
+            5_000,
+            W,
+        ),
+        SELL_TS,
+    );
+    let r = run(&[buy, sell]);
+    let need = r.usd_price_requirements();
+    assert_eq!(need.len(), 1);
+    assert_eq!(
+        need[&QuoteAsset::Sol].iter().copied().collect::<Vec<_>>(),
+        vec![T0 + 300]
+    );
+}
+
+#[tokio::test]
+async fn usd_apply_pricing_over_stats_cards_prefetches_once_and_sets_views() {
+    let buy = at(
+        trade_tx(
+            1,
+            100,
+            TradeSide::Buy,
+            M1,
+            1000,
+            0,
+            1_000_000_000,
+            0,
+            0,
+            BUY_TS,
+            5_000,
+            W,
+        ),
+        BUY_TS,
+    );
+    let sell = at(
+        trade_tx(
+            2,
+            101,
+            TradeSide::Sell,
+            M1,
+            1000,
+            1000,
+            1_100_000_000,
+            0,
+            0,
+            SELL_TS,
+            5_000,
+            W,
+        ),
+        SELL_TS,
+    );
+    let ledger = run(&[buy, sell]);
+    let mut cards = vec![SolanaWalletStats {
+        wallet: pk(W),
+        status: WalletScanStatus::Ok,
+        transactions_scanned: Some(2),
+        transactions_in_window: None,
+        truncated: false,
+        unexpected_payloads: 0,
+        error: None,
+        ledger: Some(ledger),
+        incomplete_reasons: vec![],
+        failure: None,
+        not_scanned: None,
+    }];
+    cards.push(SolanaWalletStats {
+        wallet: pk(2),
+        status: WalletScanStatus::Error,
+        transactions_scanned: None,
+        transactions_in_window: None,
+        truncated: false,
+        unexpected_payloads: 0,
+        error: Some("boom".into()),
+        ledger: None,
+        incomplete_reasons: vec![],
+        failure: None,
+        not_scanned: None,
+    });
+    let run = apply_usd_pricing(&mut cards, &sol_source()).await;
+    assert_eq!(run.wallets_priced, 1);
+    assert_eq!(run.coverage.legs, 2);
+    assert_eq!(run.minutes_requested[&QuoteAsset::Sol], 2);
+    assert!(cards[0].ledger.as_ref().unwrap().usd.is_some());
+    assert!(cards[1].ledger.is_none());
+}

@@ -993,3 +993,110 @@ proptest! {
         prop_assert!(wl.episodes >= 26);
     }
 }
+
+// ---------------------------------------------------------------------
+// ADR-018: `--quote usd` ranks and gates on the USD block.
+// ---------------------------------------------------------------------
+
+fn with_usd(
+    mut w: SolanaWalletStats,
+    closed: u64,
+    pnl: i128,
+    basis: i128,
+    unknown: u64,
+) -> SolanaWalletStats {
+    use scout_core::Money;
+    use scout_engine::{QuoteUnit, QuoteUnitBlock, UsdCoverage, UsdLedgerView};
+    let l = w.ledger.as_mut().unwrap();
+    let block = QuoteUnitBlock {
+        unit: QuoteUnit::ReportCurrency,
+        closed_episodes_known: closed,
+        wins: closed,
+        losses: 0,
+        breakeven: 0,
+        realized_trade_pnl_exact: Money::from_scaled_units(pnl),
+        realized_trade_pnl_raw: pnl,
+        consumed_acquisition_basis_exact: Money::from_scaled_units(basis),
+        consumed_acquisition_basis_raw: basis,
+        open_episode_known_disposal_pnl_raw: 0,
+        open_episode_known_disposals: 0,
+        win_rate: RatioStatus::Undefined,
+        profit_factor: RatioStatus::NoObservedLosses,
+        gross_profit_exact: Money::from_scaled_units(pnl),
+        gross_loss_abs_exact: Money::ZERO,
+        unknown_pnl_bound: LowerBound::Bounded(Money::ZERO),
+    };
+    l.usd = Some(UsdLedgerView {
+        version: "test",
+        episodes: Vec::new(),
+        block,
+        closed_episodes_unknown: unknown,
+        left_censored_episodes: 0,
+        open_episodes: 0,
+        win_rate_lower_bound: Some(WinRateLowerBound {
+            wins: closed,
+            episodes: closed + unknown,
+        }),
+        coverage: UsdCoverage::default(),
+    });
+    w
+}
+
+#[test]
+fn quote_usd_ranks_on_the_usd_block_and_unpriced_wallets_are_metric_unknown() {
+    use scout_engine::QuoteUnit;
+    let wallets = vec![
+        // SOL pnl 1_000 lamports, USD pnl 500e-8.
+        with_usd(Spec::new(1).build(), 25, 500, 10_000, 0),
+        // SOL pnl 10 lamports, USD pnl 900e-8: ranks first in USD.
+        with_usd(Spec::new(2).pnl(10, 10_000).build(), 25, 900, 10_000, 0),
+        // No USD view (pricing failed/skipped): never ranked in USD.
+        Spec::new(3).build(),
+    ];
+    let sol = rank_solana_wallets(
+        &wallets,
+        &policy(RankProfile::None, RankBy::RealizedNetPnl, 10),
+    );
+    // In SOL the 10-lamport wallet is last (USD reverses it below).
+    assert_eq!(*ranked_ids(&sol).last().unwrap(), 2);
+    let usd = rank_solana_wallets(
+        &wallets,
+        &policy(RankProfile::None, RankBy::RealizedNetPnl, 10)
+            .with_quote(QuoteUnit::ReportCurrency),
+    );
+    assert_eq!(ranked_ids(&usd), vec![2, 1]);
+    assert_partition(&usd);
+    assert_eq!(excluded_of(&usd, 3).primary_reason(), R::MetricUnknown);
+    let top = &usd.ranked[0].observation;
+    assert_eq!(top.net_pnl_raw, Some(900));
+    assert_eq!(top.quote, QuoteUnit::ReportCurrency);
+}
+
+#[test]
+fn quote_usd_gates_use_usd_counts_and_usd_unknown_share() {
+    use scout_engine::QuoteUnit;
+    let wallets = vec![
+        // 19 known USD episodes: below the quality sample gate of 20.
+        with_usd(Spec::new(1).build(), 19, 500, 10_000, 0),
+        // 5 unknown of 30 (16.7 % > 10 %): share gate fires from the USD view
+        // although the native ledger has no unknown episode.
+        with_usd(Spec::new(2).build(), 25, 500, 10_000, 5),
+        with_usd(Spec::new(3).build(), 25, 500, 10_000, 0),
+    ];
+    let rep = rank_solana_wallets(
+        &wallets,
+        &policy(RankProfile::Quality, RankBy::RealizedNetPnl, 10)
+            .with_quote(QuoteUnit::ReportCurrency),
+    );
+    assert_eq!(ranked_ids(&rep), vec![3]);
+    assert!(
+        excluded_of(&rep, 1)
+            .reasons
+            .contains(&R::InsufficientClosedEpisodes)
+    );
+    assert!(
+        excluded_of(&rep, 2)
+            .reasons
+            .contains(&R::UnknownEpisodeShare)
+    );
+}

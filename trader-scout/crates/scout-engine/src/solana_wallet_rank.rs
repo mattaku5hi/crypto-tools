@@ -12,6 +12,16 @@
 //! `unit_blocks`. The unknown-episode share gate stays wallet-wide
 //! (conservative).
 //!
+//! # USD (ADR-018)
+//! `RankPolicy::quote = QuoteUnit::ReportCurrency` (`--quote usd`) selects
+//! the USD view of each ledger (`SolanaWalletLedgerReport::usd`, applied by
+//! `apply_usd_pricing` before ranking): metrics, the `min_closed_episodes`
+//! gate, the unknown-episode share gate (USD counts: cross-quote episodes
+//! valued in USD are known there) and the win-rate bound all read the USD
+//! block, whose "raw" figures are the 1e-8 USD integers. A wallet without a
+//! USD view has no metric (`metric_unknown`), never a zero. Failed-tx fees
+//! (SOL) are not in the USD net figure; open positions stay unvalued.
+//!
 //! # Contract
 //! * Every input wallet lands in exactly one of [`WalletRankReport::ranked`]
 //!   or [`WalletRankReport::excluded`]; nothing is dropped silently.
@@ -105,7 +115,7 @@ use scout_core::{MONEY_SCALE, Money, SolanaPubkey};
 
 use crate::solana_wallet_ledger::{
     LowerBound, OpenPosition, QuoteUnit, SolanaWalletLedgerReport, WinRateLowerBound,
-    lamports_to_money, money_to_quote_units_trunc,
+    lamports_to_money, money_to_unit_raw,
 };
 use crate::solana_wallet_stats::{SolanaWalletStats, WalletScanStatus};
 
@@ -116,8 +126,7 @@ pub const DEFAULT_TOP: usize = 20;
 pub const DEFAULT_MAX_UNKNOWN_EPISODE_SHARE_PERCENT: u8 = 10;
 
 /// Version tag of the ranking rules for report metadata.
-pub const SOLANA_WALLET_RANK_VERSION: &str =
-    "solana-wallet-rank/3 (ADR-013 --quote, ADR-016 unknown-episode lower bounds)";
+pub const SOLANA_WALLET_RANK_VERSION: &str = "solana-wallet-rank/4 (ADR-013 --quote, ADR-016 unknown-episode lower bounds, ADR-018 --quote usd)";
 
 /// Ranking metric. `period-equity-pnl` needs a price source (P5.2) and is
 /// deliberately not representable.
@@ -533,6 +542,14 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
     };
     let block = l.unit_block(quote);
     let closed = unit_closed_known(l, quote);
+    // ADR-018: under `--quote usd` the unknown counts are the USD view's.
+    let (closed_unknown, win_lb) = if quote == QuoteUnit::ReportCurrency {
+        l.usd.as_ref().map_or((0, None), |u| {
+            (u.closed_episodes_unknown, u.win_rate_lower_bound)
+        })
+    } else {
+        (l.closed_episodes_unknown, l.win_rate_lower_bound)
+    };
     let net = if quote == QuoteUnit::Lamports {
         // Failed-trade fees are SOL overhead (ADR-004): SOL only.
         (closed > 0 || l.failed_trade_fees_lamports != 0).then_some(l.realized_net_pnl_lamports)
@@ -546,7 +563,7 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
     obs.rank_tier = if unbounded { 2 } else { 1 };
     obs.pnl_status = match net {
         None => PnlStatus::NotAvailable,
-        Some(_) if w.coverage_complete() && l.closed_episodes_unknown == 0 => PnlStatus::Observed,
+        Some(_) if w.coverage_complete() && closed_unknown == 0 => PnlStatus::Observed,
         Some(_) if unbounded => PnlStatus::KnownSubsetUnbounded,
         Some(_) => PnlStatus::KnownSubset,
     };
@@ -573,7 +590,7 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
             Some(Money::ZERO)
         };
         match pnl_lb.zip(failed).and_then(|(m, f)| m.checked_sub(&f).ok()) {
-            Some(m) => LowerBound::Bounded(money_to_quote_units_trunc(m)),
+            Some(m) => LowerBound::Bounded(money_to_unit_raw(quote, m)),
             None => LowerBound::Unbounded,
         }
     });
@@ -596,7 +613,7 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
     obs.pf_lower_bound = block
         .zip(base_pf)
         .map(|(b, base)| b.profit_factor_lower_bound_from(base));
-    obs.win_rate_lower_bound = l.win_rate_lower_bound;
+    obs.win_rate_lower_bound = win_lb;
     if unbounded {
         obs.key_net = net;
         obs.key_roi = obs.roi;
@@ -717,7 +734,15 @@ fn metric_known(by: RankBy, o: &WalletRankObservation) -> bool {
 /// ADR-016: `closed_unknown * 100 > percent * (closed_known +
 /// closed_unknown)`, exact in `u128`.
 fn exceeds_unknown_share(policy: &RankPolicy, l: &SolanaWalletLedgerReport) -> bool {
-    let (unknown, total) = l.unknown_episode_share_parts();
+    // ADR-018: under `--quote usd` the share is the USD view's (cross-quote
+    // episodes valued in USD are known there); no view = nothing is known.
+    let (unknown, total) = if policy.quote == QuoteUnit::ReportCurrency {
+        l.usd
+            .as_ref()
+            .map_or((0, 0), |u| u.unknown_episode_share_parts())
+    } else {
+        l.unknown_episode_share_parts()
+    };
     let pct = u128::from(policy.max_unknown_episode_share_percent.min(100));
     u128::from(unknown) * 100 > pct * u128::from(total)
 }
