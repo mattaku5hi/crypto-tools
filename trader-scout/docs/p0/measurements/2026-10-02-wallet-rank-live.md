@@ -131,3 +131,14 @@ mostly from inbound token transfers whose acquisition basis is genuinely unknowa
 **36,715, priced 100 %** (`cex_reference_1m`; USDC par assumed on 44 legs). Ranked 4 (same set as
 the SOL run, all tier 2): `AZtU5hPN…` +$27,523.92, `HQLeWLJR…` +$3,263.64, `CCpcz76L…` −$3,635.55,
 `EtJ99fc1…` −$16,831.92 (known-subset realized USD; lower bounds unbounded).
+
+## Open-position realizable valuation (ADR-019, commit `45f5f63`, 2026-10-03)
+
+`wallet-stats --period 3d --max-pages-per-wallet 6 --max-requests 60 --detail full` on 3 wallets
+(live state via `getMultipleAccounts`): 61 open positions, **59 valued**, 2 unvalued
+(`no_venue_observed`). Totals: `AZtU5hPN…` 2/2 valued, realizable 1.608 SOL ($192.00), unrealized vs
+known basis −17.147 SOL; `3eGj9qx6…` 13/15 valued, realizable 248.417 SOL ($29,661.05), unrealized
++156.805 SOL; `2tgUbS9U…` 44/44 valued, realizable 26.445 SOL ($3,157.52), unrealized −1.280 SOL.
+Example `6d82cC…` (PumpSwap): marginal 28.195 SOL, gross constant-product 25.156 SOL, fees 115 bps,
+realizable 24.867 SOL → price impact 1,077 bps. Price impact across one wallet's positions:
+16…2,545 bps — thin markets are visibly not worth their spot value.
