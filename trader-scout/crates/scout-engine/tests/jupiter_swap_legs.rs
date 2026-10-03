@@ -604,26 +604,31 @@ fn unbooked_route_shaped(
     (total, with_jupiter, df1)
 }
 
+/// Since the DFlow amendment (ledger/7) the base ledger (Jupiter instructions
+/// removed) still books the DFlow-evidenced route swaps, so the Jupiter delta
+/// is measured on top of them (it was 36 -> 38 and 62 -> 68 under ledger/6;
+/// the remaining 2 unbooked route-shaped txs per page route through
+/// `proVF4pM...`, see tests/dflow_swap_legs.rs).
 #[tokio::test]
 async fn jupiter_legs_book_additional_route_swaps_on_the_router_pages() {
     for (name, wallet, base_swaps, with_swaps, jup_txs, only, unbooked) in [
         (
             "router_wallet_9oC3_page_2026-10-02.json",
             ROUTER_WALLET_9OC3,
-            36,
-            38,
+            47,
+            49,
             4,
             2,
-            13,
+            2,
         ),
         (
             "router_wallet_tAwv_page_2026-10-02.json",
             ROUTER_WALLET_TAWV,
-            62,
-            68,
+            71,
+            77,
             27,
             6,
-            11,
+            2,
         ),
     ] {
         let txs = fixture_txs(name).await;

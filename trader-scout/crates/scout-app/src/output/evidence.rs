@@ -15,7 +15,7 @@ pub struct DecodeEvidenceDto {
     pub slot: u64,
     pub instruction_index: u32,
     pub program: String,
-    /// Address label only (`pump_curve`, `pump_amm`, `jupiter_v6`).
+    /// Address label only (`pump_curve`, `pump_amm`, `jupiter_v6`, `dflow_v4`).
     pub program_name: &'static str,
     /// IDL name, or the 8-byte discriminator in hex.
     pub variant_or_discriminator: String,

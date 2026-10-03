@@ -21,6 +21,7 @@
 )]
 
 mod bonding_curve_buy;
+mod dflow_event;
 mod jupiter_event;
 mod pump_amm;
 mod pump_amm_event;
@@ -35,6 +36,13 @@ pub use bonding_curve_buy::{
     PumpTradeSpec, PumpTradeVariant, SELL_INSTRUCTION_DISCRIMINATOR,
     SELL_V2_INSTRUCTION_DISCRIMINATOR, TradeSide, VariantVerification, classify_pump_instruction,
     hex8,
+};
+pub use dflow_event::{
+    DFLOW_EVENT_AUTHORITY_BYTES, DFLOW_EVENT_HEADER_LEN, DFLOW_FEE_EVENT_DISCRIMINATOR,
+    DFLOW_FEE_EVENT_LEN, DFLOW_SCHEMA_COMMIT, DFLOW_SCHEMA_SHA256, DFLOW_SWAP_EVENT_DISCRIMINATOR,
+    DFLOW_SWAP_EVENT_LEN, DFLOW_V4_PROGRAM_ID, DFLOW_V4_PROGRAM_ID_BYTES, DflowEventDecoder,
+    DflowEventOutcome, DflowFeeEvent, DflowSwapLeg, classify_dflow_event,
+    dflow_swap_event_verification,
 };
 pub use jupiter_event::{
     JUPITER_EVENT_AUTHORITY_BYTES, JUPITER_EVENT_HEADER_LEN, JUPITER_FEE_EVENT_DISCRIMINATOR,

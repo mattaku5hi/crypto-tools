@@ -636,6 +636,8 @@ pub struct DiagnosticsDto {
     /// ADR-015: Jupiter event-CPIs not decoded exactly / unknown (never evidence).
     pub jupiter_malformed_events: u64,
     pub jupiter_unknown_events: u64,
+    pub dflow_malformed_events: u64,
+    pub dflow_unknown_events: u64,
     /// At most 5 samples (canonical chain order) of malformed trade
     /// instructions, unknown discriminators and orphan events.
     pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
@@ -694,6 +696,9 @@ pub struct RouteEvidenceDto {
     pub jupiter: u64,
     /// Booked only because of a Jupiter leg.
     pub jupiter_only: u64,
+    pub dflow: u64,
+    /// Booked only because of a DFlow leg.
+    pub dflow_only: u64,
 }
 
 /// ADR-013 §1/§2 counters.
@@ -968,6 +973,8 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
                 pump_amm: t.route_swaps_by_evidence.pump_amm,
                 jupiter: t.route_swaps_by_evidence.jupiter,
                 jupiter_only: t.route_swaps_by_evidence.jupiter_only,
+                dflow: t.route_swaps_by_evidence.dflow,
+                dflow_only: t.route_swaps_by_evidence.dflow_only,
             },
             route_leg_not_wallet_price: t.route_leg_not_wallet_price,
             route_rejected_wallet_not_signer: d.route_rejected.wallet_not_signer,
@@ -1076,6 +1083,8 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
             unknown_discriminator_instructions: d.unknown_discriminator_instructions,
             jupiter_malformed_events: d.jupiter_malformed_events,
             jupiter_unknown_events: d.jupiter_unknown_events,
+            dflow_malformed_events: d.dflow_malformed_events,
+            dflow_unknown_events: d.dflow_unknown_events,
             evidence_samples: scout_app::evidence_dtos(&l.evidence_samples, &str::to_owned),
         },
     }

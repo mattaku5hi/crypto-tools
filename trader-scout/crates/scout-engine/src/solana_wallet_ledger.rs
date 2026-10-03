@@ -39,7 +39,7 @@
 //!   is one hop of someone else's route and is not the wallet's price.
 //! * Route swap (§2): wallet is a signer, a FixtureVerified decoded leg
 //!   (pump.fun curve, PumpSwap, or -- ADR-015, full venue runs only -- a
-//!   Jupiter v6 `SwapEvent`/`SwapsEvent` leg) trades token `T`, the wallet's non-zero deltas are exactly `T` and one
+//!   Jupiter v6 `SwapEvent`/`SwapsEvent` or DFlow v4 `SwapEvent` leg) trades token `T`, the wallet's non-zero deltas are exactly `T` and one
 //!   quote asset `Q` (SOL, USDC, USDT) with opposite signs, and every other
 //!   leg `user` is a non-signing pass-through netting zero on every mint.
 //!   The trade is booked from the wallet's own deltas in `Q`'s unit.
@@ -73,10 +73,11 @@ use scout_core::{
     SolanaExecutionStatus, SolanaPubkey,
 };
 use scout_dex_solana::{
-    AmmAttribution, AmmTradeEventPairing, BondingCurveBuyDecoder, JupiterEventDecoder,
-    JupiterEventOutcome, PairedAmmTrade, PumpAmmDecoder, PumpAmmEvent, PumpAmmInstructionOutcome,
-    PumpInstructionOutcome, TradeEventPairing, TradeSide, VariantVerification, WRAPPED_SOL_MINT,
-    pair_trades_with_events, reconcile_pump_amm_transaction,
+    AmmAttribution, AmmTradeEventPairing, BondingCurveBuyDecoder, DflowEventDecoder,
+    DflowEventOutcome, JupiterEventDecoder, JupiterEventOutcome, PairedAmmTrade, PumpAmmDecoder,
+    PumpAmmEvent, PumpAmmInstructionOutcome, PumpInstructionOutcome, TradeEventPairing, TradeSide,
+    VariantVerification, WRAPPED_SOL_MINT, dflow_swap_event_verification, pair_trades_with_events,
+    reconcile_pump_amm_transaction,
 };
 pub use scout_ledger::QuoteUnit;
 use scout_ledger::{BasisStatus, Ledger};
@@ -88,11 +89,11 @@ use crate::solana_buy_qualification::{
 };
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
-pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/6 (ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs)";
+pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/7 (ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
 
 /// Scope text for report metadata (invariant #10): allowed quote units and
 /// the route-swap rule of ADR-013.
-pub const SOLANA_WALLET_LEDGER_SCOPE: &str = "quote units: SOL (lamports, native+wSOL), USDC (6 dp raw), USDT (6 dp raw); no FX, per-unit PnL never summed; route swap = signer wallet, FixtureVerified decoded leg (pump curve/PumpSwap, or Jupiter v6 swap event hop trading the token, ADR-015), exactly one traded token and one quote asset with opposite signs, other leg users non-signing zero-net pass-through (ADR-013 section 2)";
+pub const SOLANA_WALLET_LEDGER_SCOPE: &str = "quote units: SOL (lamports, native+wSOL), USDC (6 dp raw), USDT (6 dp raw); no FX, per-unit PnL never summed; route swap = signer wallet, FixtureVerified decoded leg (pump curve/PumpSwap, or a Jupiter v6 / DFlow Aggregator v4 swap event hop trading the token, ADR-015), exactly one traded token and one quote asset with opposite signs, other leg users non-signing zero-net pass-through (ADR-013 section 2)";
 
 /// Wrapped SOL, the only non-native quote asset treated as SOL (ADR-010 §3).
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -415,13 +416,17 @@ pub struct RouteRejections {
 
 /// ADR-015: route swaps by the evidence that proved a swap leg of the
 /// token. A swap proven by several sources counts in each (non-exclusive);
-/// `jupiter_only` are the swaps booked ONLY because of a Jupiter leg.
+/// `jupiter_only` / `dflow_only` are the swaps booked ONLY because of a
+/// Jupiter / DFlow leg.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RouteEvidenceCounts {
     pub curve: u64,
     pub pump_amm: u64,
     pub jupiter: u64,
     pub jupiter_only: u64,
+    /// ADR-015 amendment: DFlow Aggregator v4 swap-event legs.
+    pub dflow: u64,
+    pub dflow_only: u64,
 }
 
 /// Evidence sources of one booked route swap.
@@ -430,6 +435,7 @@ pub(crate) struct RouteEvidence {
     curve: bool,
     pump_amm: bool,
     jupiter: bool,
+    dflow: bool,
 }
 
 impl RouteEvidenceCounts {
@@ -437,7 +443,10 @@ impl RouteEvidenceCounts {
         self.curve += u64::from(e.curve);
         self.pump_amm += u64::from(e.pump_amm);
         self.jupiter += u64::from(e.jupiter);
-        self.jupiter_only += u64::from(e.jupiter && !e.curve && !e.pump_amm);
+        self.dflow += u64::from(e.dflow);
+        // `*_only`: booked ONLY because of that aggregator's leg.
+        self.jupiter_only += u64::from(e.jupiter && !e.curve && !e.pump_amm && !e.dflow);
+        self.dflow_only += u64::from(e.dflow && !e.curve && !e.pump_amm && !e.jupiter);
     }
 }
 
@@ -457,7 +466,7 @@ pub struct TradeCounts {
     /// ADR-013 §2: route swaps booked, in total and by quote unit.
     pub route_swaps: u64,
     pub route_swaps_by_quote: QuoteUnitCounts,
-    /// ADR-015: route swaps by evidence source (curve / pumpswap / jupiter).
+    /// ADR-015: route swaps by evidence source (curve / pumpswap / jupiter / dflow).
     pub route_swaps_by_evidence: RouteEvidenceCounts,
     /// ADR-013 §1: event trades whose event is not the wallet's price and
     /// that no route rule explained (Unknown consideration).
@@ -536,6 +545,11 @@ pub struct LedgerDiagnostics {
     pub jupiter_malformed_events: u64,
     /// ADR-015: Jupiter event-CPIs with a discriminator outside the known set.
     pub jupiter_unknown_events: u64,
+    /// ADR-015 amendment: DFlow event-CPIs that did not decode exactly
+    /// (never trusted as swap evidence). COVERAGE GAP.
+    pub dflow_malformed_events: u64,
+    /// DFlow event-CPIs with a discriminator outside the known set.
+    pub dflow_unknown_events: u64,
 }
 
 /// Program ids counted as swap venues by the atomic round-trip signal:
@@ -815,8 +829,17 @@ enum LegSource {
     PumpAmm,
 }
 
-/// ADR-015: one Jupiter hop. Carries no owner and no consideration.
+/// Aggregator whose swap event produced a leg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AggSource {
+    Jupiter,
+    Dflow,
+}
+
+/// ADR-015: one aggregator (Jupiter / DFlow) hop. Carries no owner and no
+/// consideration.
 struct JupLeg {
+    source: AggSource,
     input_mint: SolanaPubkey,
     output_mint: SolanaPubkey,
     fixture_verified: bool,
@@ -1172,7 +1195,7 @@ struct TxWork<'a> {
     legs: Vec<LegInfo>,
     /// ADR-013 §2: why a route-swap candidate was not booked.
     route_reject: Option<RouteReject>,
-    /// ADR-015: Jupiter hops of the transaction (whatever the wallet).
+    /// ADR-015: Jupiter and DFlow hops of the transaction (whatever the wallet).
     jup_legs: Vec<JupLeg>,
     /// Evidence sources of the route swap booked in this transaction.
     route_evidence: RouteEvidence,
@@ -1350,12 +1373,36 @@ fn extract_jupiter_legs(tx: &RawSolanaTransaction, work: &mut TxWork<'_>) {
         {
             for l in legs {
                 work.jup_legs.push(JupLeg {
+                    source: AggSource::Jupiter,
                     input_mint: l.input_mint,
                     output_mint: l.output_mint,
                     fixture_verified: kind.verification() == VariantVerification::FixtureVerified,
                     instruction_index,
                 });
             }
+        }
+    }
+}
+
+/// ADR-015 amendment: collect DFlow Aggregator v4 swap legs (program-id and
+/// event-authority gated, exact layout). Malformed or unknown DFlow events
+/// are counted by the evidence scan and never trusted as legs.
+fn extract_dflow_legs(tx: &RawSolanaTransaction, work: &mut TxWork<'_>) {
+    let dec = DflowEventDecoder::new();
+    for ix in &tx.instructions {
+        if let DflowEventOutcome::Swap {
+            leg,
+            instruction_index,
+        } = dec.classify(ix)
+        {
+            work.jup_legs.push(JupLeg {
+                source: AggSource::Dflow,
+                input_mint: leg.input_mint,
+                output_mint: leg.output_mint,
+                fixture_verified: dflow_swap_event_verification()
+                    == VariantVerification::FixtureVerified,
+                instruction_index,
+            });
         }
     }
 }
@@ -1642,6 +1689,7 @@ fn classify_trades<'a>(
         extract_amm_trades(tx, wallet, amm, &mut work);
         // ADR-015: Jupiter legs are evidence only in full venue runs.
         extract_jupiter_legs(tx, &mut work);
+        extract_dflow_legs(tx, &mut work);
     }
     if scan {
         work.scan = scan_tx_evidence(tx, decoders, decoders.amm.is_some(), &work.orphan_events);
@@ -1691,6 +1739,8 @@ pub(crate) struct TxAttribution {
     pub unknown_discriminators: u64,
     pub jupiter_malformed: u64,
     pub jupiter_unknown: u64,
+    pub dflow_malformed: u64,
+    pub dflow_unknown: u64,
 }
 
 /// Attribute every trade of `tx` that touches one of `focus_mints` to the
@@ -1721,6 +1771,8 @@ pub(crate) fn attribute_transaction_trades(
     out.unknown_discriminators = probe.scan.unknown_discriminators;
     out.jupiter_malformed = probe.scan.jupiter_malformed;
     out.jupiter_unknown = probe.scan.jupiter_unknown;
+    out.dflow_malformed = probe.scan.dflow_malformed;
+    out.dflow_unknown = probe.scan.dflow_unknown;
     let touches_focus = probe.legs.iter().any(|l| focus_mints.contains(&l.mint))
         || probe
             .jup_legs
@@ -1861,7 +1913,7 @@ fn apply_route_rules(
                 .map(|l| l.instruction_index)
                 .or(jup_first)
                 .unwrap_or(0);
-            // A Jupiter-only route has no event timestamp: use the block time.
+            // An aggregator-only route has no event timestamp: use the block time.
             let timestamp = mine
                 .iter()
                 .find_map(|l| l.timestamp)
@@ -1968,15 +2020,18 @@ fn route_candidate(
             .iter()
             .any(|l| l.source == src && l.mint == mint && l.fixture_verified)
     };
+    let agg_leg = |src: AggSource| {
+        work.jup_legs.iter().any(|l| {
+            l.source == src && l.fixture_verified && (l.input_mint == mint || l.output_mint == mint)
+        })
+    };
     let evidence = RouteEvidence {
         curve: verified_leg(LegSource::Curve),
         pump_amm: verified_leg(LegSource::PumpAmm),
-        jupiter: work
-            .jup_legs
-            .iter()
-            .any(|l| l.fixture_verified && (l.input_mint == mint || l.output_mint == mint)),
+        jupiter: agg_leg(AggSource::Jupiter),
+        dflow: agg_leg(AggSource::Dflow),
     };
-    if !(evidence.curve || evidence.pump_amm || evidence.jupiter) {
+    if !(evidence.curve || evidence.pump_amm || evidence.jupiter || evidence.dflow) {
         return Err(RouteReject::NoVerifiedLeg);
     }
     // d. every other leg user is a non-signing, zero-net pass-through.
@@ -2124,6 +2179,8 @@ impl Builder {
         self.diag.unknown_discriminator_instructions += w.scan.unknown_discriminators;
         self.diag.jupiter_malformed_events += w.scan.jupiter_malformed;
         self.diag.jupiter_unknown_events += w.scan.jupiter_unknown;
+        self.diag.dflow_malformed_events += w.scan.dflow_malformed;
+        self.diag.dflow_unknown_events += w.scan.dflow_unknown;
         crate::decode_evidence::merge_evidence(
             &mut self.evidence_samples,
             w.scan.evidence.iter().cloned(),

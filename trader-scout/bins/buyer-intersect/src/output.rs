@@ -226,6 +226,9 @@ pub struct TokenDiagnosticsDto {
     /// unknown discriminator (never used as swap evidence).
     pub jupiter_malformed_events: u64,
     pub jupiter_unknown_events: u64,
+    /// ADR-015 amendment: the same for DFlow Aggregator v4 events.
+    pub dflow_malformed_events: u64,
+    pub dflow_unknown_events: u64,
     /// At most 5 samples of malformed trade instructions, unknown
     /// discriminators and orphan events of this token's transactions.
     pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
@@ -533,6 +536,8 @@ fn token_status(
             orphan_events: token.trade.orphan_events,
             jupiter_malformed_events: token.trade.jupiter_malformed_events,
             jupiter_unknown_events: token.trade.jupiter_unknown_events,
+            dflow_malformed_events: token.trade.dflow_malformed_events,
+            dflow_unknown_events: token.trade.dflow_unknown_events,
             evidence_samples: scout_app::evidence_dtos(&token.trade.evidence_samples, redact),
         }),
     })

@@ -382,6 +382,9 @@ pub struct RouteCountsDto {
     pub route_swaps_evidence_jupiter: u64,
     /// Booked only because of a Jupiter leg.
     pub route_swaps_evidence_jupiter_only: u64,
+    pub route_swaps_evidence_dflow: u64,
+    /// Booked only because of a DFlow leg.
+    pub route_swaps_evidence_dflow_only: u64,
     pub route_leg_not_wallet_price: u64,
     /// Coverage gaps traceable through `evidence_samples` (<= 5, canonical order).
     pub malformed_trade_instructions: u64,
@@ -389,6 +392,8 @@ pub struct RouteCountsDto {
     pub unknown_discriminator_instructions: u64,
     pub jupiter_malformed_events: u64,
     pub jupiter_unknown_events: u64,
+    pub dflow_malformed_events: u64,
+    pub dflow_unknown_events: u64,
     pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
 }
 
@@ -673,12 +678,16 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             route_swaps_evidence_pump_amm: t.route_swaps_by_evidence.pump_amm,
             route_swaps_evidence_jupiter: t.route_swaps_by_evidence.jupiter,
             route_swaps_evidence_jupiter_only: t.route_swaps_by_evidence.jupiter_only,
+            route_swaps_evidence_dflow: t.route_swaps_by_evidence.dflow,
+            route_swaps_evidence_dflow_only: t.route_swaps_by_evidence.dflow_only,
             route_leg_not_wallet_price: t.route_leg_not_wallet_price,
             malformed_trade_instructions: l.diagnostics.malformed_trade_instructions,
             orphan_trade_events: l.diagnostics.orphan_trade_events,
             unknown_discriminator_instructions: l.diagnostics.unknown_discriminator_instructions,
             jupiter_malformed_events: l.diagnostics.jupiter_malformed_events,
             jupiter_unknown_events: l.diagnostics.jupiter_unknown_events,
+            dflow_malformed_events: l.diagnostics.dflow_malformed_events,
+            dflow_unknown_events: l.diagnostics.dflow_unknown_events,
             evidence_samples: scout_app::evidence_dtos(&l.evidence_samples, &str::to_owned),
         },
         realized_net_pnl: MoneyDto {

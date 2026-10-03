@@ -64,3 +64,21 @@ Jupiter transactions, 111 hops.
   length; account-level reconciliation is a test-time verification.
 - Measured effect (router fixtures): route swaps 36→38 (9oC3) and 62→68 (tAwv); remaining unbooked
   route-shaped txs 13 / 11, of which 11 / 9 go through `DF1ow4ts…` (no verified events).
+
+## Amendment — DFlow Aggregator v4 (2026-10-03)
+
+- `DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH` = DFlow Aggregator v4 (solanacompass program
+  analytics; Carbon indexer decoder). No official IDL found; schema pinned from the third-party,
+  Codama-generated Carbon decoder (`sevenlabs-hq/carbon` @ `1e6e16b46e0efb0fc9cd6c8684ed9721e7da716a`,
+  `fixtures/dflow_aggregator_v4_carbon_1e6e16b_events.rs.txt`, sha256 `7322e999…1252`).
+- Events via Anchor event-CPI to itself, authority `8xeaWCsJYxRoudEZGJWURdfrtFhLYZz9b4iHJnW5tb3d`
+  (gated; derived from fixtures, 281/281). `SwapEvent` (`40c6cde8260871e2`, 112-byte payload, same
+  field order as Jupiter's IDL `SwapEvent`) is leg evidence under §§1–3; `FeeEvent`
+  (`494f4e7fb8d50ddc`) is decoded, never a leg; no batched variant observed.
+- Live verification (`crates/scout-engine/tests/dflow_swap_legs.rs`): 6 fixtures, 86 successful
+  txs, 248 hops — every hop exact on ≥1 side via its venue CPI (in 195, out 223, both 170);
+  intermediates conserved 92/93 (one 1-lamport rounding on a curve hop); signer token edge 78/78;
+  USDC edge never exact (−27…+200 bps; fees), so consideration stays the wallet's own delta.
+- Effect: route swaps 38→49 (9oC3), 68→77 (tAwv); remaining unbooked route-shaped txs 2 / 2, all via
+  `proVF4pM…` (no verified events). §4's example of an unevidenced router is now `proVF4pM…`.
+  Ledger/7, trade qualification v8.

@@ -644,11 +644,13 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
             );
             eprintln!(
                 "    coverage gaps: malformed_trades={} orphan_events={} jupiter_malformed={} \
-                 jupiter_unknown={}",
+                 jupiter_unknown={} dflow_malformed={} dflow_unknown={}",
                 t.malformed_trades,
                 t.orphan_events,
                 t.jupiter_malformed_events,
-                t.jupiter_unknown_events
+                t.jupiter_unknown_events,
+                t.dflow_malformed_events,
+                t.dflow_unknown_events
             );
             for e in &t.evidence_samples {
                 eprintln!(

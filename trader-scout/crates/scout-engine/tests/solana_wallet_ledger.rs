@@ -20,11 +20,12 @@ use scout_core::{
 use scout_dex_solana::{
     AMM_BUY_DISCRIMINATOR, AMM_BUY_EVENT_DISCRIMINATOR, AMM_SELL_DISCRIMINATOR,
     AMM_SELL_EVENT_DISCRIMINATOR, AmmAttribution, AmmTradeEventPairing,
-    BUY_INSTRUCTION_DISCRIMINATOR, BUY_V2_INSTRUCTION_DISCRIMINATOR, EVENT_CPI_DISCRIMINATOR,
-    JUPITER_EVENT_AUTHORITY_BYTES, JUPITER_SWAPS_EVENT_DISCRIMINATOR, JUPITER_V6_PROGRAM_ID_BYTES,
-    PUMP_AMM_PROGRAM_ID_BYTES, SELL_INSTRUCTION_DISCRIMINATOR, TRADE_EVENT_DISCRIMINATOR,
-    TradeEventPairing, TradeSide, WRAPPED_SOL_MINT, pair_trades_with_events,
-    reconcile_pump_amm_transaction,
+    BUY_INSTRUCTION_DISCRIMINATOR, BUY_V2_INSTRUCTION_DISCRIMINATOR, DFLOW_EVENT_AUTHORITY_BYTES,
+    DFLOW_FEE_EVENT_DISCRIMINATOR, DFLOW_SWAP_EVENT_DISCRIMINATOR, DFLOW_V4_PROGRAM_ID_BYTES,
+    EVENT_CPI_DISCRIMINATOR, JUPITER_EVENT_AUTHORITY_BYTES, JUPITER_SWAPS_EVENT_DISCRIMINATOR,
+    JUPITER_V6_PROGRAM_ID_BYTES, PUMP_AMM_PROGRAM_ID_BYTES, SELL_INSTRUCTION_DISCRIMINATOR,
+    TRADE_EVENT_DISCRIMINATOR, TradeEventPairing, TradeSide, WRAPPED_SOL_MINT,
+    pair_trades_with_events, reconcile_pump_amm_transaction,
 };
 use scout_engine::{
     EpisodeOutcome, LedgerDecoders, LedgerOptions, PUMP_BONDING_CURVE_PROGRAM_ID, QuoteUnit,
@@ -2195,7 +2196,9 @@ async fn router_wallet_pages_contain_no_atomic_round_trips() {
         assert_eq!(r.diagnostics.atomic_round_trip_sol_lamports, 0);
     }
     // ADR-015 (ledger/6): +2 / +6 route swaps whose only swap-leg evidence is
-    // a Jupiter v6 event (36 / 62 under ledger/5, see tests/jupiter_swap_legs.rs).
+    // a Jupiter v6 event (36 / 62 under ledger/5, see tests/jupiter_swap_legs.rs);
+    // ledger/7: +11 / +9 more whose only evidence is a DFlow v4 event
+    // (tests/dflow_swap_legs.rs).
     // ADR-013 (ledger/4): every successful signed tx with a FixtureVerified
     // pump leg on these pages is a route swap booked from the wallet's own
     // USDC/token deltas. ledger/3 had priced 3+7 of them from a hop's event
@@ -2211,7 +2214,7 @@ async fn router_wallet_pages_contain_no_atomic_round_trips() {
             a.trades.unsupported_quote,
             a.diagnostics.router_forward_trades_not_attributed,
         ),
-        (38, 38, 38, 0, 0, 0, 0)
+        (49, 49, 49, 0, 0, 0, 0)
     );
     assert_eq!(
         (
@@ -2223,7 +2226,7 @@ async fn router_wallet_pages_contain_no_atomic_round_trips() {
             b.trades.unsupported_quote,
             b.diagnostics.router_forward_trades_not_attributed,
         ),
-        (68, 68, 68, 0, 0, 0, 0)
+        (77, 77, 77, 0, 0, 0, 0)
     );
 }
 
@@ -2341,7 +2344,9 @@ async fn router_pages_are_booked_wallet_side_in_usdc() {
             ua.realized_trade_pnl_raw,
             ua.consumed_acquisition_basis_raw
         ),
-        (5, 0, 5, -24_745_390_534, 62_532_744_053)
+        // ledger/6 had (5, 0, 5, -24_745_390_534, 62_532_744_053); the DFlow-evidenced
+        // route swaps (ADR-015 amendment) close two more episodes, one in profit.
+        (7, 1, 6, -12_846_411_594, 70_832_744_053)
     );
     let ub = b.unit_block(QuoteUnit::UsdcUnits).unwrap();
     assert_eq!(
@@ -2358,7 +2363,7 @@ async fn router_pages_are_booked_wallet_side_in_usdc() {
     );
     assert_eq!(
         format_quote_money(QuoteUnit::UsdcUnits, ua.realized_trade_pnl_exact).unwrap(),
-        "-24745.390534"
+        "-12846.411594"
     );
 }
 
@@ -2998,6 +3003,214 @@ fn passthrough_rule_still_applies_with_jupiter_evidence() {
     let e = r.trades.route_swaps_by_evidence;
     assert_eq!(
         (r.trades.route_swaps, e.curve, e.jupiter, e.jupiter_only),
+        (1, 1, 1, 0)
+    );
+}
+
+// ---------------------------------------------------------------------
+// ADR-015 amendment: DFlow Aggregator v4 swap events as route evidence.
+// ---------------------------------------------------------------------
+
+/// DFlow `SwapEvent` event-CPI (`amm, input_mint, input_amount, output_mint,
+/// output_amount`), with `trailing` extra bytes and an optional authority.
+fn dflow_event_ix(hop: &JupHop, idx: u32, trailing: &[u8]) -> RawSolanaInstruction {
+    let (amm, im, ia, om, oa) = hop;
+    let mut data = EVENT_CPI_DISCRIMINATOR.to_vec();
+    data.extend(DFLOW_SWAP_EVENT_DISCRIMINATOR);
+    data.extend(amm);
+    data.extend(im);
+    data.extend(ia.to_le_bytes());
+    data.extend(om);
+    data.extend(oa.to_le_bytes());
+    data.extend_from_slice(trailing);
+    RawSolanaInstruction {
+        program_id: DFLOW_V4_PROGRAM_ID_BYTES,
+        accounts: vec![DFLOW_EVENT_AUTHORITY_BYTES],
+        data,
+        instruction_index: idx,
+    }
+}
+
+#[test]
+fn dflow_only_route_is_booked_from_wallet_deltas() {
+    let x = pk(77);
+    let hops = [
+        (dlmm(), usdc(), 5_000_000, x, 900),
+        (dlmm(), x, 900, pk(M1), 1000),
+    ];
+    let buy = jup_route_tx(
+        1,
+        1,
+        TradeSide::Buy,
+        M1,
+        1000,
+        5_002_500,
+        vec![
+            dflow_event_ix(&hops[0], 3, &[]),
+            dflow_event_ix(&hops[1], 4, &[]),
+        ],
+    );
+    let sell = jup_route_tx(
+        2,
+        2,
+        TradeSide::Sell,
+        M1,
+        1000,
+        5_000_000,
+        vec![dflow_event_ix(
+            &(dlmm(), pk(M1), 1000, usdc(), 5_100_000),
+            3,
+            &[],
+        )],
+    );
+    let r = run_both(&[buy.clone(), sell]);
+    assert_eq!(r.trades.route_swaps, 2);
+    let e = r.trades.route_swaps_by_evidence;
+    assert_eq!(
+        (
+            e.curve,
+            e.pump_amm,
+            e.jupiter,
+            e.jupiter_only,
+            e.dflow,
+            e.dflow_only
+        ),
+        (0, 0, 0, 0, 2, 2)
+    );
+    // Booked at the wallet's own deltas, never at the event amounts.
+    let (b, s) = (&r.route_swap_log[0], &r.route_swap_log[1]);
+    assert_eq!(
+        (b.side, b.token_amount, b.quote_amount),
+        (TradeSide::Buy, 1000, 5_002_500)
+    );
+    assert_eq!(
+        (s.side, s.token_amount, s.quote_amount),
+        (TradeSide::Sell, 1000, 5_000_000)
+    );
+    assert_eq!(rejected(&r), RouteRejections::default());
+    assert_eq!(r.diagnostics.dflow_malformed_events, 0);
+    // Without the event the same transaction is not a trade.
+    let mut bare = buy.clone();
+    bare.instructions.clear();
+    assert_eq!(run_both(&[bare]).trades.route_swaps, 0);
+    // Bonding-curve-only runs do not use aggregator evidence.
+    assert_eq!(run(&[buy]).trades.route_swaps, 0);
+}
+
+#[test]
+fn dflow_leg_not_trading_the_token_is_not_evidence() {
+    let hop = (dlmm(), usdc(), 5_000_000, pk(M2), 900);
+    let tx = jup_route_tx(
+        1,
+        1,
+        TradeSide::Buy,
+        M1,
+        1000,
+        5_000_000,
+        vec![dflow_event_ix(&hop, 3, &[])],
+    );
+    let r = run_both(&[tx]);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(rejected(&r).no_verified_leg, 1);
+    assert_eq!(r.trades.route_swaps_by_evidence.dflow, 0);
+}
+
+#[test]
+fn fee_event_is_never_a_leg_and_is_not_a_coverage_gap() {
+    let mut p = vec![1u8; 32];
+    p.extend_from_slice(&usdc());
+    p.extend_from_slice(&899_820u64.to_le_bytes());
+    let mut data = EVENT_CPI_DISCRIMINATOR.to_vec();
+    data.extend(DFLOW_FEE_EVENT_DISCRIMINATOR);
+    data.extend(p);
+    let fee = RawSolanaInstruction {
+        program_id: DFLOW_V4_PROGRAM_ID_BYTES,
+        accounts: vec![DFLOW_EVENT_AUTHORITY_BYTES],
+        data,
+        instruction_index: 3,
+    };
+    let tx = jup_route_tx(1, 1, TradeSide::Buy, M1, 1000, 5_000_000, vec![fee]);
+    let r = run_both(&[tx]);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.diagnostics.dflow_malformed_events, 0);
+    assert_eq!(r.diagnostics.dflow_unknown_events, 0);
+}
+
+#[test]
+fn malformed_dflow_event_is_not_trusted_and_is_counted_with_evidence() {
+    let hop = (dlmm(), usdc(), 5_000_000, pk(M1), 1000);
+    let tx = jup_route_tx(
+        9,
+        1,
+        TradeSide::Buy,
+        M1,
+        1000,
+        5_000_000,
+        vec![dflow_event_ix(&hop, 3, &[0])],
+    );
+    let r = run_both(&[tx]);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.diagnostics.dflow_malformed_events, 1);
+    assert_eq!(r.diagnostics.jupiter_malformed_events, 0);
+    assert_eq!(r.evidence_samples.len(), 1);
+    let e = &r.evidence_samples[0];
+    assert_eq!(e.signature, [9; 64]);
+    assert_eq!(e.program, DFLOW_V4_PROGRAM_ID_BYTES);
+    assert_eq!(e.variant_or_discriminator, "40c6cde8260871e2");
+    assert_eq!((e.data_len, e.accounts_len), (16 + 112 + 1, 1));
+    assert_eq!(e.program_name(), "dflow_v4");
+    // A wrong event authority is equally untrusted.
+    let mut wrong = dflow_event_ix(&hop, 3, &[]);
+    wrong.accounts = vec![JUPITER_EVENT_AUTHORITY_BYTES];
+    let tx = jup_route_tx(10, 2, TradeSide::Buy, M1, 1000, 5_000_000, vec![wrong]);
+    let r = run_both(&[tx]);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.diagnostics.dflow_malformed_events, 1);
+}
+
+#[test]
+fn unknown_dflow_event_is_counted() {
+    let mut ix = dflow_event_ix(&(dlmm(), usdc(), 1, pk(M1), 1), 3, &[]);
+    ix.data[8..16].copy_from_slice(&JUPITER_SWAPS_EVENT_DISCRIMINATOR);
+    let tx = jup_route_tx(1, 1, TradeSide::Buy, M1, 1000, 5_000_000, vec![ix]);
+    let r = run_both(&[tx]);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.diagnostics.dflow_unknown_events, 1);
+}
+
+#[test]
+fn passthrough_rule_still_applies_with_dflow_evidence() {
+    let hop = (dlmm(), usdc(), 5_000_000, pk(M1), 1000);
+    let leg_ixs = |ts: i64| {
+        vec![
+            trade_ix(TradeSide::Buy, None, PASS, M1, 0),
+            event_ix(
+                &Ev {
+                    mint: M1,
+                    user: PASS,
+                    is_buy: true,
+                    sol: HOP_EVENT_SOL,
+                    tokens: 1000,
+                    fee: 0,
+                    creator_fee: 0,
+                    ts,
+                },
+                1,
+            ),
+            dflow_event_ix(&hop, 2, &[]),
+        ]
+    };
+    let mut tx = jup_route_tx(1, 1, TradeSide::Buy, M1, 1000, 5_000_000, leg_ixs(1_001));
+    tx.token_balance_changes.push(bal(M1, PASS, 0, 7));
+    let r = run_both(&[tx]);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(rejected(&r).passthrough_nonzero, 1);
+    let mut ok = jup_route_tx(2, 2, TradeSide::Buy, M1, 1000, 5_000_000, leg_ixs(1_002));
+    ok.token_balance_changes.push(bal(M1, PASS, 100, 100));
+    let r = run_both(&[ok]);
+    let e = r.trades.route_swaps_by_evidence;
+    assert_eq!(
+        (r.trades.route_swaps, e.curve, e.dflow, e.dflow_only),
         (1, 1, 1, 0)
     );
 }

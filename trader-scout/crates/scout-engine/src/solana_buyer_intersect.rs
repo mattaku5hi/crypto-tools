@@ -157,15 +157,15 @@ impl SolanaProtocolScope {
                          FixtureVerified variant, the wallet's own legs reconcile with the events, \
                          side in token terms, reversed pools inverted, ADR-012; router-forwards \
                          are not attributed); route swaps (ADR-013 rule: signer wallet, \
-                         FixtureVerified swap leg = pump leg or Jupiter v6 SwapEvent/SwapsEvent \
-                         hop trading the token (ADR-015, evidence only, no ownership), one \
+                         FixtureVerified swap leg = pump leg, Jupiter v6 SwapEvent/SwapsEvent or \
+                         DFlow v4 SwapEvent hop trading the token (ADR-015, evidence only, no ownership), one \
                          traded token vs one SOL/USDC/USDT quote, pass-through leg users \
                          netting zero; side = sign of the wallet's own delta). Never transfers or airdrops, never routers, relayers or fee \
                          payers. IdlOnly variants are decoded but never qualify (counted, \
                          coverage incomplete)",
             not_decoded: "Raydium, Meteora (DLMM), Orca Whirlpool and Jupiter's venue hops \
-                          themselves (routes without a pump leg or a Jupiter v6 swap event, e.g. \
-                          unidentified routers), PumpSwap liquidity/non-trade instructions \
+                          themselves (routes without a pump leg or a Jupiter v6 / DFlow v4 swap event, \
+                          e.g. unidentified routers), PumpSwap liquidity/non-trade instructions \
                           and every other venue; the wallet set is a lower bound (a wallet that \
                           traded only there is not found)",
         }
@@ -190,14 +190,14 @@ impl SolanaProtocolScope {
                          reversed pools), each priced from its paired event; PumpSwap trades are \
                          attributed only when the wallet's own owner-keyed legs reconcile \
                          (ADR-012); route swaps (ADR-013: signer wallet, FixtureVerified swap \
-                         leg = pump leg or Jupiter v6 SwapEvent/SwapsEvent hop trading the token \
-                         (ADR-015), one traded token vs one SOL/USDC/USDT quote asset, \
+                         leg = pump leg, Jupiter v6 SwapEvent/SwapsEvent or DFlow v4 SwapEvent hop \
+                         trading the token (ADR-015), one traded token vs one SOL/USDC/USDT quote asset, \
                          pass-through leg users netting zero) are booked from the wallet's own deltas in the \
                          quote's unit; PnL is per quote unit (SOL, USDC, USDT), never mixed; \
                          one FIFO per (wallet, mint) across venues",
             not_decoded: "Raydium, Meteora, Orca and Jupiter's venue hops themselves (a route \
-                          is recognized only through a FixtureVerified pump leg or a Jupiter v6 \
-                          swap event, plus the wallet's own deltas), PumpSwap liquidity/non-trade instructions and every \
+                          is recognized only through a FixtureVerified pump leg or a Jupiter v6 / \
+                          DFlow v4 swap event, plus the wallet's own deltas), PumpSwap liquidity/non-trade instructions and every \
                           other venue; token movements there are continuity breaks (Unknown), \
                           never zero PnL; bot/platform fees stay outside trade PnL (ADR-010 §5)",
         }
@@ -298,6 +298,9 @@ pub struct TradeAttributionDiagnostics {
     /// unknown discriminator (never trusted as swap evidence). COVERAGE GAP.
     pub jupiter_malformed_events: u64,
     pub jupiter_unknown_events: u64,
+    /// ADR-015 amendment: the same for DFlow Aggregator v4 events.
+    pub dflow_malformed_events: u64,
+    pub dflow_unknown_events: u64,
     /// Up to 5 samples (canonical chain order) of malformed trade
     /// instructions, unknown discriminators and orphan events of this token's
     /// transactions, so each counter can be traced to a signature.
@@ -360,6 +363,8 @@ impl TradeAttributionDiagnostics {
         self.jupiter_malformed_events =
             s(self.jupiter_malformed_events, o.jupiter_malformed_events);
         self.jupiter_unknown_events = s(self.jupiter_unknown_events, o.jupiter_unknown_events);
+        self.dflow_malformed_events = s(self.dflow_malformed_events, o.dflow_malformed_events);
+        self.dflow_unknown_events = s(self.dflow_unknown_events, o.dflow_unknown_events);
         merge_evidence(
             &mut self.evidence_samples,
             o.evidence_samples.iter().cloned(),
@@ -612,6 +617,18 @@ impl SolanaBuyerIntersectReport {
                 self.trade.jupiter_unknown_events
             ));
         }
+        if self.trade.dflow_malformed_events > 0 {
+            reasons.push(format!(
+                "{} DFlow event(s) did not decode exactly (not used as swap evidence)",
+                self.trade.dflow_malformed_events
+            ));
+        }
+        if self.trade.dflow_unknown_events > 0 {
+            reasons.push(format!(
+                "{} DFlow event(s) with an unknown discriminator",
+                self.trade.dflow_unknown_events
+            ));
+        }
         if self.unexpected_payloads > 0 {
             reasons.push(format!(
                 "{} envelope(s) were not Solana transactions",
@@ -849,6 +866,12 @@ fn qualify_transaction(
     t.jupiter_unknown_events = t
         .jupiter_unknown_events
         .saturating_add(attribution.jupiter_unknown);
+    t.dflow_malformed_events = t
+        .dflow_malformed_events
+        .saturating_add(attribution.dflow_malformed);
+    t.dflow_unknown_events = t
+        .dflow_unknown_events
+        .saturating_add(attribution.dflow_unknown);
     merge_evidence(
         &mut t.evidence_samples,
         attribution.evidence.iter().cloned(),

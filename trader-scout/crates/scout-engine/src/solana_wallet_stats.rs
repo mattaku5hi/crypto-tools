@@ -469,6 +469,18 @@ async fn scan_wallet(
             d.jupiter_unknown_events
         ));
     }
+    if d.dflow_malformed_events > 0 {
+        reasons.push(format!(
+            "{} DFlow event(s) did not decode exactly (not used as swap evidence)",
+            d.dflow_malformed_events
+        ));
+    }
+    if d.dflow_unknown_events > 0 {
+        reasons.push(format!(
+            "{} DFlow event(s) with an unknown discriminator",
+            d.dflow_unknown_events
+        ));
+    }
     if ledger.trades.idl_only_variant > 0 {
         reasons.push(format!(
             "{} trade(s) via IdlOnly variant without verified fixture",

@@ -11,8 +11,8 @@
 
 use scout_core::{RawSolanaInstruction, RawSolanaTransaction, SolanaPubkey};
 use scout_dex_solana::{
-    JupiterEventDecoder, JupiterEventOutcome, PumpAmmInstructionOutcome, PumpEventOutcome,
-    PumpInstructionOutcome, hex8,
+    DflowEventDecoder, DflowEventOutcome, JupiterEventDecoder, JupiterEventOutcome,
+    PumpAmmInstructionOutcome, PumpEventOutcome, PumpInstructionOutcome, hex8,
 };
 
 use crate::solana_wallet_ledger::LedgerDecoders;
@@ -100,6 +100,8 @@ pub fn program_name(program: &SolanaPubkey) -> &'static str {
         "pump_amm"
     } else if *program == scout_dex_solana::JUPITER_V6_PROGRAM_ID_BYTES {
         "jupiter_v6"
+    } else if *program == scout_dex_solana::DFLOW_V4_PROGRAM_ID_BYTES {
+        "dflow_v4"
     } else {
         "pump_curve"
     }
@@ -154,6 +156,8 @@ pub(crate) struct TxScan {
     pub unknown_discriminators: u64,
     pub jupiter_malformed: u64,
     pub jupiter_unknown: u64,
+    pub dflow_malformed: u64,
+    pub dflow_unknown: u64,
 }
 
 impl TxScan {
@@ -185,7 +189,7 @@ impl TxScan {
 
 /// Scan every instruction of a transaction for coverage gaps.
 /// `orphans` are `(instruction_index, event name)` of events the pairing
-/// found unclaimed. `jupiter` enables the Jupiter event gate.
+/// found unclaimed. `jupiter` enables the aggregator (Jupiter and DFlow) event gates.
 pub(crate) fn scan_tx_evidence(
     tx: &RawSolanaTransaction,
     decoders: &LedgerDecoders<'_>,
@@ -298,6 +302,29 @@ pub(crate) fn scan_tx_evidence(
                         EvidenceKind::UnknownDiscriminator,
                         hex8(&discriminator),
                         "Jupiter event discriminator is not in the pinned IDL or ADR-015",
+                    );
+                }
+                _ => {}
+            }
+            match DflowEventDecoder::new().classify(ix) {
+                DflowEventOutcome::Malformed { reason } => {
+                    scan.dflow_malformed = scan.dflow_malformed.saturating_add(1);
+                    scan.push(
+                        tx,
+                        ix,
+                        EvidenceKind::MalformedEvent,
+                        discriminator_hex(ix, 8),
+                        &reason,
+                    );
+                }
+                DflowEventOutcome::UnknownEvent { discriminator } => {
+                    scan.dflow_unknown = scan.dflow_unknown.saturating_add(1);
+                    scan.push(
+                        tx,
+                        ix,
+                        EvidenceKind::UnknownDiscriminator,
+                        hex8(&discriminator),
+                        "DFlow event discriminator is not in the pinned schema source",
                     );
                 }
                 _ => {}

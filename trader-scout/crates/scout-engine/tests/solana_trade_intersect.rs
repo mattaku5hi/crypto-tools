@@ -24,7 +24,8 @@ use scout_core::{
     SolanaExecutionStatus, SolanaPubkey, SolanaTokenBalanceChange, WalletKey,
 };
 use scout_dex_solana::{
-    AmmAttribution, BUY_INSTRUCTION_DISCRIMINATOR, EVENT_CPI_DISCRIMINATOR,
+    AmmAttribution, BUY_INSTRUCTION_DISCRIMINATOR, DFLOW_EVENT_AUTHORITY_BYTES,
+    DFLOW_SWAP_EVENT_DISCRIMINATOR, DFLOW_V4_PROGRAM_ID_BYTES, EVENT_CPI_DISCRIMINATOR,
     JUPITER_EVENT_AUTHORITY_BYTES, JUPITER_SWAPS_EVENT_DISCRIMINATOR, JUPITER_V6_PROGRAM_ID_BYTES,
     PumpTradeVariant, SELL_INSTRUCTION_DISCRIMINATOR, VariantVerification, WRAPPED_SOL_MINT,
     reconcile_pump_amm_transaction,
@@ -284,7 +285,8 @@ async fn router_forwarded_pumpswap_user_is_not_attributed() {
 async fn route_swap_signer_is_attributed_on_both_sides() {
     // router_wallet_9oC3: the wallet signs ADR-013 route swaps whose decoded
     // pump legs belong to pass-through users. Hand counts (route venue):
-    // GAwhc 12 buys / 2 sells, 8dBn 5 / 8.
+    // GAwhc 12 buys / 2 sells, 8dBn 5 / 8 (ledger/7: 8dBn is 5 / 10 since two
+    // more sells are proven by DFlow v4 swap events, ADR-015 amendment).
     let mints = [
         "GAwhcphCqCv5bKHmCiN4VDdNWfbXJL4npmkc8L3Q9S9H",
         "8dBnKHwNYH3hz2fFTJczVwzBTpJFAMtc53k3uA4zpump",
@@ -310,10 +312,10 @@ async fn route_swap_signer_is_attributed_on_both_sides() {
             d.buy.as_ref().unwrap().count,
             d.sell.as_ref().unwrap().count
         ),
-        (5, 8)
+        (5, 10)
     );
     assert_eq!(r.trade.ops(Venue::Route, TradeSide::Buy), 17);
-    assert_eq!(r.trade.ops(Venue::Route, TradeSide::Sell), 10);
+    assert_eq!(r.trade.ops(Venue::Route, TradeSide::Sell), 12);
     // Only the signer wallet is a match: no pass-through leg user, relayer
     // or fee payer.
     assert_eq!(r.side_hits.len(), 1);
@@ -956,6 +958,77 @@ async fn jupiter_leg_makes_a_signer_route_swap_a_hit_in_buyer_intersect() {
     assert_eq!(r.trade.ops(Venue::Route, TradeSide::Buy), 1);
     assert_eq!(r.trade.ops(Venue::Route, TradeSide::Sell), 1);
     // Relayer (fee payer) and the Jupiter venue are never attributed.
+    assert_eq!(r.side_hits.len(), 1);
+}
+
+/// Same as `jupiter_route_tx`, but the evidence is a DFlow v4 `SwapEvent`
+/// (`amm, input_mint, input_amount, output_mint, output_amount`).
+fn dflow_route_tx(
+    buy: bool,
+    trade_mint: u8,
+    sig: u8,
+    slot: u64,
+    with_event: bool,
+    malformed: bool,
+) -> RawSolanaTransaction {
+    let mut tx = jupiter_route_tx(buy, trade_mint, sig, slot, false);
+    let usdc = pubkey(USDC_MINT);
+    let (input, in_amt, output, out_amt) = if buy {
+        (usdc, 5_000_000u64, pk(trade_mint), 1_000u64)
+    } else {
+        (pk(trade_mint), 1_000u64, usdc, 5_000_000u64)
+    };
+    let mut data = EVENT_CPI_DISCRIMINATOR.to_vec();
+    data.extend(DFLOW_SWAP_EVENT_DISCRIMINATOR);
+    data.extend(pk(0x77));
+    data.extend(input);
+    data.extend(in_amt.to_le_bytes());
+    data.extend(output);
+    data.extend(out_amt.to_le_bytes());
+    if malformed {
+        data.push(0);
+    }
+    if with_event {
+        tx.instructions.push(RawSolanaInstruction {
+            program_id: DFLOW_V4_PROGRAM_ID_BYTES,
+            accounts: vec![DFLOW_EVENT_AUTHORITY_BYTES],
+            data,
+            instruction_index: 1,
+        });
+    }
+    tx
+}
+
+#[tokio::test]
+async fn dflow_leg_makes_a_signer_route_swap_a_hit_in_buyer_intersect() {
+    let provider = scripted(vec![(
+        10,
+        vec![
+            dflow_route_tx(true, 10, 1, 100, true, false),
+            dflow_route_tx(false, 10, 2, 101, true, false),
+            // Same movements with no decoded evidence: a transfer-shaped tx.
+            dflow_route_tx(true, 10, 3, 102, false, false),
+            // A DFlow hop that does not trade token 10 is not evidence for it.
+            dflow_route_tx(true, 11, 4, 103, true, false),
+            // A malformed DFlow event is never evidence (counted).
+            dflow_route_tx(true, 10, 5, 104, true, true),
+        ],
+        false,
+    )]);
+    let r = run(&provider, &[10], 1, opts(SideFilter::Any)).await;
+    assert_eq!(r.base.matches.len(), 1);
+    let hits = &r.side_hits[&wallet(1)][&token(10)];
+    let (b, s) = (hits.buy.clone().unwrap(), hits.sell.clone().unwrap());
+    assert_eq!(
+        (b.venue, b.variant, b.count),
+        (Venue::Route, "route_swap", 1)
+    );
+    assert_eq!((s.venue, s.count), (Venue::Route, 1));
+    assert_eq!(r.trade.ops(Venue::Route, TradeSide::Buy), 1);
+    assert_eq!(r.trade.ops(Venue::Route, TradeSide::Sell), 1);
+    assert_eq!(r.trade.dflow_malformed_events, 1);
+    assert_eq!(r.trade.dflow_unknown_events, 0);
+    // Relayer (fee payer) and the DFlow program are never attributed.
     assert_eq!(r.side_hits.len(), 1);
 }
 

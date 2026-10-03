@@ -73,7 +73,7 @@ pub const SOLANA_BUY_QUALIFICATION_VERSION: &str = "pump-bonding-curve-buy/idl-e
 /// Rule identifier of the `buyer-intersect` trade-side qualification
 /// (ADR-014): bonding-curve buys and sells, PumpSwap trades and ADR-013
 /// route swaps, side in token terms.
-pub const SOLANA_TRADE_QUALIFICATION_VERSION: &str = "solana-trade-qualification/v7 (curve+pumpswap+route, ADR-014, ADR-009 26-byte track_volume, ADR-015 Jupiter route legs)";
+pub const SOLANA_TRADE_QUALIFICATION_VERSION: &str = "solana-trade-qualification/v8 (curve+pumpswap+route, ADR-014, ADR-009 26-byte track_volume, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
 
 /// Why the confirmed deployment scope could not be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
