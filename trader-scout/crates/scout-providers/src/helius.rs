@@ -251,6 +251,176 @@ pub struct HeliusProvider {
     /// Windowed newest-first scan (ADR-011 §2): stop paging after the first
     /// page holding a transaction with `blockTime < stop_before_block_time`.
     stop_before_block_time: Option<i64>,
+    options: HeliusRequestOptions,
+    /// Explicit `with_max_response_bytes` value; wins over the cap derived
+    /// from `page_limit` regardless of builder call order.
+    explicit_max_response_bytes: Option<usize>,
+}
+
+/// Per-page transaction count requested by default (`limit`).
+pub const DEFAULT_PAGE_LIMIT: u32 = 100;
+/// Helius' documented maximum `limit` for `full` mode.
+pub const MAX_PAGE_LIMIT: u32 = 1000;
+/// Measured size of one `full`-mode transaction (about 20 KB, P0.6).
+const APPROX_BYTES_PER_TX: usize = 20 * 1024;
+/// Hard ceiling for the response cap derived from the page limit.
+pub const MAX_DERIVED_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+/// `page_limit` above which the response cap is raised from the default.
+const DERIVED_CAP_THRESHOLD: u32 = 500;
+
+/// `filters.status` of `getTransactionsForAddress`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub enum StatusFilter {
+    /// Provider default (`any`); the key is NOT sent.
+    #[default]
+    Any,
+    /// Only succeeded transactions. Failed transactions become INVISIBLE,
+    /// so consumers that need failed-tx fees (wallet PnL overhead,
+    /// ADR-004) must not set this.
+    Succeeded,
+    /// Only failed transactions.
+    Failed,
+}
+
+/// `filters.tokenAccounts` of `getTransactionsForAddress`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub enum TokenAccountsFilter {
+    /// Provider default (`none`: only transactions referencing the
+    /// address itself); the key is NOT sent.
+    #[default]
+    None,
+    /// Also transactions that changed the balance of a token account owned
+    /// by the address (recommended by Helius for wallets).
+    BalanceChanged,
+    /// All token-account transactions.
+    All,
+}
+
+/// Effective request-shaping options, echoed into reports/fixtures.
+/// Defaults reproduce the pre-options request byte-for-byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct HeliusRequestOptions {
+    pub page_limit: u32,
+    pub status: StatusFilter,
+    /// `filters.blockTime.gte` (unix seconds, inclusive).
+    pub block_time_gte: Option<i64>,
+    /// `filters.blockTime.lt` (unix seconds, exclusive).
+    pub block_time_lt: Option<i64>,
+    pub token_accounts: TokenAccountsFilter,
+}
+
+impl Default for HeliusRequestOptions {
+    fn default() -> Self {
+        Self {
+            page_limit: DEFAULT_PAGE_LIMIT,
+            status: StatusFilter::Any,
+            block_time_gte: None,
+            block_time_lt: None,
+            token_accounts: TokenAccountsFilter::None,
+        }
+    }
+}
+
+impl HeliusRequestOptions {
+    /// One-line human description for stderr scope lines. Unset filters
+    /// print as `any`/`none`/`-`.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let status = match self.status {
+            StatusFilter::Any => "any",
+            StatusFilter::Succeeded => "succeeded",
+            StatusFilter::Failed => "failed",
+        };
+        let token_accounts = match self.token_accounts {
+            TokenAccountsFilter::None => "none",
+            TokenAccountsFilter::BalanceChanged => "balanceChanged",
+            TokenAccountsFilter::All => "all",
+        };
+        let t = |v: Option<i64>| v.map_or_else(|| "-".to_string(), |v| v.to_string());
+        format!(
+            "page_limit={} status={status} block_time_gte={} block_time_lt={} token_accounts={token_accounts}",
+            self.page_limit,
+            t(self.block_time_gte),
+            t(self.block_time_lt),
+        )
+    }
+
+    /// The `filters` object, or `None` when no key is set (never an empty
+    /// object).
+    #[must_use]
+    pub fn filters_json(&self) -> Option<serde_json::Value> {
+        let mut filters = serde_json::Map::new();
+        match self.status {
+            StatusFilter::Any => {}
+            StatusFilter::Succeeded => {
+                filters.insert("status".into(), "succeeded".into());
+            }
+            StatusFilter::Failed => {
+                filters.insert("status".into(), "failed".into());
+            }
+        }
+        let mut block_time = serde_json::Map::new();
+        if let Some(gte) = self.block_time_gte {
+            block_time.insert("gte".into(), gte.into());
+        }
+        if let Some(lt) = self.block_time_lt {
+            block_time.insert("lt".into(), lt.into());
+        }
+        if !block_time.is_empty() {
+            filters.insert("blockTime".into(), block_time.into());
+        }
+        match self.token_accounts {
+            TokenAccountsFilter::None => {}
+            TokenAccountsFilter::BalanceChanged => {
+                filters.insert("tokenAccounts".into(), "balanceChanged".into());
+            }
+            TokenAccountsFilter::All => {
+                filters.insert("tokenAccounts".into(), "all".into());
+            }
+        }
+        if filters.is_empty() {
+            None
+        } else {
+            Some(filters.into())
+        }
+    }
+
+    /// The full options object (2nd RPC param) for one page.
+    #[must_use]
+    pub fn request_options_json(
+        &self,
+        sort_order: &str,
+        pagination_token: Option<&str>,
+    ) -> serde_json::Value {
+        let mut options = serde_json::json!({
+            "transactionDetails": "full",
+            "sortOrder": sort_order,
+            "limit": self.page_limit,
+        });
+        if let Some(map) = options.as_object_mut() {
+            if let Some(token) = pagination_token {
+                map.insert("paginationToken".to_string(), token.into());
+            }
+            if let Some(filters) = self.filters_json() {
+                map.insert("filters".to_string(), filters);
+            }
+        }
+        options
+    }
+
+    /// Response-size cap implied by `page_limit`: the `RpcClient` default
+    /// up to 500 txs per page, then ~20 KB/tx scaled, never above 64 MiB.
+    #[must_use]
+    pub fn derived_max_response_bytes(&self) -> usize {
+        if self.page_limit <= DERIVED_CAP_THRESHOLD {
+            return scout_rpc::DEFAULT_MAX_RESPONSE_BYTES;
+        }
+        let pages = usize::try_from(self.page_limit).unwrap_or(usize::MAX);
+        pages.saturating_mul(APPROX_BYTES_PER_TX).clamp(
+            scout_rpc::DEFAULT_MAX_RESPONSE_BYTES,
+            MAX_DERIVED_RESPONSE_BYTES,
+        )
+    }
 }
 
 /// Which end of an address's history `scan()` starts from.
@@ -319,6 +489,8 @@ impl HeliusProvider {
             max_pages: DEFAULT_MAX_PAGES_PER_SCAN,
             scan_order: ScanOrder::default(),
             stop_before_block_time: None,
+            options: HeliusRequestOptions::default(),
+            explicit_max_response_bytes: None,
         })
     }
 
@@ -336,6 +508,7 @@ impl HeliusProvider {
     /// `scout_rpc::DEFAULT_MAX_RESPONSE_BYTES`).
     #[must_use]
     pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.explicit_max_response_bytes = Some(max_response_bytes);
         self.client = self.client.with_max_response_bytes(max_response_bytes);
         self
     }
@@ -356,6 +529,58 @@ impl HeliusProvider {
     #[must_use]
     pub fn total_requests_made(&self) -> u64 {
         self.client.total_requests_made()
+    }
+
+    /// Sets `limit` per page (1..=1000, default 100). Out-of-range values
+    /// are clamped. A `full`-mode transaction measured ~20 KB, so a
+    /// 1000-tx page (~20 MB) can exceed the 16 MiB `RpcClient` body cap;
+    /// above 500 the cap is raised to `page_limit * 20 KiB`, never above
+    /// 64 MiB, unless `with_max_response_bytes` set it explicitly (that
+    /// always wins). `max_pages` stays a PAGE budget: the transaction
+    /// budget is `max_pages * page_limit`. Credits: 10 per 100 returned
+    /// txs, so larger pages do not change cost per tx.
+    #[must_use]
+    pub fn with_page_limit(mut self, page_limit: u32) -> Self {
+        self.options.page_limit = page_limit.clamp(1, MAX_PAGE_LIMIT);
+        if self.explicit_max_response_bytes.is_none() {
+            let cap = self.options.derived_max_response_bytes();
+            self.client = self.client.with_max_response_bytes(cap);
+        }
+        self
+    }
+
+    /// Sets `filters.status`. `Succeeded` hides failed transactions
+    /// entirely; do not use it where failed-tx fees matter.
+    #[must_use]
+    pub fn with_status_filter(mut self, status: StatusFilter) -> Self {
+        self.options.status = status;
+        self
+    }
+
+    /// Server-side `filters.blockTime` range: `gte` inclusive, `lt`
+    /// exclusive (unix seconds). With a range set, a scan that ends
+    /// without truncation is complete for the window; no newest-first
+    /// boundary walk is needed. Compatible with
+    /// `with_stop_before_block_time` (the boundary then never fires, as
+    /// the server returns nothing older than `gte`).
+    #[must_use]
+    pub fn with_block_time_range(mut self, gte: Option<i64>, lt: Option<i64>) -> Self {
+        self.options.block_time_gte = gte;
+        self.options.block_time_lt = lt;
+        self
+    }
+
+    /// Sets `filters.tokenAccounts`.
+    #[must_use]
+    pub fn with_token_accounts(mut self, token_accounts: TokenAccountsFilter) -> Self {
+        self.options.token_accounts = token_accounts;
+        self
+    }
+
+    /// Effective request options (for run metadata and fixtures).
+    #[must_use]
+    pub fn request_options(&self) -> HeliusRequestOptions {
+        self.options
     }
 
     /// Sets the history direction (default `ScanOrder::OldestFirst`).
@@ -941,11 +1166,7 @@ impl HeliusProvider {
 
             let sent_token = state.token.take();
             let page = self
-                .fetch_transactions_page(
-                    &state.address,
-                    MAX_TRANSACTIONS_PER_SCAN,
-                    sent_token.as_deref(),
-                )
+                .fetch_transactions_page(&state.address, sent_token.as_deref())
                 .await;
             state.pages_fetched += 1;
 
@@ -1021,17 +1242,11 @@ impl HeliusProvider {
     async fn fetch_transactions_page(
         &self,
         address: &str,
-        limit: u32,
         pagination_token: Option<&str>,
     ) -> Result<(Vec<RawSolanaTransaction>, Option<String>), ProviderError> {
-        let mut options = serde_json::json!({
-            "transactionDetails": "full",
-            "sortOrder": self.scan_order.as_sort_order(),
-            "limit": limit,
-        });
-        if let (Some(token), Some(map)) = (pagination_token, options.as_object_mut()) {
-            map.insert("paginationToken".to_string(), token.into());
-        }
+        let options = self
+            .options
+            .request_options_json(self.scan_order.as_sort_order(), pagination_token);
         let params = serde_json::json!([address, options]);
 
         let result: TransactionsForAddressResult = self
@@ -1047,11 +1262,6 @@ impl HeliusProvider {
         Ok((transactions, result.pagination_token))
     }
 }
-
-/// Maximum transactions requested per page (`limit`). Helius caps `full`
-/// mode at 1,000 per call per its own docs; 100 is deliberately
-/// conservative, not a measured budget (P0.6/P0.8).
-const MAX_TRANSACTIONS_PER_SCAN: u32 = 100;
 
 /// Default page budget per `scan()` call. A conservative, UNMEASURED
 /// value -- not a measured budget (that is P0.6/P0.8). Override with
@@ -2426,5 +2636,167 @@ mod tests {
                 tx.unwrap();
             }
         }
+    }
+
+    async fn request_options_sent(server: &MockServer) -> Vec<serde_json::Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+                body["params"][1].clone()
+            })
+            .collect()
+    }
+
+    async fn first_request_options(
+        configure: impl FnOnce(HeliusProvider) -> HeliusProvider,
+    ) -> serde_json::Value {
+        let server = paged_server(vec![("", page(&[1], None))]).await;
+        drain(&configure(provider(&server, 10)), CancellationToken::new()).await;
+        request_options_sent(&server).await.remove(0)
+    }
+
+    #[tokio::test]
+    async fn defaults_send_the_legacy_request_exactly() {
+        let options = first_request_options(|p| p).await;
+        assert_eq!(
+            options,
+            json!({"transactionDetails": "full", "sortOrder": "asc", "limit": 100})
+        );
+        // Byte-for-byte: no `filters` key, not even an empty object.
+        assert!(options.get("filters").is_none());
+    }
+
+    #[tokio::test]
+    async fn page_limit_is_sent_and_clamped() {
+        assert_eq!(
+            first_request_options(|p| p.with_page_limit(1000)).await["limit"],
+            1000
+        );
+        assert_eq!(
+            first_request_options(|p| p.with_page_limit(5000)).await["limit"],
+            1000
+        );
+        assert_eq!(
+            first_request_options(|p| p.with_page_limit(0)).await["limit"],
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn status_filter_request_json() {
+        assert_eq!(
+            first_request_options(|p| p.with_status_filter(StatusFilter::Succeeded)).await,
+            json!({"transactionDetails": "full", "sortOrder": "asc", "limit": 100,
+                   "filters": {"status": "succeeded"}})
+        );
+        assert_eq!(
+            first_request_options(|p| p.with_status_filter(StatusFilter::Failed)).await["filters"],
+            json!({"status": "failed"})
+        );
+        // `Any` is the provider default: no filters key at all.
+        assert!(
+            first_request_options(|p| p.with_status_filter(StatusFilter::Any))
+                .await
+                .get("filters")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn block_time_range_request_json() {
+        let both = first_request_options(|p| p.with_block_time_range(Some(100), Some(200))).await;
+        assert_eq!(
+            both["filters"],
+            json!({"blockTime": {"gte": 100, "lt": 200}})
+        );
+        let gte_only = first_request_options(|p| p.with_block_time_range(Some(100), None)).await;
+        assert_eq!(gte_only["filters"], json!({"blockTime": {"gte": 100}}));
+        let lt_only = first_request_options(|p| p.with_block_time_range(None, Some(200))).await;
+        assert_eq!(lt_only["filters"], json!({"blockTime": {"lt": 200}}));
+        let none = first_request_options(|p| p.with_block_time_range(None, None)).await;
+        assert!(none.get("filters").is_none());
+    }
+
+    #[tokio::test]
+    async fn token_accounts_request_json() {
+        assert_eq!(
+            first_request_options(|p| p.with_token_accounts(TokenAccountsFilter::BalanceChanged))
+                .await["filters"],
+            json!({"tokenAccounts": "balanceChanged"})
+        );
+        assert_eq!(
+            first_request_options(|p| p.with_token_accounts(TokenAccountsFilter::All)).await["filters"],
+            json!({"tokenAccounts": "all"})
+        );
+        assert!(
+            first_request_options(|p| p.with_token_accounts(TokenAccountsFilter::None))
+                .await
+                .get("filters")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn all_options_combined_and_token_follows_pages() {
+        let server = paged_server(vec![
+            ("", page(&[1], Some("1:2"))),
+            ("1:2", page(&[2], None)),
+        ])
+        .await;
+        let p = provider(&server, 10)
+            .with_page_limit(250)
+            .with_status_filter(StatusFilter::Succeeded)
+            .with_block_time_range(Some(10), Some(20))
+            .with_token_accounts(TokenAccountsFilter::BalanceChanged)
+            .with_scan_order(ScanOrder::NewestFirst);
+        drain(&p, CancellationToken::new()).await;
+        let filters = json!({
+            "status": "succeeded",
+            "blockTime": {"gte": 10, "lt": 20},
+            "tokenAccounts": "balanceChanged"
+        });
+        assert_eq!(
+            request_options_sent(&server).await,
+            vec![
+                json!({"transactionDetails": "full", "sortOrder": "desc", "limit": 250,
+                       "filters": filters}),
+                json!({"transactionDetails": "full", "sortOrder": "desc", "limit": 250,
+                       "paginationToken": "1:2", "filters": filters}),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn server_window_is_compatible_with_stop_before_block_time() {
+        // Server already bounds the window, so no tx is older than `since`:
+        // the boundary never fires and pagination runs to its natural end.
+        let server =
+            paged_server(vec![("", page(&[3], Some("t1"))), ("t1", page(&[2], None))]).await;
+        let p = provider(&server, 10)
+            .with_scan_order(ScanOrder::NewestFirst)
+            .with_block_time_range(Some(0), Some(i64::MAX))
+            .with_stop_before_block_time(Some(0));
+        let out = drain(&p, CancellationToken::new()).await;
+        assert_eq!(out, vec![Some((3, false)), Some((2, false))]);
+    }
+
+    #[test]
+    fn derived_response_cap_scales_above_500_and_never_exceeds_64_mib() {
+        let cap = |limit: u32| {
+            HeliusRequestOptions {
+                page_limit: limit,
+                ..HeliusRequestOptions::default()
+            }
+            .derived_max_response_bytes()
+        };
+        assert_eq!(cap(100), scout_rpc::DEFAULT_MAX_RESPONSE_BYTES);
+        assert_eq!(cap(500), scout_rpc::DEFAULT_MAX_RESPONSE_BYTES);
+        assert_eq!(cap(1000), 1000 * 20 * 1024);
+        assert!(cap(1000) > scout_rpc::DEFAULT_MAX_RESPONSE_BYTES);
+        assert!(cap(u32::MAX) <= MAX_DERIVED_RESPONSE_BYTES);
     }
 }

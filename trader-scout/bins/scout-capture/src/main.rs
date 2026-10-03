@@ -6,10 +6,18 @@
 //! pump.fun instruction-variant summary so golden fixtures (P0.17) can
 //! be selected and trimmed with `--keep-signatures`.
 //!
-//! Request shape mirrors `HeliusProvider` exactly: `transactionDetails:
-//! "full"`, `sortOrder`, `limit`, optional `paginationToken`; no
+//! Request shape mirrors `HeliusProvider` exactly (it is built by the same
+//! `HeliusRequestOptions`): `transactionDetails: "full"`, `sortOrder`,
+//! `limit`, optional `paginationToken` and optional `filters`; no
 //! `encoding`/`maxSupportedTransactionVersion` is sent (HeliusProvider
 //! does not send them either, and they are unmeasured here).
+//!
+//! Request-shaping flags (all default to the legacy request): `--limit N`
+//! (1..=1000), `--status any|succeeded|failed`, `--since/--until` (strict
+//! `YYYY-MM-DDTHH:MM:SSZ`, mapped to `filters.blockTime` gte/lt),
+//! `--token-accounts none|balance-changed|all`. These are NOT yet
+//! live-verified; the summary prints per-page tx counts, failed counts and
+//! min/max blockTime so the server-side filters can be checked live.
 //!
 //! The API key is read only from `SCOUT_HELIUS_API_KEY` and never
 //! appears in the output file, stdout or stderr. Test-only hook:
@@ -29,10 +37,10 @@
 //! written. A terminal `RateLimited` (Retry-After above the transport
 //! cap) or `ResponseTooLarge` is exit 4.
 //!
-//! Bounds: at most 10 sequential pages of 100 transactions. NOTE:
-//! `scout-rpc` does not bound response body size (only the 30 s request
-//! timeout), so each page is limited by what Helius returns for 100
-//! full transactions.
+//! Bounds: at most 10 sequential pages of `--limit` (default 100)
+//! transactions. The response body cap follows
+//! `HeliusRequestOptions::derived_max_response_bytes` (16 MiB default,
+//! raised above 500 tx/page, never above 64 MiB).
 #![forbid(unsafe_code)]
 #![cfg_attr(
     test,
@@ -52,7 +60,10 @@ use clap::{Parser, ValueEnum};
 use scout_api::ProviderError;
 use scout_core::RawSolanaInstruction;
 use scout_dex_solana::{PumpInstructionOutcome, classify_pump_instruction, hex8};
-use scout_engine::sanitize_provider_text;
+use scout_engine::{parse_rfc3339_utc, sanitize_provider_text};
+use scout_providers::{
+    DEFAULT_PAGE_LIMIT, HeliusRequestOptions, MAX_PAGE_LIMIT, StatusFilter, TokenAccountsFilter,
+};
 use scout_rpc::{DEFAULT_MAX_RETRY_AFTER, RequestBudgetExhausted, RpcClient, RpcEndpoint};
 use serde_json::{Value, json};
 
@@ -60,7 +71,6 @@ const HELIUS_KEY_ENV: &str = "SCOUT_HELIUS_API_KEY";
 const ENDPOINT_OVERRIDE_ENV: &str = "SCOUT_CAPTURE_ENDPOINT";
 const METHOD: &str = "getTransactionsForAddress";
 const PUMP_PROGRAM: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-const PAGE_LIMIT: u32 = 100;
 const MAX_PAGES_HARD: u32 = 10;
 const TIMEOUT_MS: u64 = 30_000;
 const MAX_ATTEMPTS: u32 = 3;
@@ -81,6 +91,20 @@ impl Sort {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum StatusArg {
+    Any,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TokenAccountsArg {
+    None,
+    BalanceChanged,
+    All,
+}
+
 /// Capture raw Helius transactions for one address as a golden fixture.
 #[derive(Debug, Parser)]
 #[command(name = "scout-capture", version)]
@@ -97,6 +121,28 @@ struct Args {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=10))]
     max_pages: u32,
 
+    /// Transactions per page (`limit`, 1..=1000). A 1000-tx page is about
+    /// 20 MB; the response cap is raised accordingly (max 64 MiB).
+    #[arg(long, default_value_t = DEFAULT_PAGE_LIMIT,
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_PAGE_LIMIT)))]
+    limit: u32,
+
+    /// Server-side `filters.status`. `any` sends no filter.
+    #[arg(long, value_enum, default_value = "any")]
+    status: StatusArg,
+
+    /// Inclusive window start, `YYYY-MM-DDTHH:MM:SSZ` -> `blockTime.gte`.
+    #[arg(long)]
+    since: Option<String>,
+
+    /// Exclusive window end, `YYYY-MM-DDTHH:MM:SSZ` -> `blockTime.lt`.
+    #[arg(long)]
+    until: Option<String>,
+
+    /// Server-side `filters.tokenAccounts`. `none` sends no filter.
+    #[arg(long, value_enum, default_value = "none")]
+    token_accounts: TokenAccountsArg,
+
     /// Write the fixture JSON here.
     #[arg(long)]
     out: Option<String>,
@@ -112,6 +158,40 @@ struct Args {
     /// When exhausted the capture is incomplete and the exit code is 3.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
+}
+
+/// Effective request options from the flags; `Err` is an argument error.
+fn request_options(args: &Args) -> Result<HeliusRequestOptions, String> {
+    let gte = args
+        .since
+        .as_deref()
+        .map(|t| parse_rfc3339_utc(t).map_err(|e| format!("--since: {e}")))
+        .transpose()?;
+    let lt = args
+        .until
+        .as_deref()
+        .map(|t| parse_rfc3339_utc(t).map_err(|e| format!("--until: {e}")))
+        .transpose()?;
+    if let (Some(g), Some(l)) = (gte, lt)
+        && g >= l
+    {
+        return Err("--since must be before --until".to_string());
+    }
+    Ok(HeliusRequestOptions {
+        page_limit: args.limit,
+        status: match args.status {
+            StatusArg::Any => StatusFilter::Any,
+            StatusArg::Succeeded => StatusFilter::Succeeded,
+            StatusArg::Failed => StatusFilter::Failed,
+        },
+        block_time_gte: gte,
+        block_time_lt: lt,
+        token_accounts: match args.token_accounts {
+            TokenAccountsArg::None => TokenAccountsFilter::None,
+            TokenAccountsArg::BalanceChanged => TokenAccountsFilter::BalanceChanged,
+            TokenAccountsArg::All => TokenAccountsFilter::All,
+        },
+    })
 }
 
 /// Why `run` failed.
@@ -142,6 +222,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    let options = match request_options(&args) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("scout-capture: {message}");
+            return ExitCode::from(2);
+        }
+    };
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(err) => {
@@ -149,7 +236,7 @@ fn main() -> ExitCode {
             return ExitCode::from(4);
         }
     };
-    match rt.block_on(run(&args, &key)) {
+    match rt.block_on(run(&args, &options, &key)) {
         Ok(Completion::Complete) => ExitCode::SUCCESS,
         Ok(Completion::BudgetExhausted) => ExitCode::from(3),
         Err(RunError::Other(message)) => {
@@ -190,15 +277,20 @@ fn redact(raw: &str, key: &str) -> String {
     }
 }
 
-async fn run(args: &Args, key: &str) -> Result<Completion, RunError> {
+async fn run(
+    args: &Args,
+    options: &HeliusRequestOptions,
+    key: &str,
+) -> Result<Completion, RunError> {
     let endpoint = match std::env::var(ENDPOINT_OVERRIDE_ENV) {
         Ok(url) if !url.is_empty() => RpcEndpoint::new(url),
         _ => RpcEndpoint::new(format!("https://mainnet.helius-rpc.com/?api-key={key}")),
     };
     let client = RpcClient::new(endpoint, TIMEOUT_MS, MAX_ATTEMPTS)
         .map_err(RunError::Provider)?
-        .with_max_total_requests(args.max_requests);
-    let result = capture(args, key, &client).await;
+        .with_max_total_requests(args.max_requests)
+        .with_max_response_bytes(options.derived_max_response_bytes());
+    let result = capture(args, options, key, &client).await;
     // Always report measured cost, also on failure.
     eprintln!(
         "scout-capture: requests_made={} max_requests={}",
@@ -209,20 +301,18 @@ async fn run(args: &Args, key: &str) -> Result<Completion, RunError> {
     result
 }
 
-async fn capture(args: &Args, key: &str, client: &RpcClient) -> Result<Completion, RunError> {
+async fn capture(
+    args: &Args,
+    options: &HeliusRequestOptions,
+    key: &str,
+    client: &RpcClient,
+) -> Result<Completion, RunError> {
     let mut pages: Vec<Value> = Vec::new();
     let mut token: Option<String> = None;
     let mut budget_limit: Option<u64> = None;
     for _ in 0..args.max_pages.min(MAX_PAGES_HARD) {
-        let mut options = json!({
-            "transactionDetails": "full",
-            "sortOrder": args.sort.as_str(),
-            "limit": PAGE_LIMIT,
-        });
-        if let (Some(t), Some(map)) = (token.as_deref(), options.as_object_mut()) {
-            map.insert("paginationToken".to_string(), t.into());
-        }
-        let result: Value = match client.call(METHOD, json!([args.address, options])).await {
+        let request = options.request_options_json(args.sort.as_str(), token.as_deref());
+        let result: Value = match client.call(METHOD, json!([args.address, request])).await {
             Ok(result) => result,
             Err(ProviderError::Other(inner))
                 if inner.downcast_ref::<RequestBudgetExhausted>().is_some() =>
@@ -272,6 +362,13 @@ async fn capture(args: &Args, key: &str, client: &RpcClient) -> Result<Completio
                 "max_pages": args.max_pages,
                 "method": METHOD,
                 "max_requests": args.max_requests,
+                "limit": options.page_limit,
+                "status": options.status,
+                "since_unix": options.block_time_gte,
+                "until_unix": options.block_time_lt,
+                "token_accounts": options.token_accounts,
+                "filters": options.filters_json(),
+                "request_options": options.request_options_json(args.sort.as_str(), None),
             },
             "requests_made": client.total_requests_made(),
             "incomplete": budget_limit.map(|limit| format!(
@@ -289,7 +386,8 @@ async fn capture(args: &Args, key: &str, client: &RpcClient) -> Result<Completio
         std::fs::write(path, text).map_err(|e| format!("could not write {path}: {e}"))?;
     }
 
-    let summary = summarize(&pages);
+    let mut summary = page_stats_summary(&pages);
+    summary.push_str(&summarize(&pages));
     // Defense in depth: the summary is built from provider data.
     print!("{}", redact_keep_text(&summary, key));
     Ok(if budget_limit.is_some() {
@@ -465,6 +563,55 @@ fn collect_rows(pages: &[Value]) -> (Vec<Row>, usize) {
         }
     }
     (rows, skipped)
+}
+
+/// Per-page tx count, failed count and blockTime range, so server-side
+/// filters can be verified live from stdout.
+fn page_stats_summary(pages: &[Value]) -> String {
+    let mut out = String::new();
+    let (mut total, mut failed, mut min_t, mut max_t) = (0usize, 0usize, None::<i64>, None::<i64>);
+    for (i, page) in pages.iter().enumerate() {
+        let data = page
+            .get("data")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let page_failed = data
+            .iter()
+            .filter(|tx| tx.pointer("/meta/err").is_some_and(|e| !e.is_null()))
+            .count();
+        let times: Vec<i64> = data
+            .iter()
+            .filter_map(|tx| tx.get("blockTime").and_then(Value::as_i64))
+            .collect();
+        let (pmin, pmax) = (times.iter().copied().min(), times.iter().copied().max());
+        let _ = writeln!(
+            out,
+            "# page {}: txs={} failed={} min_block_time={} max_block_time={} more={}",
+            i + 1,
+            data.len(),
+            page_failed,
+            fmt_opt(pmin),
+            fmt_opt(pmax),
+            page.get("paginationToken").is_some_and(|t| !t.is_null()),
+        );
+        total += data.len();
+        failed += page_failed;
+        min_t = min_t.into_iter().chain(pmin).min();
+        max_t = max_t.into_iter().chain(pmax).max();
+    }
+    let _ = writeln!(
+        out,
+        "# total: pages={} txs={total} failed={failed} min_block_time={} max_block_time={}\n",
+        pages.len(),
+        fmt_opt(min_t),
+        fmt_opt(max_t),
+    );
+    out
+}
+
+fn fmt_opt(v: Option<i64>) -> String {
+    v.map_or_else(|| "-".to_string(), |v| v.to_string())
 }
 
 fn summarize(pages: &[Value]) -> String {

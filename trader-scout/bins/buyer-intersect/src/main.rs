@@ -68,7 +68,10 @@ use scout_engine::{
     SolanaBuyerIntersectReport, SolanaProtocolScope, TokenScanStatus, TradeSide, Venue,
     run_buyer_intersect, run_solana_trade_intersect, sanitize_provider_text,
 };
-use scout_providers::{HeliusProvider, ScanOrder, UnconfiguredProvider};
+use scout_providers::{
+    HeliusProvider, HeliusRequestOptions, MAX_PAGE_LIMIT, ScanOrder, StatusFilter,
+    UnconfiguredProvider,
+};
 use scout_rpc::{DEFAULT_MAX_RETRY_AFTER, RequestBudgetExhausted};
 use tokio_util::sync::CancellationToken;
 
@@ -81,6 +84,16 @@ const HELIUS_KEY_ENV: &str = "SCOUT_HELIUS_API_KEY";
 const ENDPOINT_OVERRIDE_ENV: &str = "SCOUT_BUYER_INTERSECT_ENDPOINT";
 const HELIUS_TIMEOUT_MS: u64 = 30_000;
 const HELIUS_MAX_ATTEMPTS: u32 = 3;
+
+// Defaults of the provider request options. NOT yet live-verified, so they
+// reproduce the legacy request; flip these constants (one line each) after
+// live verification.
+/// `--page-limit` default (`limit` per `getTransactionsForAddress` page).
+const DEFAULT_PAGE_LIMIT_ARG: u32 = 100;
+/// `--provider-status-filter` default: `any` or `succeeded`.
+const DEFAULT_PROVIDER_STATUS_FILTER: &str = "any";
+/// `--server-window` default: send the window as `filters.blockTime`.
+const DEFAULT_SERVER_WINDOW: bool = false;
 
 /// Find wallets that traded (bought and/or sold, `--side`) at least K
 /// distinct input tokens.
@@ -131,6 +144,40 @@ struct Args {
         value_parser = clap::value_parser!(u32).range(1..=200)
     )]
     max_pages_per_token: u32,
+
+    /// Transactions per provider page (`limit`, 1..=1000; Solana/Helius
+    /// only). `--max-pages-per-token` counts PAGES, so the per-token
+    /// transaction budget is `max-pages-per-token * page-limit`. Pages above
+    /// 500 txs raise the response-size cap (~20 KB/tx, max 64 MiB). Not yet
+    /// live-verified.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_PAGE_LIMIT_ARG,
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_PAGE_LIMIT))
+    )]
+    page_limit: u32,
+
+    /// Server-side status filter: `any` (no filter) or `succeeded` (failed
+    /// transactions are then invisible; buyer-intersect only needs
+    /// successful trades). Not yet live-verified.
+    #[arg(
+        long,
+        default_value = DEFAULT_PROVIDER_STATUS_FILTER,
+        value_parser = ["any", "succeeded"]
+    )]
+    provider_status_filter: String,
+
+    /// With a window, also send it server-side as `filters.blockTime`
+    /// (gte since, lt until) in addition to the newest-first boundary
+    /// walk. `--server-window=false` disables. Not yet live-verified.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value_t = DEFAULT_SERVER_WINDOW,
+        action = clap::ArgAction::Set
+    )]
+    server_window: bool,
 
     /// Total HTTP request budget for the whole run (all tokens, retries
     /// included), N >= 1. Absent = unlimited (requests are still counted
@@ -344,11 +391,32 @@ fn limit_text(limit: Option<u64>) -> String {
     limit.map_or_else(|| "unlimited".to_string(), |n| n.to_string())
 }
 
+/// Effective provider request options for this run (also echoed in
+/// `run_meta` and the stderr scope line).
+fn provider_options(args: &Args, window: &AnalysisWindow) -> HeliusRequestOptions {
+    let (gte, lt) = match (args.server_window, window.bounds()) {
+        (true, Some((since, until))) => (Some(since), Some(until)),
+        _ => (None, None),
+    };
+    HeliusRequestOptions {
+        page_limit: args.page_limit,
+        status: if args.provider_status_filter == "succeeded" {
+            StatusFilter::Succeeded
+        } else {
+            StatusFilter::Any
+        },
+        block_time_gte: gte,
+        block_time_lt: lt,
+        ..HeliusRequestOptions::default()
+    }
+}
+
 fn build_provider(
     api_key: &str,
     max_pages: NonZeroU32,
     max_requests: Option<u64>,
     window: &AnalysisWindow,
+    options: &HeliusRequestOptions,
 ) -> Result<HeliusProvider, ProviderError> {
     let provider = match std::env::var(ENDPOINT_OVERRIDE_ENV) {
         Ok(url) if !url.is_empty() => HeliusProvider::new_with_endpoint(
@@ -368,6 +436,9 @@ fn build_provider(
         provider
     };
     Ok(provider
+        .with_page_limit(options.page_limit)
+        .with_status_filter(options.status)
+        .with_block_time_range(options.block_time_gte, options.block_time_lt)
         .with_max_pages(max_pages)
         .with_max_total_requests(max_requests))
 }
@@ -385,7 +456,8 @@ fn run_solana(
     };
     // ONE provider for the whole run: the request budget and counter are
     // shared by every token's scan.
-    let provider = match build_provider(api_key, max_pages, args.max_requests, window) {
+    let options = provider_options(args, window);
+    let provider = match build_provider(api_key, max_pages, args.max_requests, window, &options) {
         Ok(provider) => provider,
         Err(err) => return provider_error_exit(&err, Some(api_key)),
     };
@@ -415,6 +487,8 @@ fn run_solana(
         max_pages_per_token: args.max_pages_per_token,
         max_requests: args.max_requests,
         requests_made,
+        provider_options: provider.request_options(),
+        server_window: args.server_window,
     };
     print_solana_diagnostics(&report, api_key, budget);
     let incomplete = report.is_coverage_incomplete();
@@ -486,8 +560,14 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
     }
     eprintln!(
         "  budget: max_pages_per_token={} (provider pages per input token, \
-         100 txs/page; retries are not counted)",
+         page_limit txs/page; retries are not counted)",
         budget.max_pages_per_token
+    );
+    eprintln!(
+        "  provider options: {} server_window={} (tx budget per token = max_pages_per_token * page_limit = {})",
+        budget.provider_options.describe(),
+        budget.server_window,
+        u64::from(budget.max_pages_per_token) * u64::from(budget.provider_options.page_limit)
     );
     eprintln!(
         "  requests_made={} max_requests={} (total HTTP attempts, retries included)",

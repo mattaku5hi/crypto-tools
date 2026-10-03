@@ -332,3 +332,121 @@ async fn max_requests_zero_is_usage_error_exit_2() {
     let out = run(None, Some(KEY), args(&["--max-requests", "0"])).await;
     assert_eq!(out.code, 2, "{}", out.stderr);
 }
+
+fn tx_at(sig: &str, block_time: i64, failed: bool) -> Value {
+    let mut tx = simple_tx(sig);
+    tx["blockTime"] = json!(block_time);
+    if failed {
+        tx["meta"]["err"] = json!({"InstructionError": [0, "Custom"]});
+    }
+    tx
+}
+
+#[tokio::test]
+async fn filter_flags_shape_the_exact_request_fixture_and_summary() {
+    let server = MockServer::start().await;
+    let expected_filters = json!({
+        "status": "succeeded",
+        "blockTime": {"gte": 1_785_542_400, "lt": 1_785_628_800},
+        "tokenAccounts": "balanceChanged"
+    });
+    let page =
+        json!({"data": [tx_at("sigA", 1_785_542_500, false), tx_at("sigB", 1_785_600_000, true)]});
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::body_json(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "getTransactionsForAddress",
+            "params": [ADDRESS, {
+                "transactionDetails": "full", "sortOrder": "desc", "limit": 250,
+                "filters": expected_filters
+            }]
+        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": page})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let path = tmp("filters.json");
+    let out = run(
+        Some(server.uri()),
+        Some(KEY),
+        args(&[
+            "--limit",
+            "250",
+            "--status",
+            "succeeded",
+            "--since",
+            "2026-08-01T00:00:00Z",
+            "--until",
+            "2026-08-02T00:00:00Z",
+            "--token-accounts",
+            "balance-changed",
+            "--out",
+            &path,
+        ]),
+    )
+    .await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let request = &doc["request"];
+    assert_eq!(request["limit"], 250);
+    assert_eq!(request["status"], "Succeeded");
+    assert_eq!(request["since_unix"], 1_785_542_400i64);
+    assert_eq!(request["until_unix"], 1_785_628_800i64);
+    assert_eq!(request["token_accounts"], "BalanceChanged");
+    assert_eq!(request["filters"], expected_filters);
+    assert_eq!(request["request_options"]["limit"], 250);
+    assert!(!doc.to_string().contains(KEY));
+    assert!(
+        out.stdout.contains(
+            "# page 1: txs=2 failed=1 min_block_time=1785542500 max_block_time=1785600000 more=false"
+        ),
+        "{}",
+        out.stdout
+    );
+    assert!(out.stdout.contains("# total: pages=1 txs=2 failed=1"));
+}
+
+#[tokio::test]
+async fn defaults_record_null_filters_and_legacy_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::body_json(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "getTransactionsForAddress",
+            "params": [ADDRESS, {"transactionDetails": "full", "sortOrder": "desc", "limit": 100}]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"data": [simple_tx("sigA")]}}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let path = tmp("defaults.json");
+    let out = run(Some(server.uri()), Some(KEY), args(&["--out", &path])).await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(doc["request"]["filters"].is_null());
+    assert_eq!(doc["request"]["status"], "Any");
+}
+
+#[tokio::test]
+async fn bad_filter_arguments_exit_2() {
+    for bad in [
+        vec!["--limit", "0"],
+        vec!["--limit", "1001"],
+        vec!["--status", "bogus"],
+        vec!["--token-accounts", "bogus"],
+        vec!["--since", "2026-08-01"],
+        vec!["--until", "2026-08-01T00:00:00+00:00"],
+        vec![
+            "--since",
+            "2026-08-02T00:00:00Z",
+            "--until",
+            "2026-08-01T00:00:00Z",
+        ],
+    ] {
+        let out = run(None, Some(KEY), args(&bad)).await;
+        assert_eq!(out.code, 2, "{bad:?}: {}", out.stderr);
+    }
+}

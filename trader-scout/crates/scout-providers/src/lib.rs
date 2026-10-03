@@ -18,7 +18,10 @@ mod helius;
 mod unconfigured;
 
 pub use fixture::{Fixture, FixtureProvenance, FixtureProvider};
-pub use helius::{HeliusProvider, ScanOrder};
+pub use helius::{
+    DEFAULT_PAGE_LIMIT, HeliusProvider, HeliusRequestOptions, MAX_DERIVED_RESPONSE_BYTES,
+    MAX_PAGE_LIMIT, ScanOrder, StatusFilter, TokenAccountsFilter,
+};
 pub use scout_api::{
     CapabilityStatus, HistoryProvider, ProviderError, ScanEnvelope, ScanPlan, ScanRequest,
     ScanTask, SourceCapabilities,

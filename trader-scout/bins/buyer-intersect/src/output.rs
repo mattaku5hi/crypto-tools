@@ -99,6 +99,19 @@ pub struct RunBudget {
     pub max_requests: Option<u64>,
     /// HTTP attempts actually made (retries included).
     pub requests_made: u64,
+    /// Effective provider request options (page limit, filters).
+    pub provider_options: scout_providers::HeliusRequestOptions,
+    /// `--server-window` requested.
+    pub server_window: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderOptionsDto {
+    #[serde(flatten)]
+    pub request: scout_providers::HeliusRequestOptions,
+    pub server_window: bool,
+    /// `max_pages_per_token * page_limit`.
+    pub tx_budget_per_token: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,6 +132,8 @@ pub struct RunMetaRecord {
     pub captured_at: String,
     pub scope: ScopeDto,
     pub budget: BudgetDto,
+    /// Effective provider request options (not yet live-verified).
+    pub provider_options: ProviderOptionsDto,
     /// Measured HTTP attempts for the run (retries included). Always
     /// present, also when no limit was set.
     pub requests_made: u64,
@@ -401,6 +416,12 @@ pub fn run_meta_record(
             max_pages_per_token: budget.max_pages_per_token,
             max_requests: budget.max_requests,
         },
+        provider_options: ProviderOptionsDto {
+            request: budget.provider_options,
+            server_window: budget.server_window,
+            tx_budget_per_token: u64::from(budget.max_pages_per_token)
+                * u64::from(budget.provider_options.page_limit),
+        },
         requests_made: budget.requests_made,
         input_tokens: input_tokens
             .iter()
@@ -656,6 +677,14 @@ mod tests {
                 max_pages_per_token: 25,
                 max_requests: Some(9),
                 requests_made: 7,
+                provider_options: scout_providers::HeliusRequestOptions {
+                    page_limit: 200,
+                    status: scout_providers::StatusFilter::Succeeded,
+                    block_time_gte: Some(10),
+                    block_time_lt: Some(20),
+                    ..scout_providers::HeliusRequestOptions::default()
+                },
+                server_window: true,
             },
             incomplete,
             &|t| t.replace("SECRET99", "<redacted>"),
@@ -694,6 +723,14 @@ mod tests {
         assert_eq!(meta["budget"]["max_pages_per_token"], 25);
         assert_eq!(meta["budget"]["max_requests"], 9);
         assert_eq!(meta["requests_made"], 7);
+        let po = &meta["provider_options"];
+        assert_eq!(po["page_limit"], 200);
+        assert_eq!(po["status"], "Succeeded");
+        assert_eq!(po["block_time_gte"], 10);
+        assert_eq!(po["block_time_lt"], 20);
+        assert_eq!(po["token_accounts"], "None");
+        assert_eq!(po["server_window"], true);
+        assert_eq!(po["tx_budget_per_token"], 25 * 200);
         assert_eq!(meta["input_token_count"], 2);
         assert_eq!(meta["min_token_hits"], 2);
         assert_eq!(meta["input_tokens"][0]["token"], MINT_A);

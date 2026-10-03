@@ -3175,6 +3175,7 @@ dependencies = [
  "scout-core",
  "scout-dex-solana",
  "scout-engine",
+ "scout-providers",
  "scout-rpc",
  "serde_json",
  "tokio",

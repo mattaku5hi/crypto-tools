@@ -16,6 +16,7 @@ scout-app.workspace = true
 scout-core.workspace = true
 scout-dex-solana.workspace = true
 scout-engine.workspace = true
+scout-providers.workspace = true
 scout-rpc.workspace = true
 bs58.workspace = true
 clap.workspace = true

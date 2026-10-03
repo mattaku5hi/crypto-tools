@@ -248,7 +248,18 @@ pub struct ThresholdsDto {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ProviderOptionsDto {
+    #[serde(flatten)]
+    pub request: scout_providers::HeliusRequestOptions,
+    pub server_window: bool,
+    /// `max_pages_per_wallet * page_limit`.
+    pub tx_budget_per_wallet: u64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ScanDto {
+    /// Effective provider request options (not yet live-verified).
+    pub provider_options: ProviderOptionsDto,
     pub provider: &'static str,
     pub order: &'static str,
     pub max_pages_per_wallet: u32,
@@ -696,6 +707,8 @@ pub struct RunMetaInput<'a> {
     pub run_id: &'a str,
     pub captured_at: &'a str,
     pub max_pages_per_wallet: u32,
+    pub provider_options: scout_providers::HeliusRequestOptions,
+    pub server_window: bool,
     pub max_requests: Option<u64>,
     pub requests_made: u64,
     pub input_wallet_count: usize,
@@ -752,6 +765,12 @@ pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMe
         not_decoded: scope.not_decoded,
         programs: program_pins(&scope),
         scan: ScanDto {
+            provider_options: ProviderOptionsDto {
+                request: m.provider_options,
+                server_window: m.server_window,
+                tx_budget_per_wallet: u64::from(m.max_pages_per_wallet)
+                    * u64::from(m.provider_options.page_limit),
+            },
             provider: "helius",
             order: "newest_first",
             max_pages_per_wallet: m.max_pages_per_wallet,
@@ -955,6 +974,8 @@ mod tests {
             run_id: "wallet-rank-t",
             captured_at: "2026-10-02T00:00:00Z",
             max_pages_per_wallet: 10,
+            provider_options: scout_providers::HeliusRequestOptions::default(),
+            server_window: false,
             max_requests: Some(50),
             requests_made: 4,
             input_wallet_count: 3,

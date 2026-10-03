@@ -50,7 +50,9 @@ use scout_engine::{
     AnalysisWindow, LedgerDecoders, ScanStop, SolanaWalletStatsReport, pump_amm_decoder,
     pump_bonding_curve_decoder, run_solana_wallet_stats_windowed_venues, sanitize_provider_text,
 };
-use scout_providers::{HeliusProvider, ScanOrder};
+use scout_providers::{
+    HeliusProvider, HeliusRequestOptions, MAX_PAGE_LIMIT, ScanOrder, TokenAccountsFilter,
+};
 use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
 use tokio_util::sync::CancellationToken;
 
@@ -64,6 +66,17 @@ const HELIUS_KEY_ENV: &str = "SCOUT_HELIUS_API_KEY";
 const ENDPOINT_OVERRIDE_ENV: &str = "SCOUT_WALLET_STATS_ENDPOINT";
 const HELIUS_TIMEOUT_MS: u64 = 30_000;
 const HELIUS_MAX_ATTEMPTS: u32 = 3;
+
+// Defaults of the provider request options. NOT yet live-verified, so they
+// reproduce the legacy request; flip these constants (one line each) after
+// live verification. No status filter is ever applied to wallet scans:
+// failed transactions still cost fees (ADR-004).
+/// `--page-limit` default (`limit` per `getTransactionsForAddress` page).
+const DEFAULT_PAGE_LIMIT_ARG: u32 = 100;
+/// `--server-window` default: send the window as `filters.blockTime`.
+const DEFAULT_SERVER_WINDOW: bool = false;
+/// `--token-accounts` default: `none` or `balance-changed`.
+const DEFAULT_TOKEN_ACCOUNTS: &str = "none";
 
 /// Print stats for every input wallet, including N/A and no-activity cases.
 #[derive(Debug, Parser)]
@@ -102,6 +115,39 @@ struct Args {
         value_parser = clap::value_parser!(u32).range(1..=200)
     )]
     max_pages_per_wallet: u32,
+
+    /// Transactions per provider page (`limit`, 1..=1000). The page budget
+    /// stays in PAGES: per-wallet transaction budget is
+    /// `max-pages-per-wallet * page-limit`. Pages above 500 txs raise the
+    /// response-size cap (~20 KB/tx, max 64 MiB). Not yet live-verified.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_PAGE_LIMIT_ARG,
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_PAGE_LIMIT))
+    )]
+    page_limit: u32,
+
+    /// With a window, also send it server-side as `filters.blockTime`
+    /// (gte since, lt until) in addition to the newest-first boundary
+    /// walk. `--server-window=false` disables. Not yet live-verified.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value_t = DEFAULT_SERVER_WINDOW,
+        action = clap::ArgAction::Set
+    )]
+    server_window: bool,
+
+    /// `filters.tokenAccounts`: `none` (only txs referencing the wallet) or
+    /// `balance-changed` (also txs changing the balance of a token account
+    /// the wallet owns; Helius-recommended). Not yet live-verified.
+    #[arg(
+        long,
+        default_value = DEFAULT_TOKEN_ACCOUNTS,
+        value_parser = ["none", "balance-changed"]
+    )]
+    token_accounts: String,
 
     /// Total HTTP request budget for the whole run (all wallets, retries
     /// included), N >= 1. Absent = unlimited (requests are still counted
@@ -270,11 +316,32 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Effective provider request options for this run (also echoed in
+/// `run_meta` and the stderr scope line). Never sets a status filter.
+fn provider_options(args: &Args, window: &AnalysisWindow) -> HeliusRequestOptions {
+    let (gte, lt) = match (args.server_window, window.bounds()) {
+        (true, Some((since, until))) => (Some(since), Some(until)),
+        _ => (None, None),
+    };
+    HeliusRequestOptions {
+        page_limit: args.page_limit,
+        block_time_gte: gte,
+        block_time_lt: lt,
+        token_accounts: if args.token_accounts == "balance-changed" {
+            TokenAccountsFilter::BalanceChanged
+        } else {
+            TokenAccountsFilter::None
+        },
+        ..HeliusRequestOptions::default()
+    }
+}
+
 fn build_provider(
     api_key: &str,
     max_pages: NonZeroU32,
     max_requests: Option<u64>,
     window: &AnalysisWindow,
+    options: &HeliusRequestOptions,
 ) -> Result<HeliusProvider, ProviderError> {
     let provider = match std::env::var(ENDPOINT_OVERRIDE_ENV) {
         Ok(url) if !url.is_empty() => HeliusProvider::new_with_endpoint(
@@ -285,6 +352,9 @@ fn build_provider(
         _ => HeliusProvider::new(api_key, HELIUS_TIMEOUT_MS, HELIUS_MAX_ATTEMPTS)?,
     };
     Ok(provider
+        .with_page_limit(options.page_limit)
+        .with_block_time_range(options.block_time_gte, options.block_time_lt)
+        .with_token_accounts(options.token_accounts)
         .with_max_pages(max_pages)
         .with_scan_order(ScanOrder::NewestFirst)
         .with_stop_before_block_time(window.bounds().map(|(since, _)| since))
@@ -317,7 +387,8 @@ fn run_solana(
     };
     // ONE provider for the whole run: the budget and counter are shared
     // by every wallet's scan.
-    let provider = match build_provider(api_key, max_pages, args.max_requests, window) {
+    let options = provider_options(args, window);
+    let provider = match build_provider(api_key, max_pages, args.max_requests, window, &options) {
         Ok(p) => p,
         Err(err) => return provider_error_exit(&err, api_key),
     };
@@ -377,6 +448,8 @@ fn run_solana(
             run_id: &run_id,
             captured_at: &captured_at,
             max_pages_per_wallet: args.max_pages_per_wallet,
+            provider_options: provider.request_options(),
+            server_window: args.server_window,
             detail,
             sort,
             input_wallet_count: all.len(),
@@ -445,8 +518,15 @@ fn print_diagnostics(
         s.amm_idl_commit.unwrap_or("-"),
         s.amm_idl_sha256.unwrap_or("-"),
     );
+    let effective = provider_options(args, window);
     eprintln!(
-        "  scan: newest-first, max_pages_per_wallet={max_pages} (100 txs/page; retries not counted); \
+        "  provider options: {} server_window={} (tx budget per wallet = max_pages_per_wallet * page_limit = {})",
+        effective.describe(),
+        args.server_window,
+        u64::from(args.max_pages_per_wallet) * u64::from(effective.page_limit)
+    );
+    eprintln!(
+        "  scan: newest-first, max_pages_per_wallet={max_pages} (page_limit txs/page; retries not counted); \
          {}",
         match window.bounds() {
             Some((since, until)) => format!(
