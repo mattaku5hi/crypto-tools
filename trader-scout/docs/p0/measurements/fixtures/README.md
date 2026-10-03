@@ -36,3 +36,12 @@ fixtures, `scout-engine/tests/okx_router_legs.rs` (order events vs owner-keyed d
   how the stale-price tests get a gap). Parsed exactly (no float) by `scout_pricing::parse_candles`; used by
   `scout-pricing` tests, the USD ledger goldens in `scout-engine/tests/solana_wallet_ledger.rs` and the
   wallet-stats / wallet-rank CLI wiremock tests. Not a committed live capture of any wallet.
+
+## Venue IDLs for P4.9 direct-venue decoders (2026-10-03)
+
+| File | Program | Source | sha256 |
+|---|---|---|---|
+| `orca_whirlpool_onchain_idl_2026-10-03.json` | `whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc` | on-chain Anchor IDL account `2KFqE4RWoPVbvodo8vbggCFeHPS8TDvgpwp79ALMrcyn` | `7afddfe8766bd24d30ff9ee5b12c7ee89bff5bc3b7b0396620e021a97a7ef63f` |
+| `meteora_dlmm_onchain_idl_2026-10-03.json` | `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` | on-chain Anchor IDL account `7UZRobkzaKVm1RbCH5WdFaYCGzCRjnu3prziHAsYiSyr` | `57ee0b91fb1505f9af4be8d073ecdea65adc395bae49c96a707a263b257eca84` |
+| `raydium_clmm_idl_e7e0c96f.json` | `CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK` | official `raydium-io/raydium-idl` @ `e7e0c96fe77bcf6a020b84a44c47a722aac8e359` (no on-chain IDL account) | `040a8c4866317fa028be8a81db54325ce6d9b92aeb10582d89992855bbbce5c1` |
+| `raydium_cpmm_idl_e7e0c96f.json` | `CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C` | official `raydium-io/raydium-idl` @ `e7e0c96f…` | `1202f6dc8e1c3216598f2ad5c620b9aa8c64ac584563fafed68125c27fb6df81` |
