@@ -9,13 +9,14 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct DecodeEvidenceDto {
     /// `malformed_trade_instruction`, `malformed_event`,
-    /// `unknown_discriminator` or `orphan_event`.
+    /// `unknown_discriminator`, `orphan_event`,
+    /// `okx_swap_with_receiver_not_attributed` or `okx_unverified_order_event`.
     pub kind: &'static str,
     pub signature: String,
     pub slot: u64,
     pub instruction_index: u32,
     pub program: String,
-    /// Address label only (`pump_curve`, `pump_amm`, `jupiter_v6`, `dflow_v4`).
+    /// Address label only (`pump_curve`, `pump_amm`, `jupiter_v6`, `dflow_v4`, `okx_dex_router`).
     pub program_name: &'static str,
     /// IDL name, or the 8-byte discriminator in hex.
     pub variant_or_discriminator: String,

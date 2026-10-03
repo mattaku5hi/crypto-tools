@@ -229,6 +229,13 @@ pub struct TokenDiagnosticsDto {
     /// ADR-015 amendment: the same for DFlow Aggregator v4 events.
     pub dflow_malformed_events: u64,
     pub dflow_unknown_events: u64,
+    /// ADR-017 draft: OKX DEX Router event coverage.
+    pub okx_malformed_events: u64,
+    pub okx_unknown_events: u64,
+    /// Order events with a distinct receiver: attributed to nobody.
+    pub okx_swap_with_receiver_not_attributed: u64,
+    /// Order events of an IdlOnly variant: counted, not leg evidence.
+    pub okx_idl_only_order_events: u64,
     /// At most 5 samples of malformed trade instructions, unknown
     /// discriminators and orphan events of this token's transactions.
     pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
@@ -538,6 +545,12 @@ fn token_status(
             jupiter_unknown_events: token.trade.jupiter_unknown_events,
             dflow_malformed_events: token.trade.dflow_malformed_events,
             dflow_unknown_events: token.trade.dflow_unknown_events,
+            okx_malformed_events: token.trade.okx_malformed_events,
+            okx_unknown_events: token.trade.okx_unknown_events,
+            okx_swap_with_receiver_not_attributed: token
+                .trade
+                .okx_swap_with_receiver_not_attributed,
+            okx_idl_only_order_events: token.trade.okx_idl_only_order_events,
             evidence_samples: scout_app::evidence_dtos(&token.trade.evidence_samples, redact),
         }),
     })

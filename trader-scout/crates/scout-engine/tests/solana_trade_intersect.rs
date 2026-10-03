@@ -27,13 +27,15 @@ use scout_dex_solana::{
     AmmAttribution, BUY_INSTRUCTION_DISCRIMINATOR, DFLOW_EVENT_AUTHORITY_BYTES,
     DFLOW_SWAP_EVENT_DISCRIMINATOR, DFLOW_V4_PROGRAM_ID_BYTES, EVENT_CPI_DISCRIMINATOR,
     JUPITER_EVENT_AUTHORITY_BYTES, JUPITER_SWAPS_EVENT_DISCRIMINATOR, JUPITER_V6_PROGRAM_ID_BYTES,
+    OKX_DEX_ROUTER_PROGRAM_ID_BYTES, OKX_EVENT_AUTHORITY_BYTES, OkxOrderEventKind,
     PumpTradeVariant, SELL_INSTRUCTION_DISCRIMINATOR, VariantVerification, WRAPPED_SOL_MINT,
     reconcile_pump_amm_transaction,
 };
 use scout_engine::{
     AnalysisWindow, IntersectOptions, PUMP_BONDING_CURVE_PROGRAM_ID, SideFilter,
     SolanaBuyerIntersectReport, TradeSide, USDC_MINT, Venue, WindowSource, pump_amm_decoder,
-    run_solana_trade_intersect, run_solana_trade_intersect_with_policy, solana_mainnet_chain,
+    run_solana_trade_intersect, run_solana_trade_intersect_with_policies,
+    run_solana_trade_intersect_with_policy, solana_mainnet_chain,
 };
 use scout_providers::HeliusProvider;
 use tokio_util::sync::CancellationToken;
@@ -1030,6 +1032,117 @@ async fn dflow_leg_makes_a_signer_route_swap_a_hit_in_buyer_intersect() {
     assert_eq!(r.trade.dflow_unknown_events, 0);
     // Relayer (fee payer) and the DFlow program are never attributed.
     assert_eq!(r.side_hits.len(), 1);
+}
+
+/// Same as `jupiter_route_tx`, but the evidence is an OKX DEX Router order
+/// event (`SwapWithFeesCpiEvent2`) naming `src_owner` / `dst_owner`.
+fn okx_route_tx(
+    buy: bool,
+    trade_mint: u8,
+    sig: u8,
+    slot: u64,
+    owners: Option<(u8, u8)>,
+    malformed: bool,
+) -> RawSolanaTransaction {
+    let mut tx = jupiter_route_tx(buy, trade_mint, sig, slot, false);
+    let usdc = pubkey(USDC_MINT);
+    let (src, dst) = if buy {
+        (usdc, pk(trade_mint))
+    } else {
+        (pk(trade_mint), usdc)
+    };
+    let Some((so, d_o)) = owners else {
+        return tx;
+    };
+    let mut data = EVENT_CPI_DISCRIMINATOR.to_vec();
+    data.extend(OkxOrderEventKind::SwapWithFeesCpiEvent2.discriminator());
+    data.extend(7u64.to_le_bytes());
+    for k in [src, dst, pk(so), pk(d_o)] {
+        data.extend(k);
+    }
+    for v in [1_000u64, 1_000, 1_000] {
+        data.extend(v.to_le_bytes());
+    }
+    data.extend([0u8; 128]);
+    if malformed {
+        data.push(0);
+    }
+    tx.instructions.push(RawSolanaInstruction {
+        program_id: OKX_DEX_ROUTER_PROGRAM_ID_BYTES,
+        accounts: vec![OKX_EVENT_AUTHORITY_BYTES],
+        data,
+        instruction_index: 1,
+    });
+    tx
+}
+
+fn okx_all_verified(_: OkxOrderEventKind) -> VariantVerification {
+    VariantVerification::FixtureVerified
+}
+
+#[tokio::test]
+async fn okx_order_event_makes_a_signer_route_swap_a_hit_in_buyer_intersect() {
+    let provider = scripted(vec![(
+        10,
+        vec![
+            okx_route_tx(true, 10, 1, 100, Some((1, 1)), false),
+            okx_route_tx(false, 10, 2, 101, Some((1, 1)), false),
+            // Same movements with no decoded evidence: a transfer-shaped tx.
+            okx_route_tx(true, 10, 3, 102, None, false),
+            // An order that does not trade token 10 is not evidence for it.
+            okx_route_tx(true, 11, 4, 103, Some((1, 1)), false),
+            // A malformed order event is never evidence (counted).
+            okx_route_tx(true, 10, 5, 104, Some((1, 1)), true),
+            // Swap with receiver: attributed to neither owner (counted).
+            okx_route_tx(true, 10, 6, 105, Some((1, 77)), false),
+        ],
+        false,
+    )]);
+    let assets = [token(10)];
+    let run_with = |policy: scout_engine::OkxOrderPolicy| {
+        run_solana_trade_intersect_with_policies(
+            &provider,
+            &assets,
+            1,
+            opts(SideFilter::Any),
+            CancellationToken::new(),
+            scout_engine::default_variant_policy,
+            policy,
+        )
+    };
+    // Injected FixtureVerified status: the wallet is a hit, buyer-intersect
+    // inherits the ledger's route rule.
+    let r = run_with(okx_all_verified).await.unwrap();
+    assert_eq!(r.base.matches.len(), 1);
+    let hits = &r.side_hits[&wallet(1)][&token(10)];
+    let (b, s) = (hits.buy.clone().unwrap(), hits.sell.clone().unwrap());
+    assert_eq!(
+        (b.venue, b.variant, b.count),
+        (Venue::Route, "route_swap", 1)
+    );
+    assert_eq!((s.venue, s.count), (Venue::Route, 1));
+    assert_eq!(r.trade.ops(Venue::Route, TradeSide::Buy), 1);
+    assert_eq!(r.trade.ops(Venue::Route, TradeSide::Sell), 1);
+    assert_eq!(r.trade.okx_malformed_events, 1);
+    assert_eq!(r.trade.okx_unknown_events, 0);
+    assert_eq!(r.trade.okx_swap_with_receiver_not_attributed, 1);
+    assert_eq!(r.trade.okx_idl_only_order_events, 0);
+    // Relayer (fee payer), the router and the receiver are never attributed.
+    assert_eq!(r.side_hits.len(), 1);
+    // Production status (IdlOnly): the same stream yields no hit at all, and
+    // every decoded order is counted as not used.
+    let r = run_solana_trade_intersect(
+        &provider,
+        &assets,
+        1,
+        opts(SideFilter::Any),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(r.base.matches.is_empty());
+    assert_eq!(r.trade.okx_idl_only_order_events, 4);
+    assert_eq!(r.trade.okx_swap_with_receiver_not_attributed, 1);
 }
 
 #[tokio::test]

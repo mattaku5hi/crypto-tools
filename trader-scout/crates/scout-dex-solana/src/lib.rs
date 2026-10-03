@@ -23,6 +23,8 @@
 mod bonding_curve_buy;
 mod dflow_event;
 mod jupiter_event;
+mod okx_event;
+mod okx_schema;
 mod pump_amm;
 mod pump_amm_event;
 mod pump_amm_reconcile;
@@ -45,12 +47,19 @@ pub use dflow_event::{
     dflow_swap_event_verification,
 };
 pub use jupiter_event::{
+    JUPITER_BEST_SWAP_OUT_AMOUNT_VIOLATION_DISCRIMINATOR,
+    JUPITER_CANDIDATE_SWAP_QUOTE_ERROR_DISCRIMINATOR, JUPITER_CANDIDATE_SWAP_RESULTS_DISCRIMINATOR,
     JUPITER_EVENT_AUTHORITY_BYTES, JUPITER_EVENT_HEADER_LEN, JUPITER_FEE_EVENT_DISCRIMINATOR,
-    JUPITER_FEE_EVENT_LEN, JUPITER_IDL_COMMIT, JUPITER_IDL_SHA256,
+    JUPITER_FEE_EVENT_LEN, JUPITER_IDL_COMMIT, JUPITER_IDL_SHA256, JUPITER_ONCHAIN_IDL_SHA256,
     JUPITER_SWAP_EVENT_DISCRIMINATOR, JUPITER_SWAP_ITEM_LEN, JUPITER_SWAPS_EVENT_DISCRIMINATOR,
     JUPITER_V6_PROGRAM_ID, JUPITER_V6_PROGRAM_ID_BYTES, JupiterEventDecoder, JupiterEventKind,
     JupiterEventOutcome, JupiterFeeEvent, JupiterSwapLeg, MAX_SWAPS_PER_EVENT,
     classify_jupiter_event,
+};
+pub use okx_event::{
+    OKX_DEX_ROUTER_PROGRAM_ID, OKX_DEX_ROUTER_PROGRAM_ID_BYTES, OKX_EVENT_AUTHORITY_BYTES,
+    OKX_EVENT_HEADER_LEN, OKX_IDL_SHA256, OKX_ORDER_EVENT_COMMON_LEN, OKX_SWAP_EVENT_DISCRIMINATOR,
+    OkxEventDecoder, OkxEventOutcome, OkxHop, OkxOrderEvent, OkxOrderEventKind, classify_okx_event,
 };
 pub use pump_amm::{
     AMM_BUY_DISCRIMINATOR, AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR, AMM_EVENT_CPI_NAME,

@@ -430,6 +430,10 @@ pub struct RouteCountsDto {
     pub route_swaps_evidence_dflow: u64,
     /// Booked only because of a DFlow leg.
     pub route_swaps_evidence_dflow_only: u64,
+    /// ADR-017 draft: OKX DEX Router order-event legs / booked only because of one.
+    pub route_swaps_evidence_okx: u64,
+    pub route_swaps_evidence_okx_only: u64,
+    pub route_swaps_evidence_okx_owner_is_wallet: u64,
     pub route_leg_not_wallet_price: u64,
     /// Coverage gaps traceable through `evidence_samples` (<= 5, canonical order).
     pub malformed_trade_instructions: u64,
@@ -439,6 +443,10 @@ pub struct RouteCountsDto {
     pub jupiter_unknown_events: u64,
     pub dflow_malformed_events: u64,
     pub dflow_unknown_events: u64,
+    pub okx_malformed_events: u64,
+    pub okx_unknown_events: u64,
+    pub okx_swap_with_receiver_not_attributed: u64,
+    pub okx_idl_only_order_events: u64,
     pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
 }
 
@@ -809,6 +817,9 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             route_swaps_evidence_jupiter_only: t.route_swaps_by_evidence.jupiter_only,
             route_swaps_evidence_dflow: t.route_swaps_by_evidence.dflow,
             route_swaps_evidence_dflow_only: t.route_swaps_by_evidence.dflow_only,
+            route_swaps_evidence_okx: t.route_swaps_by_evidence.okx,
+            route_swaps_evidence_okx_only: t.route_swaps_by_evidence.okx_only,
+            route_swaps_evidence_okx_owner_is_wallet: t.route_swaps_by_evidence.okx_owner_is_wallet,
             route_leg_not_wallet_price: t.route_leg_not_wallet_price,
             malformed_trade_instructions: l.diagnostics.malformed_trade_instructions,
             orphan_trade_events: l.diagnostics.orphan_trade_events,
@@ -817,6 +828,12 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             jupiter_unknown_events: l.diagnostics.jupiter_unknown_events,
             dflow_malformed_events: l.diagnostics.dflow_malformed_events,
             dflow_unknown_events: l.diagnostics.dflow_unknown_events,
+            okx_malformed_events: l.diagnostics.okx_malformed_events,
+            okx_unknown_events: l.diagnostics.okx_unknown_events,
+            okx_swap_with_receiver_not_attributed: l
+                .diagnostics
+                .okx_swap_with_receiver_not_attributed,
+            okx_idl_only_order_events: l.diagnostics.okx_idl_only_order_events,
             evidence_samples: scout_app::evidence_dtos(&l.evidence_samples, &str::to_owned),
         },
         realized_net_pnl: MoneyDto {

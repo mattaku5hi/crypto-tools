@@ -71,8 +71,8 @@ use crate::solana_buy_qualification::{
     solana_mainnet_chain,
 };
 use crate::solana_wallet_ledger::{
-    LedgerDecoders, RouteReject, RouteRejections, Venue, attribute_transaction_trades,
-    pump_amm_decoder,
+    LedgerDecoders, OkxOrderPolicy, RouteReject, RouteRejections, Venue,
+    attribute_transaction_trades, default_okx_order_policy, pump_amm_decoder,
 };
 
 /// Max malformed-instruction reason samples retained per run.
@@ -158,14 +158,15 @@ impl SolanaProtocolScope {
                          side in token terms, reversed pools inverted, ADR-012; router-forwards \
                          are not attributed); route swaps (ADR-013 rule: signer wallet, \
                          FixtureVerified swap leg = pump leg, Jupiter v6 SwapEvent/SwapsEvent or \
-                         DFlow v4 SwapEvent hop trading the token (ADR-015, evidence only, no ownership), one \
+                         DFlow v4 SwapEvent hop trading the token (ADR-015, evidence only, no ownership) or an OKX DEX Router order event of a \
+                         FixtureVerified variant naming the wallet as owner (ADR-017 draft; every variant is IdlOnly today), one \
                          traded token vs one SOL/USDC/USDT quote, pass-through leg users \
                          netting zero; side = sign of the wallet's own delta). Never transfers or airdrops, never routers, relayers or fee \
                          payers. IdlOnly variants are decoded but never qualify (counted, \
                          coverage incomplete)",
             not_decoded: "Raydium, Meteora (DLMM), Orca Whirlpool and Jupiter's venue hops \
                           themselves (routes without a pump leg or a Jupiter v6 / DFlow v4 swap event, \
-                          e.g. unidentified routers), PumpSwap liquidity/non-trade instructions \
+                          e.g. OKX DEX Router routes while its order events are IdlOnly), PumpSwap liquidity/non-trade instructions \
                           and every other venue; the wallet set is a lower bound (a wallet that \
                           traded only there is not found)",
         }
@@ -191,7 +192,7 @@ impl SolanaProtocolScope {
                          attributed only when the wallet's own owner-keyed legs reconcile \
                          (ADR-012); route swaps (ADR-013: signer wallet, FixtureVerified swap \
                          leg = pump leg, Jupiter v6 SwapEvent/SwapsEvent or DFlow v4 SwapEvent hop \
-                         trading the token (ADR-015), one traded token vs one SOL/USDC/USDT quote asset, \
+                         trading the token (ADR-015) or a FixtureVerified OKX order event of the wallet (ADR-017 draft), one traded token vs one SOL/USDC/USDT quote asset, \
                          pass-through leg users netting zero) are booked from the wallet's own deltas in the \
                          quote's unit; PnL is per quote unit (SOL, USDC, USDT), never mixed; \
                          one FIFO per (wallet, mint) across venues",
@@ -301,6 +302,15 @@ pub struct TradeAttributionDiagnostics {
     /// ADR-015 amendment: the same for DFlow Aggregator v4 events.
     pub dflow_malformed_events: u64,
     pub dflow_unknown_events: u64,
+    /// ADR-017 draft: OKX DEX Router events that did not decode exactly /
+    /// have an unknown discriminator (never trusted). COVERAGE GAP.
+    pub okx_malformed_events: u64,
+    pub okx_unknown_events: u64,
+    /// OKX order events with a distinct receiver: attributed to nobody.
+    pub okx_swap_with_receiver_not_attributed: u64,
+    /// OKX order events of a variant that is not `FixtureVerified`: decoded,
+    /// counted, never leg evidence (lower bound).
+    pub okx_idl_only_order_events: u64,
     /// Up to 5 samples (canonical chain order) of malformed trade
     /// instructions, unknown discriminators and orphan events of this token's
     /// transactions, so each counter can be traced to a signature.
@@ -365,6 +375,14 @@ impl TradeAttributionDiagnostics {
         self.jupiter_unknown_events = s(self.jupiter_unknown_events, o.jupiter_unknown_events);
         self.dflow_malformed_events = s(self.dflow_malformed_events, o.dflow_malformed_events);
         self.dflow_unknown_events = s(self.dflow_unknown_events, o.dflow_unknown_events);
+        self.okx_malformed_events = s(self.okx_malformed_events, o.okx_malformed_events);
+        self.okx_unknown_events = s(self.okx_unknown_events, o.okx_unknown_events);
+        self.okx_swap_with_receiver_not_attributed = s(
+            self.okx_swap_with_receiver_not_attributed,
+            o.okx_swap_with_receiver_not_attributed,
+        );
+        self.okx_idl_only_order_events =
+            s(self.okx_idl_only_order_events, o.okx_idl_only_order_events);
         merge_evidence(
             &mut self.evidence_samples,
             o.evidence_samples.iter().cloned(),
@@ -629,6 +647,18 @@ impl SolanaBuyerIntersectReport {
                 self.trade.dflow_unknown_events
             ));
         }
+        if self.trade.okx_malformed_events > 0 {
+            reasons.push(format!(
+                "{} OKX DEX Router event(s) did not decode exactly (not used as swap evidence)",
+                self.trade.okx_malformed_events
+            ));
+        }
+        if self.trade.okx_unknown_events > 0 {
+            reasons.push(format!(
+                "{} OKX DEX Router event(s) with an unknown discriminator",
+                self.trade.okx_unknown_events
+            ));
+        }
         if self.unexpected_payloads > 0 {
             reasons.push(format!(
                 "{} envelope(s) were not Solana transactions",
@@ -872,6 +902,16 @@ fn qualify_transaction(
     t.dflow_unknown_events = t
         .dflow_unknown_events
         .saturating_add(attribution.dflow_unknown);
+    t.okx_malformed_events = t
+        .okx_malformed_events
+        .saturating_add(attribution.okx_malformed);
+    t.okx_unknown_events = t.okx_unknown_events.saturating_add(attribution.okx_unknown);
+    t.okx_swap_with_receiver_not_attributed = t
+        .okx_swap_with_receiver_not_attributed
+        .saturating_add(attribution.okx_receiver);
+    t.okx_idl_only_order_events = t
+        .okx_idl_only_order_events
+        .saturating_add(attribution.okx_idl_only);
     merge_evidence(
         &mut t.evidence_samples,
         attribution.evidence.iter().cloned(),
@@ -986,6 +1026,30 @@ pub async fn run_solana_trade_intersect_with_policy(
     cancel: CancellationToken,
     policy: VariantPolicy,
 ) -> Result<SolanaBuyerIntersectReport, ProviderError> {
+    run_solana_trade_intersect_with_policies(
+        provider,
+        input_tokens,
+        min_token_hits,
+        options,
+        cancel,
+        policy,
+        default_okx_order_policy,
+    )
+    .await
+}
+
+/// As [`run_solana_trade_intersect_with_policy`] with an injected OKX order
+/// event policy as well (tests exercise the `FixtureVerified` path of a
+/// variant that is `IdlOnly`; production uses [`default_okx_order_policy`]).
+pub async fn run_solana_trade_intersect_with_policies(
+    provider: &dyn HistoryProvider,
+    input_tokens: &[AssetKey],
+    min_token_hits: usize,
+    options: IntersectOptions,
+    cancel: CancellationToken,
+    policy: VariantPolicy,
+    okx_order_policy: OkxOrderPolicy,
+) -> Result<SolanaBuyerIntersectReport, ProviderError> {
     let curve = pump_bonding_curve_decoder().map_err(|e| ProviderError::Other(Box::new(e)))?;
     let amm = pump_amm_decoder();
     let window = options.window;
@@ -1030,6 +1094,7 @@ pub async fn run_solana_trade_intersect_with_policy(
             decoders: LedgerDecoders {
                 curve: &curve,
                 amm: Some(&amm),
+                okx_order_policy,
             },
             focus: match token {
                 AssetKey::Token(_, AddressBytes::Solana(mint)) => BTreeSet::from([*mint]),

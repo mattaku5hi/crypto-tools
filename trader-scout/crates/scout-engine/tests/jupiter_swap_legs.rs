@@ -543,6 +543,7 @@ fn ledger(wallet: &str, txs: &[RawSolanaTransaction]) -> SolanaWalletLedgerRepor
     let decoders = LedgerDecoders {
         curve: &curve,
         amm: Some(&amm),
+        okx_order_policy: scout_engine::default_okx_order_policy,
     };
     let opts = LedgerOptions {
         left_censoring: true,

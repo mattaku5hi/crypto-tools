@@ -12,7 +12,8 @@
 use scout_core::{RawSolanaInstruction, RawSolanaTransaction, SolanaPubkey};
 use scout_dex_solana::{
     DflowEventDecoder, DflowEventOutcome, JupiterEventDecoder, JupiterEventOutcome,
-    PumpAmmInstructionOutcome, PumpEventOutcome, PumpInstructionOutcome, hex8,
+    OkxEventDecoder, OkxEventOutcome, PumpAmmInstructionOutcome, PumpEventOutcome,
+    PumpInstructionOutcome, VariantVerification, hex8,
 };
 
 use crate::solana_wallet_ledger::LedgerDecoders;
@@ -34,6 +35,12 @@ pub enum EvidenceKind {
     UnknownDiscriminator,
     /// Decoded trade event not claimed by any trade instruction.
     OrphanEvent,
+    /// OKX DEX Router order event whose source and destination
+    /// token-account owners differ (swap with receiver): attributed to nobody.
+    SwapWithReceiverNotAttributed,
+    /// OKX DEX Router order event of a variant that is not `FixtureVerified`
+    /// (decoded, counted, never leg evidence).
+    UnverifiedOrderEvent,
 }
 
 impl EvidenceKind {
@@ -44,6 +51,8 @@ impl EvidenceKind {
             Self::MalformedEvent => "malformed_event",
             Self::UnknownDiscriminator => "unknown_discriminator",
             Self::OrphanEvent => "orphan_event",
+            Self::SwapWithReceiverNotAttributed => "okx_swap_with_receiver_not_attributed",
+            Self::UnverifiedOrderEvent => "okx_unverified_order_event",
         }
     }
 }
@@ -102,6 +111,8 @@ pub fn program_name(program: &SolanaPubkey) -> &'static str {
         "jupiter_v6"
     } else if *program == scout_dex_solana::DFLOW_V4_PROGRAM_ID_BYTES {
         "dflow_v4"
+    } else if *program == scout_dex_solana::OKX_DEX_ROUTER_PROGRAM_ID_BYTES {
+        "okx_dex_router"
     } else {
         "pump_curve"
     }
@@ -158,6 +169,12 @@ pub(crate) struct TxScan {
     pub jupiter_unknown: u64,
     pub dflow_malformed: u64,
     pub dflow_unknown: u64,
+    pub okx_malformed: u64,
+    pub okx_unknown: u64,
+    /// OKX order events with a distinct receiver (attributed to nobody).
+    pub okx_receiver: u64,
+    /// OKX order events whose variant is not `FixtureVerified`.
+    pub okx_idl_only: u64,
 }
 
 impl TxScan {
@@ -189,7 +206,7 @@ impl TxScan {
 
 /// Scan every instruction of a transaction for coverage gaps.
 /// `orphans` are `(instruction_index, event name)` of events the pairing
-/// found unclaimed. `jupiter` enables the aggregator (Jupiter and DFlow) event gates.
+/// found unclaimed. `jupiter` enables the aggregator (Jupiter, DFlow and OKX) event gates.
 pub(crate) fn scan_tx_evidence(
     tx: &RawSolanaTransaction,
     decoders: &LedgerDecoders<'_>,
@@ -326,6 +343,51 @@ pub(crate) fn scan_tx_evidence(
                         hex8(&discriminator),
                         "DFlow event discriminator is not in the pinned schema source",
                     );
+                }
+                _ => {}
+            }
+            match OkxEventDecoder::new().classify(ix) {
+                OkxEventOutcome::Malformed { reason } => {
+                    scan.okx_malformed = scan.okx_malformed.saturating_add(1);
+                    scan.push(
+                        tx,
+                        ix,
+                        EvidenceKind::MalformedEvent,
+                        discriminator_hex(ix, 8),
+                        &reason,
+                    );
+                }
+                OkxEventOutcome::UnknownEvent { discriminator } => {
+                    scan.okx_unknown = scan.okx_unknown.saturating_add(1);
+                    scan.push(
+                        tx,
+                        ix,
+                        EvidenceKind::UnknownDiscriminator,
+                        hex8(&discriminator),
+                        "OKX event discriminator is not in the pinned on-chain IDL",
+                    );
+                }
+                OkxEventOutcome::Order(e) => {
+                    if !e.single_owner() {
+                        scan.okx_receiver = scan.okx_receiver.saturating_add(1);
+                        scan.push(
+                            tx,
+                            ix,
+                            EvidenceKind::SwapWithReceiverNotAttributed,
+                            e.kind.name().to_owned(),
+                            "source and destination token-account owners differ: not attributed to either",
+                        );
+                    }
+                    if (decoders.okx_order_policy)(e.kind) != VariantVerification::FixtureVerified {
+                        scan.okx_idl_only = scan.okx_idl_only.saturating_add(1);
+                        scan.push(
+                            tx,
+                            ix,
+                            EvidenceKind::UnverifiedOrderEvent,
+                            e.kind.name().to_owned(),
+                            "order-event variant is IdlOnly: decoded and counted, not leg evidence",
+                        );
+                    }
                 }
                 _ => {}
             }

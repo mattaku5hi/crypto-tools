@@ -713,6 +713,13 @@ pub struct DiagnosticsDto {
     pub jupiter_unknown_events: u64,
     pub dflow_malformed_events: u64,
     pub dflow_unknown_events: u64,
+    /// ADR-017 draft: OKX DEX Router event coverage (never evidence when malformed/unknown).
+    pub okx_malformed_events: u64,
+    pub okx_unknown_events: u64,
+    /// Order events with a distinct receiver: attributed to nobody.
+    pub okx_swap_with_receiver_not_attributed: u64,
+    /// Order events of an IdlOnly variant: counted, not leg evidence.
+    pub okx_idl_only_order_events: u64,
     /// At most 5 samples (canonical chain order) of malformed trade
     /// instructions, unknown discriminators and orphan events.
     pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
@@ -820,6 +827,12 @@ pub struct RouteEvidenceDto {
     pub dflow: u64,
     /// Booked only because of a DFlow leg.
     pub dflow_only: u64,
+    /// OKX DEX Router order-event legs (ADR-017 draft).
+    pub okx: u64,
+    /// Booked only because of an OKX leg.
+    pub okx_only: u64,
+    /// OKX swaps whose order event names the wallet itself as owner.
+    pub okx_owner_is_wallet: u64,
 }
 
 /// ADR-013 §1/§2 counters.
@@ -1186,6 +1199,9 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
                 jupiter_only: t.route_swaps_by_evidence.jupiter_only,
                 dflow: t.route_swaps_by_evidence.dflow,
                 dflow_only: t.route_swaps_by_evidence.dflow_only,
+                okx: t.route_swaps_by_evidence.okx,
+                okx_only: t.route_swaps_by_evidence.okx_only,
+                okx_owner_is_wallet: t.route_swaps_by_evidence.okx_owner_is_wallet,
             },
             route_leg_not_wallet_price: t.route_leg_not_wallet_price,
             route_rejected_wallet_not_signer: d.route_rejected.wallet_not_signer,
@@ -1318,6 +1334,10 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
             jupiter_unknown_events: d.jupiter_unknown_events,
             dflow_malformed_events: d.dflow_malformed_events,
             dflow_unknown_events: d.dflow_unknown_events,
+            okx_malformed_events: d.okx_malformed_events,
+            okx_unknown_events: d.okx_unknown_events,
+            okx_swap_with_receiver_not_attributed: d.okx_swap_with_receiver_not_attributed,
+            okx_idl_only_order_events: d.okx_idl_only_order_events,
             evidence_samples: scout_app::evidence_dtos(&l.evidence_samples, &str::to_owned),
         },
     }

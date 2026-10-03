@@ -20,3 +20,8 @@ the account is owned by the program itself (published by its upgrade authority).
 |---|---|---|---|
 | `jupiter_v6_onchain_idl_2026-10-03.json` | `JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4` | `C88XWfp26heEmDkmfSzeXP7Fd7GQJ2j9dDTUsyiZbUTa` | `12a0856158b2b6927d683a2ba21566f82e39989aca476e23c02d845fc38cdca8` |
 | `okx_dex_router_onchain_idl_2026-10-03.json` | `proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u` (OKX: DEX Router) | `8wXL8gQduvMr6pmzhJnbUqsnnegJnmnPiZVPzehLjoeT` | `c1f85197a5d96dd43fc2a1b981126cfe04c3eb6d2d68b3731129a259e45d54c9` |
+
+Checked by: `scout-dex-solana` (`jupiter_event` and `okx_event` IDL-equality tests: event set, discriminators
+`sha256("event:<Name>")[:8]`, field order and types; for OKX the whole `Dex` enum) and, over the committed live
+fixtures, `scout-engine/tests/okx_router_legs.rs` (order events vs owner-keyed deltas, hops vs venue CPIs) and
+`jupiter_swap_legs.rs`.

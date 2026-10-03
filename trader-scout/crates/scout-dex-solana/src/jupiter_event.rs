@@ -11,16 +11,22 @@
 //! ## Layouts (and where each comes from)
 //!
 //! - `SwapEvent` (`sha256("event:SwapEvent")[..8] = 40c6cde8260871e2`) --
-//!   pinned IDL (`jupiter_v6_idl_12bc5f67.json`), 112 bytes:
+//!   2024 pin (`jupiter_v6_idl_12bc5f67.json`) and on-chain IDL, 112 bytes:
 //!   `amm, input_mint, input_amount u64, output_mint, output_amount u64`.
 //! - `FeeEvent` (`494f4e7fb8d50ddc`) -- pinned IDL, 72 bytes:
 //!   `account, mint, amount u64`. No live sample: `IdlOnly`, never a leg.
 //! - `SwapsEvent` (`982f4eebc0606e6a` = `sha256("event:SwapsEvent")[..8]`) --
-//!   **NOT in the pinned IDL**. 110 of 111 live hops (2026-10-02 fixtures)
-//!   arrive in it: `u32 count ++ count * 112` bytes where each element is
-//!   ordered `input_mint, input_amount, output_mint, output_amount, amm`
-//!   (note: `amm` LAST, unlike the IDL `SwapEvent`). Layout derived from
-//!   live data only; see the ADR-015 evidence table.
+//!   **not in the 2024 pin**, but **defined by the on-chain IDL** pinned
+//!   2026-10-03 (`jupiter_v6_onchain_idl_2026-10-03.json`, sha256
+//!   `12a08561...cdca8`): `SwapsEvent { swap_events: Vec<SwapEventV2> }`,
+//!   `SwapEventV2 { input_mint, input_amount u64, output_mint, output_amount
+//!   u64, amm }` (note: `amm` LAST, unlike `SwapEvent`). Borsh `Vec` =
+//!   `u32 count ++ count * 112` bytes. 110 of 111 live hops (2026-10-02
+//!   fixtures) arrive in it with exactly this layout; see the ADR-015 table.
+//! - Known non-leg events (names and discriminators only, from the on-chain
+//!   IDL): `CandidateSwapResults`, `CandidateSwapQuoteError`,
+//!   `BestSwapOutAmountViolation`. They are **never** decoded into legs; they
+//!   classify as [`JupiterEventOutcome::KnownNonLegEvent`] (not unknown).
 //!
 //! `amm` is the **venue program id** (e.g. PumpSwap `pAMMBay6...`, Meteora
 //! DLMM `LBUZKhRx...`), not a pool address, in every live sample.
@@ -53,6 +59,10 @@ pub const JUPITER_IDL_COMMIT: &str = "12bc5f67b94a2c3edc74d6e721a19442124a0bad";
 /// sha256 of the pinned IDL file.
 pub const JUPITER_IDL_SHA256: &str =
     "764ea6d71b77458fd33aeb308d6e6bb19e660fc5320c5359f3b9cac96eba5c50";
+/// sha256 of the on-chain Anchor IDL pinned 2026-10-03 (authoritative for
+/// `SwapsEvent`; `jupiter_v6_onchain_idl_2026-10-03.json`).
+pub const JUPITER_ONCHAIN_IDL_SHA256: &str =
+    "12a0856158b2b6927d683a2ba21566f82e39989aca476e23c02d845fc38cdca8";
 
 /// `SwapEvent` discriminator.
 pub const JUPITER_SWAP_EVENT_DISCRIMINATOR: [u8; 8] =
@@ -63,6 +73,15 @@ pub const JUPITER_FEE_EVENT_DISCRIMINATOR: [u8; 8] =
 /// `SwapsEvent` discriminator (not in the pinned IDL).
 pub const JUPITER_SWAPS_EVENT_DISCRIMINATOR: [u8; 8] =
     [0x98, 0x2f, 0x4e, 0xeb, 0xc0, 0x60, 0x6e, 0x6a];
+/// `CandidateSwapResults` discriminator (on-chain IDL; never a leg).
+pub const JUPITER_CANDIDATE_SWAP_RESULTS_DISCRIMINATOR: [u8; 8] =
+    [45, 9, 244, 30, 229, 52, 168, 123];
+/// `CandidateSwapQuoteError` discriminator (on-chain IDL; never a leg).
+pub const JUPITER_CANDIDATE_SWAP_QUOTE_ERROR_DISCRIMINATOR: [u8; 8] =
+    [248, 134, 37, 55, 145, 177, 114, 79];
+/// `BestSwapOutAmountViolation` discriminator (on-chain IDL; never a leg).
+pub const JUPITER_BEST_SWAP_OUT_AMOUNT_VIOLATION_DISCRIMINATOR: [u8; 8] =
+    [124, 66, 196, 51, 218, 173, 46, 93];
 /// Event-CPI header: tag + event discriminator.
 pub const JUPITER_EVENT_HEADER_LEN: usize = 16;
 /// Bytes of one swap element (`SwapEvent` payload or one `SwapsEvent` item).
@@ -92,7 +111,8 @@ impl JupiterEventKind {
 
     /// Evidence level (ADR-009/ADR-015). Both are verified by the live
     /// fixtures reconciled in `scout-engine/tests/jupiter_swap_legs.rs`;
-    /// `SwapsEvent` has no IDL entry (see module docs).
+    /// `SwapsEvent` is absent from the 2024 pin but defined by the on-chain
+    /// IDL of 2026-10-03 (see module docs).
     #[must_use]
     pub const fn verification(self) -> VariantVerification {
         VariantVerification::FixtureVerified
@@ -132,6 +152,11 @@ pub enum JupiterEventOutcome {
         instruction_index: u32,
     },
     Fee(JupiterFeeEvent),
+    /// Event of the on-chain IDL that is not a swap leg (name only; its
+    /// payload is not decoded).
+    KnownNonLegEvent {
+        name: &'static str,
+    },
     /// Event-CPI with a discriminator outside the known set. COVERAGE GAP.
     UnknownEvent {
         discriminator: [u8; 8],
@@ -198,6 +223,19 @@ fn swaps_item_leg(b: &[u8]) -> Option<JupiterSwapLeg> {
     })
 }
 
+/// Events of the on-chain IDL that carry no swap leg.
+fn known_non_leg_name(disc: &[u8; 8]) -> Option<&'static str> {
+    if *disc == JUPITER_CANDIDATE_SWAP_RESULTS_DISCRIMINATOR {
+        Some("CandidateSwapResults")
+    } else if *disc == JUPITER_CANDIDATE_SWAP_QUOTE_ERROR_DISCRIMINATOR {
+        Some("CandidateSwapQuoteError")
+    } else if *disc == JUPITER_BEST_SWAP_OUT_AMOUNT_VIOLATION_DISCRIMINATOR {
+        Some("BestSwapOutAmountViolation")
+    } else {
+        None
+    }
+}
+
 fn malformed(reason: String) -> JupiterEventOutcome {
     JupiterEventOutcome::Malformed { reason }
 }
@@ -221,7 +259,8 @@ pub fn classify_jupiter_event(instruction: &RawSolanaInstruction) -> JupiterEven
     let payload = data.get(JUPITER_EVENT_HEADER_LEN..).unwrap_or_default();
     let known = disc == JUPITER_SWAP_EVENT_DISCRIMINATOR
         || disc == JUPITER_SWAPS_EVENT_DISCRIMINATOR
-        || disc == JUPITER_FEE_EVENT_DISCRIMINATOR;
+        || disc == JUPITER_FEE_EVENT_DISCRIMINATOR
+        || known_non_leg_name(&disc).is_some();
     if !known {
         return JupiterEventOutcome::UnknownEvent {
             discriminator: disc,
@@ -236,6 +275,9 @@ pub fn classify_jupiter_event(instruction: &RawSolanaInstruction) -> JupiterEven
         ));
     }
     let idx = instruction.instruction_index;
+    if let Some(name) = known_non_leg_name(&disc) {
+        return JupiterEventOutcome::KnownNonLegEvent { name };
+    }
     if disc == JUPITER_SWAP_EVENT_DISCRIMINATOR {
         if payload.len() != JUPITER_SWAP_ITEM_LEN {
             return malformed(format!(
@@ -573,5 +615,190 @@ mod tests {
         assert_eq!(32 + 32 + 8 + 32 + 8, JUPITER_SWAP_ITEM_LEN);
         assert_eq!(32 + 32 + 8, JUPITER_FEE_EVENT_LEN);
         assert_eq!(events.len(), 2);
+    }
+    // ---- on-chain IDL (2026-10-03) equality ----
+
+    fn onchain_idl() -> serde_json::Value {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/p0/measurements/fixtures/jupiter_v6_onchain_idl_2026-10-03.json"
+        );
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(hex(&Sha256::digest(&bytes)), JUPITER_ONCHAIN_IDL_SHA256);
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn by_name<'a>(list: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == name)
+            .unwrap_or_else(|| panic!("{name} not in the on-chain IDL"))
+    }
+
+    fn idl_disc(event: &serde_json::Value) -> Vec<u8> {
+        event["discriminator"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| u8::try_from(b.as_u64().unwrap()).unwrap())
+            .collect()
+    }
+
+    /// `(name, type)` of a struct's fields, the type rendered as `pubkey`,
+    /// `u64` or `vec<Name>`.
+    fn onchain_layout(types: &serde_json::Value, name: &str) -> Vec<(String, String)> {
+        let t = by_name(types, name);
+        assert_eq!(t["type"]["kind"], "struct", "{name}");
+        t["type"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                let ty = &f["type"];
+                let rendered = match ty.as_str() {
+                    Some(s) => s.to_owned(),
+                    None => format!("vec<{}>", ty["vec"]["defined"]["name"].as_str().unwrap()),
+                };
+                (f["name"].as_str().unwrap().to_owned(), rendered)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn onchain_idl_equality_discriminators() {
+        let idl = onchain_idl();
+        let events = &idl["events"];
+        assert_eq!(idl["address"], JUPITER_V6_PROGRAM_ID);
+        for (name, constant) in [
+            ("SwapEvent", JUPITER_SWAP_EVENT_DISCRIMINATOR),
+            ("SwapsEvent", JUPITER_SWAPS_EVENT_DISCRIMINATOR),
+            ("FeeEvent", JUPITER_FEE_EVENT_DISCRIMINATOR),
+            (
+                "CandidateSwapResults",
+                JUPITER_CANDIDATE_SWAP_RESULTS_DISCRIMINATOR,
+            ),
+            (
+                "CandidateSwapQuoteError",
+                JUPITER_CANDIDATE_SWAP_QUOTE_ERROR_DISCRIMINATOR,
+            ),
+            (
+                "BestSwapOutAmountViolation",
+                JUPITER_BEST_SWAP_OUT_AMOUNT_VIOLATION_DISCRIMINATOR,
+            ),
+        ] {
+            assert_eq!(idl_disc(by_name(events, name)), constant, "{name} (IDL)");
+            assert_eq!(disc(name), constant, "{name} (sha256)");
+        }
+        // The IDL defines exactly these six events.
+        assert_eq!(events.as_array().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn onchain_idl_equality_swaps_event_layout() {
+        let idl = onchain_idl();
+        let types = &idl["types"];
+        let p = |n: &str, t: &str| (n.to_owned(), t.to_owned());
+        // SwapsEvent { swap_events: Vec<SwapEventV2> }
+        assert_eq!(
+            onchain_layout(types, "SwapsEvent"),
+            vec![p("swap_events", "vec<SwapEventV2>")]
+        );
+        // SwapEventV2: the element order `swaps_item_leg` reads (amm LAST).
+        assert_eq!(
+            onchain_layout(types, "SwapEventV2"),
+            vec![
+                p("input_mint", "pubkey"),
+                p("input_amount", "u64"),
+                p("output_mint", "pubkey"),
+                p("output_amount", "u64"),
+                p("amm", "pubkey"),
+            ]
+        );
+        // SwapEvent (single hop): amm FIRST, as `idl_leg` reads it.
+        assert_eq!(
+            onchain_layout(types, "SwapEvent"),
+            vec![
+                p("amm", "pubkey"),
+                p("input_mint", "pubkey"),
+                p("input_amount", "u64"),
+                p("output_mint", "pubkey"),
+                p("output_amount", "u64"),
+            ]
+        );
+        assert_eq!(
+            onchain_layout(types, "FeeEvent"),
+            vec![
+                p("account", "pubkey"),
+                p("mint", "pubkey"),
+                p("amount", "u64"),
+            ]
+        );
+        assert_eq!(32 + 8 + 32 + 8 + 32, JUPITER_SWAP_ITEM_LEN);
+        assert_eq!(32 + 32 + 8, JUPITER_FEE_EVENT_LEN);
+    }
+
+    #[test]
+    fn onchain_idl_swaps_event_item_bytes_match_the_decoder() {
+        // Build the item from the IDL's own field order and decode it.
+        let idl = onchain_idl();
+        let layout = onchain_layout(&idl["types"], "SwapEventV2");
+        let l = leg(9);
+        let mut item = Vec::new();
+        for (name, _) in &layout {
+            match name.as_str() {
+                "input_mint" => item.extend_from_slice(&l.input_mint),
+                "input_amount" => item.extend_from_slice(&l.input_amount.to_le_bytes()),
+                "output_mint" => item.extend_from_slice(&l.output_mint),
+                "output_amount" => item.extend_from_slice(&l.output_amount.to_le_bytes()),
+                "amm" => item.extend_from_slice(&l.amm),
+                other => panic!("unexpected field {other}"),
+            }
+        }
+        let mut payload = 1u32.to_le_bytes().to_vec();
+        payload.extend(item);
+        match JupiterEventDecoder::new()
+            .classify(&event_ix(JUPITER_SWAPS_EVENT_DISCRIMINATOR, &payload))
+        {
+            JupiterEventOutcome::Swaps { kind, legs, .. } => {
+                assert_eq!(kind, JupiterEventKind::SwapsEvent);
+                assert_eq!(legs, vec![l]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn known_non_leg_events_are_named_never_legs_never_unknown() {
+        let dec = JupiterEventDecoder::new();
+        for (name, d) in [
+            (
+                "CandidateSwapResults",
+                JUPITER_CANDIDATE_SWAP_RESULTS_DISCRIMINATOR,
+            ),
+            (
+                "CandidateSwapQuoteError",
+                JUPITER_CANDIDATE_SWAP_QUOTE_ERROR_DISCRIMINATOR,
+            ),
+            (
+                "BestSwapOutAmountViolation",
+                JUPITER_BEST_SWAP_OUT_AMOUNT_VIOLATION_DISCRIMINATOR,
+            ),
+        ] {
+            // Whatever the payload (even one shaped like a swap), no leg.
+            for payload in [&[][..], &[0u8; 112][..], &swaps_payload(&[leg(1)])[..]] {
+                assert_eq!(
+                    dec.classify(&event_ix(d, payload)),
+                    JupiterEventOutcome::KnownNonLegEvent { name }
+                );
+            }
+            // Still event-authority gated.
+            let mut wrong = event_ix(d, &[]);
+            wrong.accounts = vec![[7; 32]];
+            assert!(matches!(
+                dec.classify(&wrong),
+                JupiterEventOutcome::Malformed { .. }
+            ));
+        }
     }
 }

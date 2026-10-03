@@ -512,6 +512,7 @@ fn run_solana(
         &LedgerDecoders {
             curve: &decoder,
             amm: Some(&amm),
+            okx_order_policy: scout_engine::default_okx_order_policy,
         },
         window,
         CancellationToken::new(),
@@ -691,12 +692,18 @@ fn print_diagnostics(
             + d.jupiter_unknown_events
             + d.dflow_malformed_events
             + d.dflow_unknown_events
+            + d.okx_malformed_events
+            + d.okx_unknown_events
+            + d.okx_swap_with_receiver_not_attributed
+            + d.okx_idl_only_order_events
             > 0
         {
             eprintln!(
                 "  wallet {} coverage gaps: malformed_trade_instructions={} orphan_trade_events={} \
                  unknown_discriminator_instructions={} jupiter_malformed_events={} \
-                 jupiter_unknown_events={} dflow_malformed_events={} dflow_unknown_events={}",
+                 jupiter_unknown_events={} dflow_malformed_events={} dflow_unknown_events={} \
+                 okx_malformed_events={} okx_unknown_events={} \
+                 okx_swap_with_receiver_not_attributed={} okx_idl_only_order_events={}",
                 bs58::encode(w.wallet).into_string(),
                 d.malformed_trade_instructions,
                 d.orphan_trade_events,
@@ -704,7 +711,11 @@ fn print_diagnostics(
                 d.jupiter_malformed_events,
                 d.jupiter_unknown_events,
                 d.dflow_malformed_events,
-                d.dflow_unknown_events
+                d.dflow_unknown_events,
+                d.okx_malformed_events,
+                d.okx_unknown_events,
+                d.okx_swap_with_receiver_not_attributed,
+                d.okx_idl_only_order_events
             );
         }
         for e in &l.evidence_samples {

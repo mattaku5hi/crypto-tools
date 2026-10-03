@@ -224,6 +224,7 @@ pub async fn run_solana_wallet_stats_windowed(
         &LedgerDecoders {
             curve: decoder,
             amm: None,
+            okx_order_policy: crate::default_okx_order_policy,
         },
         window,
         cancel,
@@ -479,6 +480,18 @@ async fn scan_wallet(
         reasons.push(format!(
             "{} DFlow event(s) with an unknown discriminator",
             d.dflow_unknown_events
+        ));
+    }
+    if d.okx_malformed_events > 0 {
+        reasons.push(format!(
+            "{} OKX DEX Router event(s) did not decode exactly (not used as swap evidence)",
+            d.okx_malformed_events
+        ));
+    }
+    if d.okx_unknown_events > 0 {
+        reasons.push(format!(
+            "{} OKX DEX Router event(s) with an unknown discriminator",
+            d.okx_unknown_events
         ));
     }
     if ledger.trades.idl_only_variant > 0 {

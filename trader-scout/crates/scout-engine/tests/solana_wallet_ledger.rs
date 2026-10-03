@@ -24,17 +24,18 @@ use scout_dex_solana::{
     BUY_INSTRUCTION_DISCRIMINATOR, BUY_V2_INSTRUCTION_DISCRIMINATOR, DFLOW_EVENT_AUTHORITY_BYTES,
     DFLOW_FEE_EVENT_DISCRIMINATOR, DFLOW_SWAP_EVENT_DISCRIMINATOR, DFLOW_V4_PROGRAM_ID_BYTES,
     EVENT_CPI_DISCRIMINATOR, JUPITER_EVENT_AUTHORITY_BYTES, JUPITER_SWAPS_EVENT_DISCRIMINATOR,
-    JUPITER_V6_PROGRAM_ID_BYTES, PUMP_AMM_PROGRAM_ID_BYTES, SELL_INSTRUCTION_DISCRIMINATOR,
-    TRADE_EVENT_DISCRIMINATOR, TradeEventPairing, TradeSide, WRAPPED_SOL_MINT,
-    pair_trades_with_events, reconcile_pump_amm_transaction,
+    JUPITER_V6_PROGRAM_ID_BYTES, OKX_DEX_ROUTER_PROGRAM_ID_BYTES, OKX_EVENT_AUTHORITY_BYTES,
+    OKX_SWAP_EVENT_DISCRIMINATOR, OkxOrderEventKind, PUMP_AMM_PROGRAM_ID_BYTES,
+    SELL_INSTRUCTION_DISCRIMINATOR, TRADE_EVENT_DISCRIMINATOR, TradeEventPairing, TradeSide,
+    WRAPPED_SOL_MINT, pair_trades_with_events, reconcile_pump_amm_transaction,
 };
 use scout_engine::{
     ConsumedBasisStatus, EpisodeOutcome, EpisodePnlBound, LedgerDecoders, LedgerOptions,
-    LowerBound, PUMP_BONDING_CURVE_PROGRAM_ID, QuoteUnit, RouteRejections, RouteSwapRecord,
-    SolanaWalletLedgerReport, USDC_MINT, USDT_MINT, UnknownReason, Venue, WinRateLowerBound,
-    allocate_fee_proportionally, build_solana_wallet_ledger, build_solana_wallet_ledger_venues,
-    build_solana_wallet_ledger_with_options, format_quote_money, lamports_to_money,
-    pump_amm_decoder, pump_bonding_curve_decoder, solana_mainnet_chain,
+    LowerBound, OkxOrderPolicy, PUMP_BONDING_CURVE_PROGRAM_ID, QuoteUnit, RouteRejections,
+    RouteSwapRecord, SolanaWalletLedgerReport, USDC_MINT, USDT_MINT, UnknownReason, Venue,
+    WinRateLowerBound, allocate_fee_proportionally, build_solana_wallet_ledger,
+    build_solana_wallet_ledger_venues, build_solana_wallet_ledger_with_options, format_quote_money,
+    lamports_to_money, pump_amm_decoder, pump_bonding_curve_decoder, solana_mainnet_chain,
 };
 use scout_providers::HeliusProvider;
 use tokio_util::sync::CancellationToken;
@@ -1586,6 +1587,7 @@ fn run_both(txs: &[RawSolanaTransaction]) -> SolanaWalletLedgerReport {
         &LedgerDecoders {
             curve: &curve,
             amm: Some(&amm),
+            okx_order_policy: scout_engine::default_okx_order_policy,
         },
         LedgerOptions::default(),
     )
@@ -2054,6 +2056,7 @@ async fn live_pumpswap_wallet_page_ledger_numbers_and_invariants() {
     let decoders = LedgerDecoders {
         curve: &curve,
         amm: Some(&amm),
+        okx_order_policy: scout_engine::default_okx_order_policy,
     };
     let opts = LedgerOptions {
         left_censoring: true,
@@ -2294,6 +2297,7 @@ async fn router_wallet_report(name: &str, wallet: &str) -> SolanaWalletLedgerRep
     let decoders = LedgerDecoders {
         curve: &curve,
         amm: Some(&amm),
+        okx_order_policy: scout_engine::default_okx_order_policy,
     };
     let opts = LedgerOptions {
         left_censoring: true,
@@ -3411,4 +3415,306 @@ fn evidence_samples_are_bounded_and_locate_malformed_and_orphan_items() {
     // Deterministic under input order.
     txs.reverse();
     assert_eq!(run_both(&txs).evidence_samples, r.evidence_samples);
+}
+
+// ---------------------------------------------------------------------
+// ADR-017 draft: OKX DEX Router order events as route evidence + ownership.
+// ---------------------------------------------------------------------
+
+/// The injected policy of the verified path: every order-event variant is
+/// treated as `FixtureVerified` (production keeps them `IdlOnly`, see
+/// `okx_router_legs.rs`).
+fn okx_all_verified(_: OkxOrderEventKind) -> scout_dex_solana::VariantVerification {
+    scout_dex_solana::VariantVerification::FixtureVerified
+}
+
+fn run_okx(txs: &[RawSolanaTransaction], policy: OkxOrderPolicy) -> SolanaWalletLedgerReport {
+    let curve = pump_bonding_curve_decoder().unwrap();
+    let amm = pump_amm_decoder();
+    build_solana_wallet_ledger_venues(
+        &pk(W),
+        txs,
+        &LedgerDecoders {
+            curve: &curve,
+            amm: Some(&amm),
+            okx_order_policy: policy,
+        },
+        LedgerOptions::default(),
+    )
+    .unwrap()
+}
+
+/// `SwapWithFeesCpiEvent2` event-CPI: common fields (order id 7, amounts
+/// 1000 / 1000 / 1000) and a zeroed 128-byte fee tail, plus `trailing` bytes.
+fn okx_order_ix(
+    src_mint: SolanaPubkey,
+    dst_mint: SolanaPubkey,
+    src_owner: SolanaPubkey,
+    dst_owner: SolanaPubkey,
+    idx: u32,
+    trailing: &[u8],
+) -> RawSolanaInstruction {
+    let mut data = EVENT_CPI_DISCRIMINATOR.to_vec();
+    data.extend(OkxOrderEventKind::SwapWithFeesCpiEvent2.discriminator());
+    data.extend(7u64.to_le_bytes());
+    for k in [src_mint, dst_mint, src_owner, dst_owner] {
+        data.extend(k);
+    }
+    for v in [1000u64, 1000, 1000] {
+        data.extend(v.to_le_bytes());
+    }
+    data.extend([0u8; 128]);
+    data.extend_from_slice(trailing);
+    RawSolanaInstruction {
+        program_id: OKX_DEX_ROUTER_PROGRAM_ID_BYTES,
+        accounts: vec![OKX_EVENT_AUTHORITY_BYTES],
+        data,
+        instruction_index: idx,
+    }
+}
+
+/// A per-hop `SwapEvent` of the router (`Dex::SplTokenSwap`, 11 in, 22 out).
+fn okx_hop_ix(idx: u32) -> RawSolanaInstruction {
+    let mut data = EVENT_CPI_DISCRIMINATOR.to_vec();
+    data.extend(OKX_SWAP_EVENT_DISCRIMINATOR);
+    data.push(0);
+    data.extend(11u64.to_le_bytes());
+    data.extend(22u64.to_le_bytes());
+    RawSolanaInstruction {
+        program_id: OKX_DEX_ROUTER_PROGRAM_ID_BYTES,
+        accounts: vec![OKX_EVENT_AUTHORITY_BYTES],
+        data,
+        instruction_index: idx,
+    }
+}
+
+/// Buy of `M1` against USDC by `W`, with the given router events.
+fn okx_buy_tx(sig: u8, ixs: Vec<RawSolanaInstruction>) -> RawSolanaTransaction {
+    jup_route_tx(
+        sig,
+        u64::from(sig),
+        TradeSide::Buy,
+        M1,
+        1000,
+        5_002_500,
+        ixs,
+    )
+}
+
+#[test]
+fn okx_order_event_is_idl_only_by_default_and_never_evidence() {
+    let tx = okx_buy_tx(1, vec![okx_order_ix(usdc(), pk(M1), pk(W), pk(W), 3, &[])]);
+    let r = run_okx(&[tx], scout_engine::default_okx_order_policy);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.trades.route_swaps_by_evidence.okx, 0);
+    assert_eq!(r.diagnostics.okx_idl_only_order_events, 1);
+    assert_eq!(r.diagnostics.okx_swap_with_receiver_not_attributed, 0);
+    assert_eq!(rejected(&r), RouteRejections::default());
+    assert_eq!(r.evidence_samples.len(), 1);
+    assert_eq!(
+        r.evidence_samples[0].kind.label(),
+        "okx_unverified_order_event"
+    );
+    assert_eq!(r.evidence_samples[0].program_name(), "okx_dex_router");
+    assert_eq!(
+        r.evidence_samples[0].variant_or_discriminator,
+        "SwapWithFeesCpiEvent2"
+    );
+}
+
+#[test]
+fn okx_order_event_of_the_signer_books_the_route_from_wallet_deltas() {
+    let buy = okx_buy_tx(1, vec![okx_order_ix(usdc(), pk(M1), pk(W), pk(W), 3, &[])]);
+    let sell = jup_route_tx(
+        2,
+        2,
+        TradeSide::Sell,
+        M1,
+        1000,
+        5_000_000,
+        vec![okx_order_ix(pk(M1), usdc(), pk(W), pk(W), 3, &[])],
+    );
+    let r = run_okx(&[buy.clone(), sell], okx_all_verified);
+    assert_eq!(r.trades.route_swaps, 2);
+    assert_eq!(r.trades.route_swaps_by_quote.usdc, 2);
+    let e = r.trades.route_swaps_by_evidence;
+    assert_eq!(
+        (
+            e.curve,
+            e.pump_amm,
+            e.jupiter,
+            e.dflow,
+            e.okx,
+            e.okx_only,
+            e.okx_owner_is_wallet
+        ),
+        (0, 0, 0, 0, 2, 2, 2)
+    );
+    // Booked at the wallet's own deltas, never at the event amounts (1000).
+    let (b, s) = (&r.route_swap_log[0], &r.route_swap_log[1]);
+    assert_eq!(
+        (b.side, b.token_amount, b.quote_amount),
+        (TradeSide::Buy, 1000, 5_002_500)
+    );
+    assert_eq!(
+        (s.side, s.token_amount, s.quote_amount),
+        (TradeSide::Sell, 1000, 5_000_000)
+    );
+    assert_eq!(rejected(&r), RouteRejections::default());
+    assert_eq!(r.diagnostics.okx_idl_only_order_events, 0);
+    assert_eq!(r.diagnostics.okx_malformed_events, 0);
+    // Without the event the same transaction is not a trade (invariant 1).
+    let mut bare = buy.clone();
+    bare.instructions.clear();
+    assert_eq!(run_okx(&[bare], okx_all_verified).trades.route_swaps, 0);
+    // Bonding-curve-only runs do not use router evidence.
+    assert_eq!(run(&[buy]).trades.route_swaps, 0);
+}
+
+#[test]
+fn okx_order_not_trading_the_token_is_not_evidence() {
+    let tx = okx_buy_tx(1, vec![okx_order_ix(usdc(), pk(M2), pk(W), pk(W), 3, &[])]);
+    let r = run_okx(&[tx], okx_all_verified);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(rejected(&r).no_verified_leg, 1);
+    assert_eq!(r.trades.route_swaps_by_evidence.okx, 0);
+}
+
+#[test]
+fn okx_hop_events_alone_are_not_swap_legs() {
+    // Per-hop SwapEvents carry no mint: they cannot prove a swap of T.
+    let tx = okx_buy_tx(1, vec![okx_hop_ix(3), okx_hop_ix(4)]);
+    let r = run_okx(&[tx], okx_all_verified);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.diagnostics.okx_malformed_events, 0);
+    assert_eq!(r.diagnostics.okx_unknown_events, 0);
+}
+
+#[test]
+fn okx_swap_with_receiver_is_attributed_to_nobody_and_counted() {
+    // Source owner is the signer W, destination owner is another account.
+    let tx = okx_buy_tx(
+        1,
+        vec![okx_order_ix(usdc(), pk(M1), pk(W), pk(OTHER), 3, &[])],
+    );
+    let r = run_okx(&[tx], okx_all_verified);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.trades.route_swaps_by_evidence.okx, 0);
+    assert_eq!(r.diagnostics.okx_swap_with_receiver_not_attributed, 1);
+    assert_eq!(r.evidence_samples.len(), 1);
+    let e = &r.evidence_samples[0];
+    assert_eq!(e.kind.label(), "okx_swap_with_receiver_not_attributed");
+    assert_eq!(e.program, OKX_DEX_ROUTER_PROGRAM_ID_BYTES);
+    assert_eq!(e.variant_or_discriminator, "SwapWithFeesCpiEvent2");
+    // Reversed roles: the destination owner is the signer.
+    let tx = okx_buy_tx(
+        2,
+        vec![okx_order_ix(usdc(), pk(M1), pk(OTHER), pk(W), 3, &[])],
+    );
+    let r = run_okx(&[tx], okx_all_verified);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.diagnostics.okx_swap_with_receiver_not_attributed, 1);
+}
+
+#[test]
+fn okx_passthrough_owner_must_net_zero_and_not_sign() {
+    // The order's single owner is PASS, not the wallet: evidence only if PASS
+    // is a non-signing zero-net pass-through (ADR-013 section 2d).
+    let ixs = || vec![okx_order_ix(usdc(), pk(M1), pk(PASS), pk(PASS), 3, &[])];
+    let mut bad = okx_buy_tx(1, ixs());
+    bad.token_balance_changes.push(bal(M1, PASS, 0, 7));
+    let r = run_okx(&[bad], okx_all_verified);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(rejected(&r).passthrough_nonzero, 1);
+    let mut signs = okx_buy_tx(2, ixs());
+    signs.signers.push(pk(PASS));
+    signs.token_balance_changes.push(bal(M1, PASS, 100, 100));
+    let r = run_okx(&[signs], okx_all_verified);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(rejected(&r).passthrough_nonzero, 1);
+    let mut ok = okx_buy_tx(3, ixs());
+    ok.token_balance_changes.push(bal(M1, PASS, 100, 100));
+    let r = run_okx(&[ok], okx_all_verified);
+    let e = r.trades.route_swaps_by_evidence;
+    assert_eq!(
+        (
+            r.trades.route_swaps,
+            e.okx,
+            e.okx_only,
+            e.okx_owner_is_wallet
+        ),
+        (1, 1, 1, 0)
+    );
+}
+
+#[test]
+fn okx_events_of_another_owner_do_not_book_this_wallet() {
+    // W signs and has the deltas, but the order belongs to OTHER, who nets
+    // non-zero: not attributed to W.
+    let mut tx = okx_buy_tx(
+        1,
+        vec![okx_order_ix(usdc(), pk(M1), pk(OTHER), pk(OTHER), 3, &[])],
+    );
+    tx.token_balance_changes.push(bal(M1, OTHER, 0, 5));
+    let r = run_okx(&[tx], okx_all_verified);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(rejected(&r).passthrough_nonzero, 1);
+}
+
+#[test]
+fn malformed_okx_event_is_not_trusted_and_is_counted_with_evidence() {
+    let tx = okx_buy_tx(9, vec![okx_order_ix(usdc(), pk(M1), pk(W), pk(W), 3, &[0])]);
+    let r = run_okx(&[tx], okx_all_verified);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.diagnostics.okx_malformed_events, 1);
+    assert_eq!(r.evidence_samples.len(), 1);
+    let e = &r.evidence_samples[0];
+    assert_eq!(e.signature, [9; 64]);
+    assert_eq!(e.program, OKX_DEX_ROUTER_PROGRAM_ID_BYTES);
+    assert_eq!(e.kind.label(), "malformed_event");
+    assert_eq!(e.variant_or_discriminator, "0c86265da7972a45");
+    assert!(e.reason.contains("SwapWithFeesCpiEvent2"), "{}", e.reason);
+    // Wrong event authority.
+    let mut wrong = okx_order_ix(usdc(), pk(M1), pk(W), pk(W), 3, &[]);
+    wrong.accounts = vec![[7; 32]];
+    let r = run_okx(&[okx_buy_tx(10, vec![wrong])], okx_all_verified);
+    assert_eq!(
+        (r.trades.route_swaps, r.diagnostics.okx_malformed_events),
+        (0, 1)
+    );
+}
+
+#[test]
+fn unknown_okx_event_is_counted() {
+    let mut ix = okx_order_ix(usdc(), pk(M1), pk(W), pk(W), 3, &[]);
+    ix.data[8..16].copy_from_slice(&JUPITER_SWAPS_EVENT_DISCRIMINATOR);
+    let r = run_okx(&[okx_buy_tx(1, vec![ix])], okx_all_verified);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.diagnostics.okx_unknown_events, 1);
+}
+
+#[test]
+fn okx_does_not_change_the_other_evidence_counts() {
+    // A Jupiter hop and a verified OKX order of the signer: both counted, and
+    // neither is "only".
+    let hop = (dlmm(), usdc(), 5_000_000, pk(M1), 1000);
+    let tx = okx_buy_tx(
+        1,
+        vec![
+            jup_event_ix(&[hop], 3, &[]),
+            okx_order_ix(usdc(), pk(M1), pk(W), pk(W), 4, &[]),
+        ],
+    );
+    let r = run_okx(&[tx], okx_all_verified);
+    let e = r.trades.route_swaps_by_evidence;
+    assert_eq!(
+        (
+            r.trades.route_swaps,
+            e.jupiter,
+            e.jupiter_only,
+            e.okx,
+            e.okx_only
+        ),
+        (1, 1, 0, 1, 0)
+    );
 }
