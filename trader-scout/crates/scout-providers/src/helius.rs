@@ -1042,6 +1042,33 @@ impl HistoryProvider for HeliusProvider {
         task: ScanTask,
         cancel: CancellationToken,
     ) -> BoxStream<'_, Result<ScanEnvelope, ProviderError>> {
+        self.scan_with_options(task, cancel, self.options)
+    }
+
+    /// Per-call `filters.blockTime` override: the same client (hence the
+    /// same shared request budget) with a different time range; the
+    /// provider itself is not mutated.
+    fn scan_block_time_range(
+        &self,
+        task: ScanTask,
+        cancel: CancellationToken,
+        gte: Option<i64>,
+        lt: Option<i64>,
+    ) -> BoxStream<'_, Result<ScanEnvelope, ProviderError>> {
+        let mut options = self.options;
+        options.block_time_gte = gte;
+        options.block_time_lt = lt;
+        self.scan_with_options(task, cancel, options)
+    }
+}
+
+impl HeliusProvider {
+    fn scan_with_options(
+        &self,
+        task: ScanTask,
+        cancel: CancellationToken,
+        options: HeliusRequestOptions,
+    ) -> BoxStream<'_, Result<ScanEnvelope, ProviderError>> {
         // Dispatch on the typed ScanRequest plan() already validated --
         // never re-parse a string prefix out of `description` (that was
         // this method's old behavior, and exactly the stringly-typed
@@ -1076,6 +1103,7 @@ impl HistoryProvider for HeliusProvider {
         let state = ScanState {
             address,
             cancel,
+            options,
             token: None,
             pages_fetched: 0,
             held: None,
@@ -1089,6 +1117,9 @@ impl HistoryProvider for HeliusProvider {
 struct ScanState {
     address: String,
     cancel: CancellationToken,
+    /// Request options of THIS scan (the provider's, or a per-call
+    /// `blockTime` override).
+    options: HeliusRequestOptions,
     /// Continuation cursor returned by the most recent page; `Some`
     /// means history continues beyond what has been fetched.
     token: Option<String>,
@@ -1172,7 +1203,7 @@ impl HeliusProvider {
 
             let sent_token = state.token.take();
             let page = self
-                .fetch_transactions_page(&state.address, sent_token.as_deref())
+                .fetch_transactions_page(&state.options, &state.address, sent_token.as_deref())
                 .await;
             state.pages_fetched += 1;
 
@@ -1247,12 +1278,12 @@ impl HeliusProvider {
     /// response's `paginationToken` (the continuation cursor), if any.
     async fn fetch_transactions_page(
         &self,
+        request_options: &HeliusRequestOptions,
         address: &str,
         pagination_token: Option<&str>,
     ) -> Result<(Vec<RawSolanaTransaction>, Option<String>), ProviderError> {
-        let options = self
-            .options
-            .request_options_json(self.scan_order.as_sort_order(), pagination_token);
+        let options =
+            request_options.request_options_json(self.scan_order.as_sort_order(), pagination_token);
         let params = serde_json::json!([address, options]);
 
         let result: TransactionsForAddressResult = self
@@ -2725,6 +2756,43 @@ mod tests {
         assert_eq!(lt_only["filters"], json!({"blockTime": {"lt": 200}}));
         let none = first_request_options(|p| p.with_block_time_range(None, None)).await;
         assert!(none.get("filters").is_none());
+    }
+
+    #[tokio::test]
+    async fn per_call_block_time_range_overrides_without_mutating_and_shares_budget() {
+        let server = paged_server(vec![("", page(&[1], None))]).await;
+        let p = provider(&server, 10)
+            .with_block_time_range(Some(1), Some(2))
+            .with_max_total_requests(Some(2));
+        // Per-call range wins for that call only.
+        let mut s = p.scan_block_time_range(task(), CancellationToken::new(), Some(100), Some(200));
+        while s.next().await.is_some() {}
+        drop(s);
+        let mut s = p.scan(task(), CancellationToken::new());
+        while s.next().await.is_some() {}
+        drop(s);
+        let sent = request_options_sent(&server).await;
+        assert_eq!(
+            sent[0]["filters"],
+            json!({"blockTime": {"gte": 100, "lt": 200}})
+        );
+        assert_eq!(
+            sent[1]["filters"],
+            json!({"blockTime": {"gte": 1, "lt": 2}})
+        );
+        assert_eq!(
+            p.request_options().block_time_gte,
+            Some(1),
+            "provider config is not mutated"
+        );
+        // Both calls drew on the ONE budget of 2 requests: a third is refused.
+        assert_eq!(p.total_requests_made(), 2);
+        let third = drain(&p, CancellationToken::new()).await;
+        assert!(
+            third.iter().any(Option::is_none),
+            "the shared budget must be exhausted"
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
     #[tokio::test]

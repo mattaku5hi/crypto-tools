@@ -115,6 +115,27 @@ pub trait HistoryProvider: Send + Sync {
         task: ScanTask,
         cancel: CancellationToken,
     ) -> BoxStream<'_, Result<ScanEnvelope, ProviderError>>;
+
+    /// As [`HistoryProvider::scan`] but restricted, for THIS call only, to
+    /// transactions with `gte <= blockTime < lt` (unix seconds; `None` =
+    /// unbounded side), so a consumer can scan disjoint time slices of one
+    /// address concurrently while every request still draws on the
+    /// provider's single shared request budget.
+    ///
+    /// The default implementation IGNORES the range and scans everything:
+    /// a provider without server-side time filtering stays correct only
+    /// because the consumer must filter by `blockTime` itself (the engine
+    /// does). Implementations that honor the range override this.
+    fn scan_block_time_range(
+        &self,
+        task: ScanTask,
+        cancel: CancellationToken,
+        gte: Option<i64>,
+        lt: Option<i64>,
+    ) -> BoxStream<'_, Result<ScanEnvelope, ProviderError>> {
+        let _ = (gte, lt);
+        self.scan(task, cancel)
+    }
 }
 
 #[cfg(test)]

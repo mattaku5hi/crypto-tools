@@ -147,6 +147,8 @@ pub struct SolanaWalletStatsReport {
     pub cancelled: bool,
     /// Run-terminal stop (budget or rate limit), if any.
     pub stop: Option<ScanStop>,
+    /// Effective max wallets scanned at once (1 = sequential).
+    pub concurrency: usize,
 }
 
 impl SolanaWalletStatsReport {
@@ -242,6 +244,39 @@ pub async fn run_solana_wallet_stats_windowed_venues(
     window: &AnalysisWindow,
     cancel: CancellationToken,
 ) -> Result<SolanaWalletStatsReport, ProviderError> {
+    run_solana_wallet_stats_concurrent(provider, wallets, decoders, window, 1, cancel).await
+}
+
+/// Upper bound of the wallet `concurrency`.
+pub const MAX_WALLET_CONCURRENCY: usize = 16;
+
+enum WalletEnd {
+    NotStarted,
+    /// Cut in flight by the run stop / the caller's cancel.
+    Interrupted,
+    Done(Box<SolanaWalletStats>),
+}
+
+/// [`run_solana_wallet_stats_windowed_venues`] scanning up to `concurrency`
+/// wallets at once (`1..=MAX_WALLET_CONCURRENCY`, clamped).
+///
+/// Bounded (invariant 13): `buffer_unordered(concurrency)`, nothing spawned;
+/// each wallet scan keeps one request in flight, so in-flight requests are
+/// bounded by `concurrency` too. Deterministic (invariants 11, 12): a wallet
+/// card depends only on its own scan, and cards are returned in input order;
+/// the run stop is that of the lowest-index failed wallet. After a stop,
+/// wallets not yet started are `NotScanned`, wallets cut in flight are
+/// `Error` carrying the typed stop kind. Time slicing is NOT done for
+/// wallets (the ledger needs one canonical per-wallet history, ADR-011).
+pub async fn run_solana_wallet_stats_concurrent(
+    provider: &dyn HistoryProvider,
+    wallets: &[SolanaPubkey],
+    decoders: &LedgerDecoders<'_>,
+    window: &AnalysisWindow,
+    concurrency: usize,
+    cancel: CancellationToken,
+) -> Result<SolanaWalletStatsReport, ProviderError> {
+    let concurrency = concurrency.clamp(1, MAX_WALLET_CONCURRENCY);
     let mut seen: BTreeSet<SolanaPubkey> = BTreeSet::new();
     let distinct: Vec<SolanaPubkey> = wallets
         .iter()
@@ -249,35 +284,78 @@ pub async fn run_solana_wallet_stats_windowed_venues(
         .filter(|w| seen.insert(*w))
         .collect();
 
-    let mut out: Vec<SolanaWalletStats> = Vec::with_capacity(distinct.len());
+    // Cancelled on a run-terminal error or the caller's cancel: wallets not
+    // yet started never start, in-flight scans are cut at their next await.
+    let run = cancel.child_token();
+    let mut ends: Vec<Option<WalletEnd>> = (0..distinct.len()).map(|_| None).collect();
+    {
+        let run_ref = &run;
+        let mut pending = futures::stream::iter(distinct.iter().copied().enumerate())
+            .map(|(index, wallet)| async move {
+                if run_ref.is_cancelled() {
+                    return (index, Ok(WalletEnd::NotStarted));
+                }
+                let end = match scan_wallet(provider, wallet, decoders, window, run_ref).await {
+                    Ok(Some(card)) => Ok(WalletEnd::Done(Box::new(card))),
+                    Ok(None) => Ok(WalletEnd::Interrupted),
+                    Err(err) => Err(err),
+                };
+                (index, end)
+            })
+            .buffer_unordered(concurrency);
+        while let Some((index, end)) = pending.next().await {
+            let end = end?;
+            if let WalletEnd::Done(card) = &end
+                && card.failure.and_then(ScanFailureKind::stop).is_some()
+            {
+                run.cancel();
+            }
+            if let Some(slot) = ends.get_mut(index) {
+                *slot = Some(end);
+            }
+        }
+    }
+
+    // Deterministic merge in input order only.
+    let stop: Option<ScanStop> = ends.iter().find_map(|e| match e {
+        Some(WalletEnd::Done(card)) => card.failure.and_then(ScanFailureKind::stop),
+        _ => None,
+    });
+    let user_cancelled = cancel.is_cancelled();
     let mut cancelled = false;
-    let mut stop: Option<ScanStop> = None;
-    for wallet in distinct {
-        if let Some(reason) = stop {
-            out.push(not_scanned_card(wallet, reason));
-            continue;
-        }
-        if cancelled || cancel.is_cancelled() {
-            cancelled = true;
-            out.push(failed_card(
-                wallet,
-                "not scanned: run cancelled".to_string(),
-            ));
-            continue;
-        }
-        match scan_wallet(provider, wallet, decoders, window, &cancel).await? {
-            Some(card) => {
-                stop = card.failure.and_then(ScanFailureKind::stop);
-                out.push(card);
-            }
-            None => {
-                cancelled = true;
-                out.push(failed_card(
-                    wallet,
-                    "scan interrupted: run cancelled".to_string(),
-                ));
-            }
-        }
+    let mut out: Vec<SolanaWalletStats> = Vec::with_capacity(distinct.len());
+    for (wallet, end) in distinct.iter().copied().zip(ends) {
+        out.push(match end.unwrap_or(WalletEnd::NotStarted) {
+            WalletEnd::Done(card) => *card,
+            WalletEnd::NotStarted => match stop {
+                Some(reason) => not_scanned_card(wallet, reason),
+                None => {
+                    cancelled = true;
+                    failed_card(wallet, "not scanned: run cancelled".to_string())
+                }
+            },
+            WalletEnd::Interrupted => match stop {
+                Some(reason) if !user_cancelled => {
+                    let mut card = failed_card(
+                        wallet,
+                        format!("interrupted in flight: {}", reason.describe()),
+                    );
+                    card.failure = Some(match reason {
+                        ScanStop::BudgetExhausted { limit } => {
+                            ScanFailureKind::BudgetExhausted { limit }
+                        }
+                        ScanStop::RateLimited { retry_after_secs } => {
+                            ScanFailureKind::RateLimited { retry_after_secs }
+                        }
+                    });
+                    card
+                }
+                _ => {
+                    cancelled = true;
+                    failed_card(wallet, "scan interrupted: run cancelled".to_string())
+                }
+            },
+        });
     }
     Ok(SolanaWalletStatsReport {
         scope: if decoders.amm.is_some() {
@@ -288,6 +366,7 @@ pub async fn run_solana_wallet_stats_windowed_venues(
         wallets: out,
         cancelled,
         stop,
+        concurrency,
     })
 }
 
@@ -364,10 +443,13 @@ async fn scan_wallet(
     // "no blockTime after the boundary" leniency relies on it).
     let mut boundary_seen = false;
     let mut missing_time = 0u64;
-    while let Some(item) = stream.next().await {
-        if cancel.is_cancelled() {
-            return Ok(None);
-        }
+    loop {
+        let item = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(None),
+            item = stream.next() => item,
+        };
+        let Some(item) = item else { break };
         match item {
             Ok(envelope) => {
                 truncated = truncated || envelope.truncated;

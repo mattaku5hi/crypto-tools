@@ -109,7 +109,11 @@ fn jsonl(out: &Out) -> Vec<Value> {
 async fn budget_smaller_than_needed_is_partial_exit_3() {
     let server = three_page_server().await;
     // Token A needs 3 requests, token B gets 1 and is then cut off.
-    let out = run(Some(server.uri()), args(&["--max-requests", "4"])).await;
+    let out = run(
+        Some(server.uri()),
+        args(&["--max-requests", "4", "--concurrency", "1"]),
+    )
+    .await;
     assert_eq!(out.code, 3, "stderr: {}", out.stderr);
     assert!(
         out.stderr
@@ -148,7 +152,12 @@ async fn budget_smaller_than_needed_is_partial_exit_3() {
 async fn budget_hit_mid_run_marks_remaining_tokens_not_scanned_and_stops_requests() {
     let server = three_page_server().await;
     // A: 3 requests, B: 1 request then the budget is spent, C: untouched.
-    let out = run_input(Some(server.uri()), args(&["--max-requests", "4"]), INPUT3).await;
+    let out = run_input(
+        Some(server.uri()),
+        args(&["--max-requests", "4", "--concurrency", "1"]),
+        INPUT3,
+    )
+    .await;
     assert_eq!(out.code, 3, "stderr: {}", out.stderr);
     assert!(
         out.stderr
@@ -194,7 +203,7 @@ async fn rate_limit_mid_run_is_exit_3_with_typed_statuses_and_no_extra_requests(
         })
         .mount(&server)
         .await;
-    let out = run_input(Some(server.uri()), args(&[]), INPUT3).await;
+    let out = run_input(Some(server.uri()), args(&["--concurrency", "1"]), INPUT3).await;
     assert_eq!(out.code, 3, "stderr: {}", out.stderr);
     assert!(
         out.stderr
@@ -264,7 +273,7 @@ async fn long_retry_after_is_exit_4_with_message_and_no_key() {
         .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "3600"))
         .mount(&server)
         .await;
-    let out = run(Some(server.uri()), args(&[])).await;
+    let out = run(Some(server.uri()), args(&["--concurrency", "1"])).await;
     assert_eq!(out.code, 4, "stderr: {}", out.stderr);
     assert!(
         out.stderr
@@ -285,4 +294,50 @@ async fn max_requests_zero_is_usage_error_exit_2() {
         let out = run(None, args(&[&format!("--max-requests={bad}")])).await;
         assert_eq!(out.code, 2, "value {bad}: {}", out.stderr);
     }
+}
+
+#[tokio::test]
+async fn concurrency_does_not_change_results_and_is_echoed() {
+    let mut matches_by_concurrency: Vec<Vec<String>> = Vec::new();
+    for c in ["1", "4"] {
+        let server = three_page_server().await;
+        let out = run_input(Some(server.uri()), args(&["--concurrency", c]), INPUT3).await;
+        assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+        let lines = jsonl(&out);
+        assert_eq!(lines[0]["budget"]["concurrency"], c.parse::<u64>().unwrap());
+        assert_eq!(lines[0]["budget"]["slices"], 1);
+        assert_eq!(lines[0]["requests_made"], 9, "same credits");
+        assert_eq!(server.received_requests().await.unwrap().len(), 9);
+        assert!(out.stderr.contains(&format!("concurrency={c} slices=1")));
+        assert!(out.stderr.contains("elapsed_ms="), "{}", out.stderr);
+        assert!(
+            !out.stdout.contains("elapsed_ms"),
+            "JSONL stays deterministic"
+        );
+        matches_by_concurrency.push(
+            out.stdout
+                .lines()
+                .filter(|l| !l.contains("\"run_meta\""))
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    assert_eq!(matches_by_concurrency[0], matches_by_concurrency[1]);
+}
+
+#[tokio::test]
+async fn concurrency_out_of_range_and_slices_without_window_are_usage_errors() {
+    for bad in ["0", "17", "abc"] {
+        let out = run(None, args(&[&format!("--concurrency={bad}")])).await;
+        assert_eq!(out.code, 2, "value {bad}: {}", out.stderr);
+    }
+    let out = run(None, args(&["--slices", "0"])).await;
+    assert_eq!(out.code, 2, "{}", out.stderr);
+    let out = run(None, args(&["--slices", "3"])).await;
+    assert_eq!(out.code, 2, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("--slices > 1 requires a window"),
+        "{}",
+        out.stderr
+    );
 }

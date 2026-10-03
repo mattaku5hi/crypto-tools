@@ -124,6 +124,7 @@ fn opts(side: SideFilter) -> IntersectOptions {
     IntersectOptions {
         side,
         window: AnalysisWindow::none(0),
+        ..IntersectOptions::default()
     }
 }
 
@@ -804,6 +805,7 @@ async fn window_boundary_is_half_open_and_reaching_it_completes_the_token() {
     let o = IntersectOptions {
         side: SideFilter::Any,
         window: window(1000, 3000),
+        ..IntersectOptions::default()
     };
     let r = run(&provider, &[10], 1, o).await;
     let hit: Vec<WalletKey> = r.base.matches.iter().map(|m| m.wallet.clone()).collect();
@@ -853,6 +855,7 @@ async fn window_transaction_without_block_time_is_a_coverage_gap() {
     let o = IntersectOptions {
         side: SideFilter::Buy,
         window: window(1000, 3000),
+        ..IntersectOptions::default()
     };
     let r = run(&provider, &[10], 1, o).await;
     assert_eq!(r.base.matches.len(), 1, "only the timed tx is placed");

@@ -277,6 +277,8 @@ pub struct ScanDto {
     pub provider: &'static str,
     pub order: &'static str,
     pub max_pages_per_wallet: u32,
+    /// Max wallets scanned at once (`--concurrency`).
+    pub concurrency: usize,
     pub max_requests: Option<u64>,
     pub requests_made: u64,
     pub window: &'static str,
@@ -957,6 +959,8 @@ pub struct RunMetaInput<'a> {
     pub max_pages_per_wallet: u32,
     pub provider_options: scout_providers::HeliusRequestOptions,
     pub server_window: bool,
+    /// `--concurrency`: max wallets scanned at once.
+    pub concurrency: usize,
     pub max_requests: Option<u64>,
     pub requests_made: u64,
     pub input_wallet_count: usize,
@@ -1026,6 +1030,7 @@ pub fn run_meta_record(m: &RunMetaInput<'_>, report: &WalletRankReport) -> RunMe
             provider: "helius",
             order: "newest_first",
             max_pages_per_wallet: m.max_pages_per_wallet,
+            concurrency: m.concurrency,
             max_requests: m.max_requests,
             requests_made: m.requests_made,
             window: if m.window.is_bounded() {
@@ -1236,6 +1241,7 @@ mod tests {
             max_pages_per_wallet: 10,
             provider_options: scout_providers::HeliusRequestOptions::default(),
             server_window: false,
+            concurrency: 4,
             max_requests: Some(50),
             requests_made: 4,
             input_wallet_count: 3,

@@ -91,8 +91,14 @@ fn jsonl(out: &Out) -> Vec<Value> {
         .collect()
 }
 
+/// Sequential (`--concurrency 1`): these tests pin WHICH wallet the budget
+/// or the terminal error hits, which is only defined for a sequential scan.
 fn args(extra: &[&str]) -> Vec<String> {
-    extra.iter().map(|s| (*s).to_string()).collect()
+    ["--concurrency", "1"]
+        .iter()
+        .chain(extra)
+        .map(|s| (*s).to_string())
+        .collect()
 }
 
 fn excluded(lines: &[Value]) -> Vec<&Value> {

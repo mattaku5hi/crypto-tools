@@ -44,10 +44,28 @@
 //! with the next token. Classification of a `ProviderError` lives in
 //! one place, [`classify_provider_error`].
 //!
-//! Bounded work: tokens are scanned sequentially, each envelope is
-//! consumed and dropped before the next is polled; retained state is
-//! the (wallet, input-token) hit set, one signature set per token scan
+//! Bounded work: at most `concurrency` scan units (a token, or one time
+//! slice of a token) are in flight (`buffer_unordered`, nothing spawned, so
+//! dropping the run drops all work); each unit keeps one request in flight
+//! and consumes/drops each envelope before polling the next. Retained state
+//! is the (wallet, input-token) hit set, one signature set per unit
 //! (bounded by the page budget) plus capped diagnostic samples.
+//!
+//! Determinism (invariants 11, 12): every unit accumulates privately and the
+//! results are merged ONLY in unit order (token input order, then slice
+//! oldest first) with order-independent operations (sums, set unions,
+//! min-`(slot, index)` evidence), so completion order never shows. A run
+//! stop is the stop of the lowest-index failed unit. Units not yet started
+//! when a stop arrives are `NotScanned` (a token with some slices started:
+//! `Failed` naming the unstarted slices); in-flight units are cut at their
+//! next await and are `Failed` ("interrupted in flight"). Only which units
+//! had already finished when the stop arrived depends on timing.
+//!
+//! Slices (`IntersectOptions::slices`): disjoint `[since, until)` sub-windows,
+//! each with its own server-side `blockTime` filter on the SAME shared
+//! request budget. A slice only counts transactions whose `blockTime` lies in
+//! it, so a boundary transaction re-delivered to a neighbour slice is counted
+//! once. A token is complete for the window iff every slice completed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -240,6 +258,48 @@ pub struct IntersectOptions {
     pub side: SideFilter,
     /// Bounded window = the caller scans newest-first to the boundary.
     pub window: AnalysisWindow,
+    /// Max scan units (a token, or one time slice of a token) in flight at
+    /// once, `1..=MAX_SCAN_CONCURRENCY` (clamped). Each unit keeps at most
+    /// one provider request in flight, so this also bounds in-flight
+    /// requests. The library default is 1 (sequential); the CLI default is 4.
+    pub concurrency: usize,
+    /// Split a bounded window into this many equal sub-windows per token,
+    /// each scanned with its own server-side `blockTime` filter
+    /// (`1..=MAX_SCAN_SLICES`, clamped; ignored without a window). Only
+    /// meaningful against a provider that honors
+    /// [`HistoryProvider::scan_block_time_range`]; others re-deliver the
+    /// whole history to every slice (correct, but not cheaper).
+    pub slices: u32,
+}
+
+/// Upper bound of [`IntersectOptions::concurrency`].
+pub const MAX_SCAN_CONCURRENCY: usize = 16;
+/// Upper bound of [`IntersectOptions::slices`].
+pub const MAX_SCAN_SLICES: u32 = 16;
+
+/// One time slice `[since, until)` of a windowed token scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SliceId {
+    /// 0-based, oldest sub-window first.
+    pub index: u32,
+    /// Number of slices of the token.
+    pub of: u32,
+    pub since: i64,
+    pub until: i64,
+}
+
+impl SliceId {
+    /// `slice 2/4 [since, until)` (unix seconds), for reasons and logs.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "slice {}/{} [{}, {})",
+            self.index.saturating_add(1),
+            self.of,
+            self.since,
+            self.until
+        )
+    }
 }
 
 impl Default for IntersectOptions {
@@ -247,6 +307,8 @@ impl Default for IntersectOptions {
         Self {
             side: SideFilter::default(),
             window: AnalysisWindow::none(0),
+            concurrency: 1,
+            slices: 1,
         }
     }
 }
@@ -479,6 +541,9 @@ pub struct SolanaTokenScanSummary {
     /// `RawPayload::SolanaTransaction` envelopes qualified for this token.
     pub transactions_scanned: u64,
     pub truncated: bool,
+    /// Time slices (sliced scans only) that did not complete; a token is
+    /// complete for the window iff this is empty and `truncated` is false.
+    pub truncated_slices: Vec<SliceId>,
     pub status: TokenScanStatus,
     /// Distinct wallets with a qualified BUY of THIS token (0 under
     /// `--side sell`: sells are not tracked then).
@@ -528,6 +593,10 @@ pub struct SolanaBuyerIntersectReport {
     /// Set when the run stopped early on a run-terminal error; tokens
     /// after the interrupted one are `NotScanned`.
     pub stop: Option<ScanStop>,
+    /// Effective in-flight scan limit of the run (after clamping).
+    pub concurrency: usize,
+    /// Effective slices per token (1 = unsliced).
+    pub slices: u32,
 }
 
 impl SolanaBuyerIntersectReport {
@@ -537,7 +606,19 @@ impl SolanaBuyerIntersectReport {
     pub fn incomplete_reasons(&self) -> Vec<String> {
         let mut reasons = Vec::new();
         for token in &self.per_token {
-            if token.truncated {
+            if token.truncated && !token.truncated_slices.is_empty() {
+                let names = token
+                    .truncated_slices
+                    .iter()
+                    .map(SliceId::describe)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                reasons.push(format!(
+                    "token {}: page budget exhausted (or never scanned) in {names} \
+                     (part of the window is not seen)",
+                    token.asset_label()
+                ));
+            } else if token.truncated {
                 if self.window.is_bounded() {
                     reasons.push(format!(
                         "token {}: page budget exhausted before the window start was reached \
@@ -713,6 +794,7 @@ impl SolanaTokenScanSummary {
             asset,
             transactions_scanned: 0,
             truncated: false,
+            truncated_slices: Vec::new(),
             status,
             qualified_buyers: 0,
             qualified_sellers: 0,
@@ -818,6 +900,7 @@ pub async fn run_solana_buyer_intersect_with_policy(
         IntersectOptions {
             side: SideFilter::Buy,
             window: AnalysisWindow::none(0),
+            ..IntersectOptions::default()
         },
         cancel,
         policy,
@@ -1054,6 +1137,7 @@ pub async fn run_solana_trade_intersect_with_policies(
     let amm = pump_amm_decoder();
     let window = options.window;
     let bounded = window.is_bounded();
+    let concurrency = options.concurrency.clamp(1, MAX_SCAN_CONCURRENCY);
 
     // Distinct tokens, input order preserved; N is this count.
     let mut seen: BTreeSet<AssetKey> = BTreeSet::new();
@@ -1076,152 +1160,139 @@ pub async fn run_solana_trade_intersect_with_policies(
         }
     }
 
+    // Scan units, token-major then slice (oldest sub-window first). The
+    // unit list is the ONLY order anything is merged in.
+    let slice_plan = plan_slices(&window, options.slices);
+    let slice_count = slice_plan.len().max(1);
+    let mut units: Vec<Unit> = Vec::with_capacity(tokens.len().saturating_mul(slice_count));
+    for token in &tokens {
+        if slice_plan.is_empty() {
+            units.push(Unit {
+                token: token.clone(),
+                slice: None,
+            });
+        } else {
+            for slice in &slice_plan {
+                units.push(Unit {
+                    token: token.clone(),
+                    slice: Some(*slice),
+                });
+            }
+        }
+    }
+
+    let shared = UnitShared {
+        provider,
+        decoders: LedgerDecoders {
+            curve: &curve,
+            amm: Some(&amm),
+            okx_order_policy,
+        },
+        side: options.side,
+        policy,
+        window,
+    };
+    let user_cancel = &cancel;
+    // Cancelled on a run-terminal error (or the caller's cancel): units not
+    // yet started never start, in-flight ones are cut at their next await.
+    let run = cancel.child_token();
+
+    // Bounded admission (invariant 13): `buffer_unordered(concurrency)` polls
+    // at most `concurrency` unit futures; the remaining units are not even
+    // constructed. Nothing is spawned, so every unit is a plain future of
+    // this task and dropping the stream drops all in-flight work. Each unit
+    // keeps at most one provider request in flight, so in-flight requests
+    // are bounded by `concurrency` as well (slices included).
+    let mut ends: Vec<Option<UnitEnd>> = (0..units.len()).map(|_| None).collect();
+    {
+        let shared = &shared;
+        let run_ref = &run;
+        let mut pending = futures::stream::iter(units.iter().enumerate())
+            .map(|(index, unit)| async move {
+                (index, scan_unit(shared, unit, user_cancel, run_ref).await)
+            })
+            .buffer_unordered(concurrency);
+        while let Some((index, result)) = pending.next().await {
+            let end = result?;
+            if let UnitEnd::Done(done) = &end
+                && done
+                    .failure
+                    .as_ref()
+                    .is_some_and(|e| classify_provider_error(e).stop().is_some())
+            {
+                run.cancel();
+            }
+            if let Some(slot) = ends.get_mut(index) {
+                *slot = Some(end);
+            }
+        }
+    }
+
+    // ---- deterministic merge, in unit order only ------------------------
+    let mut ends: Vec<UnitEnd> = ends
+        .into_iter()
+        .map(|e| {
+            e.unwrap_or(UnitEnd::NotStarted {
+                cancelled: user_cancel.is_cancelled(),
+            })
+        })
+        .collect();
+
+    // The run stop is the stop of the LOWEST-index failed unit, not of
+    // whichever failure happened to complete first.
+    let stop: Option<ScanStop> = ends.iter().find_map(|e| match e {
+        UnitEnd::Done(d) => d
+            .failure
+            .as_ref()
+            .and_then(|err| classify_provider_error(err).stop()),
+        UnitEnd::NotStarted { .. } => None,
+    });
+
     let mut side_hits: SideHitMap = BTreeMap::new();
-    let mut per_token: Vec<SolanaTokenScanSummary> = Vec::with_capacity(tokens.len());
     let mut malformed_samples: Vec<String> = Vec::new();
     let mut unknown_discriminator_samples: Vec<String> = Vec::new();
     let mut first_error: Option<ProviderError> = None;
     let mut cancelled = false;
-    let mut stop: Option<ScanStop> = None;
-
-    'tokens: for (index, token) in tokens.iter().enumerate() {
-        if cancel.is_cancelled() {
-            cancelled = true;
-            break;
-        }
-        let mut summary = SolanaTokenScanSummary::new(token.clone(), TokenScanStatus::Ok);
-        let ctx = TxContext {
-            decoders: LedgerDecoders {
-                curve: &curve,
-                amm: Some(&amm),
-                okx_order_policy,
-            },
-            focus: match token {
-                AssetKey::Token(_, AddressBytes::Solana(mint)) => BTreeSet::from([*mint]),
-                _ => BTreeSet::new(),
-            },
-            side: options.side,
-            policy,
-        };
-        let mut acc = TokenAcc::default();
-        let mut signatures: BTreeSet<[u8; 64]> = BTreeSet::new();
-        let mut in_window = 0u64;
-        let mut raw_truncated = false;
-
-        let request = ScanRequest::TokenMarketActivity {
-            asset: token.clone(),
-        };
-        let mut failure: Option<ProviderError> = None;
-        match provider.plan(&request).await {
-            Err(err @ ProviderError::ConfigurationRequired { .. }) => return Err(err),
-            Err(err) => failure = Some(err),
-            Ok(_) => {
-                let mut stream = provider.scan(
-                    ScanTask {
-                        request,
-                        description: "buyer-intersect: token market activity".to_string(),
-                    },
-                    cancel.clone(),
-                );
-                while let Some(item) = stream.next().await {
-                    if cancel.is_cancelled() {
-                        cancelled = true;
-                        finalize_token(&mut summary, &acc, raw_truncated, bounded, in_window);
-                        per_token.push(summary);
-                        break 'tokens;
+    for end in &mut ends {
+        match end {
+            UnitEnd::NotStarted { cancelled: c } => cancelled |= *c,
+            UnitEnd::Done(done) => {
+                cancelled |= done.cancelled;
+                merge_side_hits(&mut side_hits, std::mem::take(&mut done.side_hits));
+                for hex in std::mem::take(&mut done.unknown) {
+                    if unknown_discriminator_samples.len() < MAX_UNKNOWN_DISCRIMINATOR_SAMPLES {
+                        unknown_discriminator_samples.push(hex);
                     }
-                    let envelope = match item {
-                        Ok(envelope) => envelope,
-                        Err(err @ ProviderError::ConfigurationRequired { .. }) => return Err(err),
-                        Err(err) => {
-                            failure = Some(err);
-                            break;
-                        }
-                    };
-                    raw_truncated = raw_truncated || envelope.truncated;
-                    let RawPayload::SolanaTransaction(tx) = &envelope.payload else {
-                        summary.unexpected_payloads = summary.unexpected_payloads.saturating_add(1);
-                        continue;
-                    };
-                    if !signatures.insert(tx.signature) {
-                        // Idempotence (invariant 11): a re-delivered
-                        // transaction is evaluated once.
-                        continue;
-                    }
-                    summary.transactions_scanned = summary.transactions_scanned.saturating_add(1);
-                    if bounded {
-                        match tx.block_time {
-                            Some(t) if t < window.since => summary.boundary_reached = true,
-                            Some(_) => {}
-                            // Older than the boundary tx by provider order:
-                            // outside the window anyway.
-                            None if summary.boundary_reached => {}
-                            None => {
-                                summary.missing_block_time =
-                                    summary.missing_block_time.saturating_add(1);
-                            }
-                        }
-                        if !tx.block_time.is_some_and(|t| window.contains(t)) {
-                            continue;
-                        }
-                        in_window = in_window.saturating_add(1);
-                    }
-                    let q = qualify_bonding_curve_buys_with_policy(tx, &curve, policy);
-                    // The curve pass supplies the program-instruction
-                    // diagnostics; the sides and IdlOnly counts come from
-                    // the shared attribution (`qualify_transaction`).
-                    let mut tx_diagnostics = q.diagnostics;
-                    tx_diagnostics.unverified_variant_buys = Default::default();
-                    summary.diagnostics.add(&tx_diagnostics);
-                    for hex in q.unknown_discriminators {
-                        if unknown_discriminator_samples.len() < MAX_UNKNOWN_DISCRIMINATOR_SAMPLES {
-                            unknown_discriminator_samples.push(hex);
-                        }
-                    }
-                    for reason in q.malformed_reasons {
-                        if malformed_samples.len() < MAX_MALFORMED_SAMPLES {
-                            malformed_samples.push(sanitize_provider_text(&reason));
-                        }
-                    }
-                    for (mint, _owner) in &q.uninstructed_positive_deltas {
-                        if ctx.focus.contains(mint) {
-                            summary.positive_delta_without_instruction =
-                                summary.positive_delta_without_instruction.saturating_add(1);
-                        }
-                    }
-                    if q.diagnostics.out_of_scope_slot_transactions > 0 {
-                        continue;
-                    }
-                    qualify_transaction(tx, &ctx, &mut summary, &mut acc, &mut side_hits);
                 }
+                for reason in std::mem::take(&mut done.malformed) {
+                    if malformed_samples.len() < MAX_MALFORMED_SAMPLES {
+                        malformed_samples.push(reason);
+                    }
+                }
+                // The typed error moves to `first_error` (lowest unit index
+                // wins); the token keeps its classification and text.
+                done.failure_info = done.failure.take().map(|err| {
+                    let info = (
+                        classify_provider_error(&err),
+                        sanitize_provider_text(&err.to_string()),
+                    );
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                    info
+                });
             }
         }
+    }
 
-        let mut run_stop = None;
-        if let Some(err) = failure {
-            let kind = classify_provider_error(&err);
-            run_stop = kind.stop();
-            summary.status = TokenScanStatus::Failed {
-                kind,
-                message: sanitize_provider_text(&err.to_string()),
-            };
-            if first_error.is_none() {
-                first_error = Some(err);
-            }
-        }
-        finalize_token(&mut summary, &acc, raw_truncated, bounded, in_window);
-        per_token.push(summary);
-        if let Some(reason) = run_stop {
-            // Every further request would fail the same way: do not
-            // issue any; remaining tokens are explicitly not scanned.
-            stop = Some(reason);
-            for rest in tokens.iter().skip(index + 1) {
-                per_token.push(SolanaTokenScanSummary::new(
-                    rest.clone(),
-                    TokenScanStatus::NotScanned { reason },
-                ));
-            }
-            break 'tokens;
+    let mut per_token: Vec<SolanaTokenScanSummary> = Vec::with_capacity(tokens.len());
+    for (unit_chunk, chunk) in units.chunks(slice_count).zip(ends.chunks(slice_count)) {
+        let Some(first) = unit_chunk.first() else {
+            continue;
+        };
+        let slices = unit_chunk.iter().map(|u| u.slice).collect::<Vec<_>>();
+        if let Some(summary) = merge_token(&first.token, &slices, chunk, stop, bounded) {
+            per_token.push(summary);
         }
     }
 
@@ -1280,23 +1351,387 @@ pub async fn run_solana_trade_intersect_with_policies(
         unknown_discriminator_samples,
         cancelled,
         stop,
+        concurrency,
+        slices: u32::try_from(slice_count).unwrap_or(u32::MAX),
     })
 }
 
-fn finalize_token(
-    summary: &mut SolanaTokenScanSummary,
-    acc: &TokenAcc,
-    raw_truncated: bool,
-    bounded: bool,
+/// Split `[since, until)` into at most `requested` non-empty, equal (to
+/// within one second) sub-windows, oldest first. Empty = scan the window as
+/// one unit (no window, `requested <= 1`, or a one-second window).
+fn plan_slices(window: &AnalysisWindow, requested: u32) -> Vec<SliceId> {
+    if !window.is_bounded() {
+        return Vec::new();
+    }
+    let span = i128::from(window.until) - i128::from(window.since);
+    let count = i128::from(requested.clamp(1, MAX_SCAN_SLICES)).min(span);
+    if count <= 1 {
+        return Vec::new();
+    }
+    let of = u32::try_from(count).unwrap_or(MAX_SCAN_SLICES);
+    let edge = |k: i128| -> Option<i64> {
+        let offset = span.checked_mul(k)?.checked_div(count)?;
+        i64::try_from(i128::from(window.since).checked_add(offset)?).ok()
+    };
+    let mut out = Vec::new();
+    for k in 0..count {
+        let (Some(since), Some(until)) = (edge(k), edge(k + 1)) else {
+            return Vec::new();
+        };
+        out.push(SliceId {
+            index: u32::try_from(k).unwrap_or(0),
+            of,
+            since,
+            until,
+        });
+    }
+    out
+}
+
+/// One scan unit: a token (whole window) or one slice of a token.
+struct Unit {
+    token: AssetKey,
+    slice: Option<SliceId>,
+}
+
+/// Run-immutable inputs shared by every unit.
+struct UnitShared<'a> {
+    provider: &'a dyn HistoryProvider,
+    decoders: LedgerDecoders<'a>,
+    side: SideFilter,
+    policy: VariantPolicy,
+    window: AnalysisWindow,
+}
+
+enum UnitEnd {
+    /// The run stopped (or was cancelled) before this unit issued anything.
+    NotStarted {
+        cancelled: bool,
+    },
+    Done(Box<UnitOutcome>),
+}
+
+/// Everything one unit produced. Merged only in unit order.
+struct UnitOutcome {
+    /// Counters of this unit only (token-level fields are filled at merge).
+    summary: SolanaTokenScanSummary,
+    acc: TokenAcc,
+    side_hits: SideHitMap,
+    malformed: Vec<String>,
+    unknown: Vec<String>,
     in_window: u64,
-) {
+    raw_truncated: bool,
+    failure: Option<ProviderError>,
+    /// Classification and sanitized text of `failure`, set at merge.
+    failure_info: Option<(ScanFailureKind, String)>,
+    /// Cut by the run-terminal stop of ANOTHER unit while in flight.
+    interrupted: bool,
+    /// The caller's cancellation was observed.
+    cancelled: bool,
+}
+
+/// Scan one unit. `Err` only for `ConfigurationRequired` (aborts the run).
+async fn scan_unit(
+    shared: &UnitShared<'_>,
+    unit: &Unit,
+    user_cancel: &CancellationToken,
+    run: &CancellationToken,
+) -> Result<UnitEnd, ProviderError> {
+    if run.is_cancelled() {
+        return Ok(UnitEnd::NotStarted {
+            cancelled: user_cancel.is_cancelled(),
+        });
+    }
+    let window = shared.window;
+    let bounded = window.is_bounded();
+    let ctx = TxContext {
+        decoders: shared.decoders,
+        focus: match &unit.token {
+            AssetKey::Token(_, AddressBytes::Solana(mint)) => BTreeSet::from([*mint]),
+            _ => BTreeSet::new(),
+        },
+        side: shared.side,
+        policy: shared.policy,
+    };
+    let curve = shared.decoders.curve;
+    let policy = shared.policy;
+    let mut out = UnitOutcome {
+        summary: SolanaTokenScanSummary::new(unit.token.clone(), TokenScanStatus::Ok),
+        acc: TokenAcc::default(),
+        side_hits: BTreeMap::new(),
+        malformed: Vec::new(),
+        unknown: Vec::new(),
+        in_window: 0,
+        raw_truncated: false,
+        failure: None,
+        failure_info: None,
+        interrupted: false,
+        cancelled: false,
+    };
+    let mut signatures: BTreeSet<[u8; 64]> = BTreeSet::new();
+
+    let request = ScanRequest::TokenMarketActivity {
+        asset: unit.token.clone(),
+    };
+    match shared.provider.plan(&request).await {
+        Err(err @ ProviderError::ConfigurationRequired { .. }) => return Err(err),
+        Err(err) => out.failure = Some(err),
+        Ok(_) => {
+            let task = ScanTask {
+                request,
+                description: "buyer-intersect: token market activity".to_string(),
+            };
+            let mut stream = match unit.slice {
+                Some(s) => shared.provider.scan_block_time_range(
+                    task,
+                    run.clone(),
+                    Some(s.since),
+                    Some(s.until),
+                ),
+                None => shared.provider.scan(task, run.clone()),
+            };
+            loop {
+                // `None` = cut by the run cancel (stop of another unit or the
+                // caller's cancel); `Some(None)` = natural end of the scan.
+                let next = tokio::select! {
+                    biased;
+                    () = run.cancelled() => None,
+                    item = stream.next() => Some(item),
+                };
+                let item = match next {
+                    None => {
+                        if user_cancel.is_cancelled() {
+                            out.cancelled = true;
+                        } else {
+                            out.interrupted = true;
+                        }
+                        break;
+                    }
+                    Some(None) => break,
+                    Some(Some(item)) => item,
+                };
+                let envelope = match item {
+                    Ok(envelope) => envelope,
+                    Err(err @ ProviderError::ConfigurationRequired { .. }) => return Err(err),
+                    Err(err) => {
+                        out.failure = Some(err);
+                        break;
+                    }
+                };
+                out.raw_truncated = out.raw_truncated || envelope.truncated;
+                let RawPayload::SolanaTransaction(tx) = &envelope.payload else {
+                    out.summary.unexpected_payloads =
+                        out.summary.unexpected_payloads.saturating_add(1);
+                    continue;
+                };
+                if let (Some(slice), Some(t)) = (unit.slice, tx.block_time)
+                    && !(slice.since <= t && t < slice.until)
+                {
+                    // Not this slice's transaction (a provider that ignores
+                    // the range, or a boundary re-delivery): the slice that
+                    // owns `t` counts it, so it is never counted twice. It
+                    // still proves the window start was passed.
+                    if t < window.since {
+                        out.summary.boundary_reached = true;
+                    }
+                    continue;
+                }
+                if !signatures.insert(tx.signature) {
+                    // Idempotence (invariant 11): a re-delivered
+                    // transaction is evaluated once.
+                    continue;
+                }
+                out.summary.transactions_scanned =
+                    out.summary.transactions_scanned.saturating_add(1);
+                if bounded {
+                    match tx.block_time {
+                        Some(t) if t < window.since => out.summary.boundary_reached = true,
+                        Some(_) => {}
+                        // Older than the boundary tx by provider order:
+                        // outside the window anyway.
+                        None if out.summary.boundary_reached => {}
+                        None => {
+                            out.summary.missing_block_time =
+                                out.summary.missing_block_time.saturating_add(1);
+                        }
+                    }
+                    if !tx.block_time.is_some_and(|t| window.contains(t)) {
+                        continue;
+                    }
+                    out.in_window = out.in_window.saturating_add(1);
+                }
+                let q = qualify_bonding_curve_buys_with_policy(tx, curve, policy);
+                // The curve pass supplies the program-instruction
+                // diagnostics; the sides and IdlOnly counts come from
+                // the shared attribution (`qualify_transaction`).
+                let mut tx_diagnostics = q.diagnostics;
+                tx_diagnostics.unverified_variant_buys = Default::default();
+                out.summary.diagnostics.add(&tx_diagnostics);
+                for hex in q.unknown_discriminators {
+                    if out.unknown.len() < MAX_UNKNOWN_DISCRIMINATOR_SAMPLES {
+                        out.unknown.push(hex);
+                    }
+                }
+                for reason in q.malformed_reasons {
+                    if out.malformed.len() < MAX_MALFORMED_SAMPLES {
+                        out.malformed.push(sanitize_provider_text(&reason));
+                    }
+                }
+                for (mint, _owner) in &q.uninstructed_positive_deltas {
+                    if ctx.focus.contains(mint) {
+                        out.summary.positive_delta_without_instruction = out
+                            .summary
+                            .positive_delta_without_instruction
+                            .saturating_add(1);
+                    }
+                }
+                if q.diagnostics.out_of_scope_slot_transactions > 0 {
+                    continue;
+                }
+                qualify_transaction(tx, &ctx, &mut out.summary, &mut out.acc, &mut out.side_hits);
+            }
+        }
+    }
+    Ok(UnitEnd::Done(Box::new(out)))
+}
+
+fn merge_evidence_slot(dst: &mut Option<SideEvidence>, src: Option<SideEvidence>) {
+    let Some(src) = src else { return };
+    match dst {
+        None => *dst = Some(src),
+        Some(d) => {
+            let count = d.count.saturating_add(src.count);
+            if (src.slot, src.transaction_index) < (d.slot, d.transaction_index) {
+                *d = src;
+            }
+            d.count = count;
+        }
+    }
+}
+
+fn merge_side_hits(into: &mut SideHitMap, from: SideHitMap) {
+    for (wallet, per_asset) in from {
+        let dst = into.entry(wallet).or_default();
+        for (asset, hits) in per_asset {
+            let cell = dst.entry(asset).or_default();
+            merge_evidence_slot(&mut cell.buy, hits.buy);
+            merge_evidence_slot(&mut cell.sell, hits.sell);
+        }
+    }
+}
+
+const fn stop_kind(stop: ScanStop) -> ScanFailureKind {
+    match stop {
+        ScanStop::BudgetExhausted { limit } => ScanFailureKind::BudgetExhausted { limit },
+        ScanStop::RateLimited { retry_after_secs } => {
+            ScanFailureKind::RateLimited { retry_after_secs }
+        }
+    }
+}
+
+/// Fold the units of one token (slice order) into its summary. `None` = the
+/// token is omitted (the caller cancelled before any of its units started).
+///
+/// Status rules: every unit not started and a run stop -> `NotScanned`; a
+/// failed unit (first by slice order) or a unit cut in flight by the stop ->
+/// `Failed`; some units not started after a stop -> `Failed` naming them;
+/// any slice truncated -> token `truncated`, slices named.
+fn merge_token(
+    token: &AssetKey,
+    slices: &[Option<SliceId>],
+    parts: &[UnitEnd],
+    stop: Option<ScanStop>,
+    bounded: bool,
+) -> Option<SolanaTokenScanSummary> {
+    let mut summary = SolanaTokenScanSummary::new(token.clone(), TokenScanStatus::Ok);
+    let mut acc = TokenAcc::default();
+    let mut in_window = 0u64;
+    let mut any_started = false;
+    let mut truncated = false;
+    let mut failed: Option<(ScanFailureKind, String)> = None;
+    let mut unstarted: Vec<SliceId> = Vec::new();
+    let label =
+        |slice: &Option<SliceId>| slice.map_or_else(String::new, |s| format!("{}: ", s.describe()));
+    for (slice, part) in slices.iter().zip(parts) {
+        let UnitEnd::Done(done) = part else {
+            if let Some(s) = slice {
+                unstarted.push(*s);
+            }
+            continue;
+        };
+        any_started = true;
+        let u = &done.summary;
+        let s = u64::saturating_add;
+        summary.transactions_scanned = s(summary.transactions_scanned, u.transactions_scanned);
+        summary.missing_block_time = s(summary.missing_block_time, u.missing_block_time);
+        summary.boundary_reached |= u.boundary_reached;
+        summary.positive_delta_without_instruction = s(
+            summary.positive_delta_without_instruction,
+            u.positive_delta_without_instruction,
+        );
+        summary.unexpected_payloads = s(summary.unexpected_payloads, u.unexpected_payloads);
+        summary.diagnostics.add(&u.diagnostics);
+        summary.trade.add(&u.trade);
+        in_window = s(in_window, done.in_window);
+        acc.wallets.extend(done.acc.wallets.iter().cloned());
+        acc.buyers.extend(done.acc.buyers.iter().cloned());
+        acc.sellers.extend(done.acc.sellers.iter().cloned());
+        if done.raw_truncated && !(bounded && u.boundary_reached) {
+            truncated = true;
+            if let Some(sl) = slice {
+                summary.truncated_slices.push(*sl);
+            }
+        }
+        if failed.is_none() {
+            if let Some((kind, text)) = &done.failure_info {
+                failed = Some((*kind, format!("{}{text}", label(slice))));
+            } else if done.interrupted {
+                failed = Some((
+                    stop.map_or(ScanFailureKind::Other, stop_kind),
+                    format!(
+                        "{}interrupted in flight: {}",
+                        label(slice),
+                        stop.map_or_else(|| "run stopped".to_string(), |s| s.describe())
+                    ),
+                ));
+            }
+        }
+    }
+    if !any_started {
+        return stop.map(|reason| {
+            SolanaTokenScanSummary::new(token.clone(), TokenScanStatus::NotScanned { reason })
+        });
+    }
     let count = |s: &BTreeSet<WalletKey>| u64::try_from(s.len()).unwrap_or(u64::MAX);
     summary.qualified_buyers = count(&acc.buyers);
     summary.qualified_sellers = count(&acc.sellers);
     summary.qualified_wallets = count(&acc.wallets);
-    // Windowed: reaching the boundary (a transaction older than the window
-    // start) makes the scan complete for the window even if the provider
-    // still held a cursor.
-    summary.truncated = raw_truncated && !(bounded && summary.boundary_reached);
     summary.transactions_in_window = bounded.then_some(in_window);
+    if !unstarted.is_empty() {
+        match stop {
+            Some(reason) => {
+                if failed.is_none() {
+                    let names = unstarted
+                        .iter()
+                        .map(SliceId::describe)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    failed = Some((
+                        stop_kind(reason),
+                        format!("not scanned ({names}): {}", reason.describe()),
+                    ));
+                }
+            }
+            None => {
+                // Caller cancelled: the slices never scanned are a gap.
+                truncated = true;
+                summary.truncated_slices.extend(unstarted);
+            }
+        }
+    }
+    summary.truncated = truncated;
+    if let Some((kind, message)) = failed {
+        summary.status = TokenScanStatus::Failed { kind, message };
+    }
+    Some(summary)
 }

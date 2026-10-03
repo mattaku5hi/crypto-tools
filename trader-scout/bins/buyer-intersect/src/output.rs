@@ -103,6 +103,10 @@ pub struct RunBudget {
     pub provider_options: scout_providers::HeliusRequestOptions,
     /// `--server-window` requested.
     pub server_window: bool,
+    /// `--concurrency`: scan units in flight (effective).
+    pub concurrency: usize,
+    /// `--slices`: effective time slices per token (1 = unsliced).
+    pub slices: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -122,6 +126,10 @@ pub struct BudgetDto {
     /// Total HTTP attempts allowed (`--max-requests`, retries included);
     /// `null` = unlimited.
     pub max_requests: Option<u64>,
+    /// Max scan units (tokens / token slices) in flight (`--concurrency`).
+    pub concurrency: usize,
+    /// Effective time slices per token (`--slices`; 1 = unsliced).
+    pub slices: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -300,6 +308,9 @@ pub struct TokenStatusDto {
     /// Distinct wallets with a qualifying op of the selected side(s).
     pub qualified_wallets: Option<u64>,
     pub diagnostics: Option<TokenDiagnosticsDto>,
+    /// Sliced scans: the slices that did not complete (absent when none).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub truncated_slices: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -432,6 +443,8 @@ pub fn run_meta_record(
         budget: BudgetDto {
             max_pages_per_token: budget.max_pages_per_token,
             max_requests: budget.max_requests,
+            concurrency: budget.concurrency,
+            slices: budget.slices,
         },
         provider_options: ProviderOptionsDto {
             request: budget.provider_options,
@@ -473,6 +486,11 @@ fn token_status(
     redact: &dyn Fn(&str) -> String,
 ) -> Result<TokenStatusDto, String> {
     let asset = asset_dto(&token.asset)?;
+    let truncated_slices: Vec<String> = token
+        .truncated_slices
+        .iter()
+        .map(scout_engine::SliceId::describe)
+        .collect();
     match &token.status {
         TokenScanStatus::Ok => {}
         TokenScanStatus::Failed { kind, message } => {
@@ -488,6 +506,7 @@ fn token_status(
                 qualified_sellers: None,
                 qualified_wallets: None,
                 diagnostics: None,
+                truncated_slices,
             });
         }
         TokenScanStatus::NotScanned { reason } => {
@@ -503,6 +522,7 @@ fn token_status(
                 qualified_sellers: None,
                 qualified_wallets: None,
                 diagnostics: None,
+                truncated_slices,
             });
         }
     }
@@ -553,6 +573,7 @@ fn token_status(
             okx_idl_only_order_events: token.trade.okx_idl_only_order_events,
             evidence_samples: scout_app::evidence_dtos(&token.trade.evidence_samples, redact),
         }),
+        truncated_slices,
     })
 }
 
@@ -638,6 +659,7 @@ mod tests {
             asset,
             transactions_scanned: 250,
             truncated,
+            truncated_slices: Vec::new(),
             status: if failed {
                 TokenScanStatus::Failed {
                     kind: ScanFailureKind::Other,
@@ -689,6 +711,8 @@ mod tests {
             unknown_discriminator_samples: vec![],
             cancelled: false,
             stop: None,
+            concurrency: 4,
+            slices: 1,
         }
     }
 
@@ -713,6 +737,8 @@ mod tests {
                     ..scout_providers::HeliusRequestOptions::default()
                 },
                 server_window: true,
+                concurrency: 4,
+                slices: 1,
             },
             incomplete,
             &|t| t.replace("SECRET99", "<redacted>"),

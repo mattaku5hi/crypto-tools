@@ -52,12 +52,12 @@ pub use solana_buy_qualification::{
     qualify_bonding_curve_buys, qualify_bonding_curve_buys_with_policy, solana_mainnet_chain,
 };
 pub use solana_buyer_intersect::{
-    IntersectOptions, ScanFailureKind, ScanStop, SideEvidence, SideFilter,
-    SolanaBuyerIntersectReport, SolanaProtocolScope, SolanaTokenScanSummary, TokenScanStatus,
-    TokenSideHits, TradeAttributionDiagnostics, classify_provider_error,
-    run_solana_buyer_intersect, run_solana_buyer_intersect_with_policy, run_solana_trade_intersect,
-    run_solana_trade_intersect_with_policies, run_solana_trade_intersect_with_policy,
-    sanitize_provider_text,
+    IntersectOptions, MAX_SCAN_CONCURRENCY, MAX_SCAN_SLICES, ScanFailureKind, ScanStop,
+    SideEvidence, SideFilter, SliceId, SolanaBuyerIntersectReport, SolanaProtocolScope,
+    SolanaTokenScanSummary, TokenScanStatus, TokenSideHits, TradeAttributionDiagnostics,
+    classify_provider_error, run_solana_buyer_intersect, run_solana_buyer_intersect_with_policy,
+    run_solana_trade_intersect, run_solana_trade_intersect_with_policies,
+    run_solana_trade_intersect_with_policy, sanitize_provider_text,
 };
 pub use solana_open_valuation::{
     CurveRead, FeeObservation, LABEL_REALIZABLE_CP_QUOTE, OpenBasis, OpenUsd, OpenValuationRun,
@@ -86,9 +86,10 @@ pub use solana_wallet_rank::{
     rank_solana_wallets,
 };
 pub use solana_wallet_stats::{
-    SolanaWalletStats, SolanaWalletStatsReport, WalletScanStatus, format_scaled_decimal,
-    lamports_to_sol_string, rational_to_decimal_string, run_solana_wallet_stats,
-    run_solana_wallet_stats_windowed, run_solana_wallet_stats_windowed_venues,
+    MAX_WALLET_CONCURRENCY, SolanaWalletStats, SolanaWalletStatsReport, WalletScanStatus,
+    format_scaled_decimal, lamports_to_sol_string, rational_to_decimal_string,
+    run_solana_wallet_stats, run_solana_wallet_stats_concurrent, run_solana_wallet_stats_windowed,
+    run_solana_wallet_stats_windowed_venues,
 };
 pub use solana_wallet_usd::{
     SOLANA_WALLET_USD_VERSION, UsdCoverage, UsdDisposal, UsdEpisode, UsdJournal, UsdLedgerView,

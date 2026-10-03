@@ -98,8 +98,14 @@ fn jsonl(out: &Out) -> Vec<Value> {
         .collect()
 }
 
+/// Sequential (`--concurrency 1`): these tests pin WHICH wallet the budget
+/// or the terminal error hits, which is only defined for a sequential scan.
 fn args(extra: &[&str]) -> Vec<String> {
-    extra.iter().map(|s| (*s).to_string()).collect()
+    ["--concurrency", "1"]
+        .iter()
+        .chain(extra)
+        .map(|s| (*s).to_string())
+        .collect()
 }
 
 fn wallet_records(lines: &[Value]) -> Vec<&Value> {
@@ -321,4 +327,48 @@ async fn explicit_window_is_echoed_and_budget_before_boundary_is_exit_3() {
         "{}",
         out.stderr
     );
+}
+
+#[tokio::test]
+async fn concurrency_does_not_change_cards_and_is_echoed() {
+    let mut cards: Vec<Vec<String>> = Vec::new();
+    for c in ["1", "4"] {
+        let server = three_page_server().await;
+        let out = run(
+            server.uri(),
+            vec!["--concurrency".to_string(), c.to_string()],
+        )
+        .await;
+        let lines = jsonl(&out);
+        assert_eq!(lines[0]["scan"]["concurrency"], c.parse::<u64>().unwrap());
+        assert!(
+            out.stderr.contains(&format!("concurrency={c}")),
+            "{}",
+            out.stderr
+        );
+        assert!(out.stderr.contains("elapsed_ms="), "{}", out.stderr);
+        assert!(!out.stdout.contains("elapsed_ms"));
+        assert_eq!(server.received_requests().await.unwrap().len(), 9);
+        cards.push(
+            out.stdout
+                .lines()
+                .filter(|l| l.contains("\"wallet_stats\""))
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    assert_eq!(cards[0].len(), 3);
+    assert_eq!(cards[0], cards[1]);
+}
+
+#[tokio::test]
+async fn concurrency_out_of_range_is_exit_2() {
+    for bad in ["0", "17", "abc"] {
+        let out = run(
+            "http://127.0.0.1:1".to_string(),
+            vec![format!("--concurrency={bad}")],
+        )
+        .await;
+        assert_eq!(out.code, 2, "value {bad}: {}", out.stderr);
+    }
 }

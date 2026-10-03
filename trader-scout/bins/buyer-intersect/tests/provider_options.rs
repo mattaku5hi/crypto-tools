@@ -174,6 +174,8 @@ async fn server_window_sends_block_time_filter_only_with_a_window() {
         Some(server.uri()),
         args(&[
             "--server-window",
+            "--slices",
+            "1",
             "--since",
             "2026-08-01T00:00:00Z",
             "--until",
@@ -232,4 +234,49 @@ async fn invalid_provider_option_values_exit_2() {
         let out = run(None, args(&bad)).await;
         assert_eq!(out.code, 2, "{bad:?}: {}", out.stderr);
     }
+}
+
+#[tokio::test]
+async fn default_slices_split_a_window_into_four_server_side_ranges_per_token() {
+    let server = single_page_server().await;
+    let out = run(
+        Some(server.uri()),
+        args(&[
+            "--since",
+            "2026-08-01T00:00:00Z",
+            "--until",
+            "2026-08-02T00:00:00Z",
+        ]),
+    )
+    .await;
+    assert_eq!(meta(&out)["budget"]["slices"], 4);
+    assert_eq!(meta(&out)["budget"]["concurrency"], 4);
+    assert!(
+        out.stderr.contains("concurrency=4 slices=4"),
+        "{}",
+        out.stderr
+    );
+    let mut ranges: Vec<(i64, i64)> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+            let bt = &body["params"][1]["filters"]["blockTime"];
+            (bt["gte"].as_i64().unwrap(), bt["lt"].as_i64().unwrap())
+        })
+        .collect();
+    ranges.sort_unstable();
+    ranges.dedup();
+    // 86400 s / 4 = 21600 s, contiguous, exact outer ends (both tokens
+    // request the same four ranges).
+    let start = 1_785_542_400i64;
+    assert_eq!(
+        ranges,
+        (0..4i64)
+            .map(|k| (start + k * 21_600, start + (k + 1) * 21_600))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 8);
 }

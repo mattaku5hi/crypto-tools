@@ -42,7 +42,7 @@ use scout_core::{AddressBytes, ChainFamily, SolanaPubkey, WalletKey};
 use scout_engine::{
     AnalysisWindow, DEFAULT_TOP, LedgerDecoders, QuoteUnit, RankBy, RankPolicy, RankProfile,
     ScanStop, SolanaWalletStatsReport, WalletRankReport, pump_amm_decoder,
-    pump_bonding_curve_decoder, rank_solana_wallets, run_solana_wallet_stats_windowed_venues,
+    pump_bonding_curve_decoder, rank_solana_wallets, run_solana_wallet_stats_concurrent,
     sanitize_provider_text,
 };
 use scout_pricing::PriceSource as _;
@@ -224,6 +224,18 @@ struct Args {
         value_parser = ["none", "balance-changed"]
     )]
     token_accounts: String,
+
+    /// Max wallets scanned at once (1..=16, default 4). Each wallet scan
+    /// keeps one provider request in flight, so this also caps concurrent
+    /// requests. The shared `--max-requests` budget stays exact; results do
+    /// not depend on the value (cards merged in input order). `1` =
+    /// sequential. Time slicing is not available for wallets.
+    #[arg(
+        long,
+        default_value_t = 4,
+        value_parser = clap::value_parser!(u32).range(1..=16)
+    )]
+    concurrency: u32,
 
     /// Total HTTP attempt budget (retries included) for the whole run.
     /// When spent, the interrupted wallet is `provider_error`, remaining
@@ -582,6 +594,7 @@ fn run_solana(
         return ExitCode::from(2);
     };
     let options = provider_options(args, window);
+    let started = std::time::Instant::now();
     let provider = match build_provider(api_key, max_pages, args.max_requests, window, &options) {
         Ok(p) => p,
         Err(err) => return provider_error_exit(&err, api_key),
@@ -597,7 +610,7 @@ fn run_solana(
         }
     };
     let amm = pump_amm_decoder();
-    let mut stats = match rt.block_on(run_solana_wallet_stats_windowed_venues(
+    let mut stats = match rt.block_on(run_solana_wallet_stats_concurrent(
         &provider,
         solana,
         &LedgerDecoders {
@@ -606,6 +619,7 @@ fn run_solana(
             okx_order_policy: scout_engine::default_okx_order_policy,
         },
         window,
+        usize::try_from(args.concurrency).unwrap_or(1),
         CancellationToken::new(),
     )) {
         Ok(r) => r,
@@ -662,7 +676,16 @@ fn run_solana(
     for r in &price_reasons {
         eprintln!("wallet-rank: {r}");
     }
-    print_diagnostics(&stats, &report, api_key, args, window, requests_made);
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    print_diagnostics(
+        &stats,
+        &report,
+        api_key,
+        args,
+        window,
+        requests_made,
+        elapsed_ms,
+    );
     let captured_at = scout_app::now_utc_rfc3339();
     let lines = if args.format == "jsonl" {
         let compact: String = captured_at
@@ -676,6 +699,7 @@ fn run_solana(
             max_pages_per_wallet: args.max_pages_per_wallet,
             provider_options: provider.request_options(),
             server_window: args.server_window,
+            concurrency: usize::try_from(args.concurrency).unwrap_or(1),
             max_requests: args.max_requests,
             requests_made,
             input_wallet_count: all.len(),
@@ -749,6 +773,7 @@ fn print_diagnostics(
     args: &Args,
     window: &AnalysisWindow,
     requests_made: u64,
+    elapsed_ms: u64,
 ) {
     let s = &stats.scope;
     let p = &report.policy;
@@ -770,6 +795,11 @@ fn print_diagnostics(
         effective.describe(),
         args.server_window,
         u64::from(args.max_pages_per_wallet) * u64::from(effective.page_limit)
+    );
+    eprintln!(
+        "  concurrency={} (max wallets scanned at once; slices not used for wallets) \
+         elapsed_ms={elapsed_ms} (stderr only, not in JSONL)",
+        stats.concurrency
     );
     eprintln!(
         "  scan: newest-first, max_pages_per_wallet={} (page_limit txs/page; retries not counted), \

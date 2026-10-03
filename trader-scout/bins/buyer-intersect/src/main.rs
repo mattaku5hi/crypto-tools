@@ -184,6 +184,47 @@ struct Args {
     /// and reported). When exhausted the run is partial and exits 3.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
+
+    /// Max scan units in flight at once (a token, or one time slice of a
+    /// token; 1..=16, default 4). Each unit keeps one provider request in
+    /// flight, so this also caps concurrent requests. The shared
+    /// `--max-requests` budget stays exact; results do not depend on the
+    /// value (merged in input order). `--concurrency 1` is sequential.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_CONCURRENCY,
+        value_parser = clap::value_parser!(u32).range(1..=16)
+    )]
+    concurrency: u32,
+
+    /// Split a window `[since, until)` into this many equal sub-windows per
+    /// token, each scanned with its own server-side `blockTime` filter
+    /// (1..=16). Default: 4 with a window and `--server-window`, else 1.
+    /// More than 1 requires a window and `--server-window`.
+    /// `--max-pages-per-token` then applies to EACH slice. A token is
+    /// complete iff every slice is; truncated slices are named.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=16))]
+    slices: Option<u32>,
+}
+
+/// Library default is sequential; the CLI default.
+const DEFAULT_CONCURRENCY: u32 = 4;
+/// `--slices` default when a window is set and `--server-window` is on.
+const DEFAULT_WINDOW_SLICES: u32 = 4;
+
+/// Effective `--slices`, or the usage error text (exit 2).
+fn effective_slices(args: &Args, window: &AnalysisWindow) -> Result<u32, String> {
+    let sliceable = window.is_bounded() && args.server_window;
+    match args.slices {
+        Some(n) if n > 1 && !sliceable => Err(
+            "--slices > 1 requires a window (--since/--period) and --server-window (each slice \
+             is a server-side blockTime filter)"
+                .to_string(),
+        ),
+        Some(n) => Ok(n),
+        None if sliceable => Ok(DEFAULT_WINDOW_SLICES),
+        None => Ok(1),
+    }
 }
 
 /// Run start in unix seconds (pinned once per run as `as_of`).
@@ -457,6 +498,14 @@ fn run_solana(
     // ONE provider for the whole run: the request budget and counter are
     // shared by every token's scan.
     let options = provider_options(args, window);
+    let slices = match effective_slices(args, window) {
+        Ok(n) => n,
+        Err(message) => {
+            eprintln!("buyer-intersect: {message}");
+            return ExitCode::from(2);
+        }
+    };
+    let started = std::time::Instant::now();
     let provider = match build_provider(api_key, max_pages, args.max_requests, window, &options) {
         Ok(provider) => provider,
         Err(err) => return provider_error_exit(&err, Some(api_key)),
@@ -468,6 +517,8 @@ fn run_solana(
         IntersectOptions {
             side: side_filter(args),
             window: *window,
+            concurrency: usize::try_from(args.concurrency).unwrap_or(1),
+            slices,
         },
         CancellationToken::new(),
     ));
@@ -489,8 +540,11 @@ fn run_solana(
         requests_made,
         provider_options: provider.request_options(),
         server_window: args.server_window,
+        concurrency: report.concurrency,
+        slices: report.slices,
     };
-    print_solana_diagnostics(&report, api_key, budget);
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    print_solana_diagnostics(&report, api_key, budget, elapsed_ms);
     let incomplete = report.is_coverage_incomplete();
     let captured_at = scout_app::now_utc_rfc3339();
     let outcome = match emit_solana_matches(
@@ -527,7 +581,12 @@ fn redact(text: &str, secret: &str) -> String {
 /// Scope, coverage and diagnostics block on stderr (stdout stays the
 /// single selected result format, CLI.md §2). Unknown is never printed
 /// as zero: failed tokens say `scan failed`, not `0 transactions`.
-fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, budget: RunBudget) {
+fn print_solana_diagnostics(
+    report: &SolanaBuyerIntersectReport,
+    api_key: &str,
+    budget: RunBudget,
+    elapsed_ms: u64,
+) {
     let scope = &report.scope;
     eprintln!("buyer-intersect: protocol scope (Solana mainnet):");
     eprintln!("  recognized: {}", scope.recognized);
@@ -570,7 +629,13 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
         u64::from(budget.max_pages_per_token) * u64::from(budget.provider_options.page_limit)
     );
     eprintln!(
-        "  requests_made={} max_requests={} (total HTTP attempts, retries included)",
+        "  concurrency={} slices={} (max scan units in flight; slices per token, 1 = unsliced; \
+         --max-pages-per-token applies per slice)",
+        budget.concurrency, budget.slices
+    );
+    eprintln!(
+        "  requests_made={} max_requests={} (total HTTP attempts, retries included) \
+         elapsed_ms={elapsed_ms} (stderr only, not in JSONL)",
         budget.requests_made,
         limit_text(budget.max_requests)
     );
