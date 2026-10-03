@@ -203,6 +203,21 @@ pub struct EvmRpcClient {
     cfg: EvmRpcConfig,
     timestamps: Arc<Mutex<TimestampCache>>,
     recorder: Option<Arc<CallRecorder>>,
+    /// Whole-block receipts fetched so far (shared by clones): the native-leg
+    /// sole-touch check and the receipt of the transaction itself come from
+    /// ONE `eth_getBlockReceipts`. Bounded by total receipt count.
+    block_cache: Arc<Mutex<BlockReceiptCache>>,
+    /// Logical calls by JSON-RPC method (a retry is not a new call).
+    call_counts: Arc<Mutex<BTreeMap<String, u64>>>,
+}
+
+/// Max receipts held in the shared block cache (oldest blocks evicted).
+const MAX_CACHED_RECEIPTS: usize = 50_000;
+
+#[derive(Debug, Default)]
+struct BlockReceiptCache {
+    map: BTreeMap<u64, Arc<Vec<EvmReceiptInfo>>>,
+    receipts: usize,
 }
 
 #[derive(Debug, Default)]
@@ -288,6 +303,8 @@ impl EvmRpcClient {
             cfg,
             timestamps: Arc::new(Mutex::new(TimestampCache::default())),
             recorder: None,
+            block_cache: Arc::new(Mutex::new(BlockReceiptCache::default())),
+            call_counts: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -298,6 +315,15 @@ impl EvmRpcClient {
     pub fn with_logs_endpoint(mut self, logs_rpc: RpcClient) -> Self {
         self.logs_rpc = Some(logs_rpc.sharing_budget_with(&self.rpc));
         self
+    }
+
+    /// Logical JSON-RPC calls made so far by method (retries not counted).
+    #[must_use]
+    pub fn calls_by_method(&self) -> BTreeMap<String, u64> {
+        self.call_counts
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_default()
     }
 
     /// `true` when `eth_getLogs` goes to a separate endpoint.
@@ -330,6 +356,9 @@ impl EvmRpcClient {
     /// One call; a JSON `null` result (legit for unknown tx/block) comes
     /// back as `Value::Null` instead of the transport's "empty envelope".
     async fn call_json(&self, method: &str, params: Value) -> Result<Value, EvmSourceError> {
+        if let Ok(mut c) = self.call_counts.lock() {
+            *c.entry(method.to_string()).or_insert(0) += 1;
+        }
         let rpc = match (&self.logs_rpc, method) {
             (Some(logs), "eth_getLogs") => logs,
             _ => &self.rpc,
@@ -549,6 +578,33 @@ impl EvmRpcClient {
             .collect()
     }
 
+    /// Receipts of a block, cached and shared (bounded; see
+    /// `MAX_CACHED_RECEIPTS`).
+    pub async fn block_receipts_shared(
+        &self,
+        block: u64,
+    ) -> Result<Arc<Vec<EvmReceiptInfo>>, EvmSourceError> {
+        if let Ok(c) = self.block_cache.lock()
+            && let Some(r) = c.map.get(&block)
+        {
+            return Ok(Arc::clone(r));
+        }
+        let r = Arc::new(self.block_receipts(block).await?);
+        if let Ok(mut c) = self.block_cache.lock() {
+            while c.receipts.saturating_add(r.len()) > MAX_CACHED_RECEIPTS {
+                let Some((_, old)) = c.map.pop_first() else {
+                    break;
+                };
+                c.receipts = c.receipts.saturating_sub(old.len());
+            }
+            c.receipts = c.receipts.saturating_add(r.len());
+            if let Some(prev) = c.map.insert(block, Arc::clone(&r)) {
+                c.receipts = c.receipts.saturating_sub(prev.len());
+            }
+        }
+        Ok(r)
+    }
+
     pub async fn transaction_receipt(&self, hash: B256) -> Result<EvmReceiptInfo, EvmSourceError> {
         let v = self
             .call_json("eth_getTransactionReceipt", json!([format!("{hash:#x}")]))
@@ -608,7 +664,11 @@ impl EvmRpcClient {
         blocks: &[u64],
     ) -> Result<Vec<(u64, Vec<EvmReceiptInfo>)>, EvmSourceError> {
         stream::iter(blocks.iter().copied())
-            .map(|b| async move { self.block_receipts(b).await.map(|r| (b, r)) })
+            .map(|b| async move {
+                self.block_receipts_shared(b)
+                    .await
+                    .map(|r| (b, r.as_ref().clone()))
+            })
             .buffered(self.cfg.concurrency)
             .collect::<Vec<_>>()
             .await

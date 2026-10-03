@@ -30,6 +30,7 @@ use crate::chain_display::{ChainDisplay, evm_key};
 use crate::evm_trade_extraction::{
     EVM_TRADE_EXTRACTION_VERSION, EvmExtractionConfig, EvmTxOutcome, QuoteAsset, extract_evm_trades,
 };
+use crate::solana_buyer_intersect::ScanStop;
 use crate::solana_buyer_intersect::SolanaProtocolScope;
 use crate::solana_buyer_intersect::{
     ScanFailureKind, classify_provider_error, sanitize_provider_text,
@@ -40,6 +41,7 @@ use crate::solana_wallet_ledger::{
 use crate::solana_wallet_stats::{
     SolanaWalletStats, SolanaWalletStatsReport, WalletScanStatus, failed_card, run_wallet_cards,
 };
+use scout_dex_solana::TradeSide;
 
 /// One venue deployment of the chain with its evidence level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,12 +164,52 @@ impl EvmRunInfo {
 }
 
 /// Everything a stats run reads.
-#[derive(Debug)]
 pub struct EvmStatsSources<'a> {
     pub scanner: &'a EvmHistoryScanner,
     pub explorer: &'a BlockscoutEvmSource,
     /// `None` = native legs are not resolved (logs and `tx.value` only).
     pub resolver: Option<&'a NativeLegResolver>,
+    /// The run's `--max-requests` (RPC side). With a limit, a wallet whose
+    /// planned cost does not fit the remaining budget is refused BEFORE any
+    /// receipt request (`NotScanned`, exit 3) instead of dying mid-scan.
+    pub max_requests: Option<u64>,
+    /// Progress/cost lines for stderr (the SDK never prints).
+    pub notice: Option<&'a (dyn Fn(&str) + Send + Sync)>,
+}
+
+impl std::fmt::Debug for EvmStatsSources<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EvmStatsSources")
+            .field("max_requests", &self.max_requests)
+            .field("has_resolver", &self.resolver.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Request budget shared by the concurrent wallet scans of one run.
+struct RunBudget {
+    /// RPC attempts still available when the scans started.
+    available: Option<u64>,
+    /// Sum of the estimates of wallets already admitted.
+    reserved: std::sync::atomic::AtomicU64,
+    limit: u64,
+}
+
+impl RunBudget {
+    /// Admit a wallet needing at most `estimate` requests; `Err(available)`
+    /// when it does not fit next to the wallets admitted before it.
+    fn admit(&self, estimate: u64) -> Result<(), u64> {
+        use std::sync::atomic::Ordering;
+        let Some(avail) = self.available else {
+            return Ok(());
+        };
+        self.reserved
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |r| {
+                (r.saturating_add(estimate) <= avail).then(|| r.saturating_add(estimate))
+            })
+            .map(|_| ())
+            .map_err(|r| avail.saturating_sub(r))
+    }
 }
 
 fn to_provider_error(e: EvmSourceError) -> ProviderError {
@@ -215,6 +257,13 @@ pub async fn run_evm_wallet_stats(
         .await
         .map_err(to_provider_error)?;
     let keys: Vec<[u8; 32]> = wallets.iter().map(|w| evm_key(*w)).collect();
+    let used = sources.scanner.rpc().total_requests_made();
+    let budget = RunBudget {
+        available: sources.max_requests.map(|m| m.saturating_sub(used)),
+        reserved: std::sync::atomic::AtomicU64::new(0),
+        limit: sources.max_requests.unwrap_or(0),
+    };
+    let budget = &budget;
     let cards = run_wallet_cards(&keys, chain, concurrency, cancel, |key, token| async move {
         scan_evm_wallet(
             cfg,
@@ -222,6 +271,7 @@ pub async fn run_evm_wallet_stats(
             crate::chain_display::evm_address_of_key(&key),
             window,
             blocks,
+            budget,
             &token,
         )
         .await
@@ -271,6 +321,7 @@ async fn scan_evm_wallet(
     wallet: Address,
     window: &AnalysisWindow,
     blocks: Option<(u64, u64)>,
+    budget: &RunBudget,
     cancel: &CancellationToken,
 ) -> Result<Option<SolanaWalletStats>, ProviderError> {
     let chain = ChainDisplay::evm(&cfg.profile);
@@ -313,10 +364,68 @@ async fn scan_evm_wallet(
             ),
         }));
     };
+    let say = |m: &str| {
+        if let Some(n) = sources.notice {
+            n(m);
+        }
+    };
+    let label = chain.address(&key);
+    // Phase 1: explorer listings only (no RPC receipt/transaction request).
+    let listed = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Ok(None),
+        r = sources.scanner.list_wallet(sources.explorer, wallet, from, to) => r,
+    };
+    let listing = match listed {
+        Ok(l) => l,
+        Err(EvmSourceError::Provider(p @ ProviderError::ConfigurationRequired { .. })) => {
+            return Err(p);
+        }
+        Err(e) => return Ok(Some(evm_error_card(wallet, chain, &e))),
+    };
+    // Plan the RPC cost and refuse a wallet that cannot fit the budget.
+    let plan = listing.plan(sources.scanner.limits());
+    let probe = if sources.resolver.is_some() { 3 } else { 0 };
+    let estimate = plan.max_requests().saturating_add(probe);
+    say(&format!(
+        "wallet {label}: {} tx(s) ({} token-only); planned RPC requests: {}; <= {estimate} \
+         in total{}",
+        plan.transactions,
+        listing.token_only,
+        plan.by_method()
+            .iter()
+            .map(|(m, n)| format!("{m}={n}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        match budget.available {
+            Some(a) => format!(" (budget left for the run: {a})"),
+            None => String::new(),
+        }
+    ));
+    if let Err(left) = budget.admit(estimate) {
+        let reason = format!(
+            "refused before scanning: planned cost of up to {estimate} RPC requests ({} receipt \
+             request(s) + 2 archive balance reads per possible sell + probe) does not fit the \
+             remaining request budget of {left} of --max-requests {}; raise --max-requests or \
+             narrow the window",
+            plan.base_requests(),
+            budget.limit
+        );
+        say(&format!("wallet {label}: {reason}"));
+        let mut card = crate::solana_wallet_stats::not_scanned_card(
+            key,
+            chain,
+            ScanStop::BudgetExhausted {
+                limit: budget.limit,
+            },
+        );
+        card.incomplete_reasons.push(reason);
+        return Ok(Some(card));
+    }
     let scanned = tokio::select! {
         biased;
         () = cancel.cancelled() => return Ok(None),
-        r = sources.scanner.scan_wallet(sources.explorer, wallet, from, to) => r,
+        r = sources.scanner.assemble_listing(listing) => r,
     };
     let out = match scanned {
         Ok(o) => o,
@@ -339,7 +448,15 @@ async fn scan_evm_wallet(
         let wanted: std::collections::BTreeSet<_> = ex
             .iter()
             .filter_map(|e| match &e.outcome {
-                EvmTxOutcome::Trade(t) if t.quote == QuoteAsset::Native => Some(e.tx_hash),
+                // Only native-quoted SELLS need the native leg (proceeds
+                // arrive as an internal transfer, invisible in logs). Buys
+                // book `tx.value` exactly; USDG-quoted trades have no native
+                // leg; failed transactions are not trades.
+                EvmTxOutcome::Trade(t)
+                    if t.quote == QuoteAsset::Native && t.side == TradeSide::Sell =>
+                {
+                    Some(e.tx_hash)
+                }
                 _ => None,
             })
             .collect();

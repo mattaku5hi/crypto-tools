@@ -365,6 +365,12 @@ async fn wallet_scan_lists_through_the_indexer_and_never_calls_get_logs() {
         .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
         .filter_map(|b| b["method"].as_str().map(str::to_string))
         .collect();
+    assert!(o.stderr.contains("planned RPC requests:"), "{}", o.stderr);
+    assert!(o.stderr.contains("rpc calls by method:"), "{}", o.stderr);
+    assert!(
+        !methods.iter().any(|x| x == "eth_getTransactionByHash"),
+        "explorer rows describe the signed txs: {methods:?}"
+    );
     assert!(
         !methods.iter().any(|x| x == "eth_getLogs"),
         "wallet scans never use window getLogs: {methods:?}"

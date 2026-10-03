@@ -161,6 +161,8 @@ mod stats {
             &EvmStatsSources {
                 scanner: &scanner,
                 explorer: &explorer,
+                max_requests: None,
+                notice: None,
                 resolver: Some(&resolver),
             },
             &wallets,
@@ -178,6 +180,22 @@ mod stats {
             info.archive_state
         );
         assert_eq!(info.native_leg_counts.get("logs_and_value_only"), Some(&9));
+        // Request counts BY METHOD (logical calls) for the two wallets: the
+        // explorer rows describe every signed tx, so no transaction is
+        // fetched; at most one receipt request per transaction; the only
+        // native-leg calls are the one-time capability probes (trace 1,
+        // archive balance 1) because both sources are unsupported here.
+        let n_txs: usize = senders.iter().take(2).map(|(_, n)| *n).sum();
+        let calls = scanner.rpc().calls_by_method();
+        let c = |m: &str| calls.get(m).copied().unwrap_or(0);
+        assert_eq!(c("eth_getTransactionByHash"), 0, "{calls:?}");
+        let receipt_requests = c("eth_getTransactionReceipt") + c("eth_getBlockReceipts");
+        assert!(
+            receipt_requests >= 1 && receipt_requests <= u64::try_from(n_txs).unwrap(),
+            "{calls:?} for {n_txs} txs"
+        );
+        assert_eq!((c("debug_traceTransaction"), c("eth_getBalance")), (1, 1));
+        assert_eq!(c("eth_getLogs"), 0);
         assert_eq!(report.wallets.len(), 2);
         assert!(!report.is_coverage_incomplete());
 
@@ -309,6 +327,8 @@ mod stats {
             &EvmStatsSources {
                 scanner: &scanner,
                 explorer: &explorer,
+                max_requests: None,
+                notice: None,
                 resolver: Some(&resolver),
             },
             &wallets,
@@ -321,10 +341,10 @@ mod stats {
         let info = report.evm.as_ref().unwrap();
         assert_eq!(info.trace, "supported");
         assert!(info.archive_state.starts_with("unsupported"));
-        // Buys stay tx.value-based but are now Observed through the trace
-        // (an empty internal list is an observed zero refund); sells too.
-        assert_eq!(info.native_leg_counts.get("trace"), Some(&9));
-        assert_eq!(info.native_leg_counts.get("logs_and_value_only"), None);
+        // Only native-quoted SELLS are resolved (6 of the 9 native trades);
+        // the 3 buys book tx.value and never cost a trace call.
+        assert_eq!(info.native_leg_counts.get("trace"), Some(&6));
+        assert_eq!(info.native_leg_counts.get("logs_and_value_only"), Some(&3));
         // (raw SUM B pnl of the known disposals inside the still-open episode,
         // remaining basis scaled): independent FIFO, see the module docs.
         let expect = [
@@ -351,9 +371,77 @@ mod stats {
             );
             assert!(!l.has_unknown_basis_inventory);
             let ev = l.evm.as_ref().unwrap();
-            assert!(ev.trades.iter().all(|t| t.native_leg == "trace"));
+            // sells go through the trace; buys never needed it
+            assert!(ev.trades.iter().all(|t| matches!(
+                (format!("{:?}", t.side).as_str(), t.native_leg),
+                ("Sell", "trace") | ("Buy", "logs_and_value_only")
+            )));
             assert!(ev.trades.iter().all(|t| t.quote_amount.is_some()));
         }
         let _ = B256::ZERO;
+    }
+
+    #[tokio::test]
+    async fn a_wallet_that_cannot_fit_the_budget_is_refused_before_any_receipt_request() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(evm_aiden::fixture_path()).unwrap())
+                .unwrap();
+        let senders = ExplorerReplay::from_fixture(&fixture).senders();
+        let server = evm_aiden::serve(evm_aiden::replay()).await;
+        let rpc = evm_aiden::rpc_client(&server);
+        let chain = rpc.preflight().await.unwrap();
+        let scanner = EvmHistoryScanner::new(rpc.clone(), chain, ScanLimits::default());
+        let (_ex_server, explorer) = explorer(&fixture).await;
+        let cfg = EvmExtractionConfig::for_profile(ROBINHOOD);
+        let wallets: Vec<Address> = senders
+            .iter()
+            .take(2)
+            .map(|(a, _)| a.parse().unwrap())
+            .collect();
+        let notes = std::sync::Mutex::new(Vec::<String>::new());
+        let say = |m: &str| notes.lock().unwrap().push(m.to_string());
+        let report = run_evm_wallet_stats(
+            &cfg,
+            &EvmStatsSources {
+                scanner: &scanner,
+                explorer: &explorer,
+                // the window resolution alone already used more than this
+                max_requests: Some(1),
+                notice: Some(&say),
+                resolver: None,
+            },
+            &wallets,
+            &window(),
+            2,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(report.all_failed_for_budget());
+        for w in &report.wallets {
+            assert_eq!(w.status, WalletScanStatus::NotScanned);
+            assert!(matches!(
+                w.not_scanned,
+                Some(scout_engine::ScanStop::BudgetExhausted { limit: 1 })
+            ));
+            assert!(w.incomplete_reasons[0].contains("refused before scanning"));
+        }
+        let calls = scanner.rpc().calls_by_method();
+        for m in [
+            "eth_getTransactionReceipt",
+            "eth_getBlockReceipts",
+            "eth_getTransactionByHash",
+            "eth_getBalance",
+        ] {
+            assert_eq!(calls.get(m), None, "{m} must not be called: {calls:?}");
+        }
+        let notes = notes.lock().unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("planned RPC requests: eth_getBalance(<=)=")
+                    && n.contains("eth_getTransactionReceipt=")),
+            "{notes:?}"
+        );
     }
 }

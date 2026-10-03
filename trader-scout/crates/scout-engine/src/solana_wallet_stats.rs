@@ -216,6 +216,17 @@ impl SolanaWalletStatsReport {
             })
     }
 
+    /// Nothing was observed and every failed wallet was refused or stopped
+    /// by the request budget (exit 3, not 4: the budget is the cause).
+    #[must_use]
+    pub fn all_failed_for_budget(&self) -> bool {
+        self.all_failed()
+            && self
+                .wallets
+                .iter()
+                .all(|w| matches!(w.not_scanned, Some(ScanStop::BudgetExhausted { .. })))
+    }
+
     /// At least one wallet produced a card with ledger figures.
     #[must_use]
     pub fn any_data(&self) -> bool {

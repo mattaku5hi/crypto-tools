@@ -30,7 +30,7 @@
 //! receipt can show. A trace source has no such assumption and is preferred.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use alloy_primitives::{Address, B256, I256, U256};
 use futures::stream::{self, StreamExt};
@@ -46,8 +46,6 @@ const MAX_TRACE_FRAMES: usize = 100_000;
 /// Matches serde_json's own recursion limit: a deeper tree cannot even be
 /// deserialized from the wire (it surfaces as a failed trace).
 const MAX_TRACE_DEPTH: usize = 128;
-/// Cached blocks of receipts (bounded, invariant #13).
-const MAX_CACHED_BLOCKS: usize = 256;
 
 /// Whether a source works against this endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,7 +265,6 @@ pub struct NativeLegResolver {
     rpc: EvmRpcClient,
     policy: NativeLegPolicy,
     caps: OnceCell<NativeLegCapabilities>,
-    blocks: Mutex<BTreeMap<u64, Arc<Vec<EvmReceiptInfo>>>>,
 }
 
 impl NativeLegResolver {
@@ -277,7 +274,6 @@ impl NativeLegResolver {
             rpc,
             policy,
             caps: OnceCell::new(),
-            blocks: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -321,21 +317,8 @@ impl NativeLegResolver {
     }
 
     async fn receipts_of(&self, block: u64) -> Result<Arc<Vec<EvmReceiptInfo>>, EvmSourceError> {
-        if let Ok(c) = self.blocks.lock()
-            && let Some(r) = c.get(&block)
-        {
-            return Ok(Arc::clone(r));
-        }
-        let r = Arc::new(self.rpc.block_receipts(block).await?);
-        if let Ok(mut c) = self.blocks.lock() {
-            while c.len() >= MAX_CACHED_BLOCKS {
-                if c.pop_first().is_none() {
-                    break;
-                }
-            }
-            c.insert(block, Arc::clone(&r));
-        }
-        Ok(r)
+        // Shared with the scan: a block already fetched there is free here.
+        self.rpc.block_receipts_shared(block).await
     }
 
     /// Is `account` touched by any transaction of the block other than `hash`?
@@ -492,8 +475,8 @@ impl NativeLegResolver {
         let caps = match (self.caps.get(), sample) {
             (Some(c), _) => c.clone(),
             (None, Some(s)) => {
-                let c = self.detect(s).await?;
-                self.caps.get_or_init(|| async { c }).await.clone()
+                // One probe even when several wallets race here.
+                self.caps.get_or_try_init(|| self.detect(s)).await?.clone()
             }
             (None, None) => NativeLegCapabilities {
                 trace: Capability::Unsupported("not checked: nothing to resolve".to_string()),

@@ -66,6 +66,14 @@ pub(crate) fn run_evm(
     for w in &run.warnings {
         eprintln!("wallet-stats: warning: {w}");
     }
+    eprintln!(
+        "wallet-stats: rpc calls by method: {}",
+        run.rpc_calls_by_method
+            .iter()
+            .map(|(m, n)| format!("{m}={n}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     for l in &run.rate_limits {
         eprintln!("wallet-stats: rate limit: {l}");
     }
@@ -169,7 +177,7 @@ pub(crate) fn run_evm(
         None => {}
     }
     if report.all_failed() {
-        return ExitCode::from(4);
+        return ExitCode::from(if report.all_failed_for_budget() { 3 } else { 4 });
     }
     if incomplete {
         return ExitCode::from(3);

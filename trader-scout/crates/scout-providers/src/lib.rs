@@ -41,7 +41,8 @@ pub use evm_rpc::{
     capped_span_from_error, is_range_or_cap_error, suggested_range,
 };
 pub use evm_scan::{
-    EvmHistoryScanner, InternalIndex, ReceiptMode, ScanLimits, TokenScanOutput, WalletScanOutput,
+    EvmHistoryScanner, InternalIndex, ReceiptMode, ScanLimits, TokenScanOutput, WalletCostPlan,
+    WalletListing, WalletScanOutput,
 };
 pub use evm_wire::{EvmReceiptInfo, EvmTxInfo};
 pub use fixture::{Fixture, FixtureProvenance, FixtureProvider};

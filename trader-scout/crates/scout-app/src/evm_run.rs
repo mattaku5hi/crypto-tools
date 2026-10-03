@@ -467,6 +467,8 @@ pub struct EvmStatsRun {
     pub warnings: Vec<String>,
     /// Final per-endpoint rate-limiter report lines (stderr).
     pub rate_limits: Vec<String>,
+    /// Logical RPC calls of the run by method (retries not counted).
+    pub rpc_calls_by_method: std::collections::BTreeMap<String, u64>,
 }
 
 impl EvmStatsRun {
@@ -584,6 +586,8 @@ pub async fn collect_evm_stats(
             scanner: &scanner,
             explorer: &explorer,
             resolver: Some(&resolver),
+            max_requests,
+            notice: Some(&|m: &str| notice(format!("cost: {m}"))),
         },
         wallets,
         window,
@@ -624,6 +628,7 @@ pub async fn collect_evm_stats(
         secrets,
         warnings: setup.warnings,
         rate_limits,
+        rpc_calls_by_method: setup.rpc.calls_by_method(),
     })
 }
 

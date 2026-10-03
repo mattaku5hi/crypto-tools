@@ -7,7 +7,7 @@
 //! the output is in canonical `(block, transaction_index)` order regardless
 //! of async completion order (invariant #12).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use alloy_primitives::{Address, B256, U256};
 use scout_core::{ChainKey, InternalTransfer, NativeSource, RawEvmTransaction};
@@ -131,6 +131,11 @@ impl EvmHistoryScanner {
     }
 
     #[must_use]
+    pub fn limits(&self) -> &ScanLimits {
+        &self.limits
+    }
+
+    #[must_use]
     pub fn rpc(&self) -> &EvmRpcClient {
         &self.rpc
     }
@@ -213,7 +218,7 @@ impl EvmHistoryScanner {
         let hash_list: Vec<B256> = hashes.iter().map(|(_, _, h)| *h).collect();
         let transactions = self
             // The needed receipts are already in hand: no second fetch.
-            .build(&hash_list, None, Some(needed))
+            .build(&hash_list, None, Some(needed), None)
             .await?;
         Ok(TokenScanOutput {
             transactions,
@@ -225,20 +230,8 @@ impl EvmHistoryScanner {
 
     /// Wallet-centric scan through the indexer listings (never a window-wide
     /// `eth_getLogs`, which is infeasible on 0.1 s-block chains with
-    /// range-capped providers). Over the block range `[from, to]`:
-    ///
-    /// - `txlist`: the wallet's own signed transactions (failed included);
-    /// - `tokentx`: every ERC-20 transfer to/from the wallet, which also
-    ///   names transactions the wallet did NOT sign (needed for inventory
-    ///   continuity);
-    /// - `txlistinternal`: native internal transfers, used only when the
-    ///   explorer reports complete processing.
-    ///
-    /// Hashes are deduplicated, the explorer's block timestamps seed the
-    /// block-time cache, and receipts/transactions come from RPC
-    /// (`eth_getTransactionReceipt`, or `eth_getBlockReceipts` for blocks
-    /// holding several of them). A truncated listing is reported
-    /// (`txlist_complete` / `tokentx_complete`), never hidden.
+    /// range-capped providers): [`Self::list_wallet`] then
+    /// [`Self::assemble_listing`]. See those for the request costs.
     pub async fn scan_wallet(
         &self,
         source: &BlockscoutEvmSource,
@@ -246,6 +239,33 @@ impl EvmHistoryScanner {
         from_block: u64,
         to_block: u64,
     ) -> Result<WalletScanOutput, EvmSourceError> {
+        let listing = self
+            .list_wallet(source, wallet, from_block, to_block)
+            .await?;
+        self.assemble_listing(listing).await
+    }
+
+    /// Phase 1 (explorer requests only): over the block range `[from, to]`
+    ///
+    /// - `txlist`: the wallet's own signed transactions (failed included);
+    ///   these rows carry from/to/value/gas price/block, so NO
+    ///   `eth_getTransactionByHash` is made for them;
+    /// - `tokentx`: every ERC-20 transfer to/from the wallet, which also
+    ///   names transactions the wallet did NOT sign (needed for inventory
+    ///   continuity); their sender/recipient come from the receipt;
+    /// - `txlistinternal`: native internal transfers, used only when the
+    ///   explorer reports complete processing.
+    ///
+    /// Hashes are deduplicated and the explorer's block timestamps seed the
+    /// block-time cache. Nothing is fetched over RPC yet, so the cost of
+    /// phase 2 can be planned ([`WalletListing::plan`]) and refused first.
+    pub async fn list_wallet(
+        &self,
+        source: &BlockscoutEvmSource,
+        wallet: Address,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<WalletListing, EvmSourceError> {
         let txlist = source.txlist(wallet, from_block, to_block).await?;
         let tokentx = source
             .token_transfers(wallet, None, from_block, to_block)
@@ -254,24 +274,38 @@ impl EvmHistoryScanner {
             .internal_transfers(wallet, from_block, to_block)
             .await?;
         let index = InternalIndex::from_complete_listing(&internal);
-        let mut own: Vec<B256> = txlist
-            .rows
-            .iter()
-            .filter(|t| t.from == wallet)
-            .map(|t| t.hash)
-            .collect();
-        own.sort();
-        own.dedup();
-        let mut hashes = own.clone();
-        hashes.extend(tokentx.rows.iter().map(|t| t.hash));
-        hashes.sort();
-        hashes.dedup();
-        let token_only = hashes.len().saturating_sub(own.len());
-        if hashes.len() > self.limits.max_transactions {
-            return Err(EvmSourceError::TooManyTransactions {
-                cap: self.limits.max_transactions,
-            });
+        let mut described: HashMap<B256, Described> = HashMap::new();
+        for t in txlist.rows.iter().filter(|t| t.from == wallet) {
+            described.insert(
+                t.hash,
+                Described {
+                    block_number: t.block_number,
+                    kind: DescKind::Signed {
+                        from: t.from,
+                        to: t.to,
+                        value: t.value,
+                        gas_price: t.gas_price,
+                    },
+                },
+            );
         }
+        let own: HashSet<B256> = described.keys().copied().collect();
+        let mut prefer_block: HashSet<B256> = HashSet::new();
+        for t in &tokentx.rows {
+            described.entry(t.hash).or_insert(Described {
+                block_number: t.block_number,
+                kind: DescKind::TokenOnly,
+            });
+            // A signed transaction in which the wallet SENDS a token may be
+            // a sell: its block's receipts are fetched whole (once) so the
+            // native-leg sole-touch check needs no second request.
+            if t.from == wallet && own.contains(&t.hash) {
+                prefer_block.insert(t.hash);
+            }
+        }
+        let mut hashes: Vec<B256> = described.keys().copied().collect();
+        hashes.sort();
+        let token_only = hashes.len().saturating_sub(own.len());
         self.rpc.seed_block_timestamps(
             txlist
                 .rows
@@ -279,14 +313,46 @@ impl EvmHistoryScanner {
                 .map(|t| (t.block_number, t.time_stamp))
                 .chain(tokentx.rows.iter().map(|t| (t.block_number, t.time_stamp))),
         );
-        let transactions = self.build(&hashes, index.as_ref(), None).await?;
-        Ok(WalletScanOutput {
-            transactions,
+        Ok(WalletListing {
+            wallet,
+            hashes,
+            described,
+            prefer_block,
+            index,
             txlist_complete: txlist.complete,
             tokentx_complete: tokentx.complete,
-            listed_transactions: hashes.len(),
-            token_only_transactions: token_only,
-            internal_complete: index.is_some(),
+            internal_complete: internal.complete,
+            token_only,
+        })
+    }
+
+    /// Phase 2: receipts (one request per transaction, or one per crowded /
+    /// possible-sell block) and the few transactions the explorer did not
+    /// describe, then the canonical `RawEvmTransaction`s.
+    pub async fn assemble_listing(
+        &self,
+        listing: WalletListing,
+    ) -> Result<WalletScanOutput, EvmSourceError> {
+        if listing.hashes.len() > self.limits.max_transactions {
+            return Err(EvmSourceError::TooManyTransactions {
+                cap: self.limits.max_transactions,
+            });
+        }
+        let transactions = self
+            .build(
+                &listing.hashes,
+                listing.index.as_ref(),
+                None,
+                Some(&listing),
+            )
+            .await?;
+        Ok(WalletScanOutput {
+            transactions,
+            txlist_complete: listing.txlist_complete,
+            tokentx_complete: listing.tokentx_complete,
+            listed_transactions: listing.hashes.len(),
+            token_only_transactions: listing.token_only,
+            internal_complete: listing.index.is_some(),
         })
     }
 
@@ -302,7 +368,7 @@ impl EvmHistoryScanner {
                 cap: self.limits.max_transactions,
             });
         }
-        self.build(hashes, internals, None).await
+        self.build(hashes, internals, None, None).await
     }
 
     async fn build(
@@ -310,33 +376,97 @@ impl EvmHistoryScanner {
         hashes: &[B256],
         internals: Option<&InternalIndex>,
         prefetched_receipts: Option<Vec<EvmReceiptInfo>>,
+        listing: Option<&WalletListing>,
     ) -> Result<Vec<RawEvmTransaction>, EvmSourceError> {
-        let txs = self.rpc.transactions_by_hashes(hashes).await?;
+        let describe = |h: &B256| listing.and_then(|l| l.described.get(h));
+        // 1. Transactions: only hashes no explorer row describes cost a call.
+        let undescribed: Vec<B256> = hashes
+            .iter()
+            .filter(|h| describe(h).is_none())
+            .copied()
+            .collect();
+        let mut cores: HashMap<B256, TxCore> = HashMap::with_capacity(hashes.len());
+        for t in self.rpc.transactions_by_hashes(&undescribed).await? {
+            cores.insert(
+                t.hash,
+                TxCore {
+                    from: t.from,
+                    to: t.to,
+                    value: t.value,
+                    block_number: t.block_number,
+                    index: Some(t.transaction_index),
+                    gas_price: t.gas_price,
+                },
+            );
+        }
+        let mut token_only: Vec<B256> = Vec::new();
+        for h in hashes {
+            match describe(h) {
+                Some(Described {
+                    block_number,
+                    kind:
+                        DescKind::Signed {
+                            from,
+                            to,
+                            value,
+                            gas_price,
+                        },
+                }) => {
+                    cores.insert(
+                        *h,
+                        TxCore {
+                            from: *from,
+                            to: *to,
+                            value: *value,
+                            block_number: *block_number,
+                            index: None,
+                            gas_price: Some(*gas_price),
+                        },
+                    );
+                }
+                Some(Described {
+                    kind: DescKind::TokenOnly,
+                    ..
+                }) => token_only.push(*h),
+                None => {}
+            }
+        }
+        // 2. Receipts: exactly one request per transaction, or one per
+        // block when crowded / flagged (see `ReceiptMode::Auto`).
         let mut receipts: HashMap<B256, EvmReceiptInfo> = prefetched_receipts
             .unwrap_or_default()
             .into_iter()
             .map(|r| (r.tx_hash, r))
             .collect();
-        let missing: Vec<&crate::evm_wire::EvmTxInfo> = txs
+        let block_of = |h: &B256| {
+            cores
+                .get(h)
+                .map(|c| c.block_number)
+                .or_else(|| describe(h).map(|d| d.block_number))
+        };
+        let missing: Vec<(B256, u64)> = hashes
             .iter()
-            .filter(|t| !receipts.contains_key(&t.hash))
+            .filter(|h| !receipts.contains_key(*h))
+            .filter_map(|h| block_of(h).map(|b| (*h, b)))
             .collect();
-        // (block -> needed tx count) decides block vs per-transaction fetch.
-        let mut per_block: BTreeMap<u64, usize> = BTreeMap::new();
-        for t in &missing {
-            *per_block.entry(t.block_number).or_insert(0) += 1;
+        let prefer = |h: &B256| listing.is_some_and(|l| l.prefer_block.contains(h));
+        let mut per_block: BTreeMap<u64, (usize, bool)> = BTreeMap::new();
+        for (h, b) in &missing {
+            let e = per_block.entry(*b).or_insert((0, false));
+            e.0 += 1;
+            e.1 |= prefer(h);
         }
         let use_block = |block: u64| match self.limits.receipt_mode {
             ReceiptMode::BlockReceipts => true,
             ReceiptMode::PerTransaction => false,
-            ReceiptMode::Auto => {
-                per_block.get(&block).copied().unwrap_or(0) >= self.limits.block_receipts_min_txs
-            }
+            ReceiptMode::Auto => per_block
+                .get(&block)
+                .is_some_and(|(n, flagged)| *flagged || *n >= self.limits.block_receipts_min_txs),
         };
         let single: Vec<B256> = missing
             .iter()
-            .filter(|t| !use_block(t.block_number))
-            .map(|t| t.hash)
+            .filter(|(_, b)| !use_block(*b))
+            .map(|(h, _)| *h)
             .collect();
         let whole_blocks: Vec<u64> = per_block
             .keys()
@@ -355,25 +485,67 @@ impl EvmHistoryScanner {
                 }
             }
         }
-        let blocks: Vec<u64> = txs
-            .iter()
-            .map(|t| t.block_number)
+        // 3. Transactions the wallet did not sign: sender/recipient from the
+        // receipt. `value` is never read for a non-signer (extraction books
+        // only the signer's native value). A receipt that names the wallet
+        // as sender, or has no `from`, falls back to the RPC transaction.
+        let wallet = listing.map(|l| l.wallet);
+        let mut fallback: Vec<B256> = Vec::new();
+        for h in &token_only {
+            let r = receipts.get(h).ok_or_else(|| EvmSourceError::NotFound {
+                what: format!("receipt {h:#x}"),
+            })?;
+            match (r.from, wallet) {
+                (Some(from), Some(w)) if from != w => {
+                    cores.insert(
+                        *h,
+                        TxCore {
+                            from,
+                            to: r.to,
+                            value: U256::ZERO,
+                            block_number: r.block_number,
+                            index: None,
+                            gas_price: None,
+                        },
+                    );
+                }
+                _ => fallback.push(*h),
+            }
+        }
+        for t in self.rpc.transactions_by_hashes(&fallback).await? {
+            cores.insert(
+                t.hash,
+                TxCore {
+                    from: t.from,
+                    to: t.to,
+                    value: t.value,
+                    block_number: t.block_number,
+                    index: Some(t.transaction_index),
+                    gas_price: t.gas_price,
+                },
+            );
+        }
+        let blocks: Vec<u64> = cores
+            .values()
+            .map(|c| c.block_number)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
         let times: BTreeMap<u64, u64> = self.rpc.block_timestamps(&blocks).await?;
 
-        let mut out = Vec::with_capacity(txs.len());
-        for t in txs {
-            let r = receipts
-                .remove(&t.hash)
-                .ok_or_else(|| EvmSourceError::NotFound {
-                    what: format!("receipt {:#x}", t.hash),
-                })?;
-            if r.block_number != t.block_number || r.transaction_index != t.transaction_index {
+        let mut out = Vec::with_capacity(cores.len());
+        for h in hashes {
+            let t = cores.remove(h).ok_or_else(|| EvmSourceError::NotFound {
+                what: format!("transaction {h:#x}"),
+            })?;
+            let r = receipts.remove(h).ok_or_else(|| EvmSourceError::NotFound {
+                what: format!("receipt {h:#x}"),
+            })?;
+            if r.block_number != t.block_number || t.index.is_some_and(|i| i != r.transaction_index)
+            {
                 return Err(malformed(
                     "receipt",
-                    format!("receipt position differs from transaction {:#x}", t.hash),
+                    format!("receipt position differs from transaction {h:#x}"),
                 ));
             }
             let effective_gas_price: U256 = r
@@ -388,11 +560,11 @@ impl EvmHistoryScanner {
             })?;
             out.push(RawEvmTransaction {
                 chain: self.chain.clone(),
-                hash: t.hash,
+                hash: *h,
                 from: t.from,
                 to: t.to,
                 block_number: t.block_number,
-                transaction_index: t.transaction_index,
+                transaction_index: r.transaction_index,
                 block_time,
                 value: t.value,
                 status: r.status,
@@ -400,13 +572,139 @@ impl EvmHistoryScanner {
                 effective_gas_price,
                 l1_fee: r.l1_fee,
                 logs: r.logs,
-                internal_transfers: internals.map(|i| i.for_tx(&t.hash)),
+                internal_transfers: internals.map(|i| i.for_tx(h)),
                 native_source: internals.map(|_| NativeSource::Explorer),
                 native_balance_diff: None,
             });
         }
         out.sort_by_key(|t| (t.block_number, t.transaction_index));
         Ok(out)
+    }
+}
+
+/// Transaction fields assembled from an explorer row, a receipt or an RPC
+/// transaction.
+struct TxCore {
+    from: Address,
+    to: Option<Address>,
+    value: U256,
+    block_number: u64,
+    /// Known position (RPC source); `None` = taken from the receipt.
+    index: Option<u64>,
+    gas_price: Option<U256>,
+}
+
+#[derive(Debug, Clone)]
+enum DescKind {
+    /// A `txlist` row of a transaction the wallet signed.
+    Signed {
+        from: Address,
+        to: Option<Address>,
+        value: U256,
+        gas_price: U256,
+    },
+    /// Named by `tokentx` only (the wallet did not sign it).
+    TokenOnly,
+}
+
+#[derive(Debug, Clone)]
+struct Described {
+    block_number: u64,
+    kind: DescKind,
+}
+
+/// Phase-1 result of a wallet scan: the explorer's view, before any RPC
+/// receipt/transaction request.
+#[derive(Debug, Clone)]
+pub struct WalletListing {
+    wallet: Address,
+    hashes: Vec<B256>,
+    described: HashMap<B256, Described>,
+    prefer_block: HashSet<B256>,
+    index: Option<InternalIndex>,
+    pub txlist_complete: bool,
+    pub tokentx_complete: bool,
+    pub internal_complete: bool,
+    /// Transactions only `tokentx` named (the wallet did not sign them).
+    pub token_only: usize,
+}
+
+impl WalletListing {
+    /// Distinct transactions to assemble.
+    #[must_use]
+    pub fn transactions(&self) -> usize {
+        self.hashes.len()
+    }
+
+    /// The RPC cost of phase 2 under `limits`.
+    #[must_use]
+    pub fn plan(&self, limits: &ScanLimits) -> WalletCostPlan {
+        let mut per_block: BTreeMap<u64, (usize, bool)> = BTreeMap::new();
+        for h in &self.hashes {
+            if let Some(d) = self.described.get(h) {
+                let e = per_block.entry(d.block_number).or_insert((0, false));
+                e.0 += 1;
+                e.1 |= self.prefer_block.contains(h);
+            }
+        }
+        let (mut tx_receipt_calls, mut block_receipt_calls) = (0u64, 0u64);
+        for (n, flagged) in per_block.values() {
+            let whole = match limits.receipt_mode {
+                ReceiptMode::BlockReceipts => true,
+                ReceiptMode::PerTransaction => false,
+                ReceiptMode::Auto => *flagged || *n >= limits.block_receipts_min_txs,
+            };
+            if whole {
+                block_receipt_calls += 1;
+            } else {
+                tx_receipt_calls += u64::try_from(*n).unwrap_or(u64::MAX);
+            }
+        }
+        WalletCostPlan {
+            transactions: u64::try_from(self.hashes.len()).unwrap_or(u64::MAX),
+            tx_receipt_calls,
+            block_receipt_calls,
+            candidate_sells: u64::try_from(self.prefer_block.len()).unwrap_or(u64::MAX),
+        }
+    }
+}
+
+/// Planned RPC requests of assembling one wallet (before native legs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalletCostPlan {
+    pub transactions: u64,
+    pub tx_receipt_calls: u64,
+    pub block_receipt_calls: u64,
+    /// Signed transactions in which the wallet sent a token: each MAY be a
+    /// native-quoted sell needing two archive `eth_getBalance` calls.
+    pub candidate_sells: u64,
+}
+
+impl WalletCostPlan {
+    /// Receipt requests, certain.
+    #[must_use]
+    pub fn base_requests(&self) -> u64 {
+        self.tx_receipt_calls
+            .saturating_add(self.block_receipt_calls)
+    }
+
+    /// Upper bound: every candidate sell resolved through the archive
+    /// balance diff (2 `eth_getBalance`; its block receipts are already
+    /// fetched as the transaction's own receipt).
+    #[must_use]
+    pub fn max_requests(&self) -> u64 {
+        self.base_requests()
+            .saturating_add(self.candidate_sells.saturating_mul(2))
+    }
+
+    /// Requests by method, upper bound for `eth_getBalance`.
+    #[must_use]
+    pub fn by_method(&self) -> BTreeMap<&'static str, u64> {
+        BTreeMap::from([
+            ("eth_getTransactionReceipt", self.tx_receipt_calls),
+            ("eth_getBlockReceipts", self.block_receipt_calls),
+            ("eth_getBalance(<=)", self.candidate_sells.saturating_mul(2)),
+        ])
     }
 }
 
@@ -485,8 +783,8 @@ mod tests {
                 }
                 "eth_getTransactionReceipt" => {
                     let hs = body["params"][0].as_str().unwrap().to_string();
-                    let (block, idx, _) = pos_of(&hs);
-                    json!({"transactionHash":hs,"blockNumber":block,
+                    let (block, idx, from) = pos_of(&hs);
+                    json!({"transactionHash":hs,"blockNumber":block,"from":from,
                         "transactionIndex":idx,"status":"0x1","gasUsed":"0x64",
                         "effectiveGasPrice":"0x2","logs":[]})
                 }
@@ -741,6 +1039,73 @@ mod tests {
         assert!(
             q.iter()
                 .any(|u| u.contains("action=tokentx") && u.contains("endblock=865000"))
+        );
+    }
+
+    #[tokio::test]
+    async fn possible_sell_blocks_are_fetched_whole_once_and_shared_with_the_resolver() {
+        let rpc = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Chain)
+            .mount(&rpc)
+            .await;
+        let sc = scanner(&rpc, ScanLimits::default()).await;
+        let bs = MockServer::start().await;
+        // W SENDS a token in its own tx 0xa1 (possible sell); 0xee is incoming only
+        let mut sent = token_row(h(0xa1), 7);
+        sent["from"] = json!(WALLET);
+        sent["to"] = json!(OTHER);
+        Mock::given(method("GET"))
+            .respond_with(Listings {
+                tokentx_rows: vec![sent, token_row(h(0xee), 8)],
+            })
+            .mount(&bs)
+            .await;
+        let mut cfg = BlockscoutEvmConfig::new(4663, BlockscoutApiKey::new("k"));
+        cfg.base_url = bs.uri();
+        let src = BlockscoutEvmSource::new(cfg).unwrap();
+        let listing = sc
+            .list_wallet(&src, WALLET.parse().unwrap(), 0, 100)
+            .await
+            .unwrap();
+        let plan = listing.plan(&ScanLimits::default());
+        assert_eq!(
+            (
+                plan.transactions,
+                plan.tx_receipt_calls,
+                plan.block_receipt_calls,
+                plan.candidate_sells
+            ),
+            (2, 1, 1, 1)
+        );
+        // 2 receipts + 2 balances at most
+        assert_eq!((plan.base_requests(), plan.max_requests()), (2, 4));
+        assert!(
+            methods(&rpc).await.is_empty(),
+            "planning makes no RPC request"
+        );
+        sc.assemble_listing(listing).await.unwrap();
+        let ms = methods(&rpc).await;
+        assert_eq!(
+            ms.iter().filter(|m| *m == "eth_getBlockReceipts").count(),
+            1
+        );
+        assert_eq!(
+            ms.iter()
+                .filter(|m| *m == "eth_getTransactionReceipt")
+                .count(),
+            1
+        );
+        // the cached block comes back for free (the native-leg check)
+        let again = sc.rpc().block_receipts_shared(7).await.unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(
+            methods(&rpc)
+                .await
+                .iter()
+                .filter(|m| *m == "eth_getBlockReceipts")
+                .count(),
+            1
         );
     }
 

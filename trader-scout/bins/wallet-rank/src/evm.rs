@@ -63,6 +63,14 @@ pub(crate) fn run_evm(
     for w in &run.warnings {
         eprintln!("wallet-rank: warning: {w}");
     }
+    eprintln!(
+        "wallet-rank: rpc calls by method: {}",
+        run.rpc_calls_by_method
+            .iter()
+            .map(|(m, n)| format!("{m}={n}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     for l in &run.rate_limits {
         eprintln!("wallet-rank: rate limit: {l}");
     }
@@ -188,7 +196,7 @@ pub(crate) fn run_evm(
         None => {}
     }
     if stats.all_failed() {
-        return ExitCode::from(4);
+        return ExitCode::from(if stats.all_failed_for_budget() { 3 } else { 4 });
     }
     if incomplete {
         return ExitCode::from(3);
