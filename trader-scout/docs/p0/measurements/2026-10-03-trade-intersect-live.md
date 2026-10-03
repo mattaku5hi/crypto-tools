@@ -36,3 +36,15 @@ Coverage: the same 6 tokens still exceed **40,000 successful transactions in one
 window is not complete for them (named per token, exit 3). For such tokens a narrower window or a
 larger page budget is the only honest option. 2 malformed PumpSwap trade instructions remain on
 `HXxJdaQb…` (a further encoding variant; not yet captured).
+
+## Run D — bounded concurrency + time slices (commit `a64bdd4`)
+
+`--period 1d --max-pages-per-token 20 --slices 4 --concurrency 8 --max-requests 700` (same 80 pages
+per token as run C, now spread over 4 equal sub-windows): **289 s wall clock** (run C: 424 s
+sequential, i.e. ~1.5× faster), 417 requests, exit 3, no 429s. Matches K≥2: 671 (K=2 500, 3 109,
+4 25, 5 24, 6 10, 7 1, 8 2). The speed-up is far below 8×: the run moves ~200k successful
+transactions at ~16 KB each (≈3–4 GB of JSON), so it is bandwidth-bound, not request-latency-bound.
+Slicing changes *which* part of an over-budget window is seen: every sub-window contributes its
+newest transactions (a spread over the day) instead of only the newest hours; truncation is named
+per slice. Further speed needs fewer bytes per transaction (no documented option to drop
+`logMessages`/unused meta in `getTransactionsForAddress` full mode) or narrower windows.
