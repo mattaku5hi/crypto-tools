@@ -48,3 +48,9 @@ Slicing changes *which* part of an over-budget window is seen: every sub-window 
 newest transactions (a spread over the day) instead of only the newest hours; truncation is named
 per slice. Further speed needs fewer bytes per transaction (no documented option to drop
 `logMessages`/unused meta in `getTransactionsForAddress` full mode) or narrower windows.
+
+Byte breakdown of a 1,000-tx full-mode page (busy pump token, 16.1 MB compact): `preTokenBalances`
+28.9 %, `postTokenBalances` 28.9 %, `transaction` 18.1 %, `logMessages` 9.5 %, `loadedAddresses`
+5.1 %, pre/post lamport balances 6.2 %, `innerInstructions` 2.9 %. The token balances (owner-keyed
+deltas) are required by attribution, so request-side trimming could save ≲15–25 % at best
+(e.g. binary `transaction` encoding); narrower windows remain the main cost/time lever.
