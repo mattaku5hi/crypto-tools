@@ -114,3 +114,12 @@ quality (7d), all tier 2 (an unknown episode with unknown basis → lower bound 
 Two of four GMGN "top traders" have negative own realized SOL PnL over the last 7 days — a reminder
 that leaderboard figures (USD, 30d, incl. unrealized) are not our metric. Still a single tiny
 research sample, not a validation of the policy.
+
+## Re-run after OKX order events (ADR-017, commit `c21f925`)
+
+insider/3d: ranked 1 (same wallet), primary `unknown_episode_share` 10 (was 11), 158 requests.
+quality/7d: ranked 4 (same wallets, all tier 2), primary `unknown_episode_share` 14, 296 requests.
+OKX evidence closed the last unbooked route-shaped txs on the router fixtures (0/0) but moves this
+live set only marginally: decoding is now past the point of diminishing returns for it. Remaining
+blockers are window coverage (budget) and unknown episodes with unknown basis (unbounded → tier 2),
+mostly from inbound token transfers whose acquisition basis is genuinely unknowable on-chain.
