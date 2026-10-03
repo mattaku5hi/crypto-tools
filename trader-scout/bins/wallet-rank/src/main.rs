@@ -660,6 +660,36 @@ fn print_diagnostics(
         report.ranked.len(),
         report.excluded.len()
     );
+    for w in &stats.wallets {
+        let Some(l) = &w.ledger else { continue };
+        let d = &l.diagnostics;
+        if d.malformed_trade_instructions
+            + d.orphan_trade_events
+            + d.unknown_discriminator_instructions
+            + d.jupiter_malformed_events
+            + d.jupiter_unknown_events
+            > 0
+        {
+            eprintln!(
+                "  wallet {} coverage gaps: malformed_trade_instructions={} orphan_trade_events={} \
+                 unknown_discriminator_instructions={} jupiter_malformed_events={} \
+                 jupiter_unknown_events={}",
+                bs58::encode(w.wallet).into_string(),
+                d.malformed_trade_instructions,
+                d.orphan_trade_events,
+                d.unknown_discriminator_instructions,
+                d.jupiter_malformed_events,
+                d.jupiter_unknown_events
+            );
+        }
+        for e in &l.evidence_samples {
+            eprintln!(
+                "    evidence (up to {}): {}",
+                scout_engine::MAX_EVIDENCE_SAMPLES,
+                scout_app::evidence_line(e, &|s| redact(s, api_key))
+            );
+        }
+    }
     let reasons = stats.incomplete_reasons();
     if reasons.is_empty() {
         eprintln!("wallet-rank: status=complete within declared protocol scope");

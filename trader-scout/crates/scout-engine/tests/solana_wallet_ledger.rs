@@ -21,6 +21,7 @@ use scout_dex_solana::{
     AMM_BUY_DISCRIMINATOR, AMM_BUY_EVENT_DISCRIMINATOR, AMM_SELL_DISCRIMINATOR,
     AMM_SELL_EVENT_DISCRIMINATOR, AmmAttribution, AmmTradeEventPairing,
     BUY_INSTRUCTION_DISCRIMINATOR, BUY_V2_INSTRUCTION_DISCRIMINATOR, EVENT_CPI_DISCRIMINATOR,
+    JUPITER_EVENT_AUTHORITY_BYTES, JUPITER_SWAPS_EVENT_DISCRIMINATOR, JUPITER_V6_PROGRAM_ID_BYTES,
     PUMP_AMM_PROGRAM_ID_BYTES, SELL_INSTRUCTION_DISCRIMINATOR, TRADE_EVENT_DISCRIMINATOR,
     TradeEventPairing, TradeSide, WRAPPED_SOL_MINT, pair_trades_with_events,
     reconcile_pump_amm_transaction,
@@ -2193,6 +2194,8 @@ async fn router_wallet_pages_contain_no_atomic_round_trips() {
         assert_eq!(r.diagnostics.atomic_round_trip_txs, 0);
         assert_eq!(r.diagnostics.atomic_round_trip_sol_lamports, 0);
     }
+    // ADR-015 (ledger/6): +2 / +6 route swaps whose only swap-leg evidence is
+    // a Jupiter v6 event (36 / 62 under ledger/5, see tests/jupiter_swap_legs.rs).
     // ADR-013 (ledger/4): every successful signed tx with a FixtureVerified
     // pump leg on these pages is a route swap booked from the wallet's own
     // USDC/token deltas. ledger/3 had priced 3+7 of them from a hop's event
@@ -2208,7 +2211,7 @@ async fn router_wallet_pages_contain_no_atomic_round_trips() {
             a.trades.unsupported_quote,
             a.diagnostics.router_forward_trades_not_attributed,
         ),
-        (36, 36, 36, 0, 0, 0, 0)
+        (38, 38, 38, 0, 0, 0, 0)
     );
     assert_eq!(
         (
@@ -2220,7 +2223,7 @@ async fn router_wallet_pages_contain_no_atomic_round_trips() {
             b.trades.unsupported_quote,
             b.diagnostics.router_forward_trades_not_attributed,
         ),
-        (62, 62, 62, 0, 0, 0, 0)
+        (68, 68, 68, 0, 0, 0, 0)
     );
 }
 
@@ -2349,7 +2352,9 @@ async fn router_pages_are_booked_wallet_side_in_usdc() {
             ub.realized_trade_pnl_raw,
             ub.consumed_acquisition_basis_raw
         ),
-        (5, 2, 3, -7_030_355_795, 41_500_000_000)
+        // ledger/5 had (5, 2, 3, -7_030_355_795, 41_500_000_000); the 6 Jupiter-
+        // evidenced route swaps (ADR-015) close one more episode, in profit.
+        (6, 3, 3, 2_701_449_089, 83_500_000_000)
     );
     assert_eq!(
         format_quote_money(QuoteUnit::UsdcUnits, ua.realized_trade_pnl_exact).unwrap(),
@@ -2762,4 +2767,306 @@ fn per_unit_sums_are_never_mixed_and_win_rate_is_overall() {
             value: Money::from_scaled_units(100_000_000)
         }
     );
+}
+
+// ---------------------------------------------------------------------
+// ADR-015: Jupiter v6 swap legs as route evidence (synthetic goldens).
+// ---------------------------------------------------------------------
+
+/// `(venue program, input mint, input amount, output mint, output amount)`.
+type JupHop = (SolanaPubkey, SolanaPubkey, u64, SolanaPubkey, u64);
+
+fn jup_event_ix(hops: &[JupHop], idx: u32, trailing: &[u8]) -> RawSolanaInstruction {
+    let mut data = EVENT_CPI_DISCRIMINATOR.to_vec();
+    data.extend(JUPITER_SWAPS_EVENT_DISCRIMINATOR);
+    data.extend(u32::try_from(hops.len()).unwrap().to_le_bytes());
+    for (amm, im, ia, om, oa) in hops {
+        data.extend(im);
+        data.extend(ia.to_le_bytes());
+        data.extend(om);
+        data.extend(oa.to_le_bytes());
+        data.extend(amm);
+    }
+    data.extend_from_slice(trailing);
+    RawSolanaInstruction {
+        program_id: JUPITER_V6_PROGRAM_ID_BYTES,
+        accounts: vec![JUPITER_EVENT_AUTHORITY_BYTES],
+        data,
+        instruction_index: idx,
+    }
+}
+
+/// Signer wallet W trades `tokens` of `mint` against `quote_amt` USDC; the
+/// only decoded evidence is the given Jupiter instructions (no pump leg).
+fn jup_route_tx(
+    sig: u8,
+    slot: u64,
+    side: TradeSide,
+    mint: u8,
+    tokens: u64,
+    quote_amt: u64,
+    ixs: Vec<RawSolanaInstruction>,
+) -> RawSolanaTransaction {
+    let buy = side == TradeSide::Buy;
+    let (t_pre, t_post) = if buy { (0, tokens) } else { (tokens, 0) };
+    let (q_pre, q_post) = if buy { (quote_amt, 0) } else { (0, quote_amt) };
+    let mut tx = Tx {
+        sig,
+        slot,
+        index: 0,
+        ixs,
+        bals: vec![
+            bal(mint, W, t_pre, t_post),
+            bal_pk(usdc(), W, q_pre, q_post),
+        ],
+        fee: 5_000,
+        payer: RELAYER,
+        native: vec![nat(W, -550_840)],
+        ok: true,
+    }
+    .build();
+    tx.signers = vec![pk(RELAYER), pk(W)];
+    tx
+}
+
+fn dlmm() -> SolanaPubkey {
+    pubkey("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo")
+}
+
+#[test]
+fn jupiter_only_route_is_booked_from_wallet_deltas() {
+    // Two hops USDC -> X -> T (T is only the second hop's output); no pump leg.
+    let x = pk(77);
+    let hops = [
+        (dlmm(), usdc(), 5_000_000, x, 900),
+        (dlmm(), x, 900, pk(M1), 1000),
+    ];
+    // The wallet pays a little more USDC than the first hop (platform fee).
+    let buy = jup_route_tx(
+        1,
+        1,
+        TradeSide::Buy,
+        M1,
+        1000,
+        5_002_500,
+        vec![jup_event_ix(&hops, 3, &[])],
+    );
+    let sell_hops = [(dlmm(), pk(M1), 1000, usdc(), 5_100_000)];
+    let sell = jup_route_tx(
+        2,
+        2,
+        TradeSide::Sell,
+        M1,
+        1000,
+        5_000_000,
+        vec![jup_event_ix(&sell_hops, 3, &[])],
+    );
+    let r = run_both(&[buy.clone(), sell]);
+    assert_eq!(r.trades.route_swaps, 2);
+    assert_eq!(r.trades.route_swaps_by_quote.usdc, 2);
+    let e = r.trades.route_swaps_by_evidence;
+    assert_eq!(
+        (e.curve, e.pump_amm, e.jupiter, e.jupiter_only),
+        (0, 0, 2, 2)
+    );
+    // Booked at the wallet's own deltas, never at the event amounts.
+    let (b, s) = (&r.route_swap_log[0], &r.route_swap_log[1]);
+    assert_eq!(
+        (b.side, b.token_amount, b.quote_amount),
+        (TradeSide::Buy, 1000, 5_002_500)
+    );
+    assert_eq!(
+        (s.side, s.token_amount, s.quote_amount),
+        (TradeSide::Sell, 1000, 5_000_000)
+    );
+    assert_eq!(rejected(&r), RouteRejections::default());
+    assert_eq!(r.diagnostics.jupiter_malformed_events, 0);
+    // Without Jupiter evidence the same transactions are not trades.
+    let mut bare = buy.clone();
+    bare.instructions.clear();
+    assert_eq!(run_both(&[bare]).trades.route_swaps, 0);
+    // Bonding-curve-only runs do not use Jupiter evidence (pre-ADR-012 shape).
+    assert_eq!(run(&[buy]).trades.route_swaps, 0);
+}
+
+#[test]
+fn jupiter_leg_not_trading_the_token_is_not_evidence() {
+    // Hops trade USDC <-> M2, the wallet's token is M1.
+    let hops = [(dlmm(), usdc(), 5_000_000, pk(M2), 900)];
+    let tx = jup_route_tx(
+        1,
+        1,
+        TradeSide::Buy,
+        M1,
+        1000,
+        5_000_000,
+        vec![jup_event_ix(&hops, 3, &[])],
+    );
+    let r = run_both(&[tx]);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(rejected(&r).no_verified_leg, 1);
+    assert_eq!(r.trades.route_swaps_by_evidence.jupiter, 0);
+}
+
+#[test]
+fn malformed_jupiter_event_is_not_trusted_and_is_counted_with_evidence() {
+    let hops = [(dlmm(), usdc(), 5_000_000, pk(M1), 1000)];
+    let tx = jup_route_tx(
+        9,
+        1,
+        TradeSide::Buy,
+        M1,
+        1000,
+        5_000_000,
+        vec![jup_event_ix(&hops, 3, &[0])],
+    );
+    let r = run_both(&[tx]);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(r.diagnostics.jupiter_malformed_events, 1);
+    assert_eq!(r.evidence_samples.len(), 1);
+    let e = &r.evidence_samples[0];
+    assert_eq!(e.signature, [9; 64]);
+    assert_eq!(e.program, JUPITER_V6_PROGRAM_ID_BYTES);
+    assert_eq!(e.variant_or_discriminator, "982f4eebc0606e6a");
+    assert_eq!((e.data_len, e.accounts_len), (16 + 4 + 112 + 1, 1));
+    assert!(e.reason.contains("SwapsEvent"), "{}", e.reason);
+}
+
+#[test]
+fn passthrough_rule_still_applies_with_jupiter_evidence() {
+    // A Jupiter leg proves the swap, but a pump leg of another user that is
+    // not a zero-net pass-through (it received M1) still rejects the booking.
+    let hops = [(dlmm(), usdc(), 5_000_000, pk(M1), 1000)];
+    let mut tx = jup_route_tx(
+        1,
+        1,
+        TradeSide::Buy,
+        M1,
+        1000,
+        5_000_000,
+        vec![
+            trade_ix(TradeSide::Buy, None, PASS, M1, 0),
+            event_ix(
+                &Ev {
+                    mint: M1,
+                    user: PASS,
+                    is_buy: true,
+                    sol: HOP_EVENT_SOL,
+                    tokens: 1000,
+                    fee: 0,
+                    creator_fee: 0,
+                    ts: 1_001,
+                },
+                1,
+            ),
+            jup_event_ix(&hops, 2, &[]),
+        ],
+    );
+    tx.token_balance_changes.push(bal(M1, PASS, 0, 7));
+    let r = run_both(&[tx]);
+    assert_eq!(r.trades.route_swaps, 0);
+    assert_eq!(rejected(&r).passthrough_nonzero, 1);
+    // Same shape with a zero-net pass-through user is booked, with both
+    // evidence sources counted.
+    let mut ok = jup_route_tx(
+        2,
+        2,
+        TradeSide::Buy,
+        M1,
+        1000,
+        5_000_000,
+        vec![
+            trade_ix(TradeSide::Buy, None, PASS, M1, 0),
+            event_ix(
+                &Ev {
+                    mint: M1,
+                    user: PASS,
+                    is_buy: true,
+                    sol: HOP_EVENT_SOL,
+                    tokens: 1000,
+                    fee: 0,
+                    creator_fee: 0,
+                    ts: 1_002,
+                },
+                1,
+            ),
+            jup_event_ix(&hops, 2, &[]),
+        ],
+    );
+    ok.token_balance_changes.push(bal(M1, PASS, 100, 100));
+    let r = run_both(&[ok]);
+    let e = r.trades.route_swaps_by_evidence;
+    assert_eq!(
+        (r.trades.route_swaps, e.curve, e.jupiter, e.jupiter_only),
+        (1, 1, 1, 0)
+    );
+}
+
+#[test]
+fn evidence_samples_are_bounded_and_locate_malformed_and_orphan_items() {
+    let mut txs = Vec::new();
+    // 6 malformed curve buys (truncated args) + 1 orphan TradeEvent.
+    for i in 0..6u8 {
+        let mut ix = trade_ix(TradeSide::Buy, None, W, M1, 0);
+        ix.data.truncate(12);
+        txs.push(
+            Tx {
+                sig: 10 + i,
+                slot: u64::from(i) + 1,
+                index: 0,
+                ixs: vec![ix],
+                bals: vec![],
+                fee: 5_000,
+                payer: W,
+                native: vec![],
+                ok: true,
+            }
+            .build(),
+        );
+    }
+    txs.push(
+        Tx {
+            sig: 50,
+            slot: 0,
+            index: 0,
+            ixs: vec![event_ix(
+                &Ev {
+                    mint: M1,
+                    user: W,
+                    is_buy: true,
+                    sol: 1,
+                    tokens: 1,
+                    fee: 0,
+                    creator_fee: 0,
+                    ts: 5,
+                },
+                0,
+            )],
+            bals: vec![],
+            fee: 5_000,
+            payer: W,
+            native: vec![],
+            ok: true,
+        }
+        .build(),
+    );
+    let r = run_both(&txs);
+    assert_eq!(r.diagnostics.malformed_trade_instructions, 6);
+    assert_eq!(r.diagnostics.orphan_trade_events, 1);
+    assert_eq!(r.evidence_samples.len(), 5);
+    // Canonical order: the orphan (slot 0) first, then the lowest slots.
+    let first = &r.evidence_samples[0];
+    assert_eq!(first.signature, [50; 64]);
+    assert_eq!(first.kind.label(), "orphan_event");
+    assert_eq!(first.variant_or_discriminator, "TradeEvent");
+    let second = &r.evidence_samples[1];
+    assert_eq!(second.signature, [10; 64]);
+    assert_eq!(second.kind.label(), "malformed_trade_instruction");
+    assert_eq!(second.variant_or_discriminator, "buy");
+    assert_eq!((second.data_len, second.accounts_len), (12, 16));
+    assert_eq!(second.program, pump());
+    assert!(!second.reason.is_empty());
+    // Deterministic under input order.
+    txs.reverse();
+    assert_eq!(run_both(&txs).evidence_samples, r.evidence_samples);
 }

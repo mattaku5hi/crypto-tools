@@ -376,7 +376,20 @@ pub struct RouteCountsDto {
     pub route_swaps_sol: u64,
     pub route_swaps_usdc: u64,
     pub route_swaps_usdt: u64,
+    /// ADR-015: route swaps by swap-leg evidence source (non-exclusive).
+    pub route_swaps_evidence_curve: u64,
+    pub route_swaps_evidence_pump_amm: u64,
+    pub route_swaps_evidence_jupiter: u64,
+    /// Booked only because of a Jupiter leg.
+    pub route_swaps_evidence_jupiter_only: u64,
     pub route_leg_not_wallet_price: u64,
+    /// Coverage gaps traceable through `evidence_samples` (<= 5, canonical order).
+    pub malformed_trade_instructions: u64,
+    pub orphan_trade_events: u64,
+    pub unknown_discriminator_instructions: u64,
+    pub jupiter_malformed_events: u64,
+    pub jupiter_unknown_events: u64,
+    pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
 }
 
 #[derive(Debug, Serialize)]
@@ -656,7 +669,17 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             route_swaps_sol: t.route_swaps_by_quote.sol,
             route_swaps_usdc: t.route_swaps_by_quote.usdc,
             route_swaps_usdt: t.route_swaps_by_quote.usdt,
+            route_swaps_evidence_curve: t.route_swaps_by_evidence.curve,
+            route_swaps_evidence_pump_amm: t.route_swaps_by_evidence.pump_amm,
+            route_swaps_evidence_jupiter: t.route_swaps_by_evidence.jupiter,
+            route_swaps_evidence_jupiter_only: t.route_swaps_by_evidence.jupiter_only,
             route_leg_not_wallet_price: t.route_leg_not_wallet_price,
+            malformed_trade_instructions: l.diagnostics.malformed_trade_instructions,
+            orphan_trade_events: l.diagnostics.orphan_trade_events,
+            unknown_discriminator_instructions: l.diagnostics.unknown_discriminator_instructions,
+            jupiter_malformed_events: l.diagnostics.jupiter_malformed_events,
+            jupiter_unknown_events: l.diagnostics.jupiter_unknown_events,
+            evidence_samples: scout_app::evidence_dtos(&l.evidence_samples, &str::to_owned),
         },
         realized_net_pnl: MoneyDto {
             status: o.pnl_status.label(),

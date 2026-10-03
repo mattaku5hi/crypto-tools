@@ -1,6 +1,6 @@
 # ADR-015: Jupiter v6 `SwapEvent` as verified swap-leg evidence for route swaps
 
-Status: Proposed (finalize after live-fixture verification, P4.9)
+Status: Accepted with amendment (2026-10-03, live-fixture verification below)
 Date: 2026-10-03
 Amends: ADR-013 §2b (which legs count as decoder evidence of a swap).
 
@@ -40,3 +40,27 @@ Anchor event-CPI wrapper (`e445a52e51cb9a1d`) to Jupiter itself, and `FeeEvent`.
 - Jupiter-routed trades on undecoded venues become bookable by ADR-013 at the wallet's exact deltas.
 - If live verification fails (layout drift since the 2024 IDL), this ADR stays Proposed and the
   evidence is recorded instead.
+
+## Amendment — live verification (2026-10-03)
+
+Evidence: `crates/scout-engine/tests/jupiter_swap_legs.rs` over 6 committed fixtures, 37 successful
+Jupiter transactions, 111 hops.
+
+- The live program emits **`SwapsEvent`** (disc `982f4eebc0606e6a` = `sha256("event:SwapsEvent")[:8]`)
+  for 110/111 hops; it is **not** in the pinned 2024 IDL. Layout (derived from live data, exact length
+  in every sample, no trailing bytes): `u32 count` + `count × 112` bytes, item =
+  `input_mint, input_amount u64, output_mint, output_amount u64, amm` (amm last). The IDL `SwapEvent`
+  occurs once (`pump_mint2_full.json`, `5twkEEg4…`). `FeeEvent` has no live sample → IdlOnly, never a
+  leg. Event authority is always `D8cy77BBepLMngZx6ZukaTff5hCt1HrWyKk3Hnd9oitf` (gated).
+- `amm` holds the **venue program id** (PumpSwap, DLMM, Raydium CPMM/CLMM…), not a pool. The vault
+  check in §1 is replaced by: the hop's venue CPI (program = `amm`, same stack height, before the
+  event, matched in order) moves a CPI token account by exactly ±input or ±output amount — 111/111
+  hops pass at least one side (both 71, input 83, output 99); intermediate mints conserved 38/38;
+  signer edge on the token side exact 31/31. The quote (USDC) edge differs from first/last hop by
+  ~4.5 bps routed to other owners (fees), so wallet consideration stays the wallet's own delta
+  (ADR-013 §2), never the hop amount.
+- Verdict: `SwapsEvent` and `SwapEvent` are FixtureVerified **as leg evidence only**. Re-verify on
+  any new IDL pin or layout change. Runtime trust = program id + event-CPI tag + authority + exact
+  length; account-level reconciliation is a test-time verification.
+- Measured effect (router fixtures): route swaps 36→38 (9oC3) and 62→68 (tAwv); remaining unbooked
+  route-shaped txs 13 / 11, of which 11 / 9 go through `DF1ow4ts…` (no verified events).

@@ -24,13 +24,14 @@ use scout_core::{
     SolanaExecutionStatus, SolanaPubkey, SolanaTokenBalanceChange, WalletKey,
 };
 use scout_dex_solana::{
-    AmmAttribution, BUY_INSTRUCTION_DISCRIMINATOR, PumpTradeVariant,
-    SELL_INSTRUCTION_DISCRIMINATOR, VariantVerification, WRAPPED_SOL_MINT,
+    AmmAttribution, BUY_INSTRUCTION_DISCRIMINATOR, EVENT_CPI_DISCRIMINATOR,
+    JUPITER_EVENT_AUTHORITY_BYTES, JUPITER_SWAPS_EVENT_DISCRIMINATOR, JUPITER_V6_PROGRAM_ID_BYTES,
+    PumpTradeVariant, SELL_INSTRUCTION_DISCRIMINATOR, VariantVerification, WRAPPED_SOL_MINT,
     reconcile_pump_amm_transaction,
 };
 use scout_engine::{
     AnalysisWindow, IntersectOptions, PUMP_BONDING_CURVE_PROGRAM_ID, SideFilter,
-    SolanaBuyerIntersectReport, TradeSide, Venue, WindowSource, pump_amm_decoder,
+    SolanaBuyerIntersectReport, TradeSide, USDC_MINT, Venue, WindowSource, pump_amm_decoder,
     run_solana_trade_intersect, run_solana_trade_intersect_with_policy, solana_mainnet_chain,
 };
 use scout_providers::HeliusProvider;
@@ -869,4 +870,114 @@ async fn duplicate_delivery_of_a_transaction_counts_once() {
             .count,
         1
     );
+}
+
+// ---- ADR-015: Jupiter legs through the shared attribution -----------------
+
+/// Signer wallet 1 (relayer 88 pays) swaps USDC for / into token 10; the only
+/// decoded evidence is a Jupiter `SwapsEvent` whose hop trades token 10.
+fn jupiter_route_tx(
+    buy: bool,
+    trade_mint: u8,
+    sig: u8,
+    slot: u64,
+    with_event: bool,
+) -> RawSolanaTransaction {
+    let usdc = pubkey(USDC_MINT);
+    let (input, in_amt, output, out_amt) = if buy {
+        (usdc, 5_000_000u64, pk(trade_mint), 1_000u64)
+    } else {
+        (pk(trade_mint), 1_000u64, usdc, 5_000_000u64)
+    };
+    let mut data = EVENT_CPI_DISCRIMINATOR.to_vec();
+    data.extend(JUPITER_SWAPS_EVENT_DISCRIMINATOR);
+    data.extend(1u32.to_le_bytes());
+    data.extend(input);
+    data.extend(in_amt.to_le_bytes());
+    data.extend(output);
+    data.extend(out_amt.to_le_bytes());
+    data.extend(pk(0x77));
+    let ix = RawSolanaInstruction {
+        program_id: JUPITER_V6_PROGRAM_ID_BYTES,
+        accounts: vec![JUPITER_EVENT_AUTHORITY_BYTES],
+        data,
+        instruction_index: 1,
+    };
+    let usdc_bal = |pre: u64, post: u64| SolanaTokenBalanceChange {
+        mint: usdc,
+        owner: Some(pk(1)),
+        decimals: 6,
+        pre_amount: Some(pre),
+        post_amount: post,
+        closed: false,
+    };
+    RawSolanaTransaction {
+        block_time: None,
+        signature: [sig; 64],
+        execution: SolanaExecutionStatus::Succeeded,
+        slot,
+        transaction_index: 0,
+        instructions: if with_event { vec![ix] } else { vec![] },
+        token_balance_changes: if buy {
+            vec![bal(10, 1, None, 1_000), usdc_bal(5_000_000, 0)]
+        } else {
+            vec![bal(10, 1, Some(1_000), 0), usdc_bal(0, 5_000_000)]
+        },
+        fee_lamports: 5_000,
+        fee_payer: pk(88),
+        signers: vec![pk(88), pk(1)],
+        native_balance_changes: vec![],
+    }
+}
+
+#[tokio::test]
+async fn jupiter_leg_makes_a_signer_route_swap_a_hit_in_buyer_intersect() {
+    let provider = scripted(vec![(
+        10,
+        vec![
+            jupiter_route_tx(true, 10, 1, 100, true),
+            jupiter_route_tx(false, 10, 2, 101, true),
+            // Same movements with no decoded evidence: a transfer-shaped tx.
+            jupiter_route_tx(true, 10, 3, 102, false),
+            // A Jupiter hop that does not trade token 10 is not evidence for it.
+            jupiter_route_tx(true, 11, 4, 103, true),
+        ],
+        false,
+    )]);
+    let r = run(&provider, &[10], 1, opts(SideFilter::Any)).await;
+    assert_eq!(r.base.matches.len(), 1);
+    let hits = &r.side_hits[&wallet(1)][&token(10)];
+    let (b, s) = (hits.buy.clone().unwrap(), hits.sell.clone().unwrap());
+    assert_eq!(
+        (b.venue, b.variant, b.count),
+        (Venue::Route, "route_swap", 1)
+    );
+    assert_eq!((s.venue, s.count), (Venue::Route, 1));
+    assert_eq!(r.trade.ops(Venue::Route, TradeSide::Buy), 1);
+    assert_eq!(r.trade.ops(Venue::Route, TradeSide::Sell), 1);
+    // Relayer (fee payer) and the Jupiter venue are never attributed.
+    assert_eq!(r.side_hits.len(), 1);
+}
+
+#[tokio::test]
+async fn buyer_intersect_keeps_bounded_evidence_for_malformed_items() {
+    let mut txs = Vec::new();
+    for i in 0..7u8 {
+        let mut tx = curve_tx(true, 1, 10, 20 + i, 100 + u64::from(i));
+        tx.instructions[0].data.truncate(12);
+        txs.push(tx);
+    }
+    let provider = scripted(vec![(10, txs, false)]);
+    let r = run(&provider, &[10], 1, opts(SideFilter::Any)).await;
+    assert_eq!(r.trade.malformed_trades, 7);
+    let ev = &r.trade.evidence_samples;
+    assert_eq!(ev.len(), 5);
+    assert_eq!(ev[0].signature, [20; 64]);
+    assert_eq!(ev[0].slot, 100);
+    assert_eq!(ev[0].variant_or_discriminator, "buy");
+    assert_eq!((ev[0].data_len, ev[0].accounts_len), (12, 16));
+    assert_eq!(ev[0].kind.label(), "malformed_trade_instruction");
+    assert_eq!(ev[0].program_name(), "pump_curve");
+    // Per-token diagnostics carry the same samples.
+    assert_eq!(r.per_token[0].trade.evidence_samples, *ev);
 }

@@ -642,6 +642,21 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
                 t.route_rejections.no_verified_leg,
                 t.route_rejections.passthrough_nonzero,
             );
+            eprintln!(
+                "    coverage gaps: malformed_trades={} orphan_events={} jupiter_malformed={} \
+                 jupiter_unknown={}",
+                t.malformed_trades,
+                t.orphan_events,
+                t.jupiter_malformed_events,
+                t.jupiter_unknown_events
+            );
+            for e in &t.evidence_samples {
+                eprintln!(
+                    "    evidence (up to {}): {}",
+                    scout_engine::MAX_EVIDENCE_SAMPLES,
+                    scout_app::evidence_line(e, &|s| redact(s, api_key))
+                );
+            }
         }
     }
     let d = &report.diagnostics;

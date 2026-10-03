@@ -26,6 +26,7 @@
 
 mod analysis_window;
 mod buyer_intersect;
+mod decode_evidence;
 mod solana_buy_qualification;
 mod solana_buyer_intersect;
 mod solana_wallet_ledger;
@@ -37,6 +38,9 @@ pub use analysis_window::{
     parse_rfc3339_utc,
 };
 pub use buyer_intersect::{BuyerIntersectReport, BuyerMatch, run_buyer_intersect};
+pub use decode_evidence::{
+    DecodeEvidence, EvidenceKind, MAX_EVIDENCE_SAMPLES, merge_evidence, program_name,
+};
 pub use scout_dex_solana::{PumpTradeVariant, TradeSide, VariantVerification};
 pub use solana_buy_qualification::{
     PUMP_BONDING_CURVE_IDL_COMMIT, PUMP_BONDING_CURVE_PROGRAM_ID, QualifiedBuy,
@@ -55,13 +59,14 @@ pub use solana_buyer_intersect::{
 pub use solana_wallet_ledger::{
     ActivityMetrics, DailyActivity, EpisodeOutcome, EpisodeRecord, LedgerDecoders,
     LedgerDiagnostics, LedgerOptions, OpenPosition, QuoteUnit, QuoteUnitBlock, QuoteUnitCounts,
-    RouteRejections, RouteSwapRecord, SOLANA_QUOTE_UNITS, SOLANA_WALLET_LEDGER_SCOPE,
-    SOLANA_WALLET_LEDGER_VERSION, SWAP_VENUE_PROGRAM_IDS, SolanaWalletLedgerError,
-    SolanaWalletLedgerReport, TradeCounts, USDC_MINT, USDT_MINT, UnknownReason, VariantTradeCount,
-    Venue, VenueSideCounts, WSOL_MINT, allocate_fee_proportionally, build_solana_wallet_ledger,
-    build_solana_wallet_ledger_venues, build_solana_wallet_ledger_with_options, format_quote_money,
-    lamports_to_money, money_to_lamports_trunc, money_to_quote_units_trunc, pump_amm_decoder,
-    quote_unit_decimals, quote_unit_label, quote_units_to_money,
+    RouteEvidenceCounts, RouteRejections, RouteSwapRecord, SOLANA_QUOTE_UNITS,
+    SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION, SWAP_VENUE_PROGRAM_IDS,
+    SolanaWalletLedgerError, SolanaWalletLedgerReport, TradeCounts, USDC_MINT, USDT_MINT,
+    UnknownReason, VariantTradeCount, Venue, VenueSideCounts, WSOL_MINT,
+    allocate_fee_proportionally, build_solana_wallet_ledger, build_solana_wallet_ledger_venues,
+    build_solana_wallet_ledger_with_options, format_quote_money, lamports_to_money,
+    money_to_lamports_trunc, money_to_quote_units_trunc, pump_amm_decoder, quote_unit_decimals,
+    quote_unit_label, quote_units_to_money,
 };
 pub use solana_wallet_rank::{
     DEFAULT_TOP, ExcludedWallet, ExclusionReason, OpenExposure, PnlStatus, RankBy, RankPolicy,

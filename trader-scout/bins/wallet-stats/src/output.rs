@@ -631,6 +631,14 @@ pub struct DiagnosticsDto {
     pub router_forward_trades_not_attributed: u64,
     pub quote_funded_elsewhere_trades: u64,
     pub reversed_pool_trades: u64,
+    /// Instructions/events of a decoded program with an unknown discriminator.
+    pub unknown_discriminator_instructions: u64,
+    /// ADR-015: Jupiter event-CPIs not decoded exactly / unknown (never evidence).
+    pub jupiter_malformed_events: u64,
+    pub jupiter_unknown_events: u64,
+    /// At most 5 samples (canonical chain order) of malformed trade
+    /// instructions, unknown discriminators and orphan events.
+    pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
 }
 
 /// Exact amount in raw base units and as an exact decimal string of its
@@ -679,11 +687,22 @@ pub struct QuoteUnitCountsDto {
     pub usdt: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RouteEvidenceDto {
+    pub curve: u64,
+    pub pump_amm: u64,
+    pub jupiter: u64,
+    /// Booked only because of a Jupiter leg.
+    pub jupiter_only: u64,
+}
+
 /// ADR-013 §1/§2 counters.
 #[derive(Debug, Serialize)]
 pub struct RouteDto {
     pub route_swaps: u64,
     pub route_swaps_by_quote: QuoteUnitCountsDto,
+    /// ADR-015: route swaps by swap-leg evidence source (non-exclusive).
+    pub route_swaps_by_evidence: RouteEvidenceDto,
     pub route_leg_not_wallet_price: u64,
     pub route_rejected_wallet_not_signer: u64,
     pub route_rejected_multi_asset: u64,
@@ -944,6 +963,12 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
                 usdc: t.route_swaps_by_quote.usdc,
                 usdt: t.route_swaps_by_quote.usdt,
             },
+            route_swaps_by_evidence: RouteEvidenceDto {
+                curve: t.route_swaps_by_evidence.curve,
+                pump_amm: t.route_swaps_by_evidence.pump_amm,
+                jupiter: t.route_swaps_by_evidence.jupiter,
+                jupiter_only: t.route_swaps_by_evidence.jupiter_only,
+            },
             route_leg_not_wallet_price: t.route_leg_not_wallet_price,
             route_rejected_wallet_not_signer: d.route_rejected.wallet_not_signer,
             route_rejected_multi_asset: d.route_rejected.multi_asset,
@@ -1048,6 +1073,10 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
             router_forward_trades_not_attributed: d.router_forward_trades_not_attributed,
             quote_funded_elsewhere_trades: d.quote_funded_elsewhere_trades,
             reversed_pool_trades: d.reversed_pool_trades,
+            unknown_discriminator_instructions: d.unknown_discriminator_instructions,
+            jupiter_malformed_events: d.jupiter_malformed_events,
+            jupiter_unknown_events: d.jupiter_unknown_events,
+            evidence_samples: scout_app::evidence_dtos(&l.evidence_samples, &str::to_owned),
         },
     }
 }

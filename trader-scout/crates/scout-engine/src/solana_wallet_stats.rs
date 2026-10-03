@@ -450,6 +450,25 @@ async fn scan_wallet(
             d.orphan_trade_events
         ));
     }
+    if d.unknown_discriminator_instructions > 0 {
+        reasons.push(format!(
+            "{} instruction(s)/event(s) of a decoded program have a discriminator not in the \
+             pinned IDL (see evidence samples)",
+            d.unknown_discriminator_instructions
+        ));
+    }
+    if d.jupiter_malformed_events > 0 {
+        reasons.push(format!(
+            "{} Jupiter event(s) did not decode exactly (not used as swap evidence)",
+            d.jupiter_malformed_events
+        ));
+    }
+    if d.jupiter_unknown_events > 0 {
+        reasons.push(format!(
+            "{} Jupiter event(s) with an unknown discriminator",
+            d.jupiter_unknown_events
+        ));
+    }
     if ledger.trades.idl_only_variant > 0 {
         reasons.push(format!(
             "{} trade(s) via IdlOnly variant without verified fixture",

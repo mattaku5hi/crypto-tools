@@ -2,8 +2,10 @@
 //! docs/CLI.md §7-8 for the contract this implements.
 #![allow(clippy::module_inception)]
 
+mod evidence;
 mod jsonl;
 mod writer;
 
+pub use evidence::{DecodeEvidenceDto, evidence_dtos, evidence_line};
 pub use jsonl::{JsonlRecord, RunStatus, SCHEMA_VERSION, Window};
 pub use writer::{WriteOutcome, write_lines_to_stdout};

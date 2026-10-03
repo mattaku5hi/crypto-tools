@@ -21,6 +21,7 @@
 )]
 
 mod bonding_curve_buy;
+mod jupiter_event;
 mod pump_amm;
 mod pump_amm_event;
 mod pump_amm_reconcile;
@@ -34,6 +35,14 @@ pub use bonding_curve_buy::{
     PumpTradeSpec, PumpTradeVariant, SELL_INSTRUCTION_DISCRIMINATOR,
     SELL_V2_INSTRUCTION_DISCRIMINATOR, TradeSide, VariantVerification, classify_pump_instruction,
     hex8,
+};
+pub use jupiter_event::{
+    JUPITER_EVENT_AUTHORITY_BYTES, JUPITER_EVENT_HEADER_LEN, JUPITER_FEE_EVENT_DISCRIMINATOR,
+    JUPITER_FEE_EVENT_LEN, JUPITER_IDL_COMMIT, JUPITER_IDL_SHA256,
+    JUPITER_SWAP_EVENT_DISCRIMINATOR, JUPITER_SWAP_ITEM_LEN, JUPITER_SWAPS_EVENT_DISCRIMINATOR,
+    JUPITER_V6_PROGRAM_ID, JUPITER_V6_PROGRAM_ID_BYTES, JupiterEventDecoder, JupiterEventKind,
+    JupiterEventOutcome, JupiterFeeEvent, JupiterSwapLeg, MAX_SWAPS_PER_EVENT,
+    classify_jupiter_event,
 };
 pub use pump_amm::{
     AMM_BUY_DISCRIMINATOR, AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR, AMM_EVENT_CPI_NAME,

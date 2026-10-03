@@ -222,6 +222,13 @@ pub struct TokenDiagnosticsDto {
     pub trades_without_matching_delta: u64,
     pub malformed_trades: u64,
     pub orphan_events: u64,
+    /// ADR-015: Jupiter event-CPIs that did not decode exactly / with an
+    /// unknown discriminator (never used as swap evidence).
+    pub jupiter_malformed_events: u64,
+    pub jupiter_unknown_events: u64,
+    /// At most 5 samples of malformed trade instructions, unknown
+    /// discriminators and orphan events of this token's transactions.
+    pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
 }
 
 /// Typed run-stop reason / failure kind: `kind` is `budget_exhausted`,
@@ -524,6 +531,9 @@ fn token_status(
             trades_without_matching_delta: token.trade.trades_without_matching_delta,
             malformed_trades: token.trade.malformed_trades,
             orphan_events: token.trade.orphan_events,
+            jupiter_malformed_events: token.trade.jupiter_malformed_events,
+            jupiter_unknown_events: token.trade.jupiter_unknown_events,
+            evidence_samples: scout_app::evidence_dtos(&token.trade.evidence_samples, redact),
         }),
     })
 }
