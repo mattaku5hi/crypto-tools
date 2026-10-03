@@ -27,10 +27,8 @@ use scout_core::RawEvmLog;
 /// `keccak256("Swap(address,uint256,uint256,uint256,uint256,address)")`.
 /// This is a protocol-shape constant, not a deployment address — pinning
 /// it here does not claim any specific contract is supported.
-pub const V2_SWAP_EVENT_SIGNATURE: B256 = B256::new([
-    0xd7, 0x8a, 0xd9, 0x5f, 0xa4, 0x6c, 0x99, 0x4b, 0x65, 0x51, 0xd0, 0xda, 0x85, 0xfc, 0x27, 0x5f,
-    0xe6, 0x13, 0xce, 0x37, 0x65, 0x7f, 0xb8, 0xd5, 0xe4, 0x4f, 0x1f, 0xea, 0x53, 0x9d, 0x93, 0x24,
-]);
+pub const V2_SWAP_EVENT_SIGNATURE: B256 =
+    alloy_primitives::b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
 
 /// A decoded v2-style swap: raw amounts in/out for each token side, and
 /// the address that received the output (the `to` field of the event —

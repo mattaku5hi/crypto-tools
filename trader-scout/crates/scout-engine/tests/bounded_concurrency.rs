@@ -65,6 +65,7 @@ fn curve_tx(buy: bool, user: u8, mint: u8, sig: u8, slot: u64, t: i64) -> RawSol
         data.push(1);
     }
     RawSolanaTransaction {
+        log_messages: None,
         block_time: Some(t),
         signature: [sig; 64],
         execution: SolanaExecutionStatus::Succeeded,

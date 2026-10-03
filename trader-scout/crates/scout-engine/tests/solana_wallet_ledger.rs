@@ -190,6 +190,7 @@ struct Tx {
 impl Tx {
     fn build(self) -> RawSolanaTransaction {
         RawSolanaTransaction {
+            log_messages: None,
             block_time: None,
             signature: [self.sig; 64],
             execution: if self.ok {
@@ -1160,6 +1161,7 @@ async fn check_fixture_tx(sig_prefix: &str, expect_zero_residual: bool) -> i128 
     let mint_off = 16;
     ixs[1].data[mint_off..mint_off + 32].copy_from_slice(&mint);
     sell_events.push(RawSolanaTransaction {
+        log_messages: None,
         block_time: None,
         signature: [0xab; 64],
         execution: SolanaExecutionStatus::Succeeded,

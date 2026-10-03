@@ -710,7 +710,7 @@ fn print_solana_diagnostics(
             eprintln!(
                 "    coverage gaps: malformed_trades={} orphan_events={} jupiter_malformed={} \
                  jupiter_unknown={} dflow_malformed={} dflow_unknown={} okx_malformed={} \
-                 okx_unknown={} okx_receiver_not_attributed={} okx_idl_only={}",
+                 okx_unknown={} okx_receiver_not_attributed={} okx_idl_only={} venue_events={:?}",
                 t.malformed_trades,
                 t.orphan_events,
                 t.jupiter_malformed_events,
@@ -720,7 +720,8 @@ fn print_solana_diagnostics(
                 t.okx_malformed_events,
                 t.okx_unknown_events,
                 t.okx_swap_with_receiver_not_attributed,
-                t.okx_idl_only_order_events
+                t.okx_idl_only_order_events,
+                t.venue_events
             );
             for e in &t.evidence_samples {
                 eprintln!(

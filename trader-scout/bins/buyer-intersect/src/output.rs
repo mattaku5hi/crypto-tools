@@ -244,6 +244,8 @@ pub struct TokenDiagnosticsDto {
     pub okx_swap_with_receiver_not_attributed: u64,
     /// Order events of an IdlOnly variant: counted, not leg evidence.
     pub okx_idl_only_order_events: u64,
+    /// ADR-013 section 2b: direct-venue swap-event coverage.
+    pub venue_events: scout_app::VenueEventsDto,
     /// At most 5 samples of malformed trade instructions, unknown
     /// discriminators and orphan events of this token's transactions.
     pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
@@ -571,6 +573,7 @@ fn token_status(
                 .trade
                 .okx_swap_with_receiver_not_attributed,
             okx_idl_only_order_events: token.trade.okx_idl_only_order_events,
+            venue_events: (&token.trade.venue_events).into(),
             evidence_samples: scout_app::evidence_dtos(&token.trade.evidence_samples, redact),
         }),
         truncated_slices,

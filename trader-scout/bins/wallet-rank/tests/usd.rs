@@ -150,7 +150,7 @@ async fn quote_usd_prices_ranks_in_usd_and_counts_price_requests_apart() {
         meta["ledger_version"]
             .as_str()
             .unwrap()
-            .starts_with("solana-wallet-ledger/13")
+            .starts_with("solana-wallet-ledger/14")
     );
     let n_coinbase = c.received_requests().await.unwrap().len();
     assert_eq!(n_coinbase, 1);

@@ -189,7 +189,7 @@ async fn usd_block_is_priced_from_the_recorded_candles_and_counted_separately() 
         w["stats"]["ledger_version"]
             .as_str()
             .unwrap()
-            .contains("/13")
+            .contains("/14")
     );
     // Per-episode USD view in full detail.
     let eps = w["episodes"].as_array().unwrap();

@@ -81,7 +81,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::analysis_window::AnalysisWindow;
 use crate::buyer_intersect::{BuyerIntersectReport, threshold_and_sort_matches};
-use crate::decode_evidence::{DecodeEvidence, merge_evidence};
+use crate::decode_evidence::{DecodeEvidence, VenueEventDiagnostics, merge_evidence};
 use crate::solana_buy_qualification::{
     PUMP_BONDING_CURVE_IDL_COMMIT, PUMP_BONDING_CURVE_PROGRAM_ID, SOLANA_BUY_QUALIFICATION_VERSION,
     SOLANA_TRADE_QUALIFICATION_VERSION, TxQualificationDiagnostics, VariantPolicy,
@@ -176,15 +176,17 @@ impl SolanaProtocolScope {
                          side in token terms, reversed pools inverted, ADR-012; router-forwards \
                          are not attributed); route swaps (ADR-013 rule: signer wallet, \
                          FixtureVerified swap leg = pump leg, Jupiter v6 SwapEvent/SwapsEvent or \
-                         DFlow v4 SwapEvent hop trading the token (ADR-015, evidence only, no ownership) or an OKX DEX Router order event of a \
-                         FixtureVerified variant naming the wallet as owner (ADR-017; only SwapWithFeesCpiEvent2 is verified), one \
+                         DFlow v4 SwapEvent hop trading the token (ADR-015, evidence only, no ownership), an OKX DEX Router order event of a \
+                         FixtureVerified variant naming the wallet as owner (ADR-017; only SwapWithFeesCpiEvent2 is verified), or a FixtureVerified \
+                         direct-venue swap event (Orca Whirlpool Traded, Meteora DLMM Swap/Swap2Evt, Raydium CLMM/CPMM SwapEvent; ADR-013 section 2b, \
+                         evidence only, no ownership) trading the token, one \
                          traded token vs one SOL/USDC/USDT quote, pass-through leg users \
                          netting zero; side = sign of the wallet's own delta). Never transfers or airdrops, never routers, relayers or fee \
                          payers. IdlOnly variants are decoded but never qualify (counted, \
                          coverage incomplete)",
-            not_decoded: "Raydium, Meteora (DLMM), Orca Whirlpool and Jupiter's venue hops \
-                          themselves (routes without a pump leg or a Jupiter v6 / DFlow v4 swap event, \
-                          e.g. OKX DEX Router routes whose order event is not SwapWithFeesCpiEvent2), PumpSwap liquidity/non-trade instructions \
+            not_decoded: "Raydium, Meteora (DLMM), Orca Whirlpool as venues beyond their swap events (a swap is recognized only through a verified swap-event leg plus the wallet's own deltas; \
+                          Whirlpool two-hop, Raydium CLMM router, DLMM exact-out/price-impact and CPMM base-output swaps are IdlOnly or unsupported), routes without a pump leg, a Jupiter v6 / DFlow v4 swap event or a \
+                          direct-venue swap event (e.g. OKX DEX Router routes whose order event is not SwapWithFeesCpiEvent2), PumpSwap liquidity/non-trade instructions \
                           and every other venue; the wallet set is a lower bound (a wallet that \
                           traded only there is not found)",
         }
@@ -210,13 +212,13 @@ impl SolanaProtocolScope {
                          attributed only when the wallet's own owner-keyed legs reconcile \
                          (ADR-012); route swaps (ADR-013: signer wallet, FixtureVerified swap \
                          leg = pump leg, Jupiter v6 SwapEvent/SwapsEvent or DFlow v4 SwapEvent hop \
-                         trading the token (ADR-015) or a FixtureVerified OKX order event of the wallet (ADR-017), one traded token vs one SOL/USDC/USDT quote asset, \
+                         trading the token (ADR-015) a FixtureVerified OKX order event of the wallet (ADR-017) or a FixtureVerified direct-venue swap event (Whirlpool, DLMM, Raydium CLMM/CPMM; ADR-013 section 2b), one traded token vs one SOL/USDC/USDT quote asset, \
                          pass-through leg users netting zero) are booked from the wallet's own deltas in the \
                          quote's unit; PnL is per quote unit (SOL, USDC, USDT), never mixed; \
                          one FIFO per (wallet, mint) across venues",
-            not_decoded: "Raydium, Meteora, Orca and Jupiter's venue hops themselves (a route \
-                          is recognized only through a FixtureVerified pump leg or a Jupiter v6 / \
-                          DFlow v4 swap event, plus the wallet's own deltas), PumpSwap liquidity/non-trade instructions and every \
+            not_decoded: "Raydium, Meteora and Orca as venues beyond their swap events (a route \
+                          is recognized only through a FixtureVerified pump leg, a Jupiter v6 / \
+                          DFlow v4 swap event or a direct-venue swap event, plus the wallet's own deltas), PumpSwap liquidity/non-trade instructions and every \
                           other venue; token movements there are continuity breaks (Unknown), \
                           never zero PnL; bot/platform fees stay outside trade PnL (ADR-010 §5)",
         }
@@ -373,6 +375,10 @@ pub struct TradeAttributionDiagnostics {
     /// OKX order events of a variant that is not `FixtureVerified`: decoded,
     /// counted, never leg evidence (lower bound).
     pub okx_idl_only_order_events: u64,
+    /// ADR-013 section 2b: direct-venue (Whirlpool, DLMM, Raydium CLMM/CPMM)
+    /// swap-event coverage. malformed/unknown are COVERAGE GAPS; idl_only and
+    /// unresolved are informational (lower bound).
+    pub venue_events: VenueEventDiagnostics,
     /// Up to 5 samples (canonical chain order) of malformed trade
     /// instructions, unknown discriminators and orphan events of this token's
     /// transactions, so each counter can be traced to a signature.
@@ -445,6 +451,7 @@ impl TradeAttributionDiagnostics {
         );
         self.okx_idl_only_order_events =
             s(self.okx_idl_only_order_events, o.okx_idl_only_order_events);
+        self.venue_events.add(&o.venue_events);
         merge_evidence(
             &mut self.evidence_samples,
             o.evidence_samples.iter().cloned(),
@@ -740,6 +747,7 @@ impl SolanaBuyerIntersectReport {
                 self.trade.okx_unknown_events
             ));
         }
+        reasons.extend(self.trade.venue_events.gap_reasons());
         if self.unexpected_payloads > 0 {
             reasons.push(format!(
                 "{} envelope(s) were not Solana transactions",
@@ -995,6 +1003,7 @@ fn qualify_transaction(
     t.okx_idl_only_order_events = t
         .okx_idl_only_order_events
         .saturating_add(attribution.okx_idl_only);
+    t.venue_events.add(&attribution.venue_events);
     merge_evidence(
         &mut t.evidence_samples,
         attribution.evidence.iter().cloned(),

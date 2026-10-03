@@ -22,6 +22,7 @@
 
 mod bonding_curve_buy;
 mod dflow_event;
+mod dlmm_event;
 mod jupiter_event;
 mod okx_event;
 mod okx_schema;
@@ -29,8 +30,14 @@ mod pump_accounts;
 mod pump_amm;
 mod pump_amm_event;
 mod pump_amm_reconcile;
+mod raydium_clmm_event;
+mod raydium_cpmm_event;
 mod swap_math;
 mod trade_event;
+mod venue_legs;
+mod venue_log;
+mod venue_wire;
+mod whirlpool_event;
 
 pub use bonding_curve_buy::{
     BUY_EXACT_QUOTE_IN_V2_INSTRUCTION_DISCRIMINATOR, BUY_EXACT_SOL_IN_INSTRUCTION_DISCRIMINATOR,
@@ -47,6 +54,17 @@ pub use dflow_event::{
     DFLOW_SWAP_EVENT_LEN, DFLOW_V4_PROGRAM_ID, DFLOW_V4_PROGRAM_ID_BYTES, DflowEventDecoder,
     DflowEventOutcome, DflowFeeEvent, DflowSwapLeg, classify_dflow_event,
     dflow_swap_event_verification,
+};
+pub use dlmm_event::{
+    DLMM_EVENT_AUTHORITY_BYTES, DLMM_EVENT_HEADER_LEN, DLMM_EVENTS, DLMM_IDL_SHA256,
+    DLMM_PROGRAM_ID, DLMM_PROGRAM_ID_BYTES, DLMM_SWAP_EVENT_DISCRIMINATOR, DLMM_SWAP_EVENT_LEN,
+    DLMM_SWAP2_EVENT_DISCRIMINATOR, DLMM_SWAP2_EVENT_LEN, DlmmEventOutcome, DlmmSwap2Event,
+    DlmmSwapEvent, DlmmSwapIx, DlmmSwapVariant, classify_dlmm_event, parse_dlmm_swap_instruction,
+};
+pub use dlmm_event::{
+    DLMM_SWAP_DISCRIMINATOR, DLMM_SWAP_EXACT_OUT_DISCRIMINATOR, DLMM_SWAP_EXACT_OUT2_DISCRIMINATOR,
+    DLMM_SWAP_WITH_PRICE_IMPACT_DISCRIMINATOR, DLMM_SWAP_WITH_PRICE_IMPACT2_DISCRIMINATOR,
+    DLMM_SWAP2_DISCRIMINATOR,
 };
 pub use jupiter_event::{
     JUPITER_BEST_SWAP_OUT_AMOUNT_VIOLATION_DISCRIMINATOR,
@@ -91,6 +109,26 @@ pub use pump_amm_reconcile::{
     AmmAttribution, AmmMintLeg, AmmTxReconciliation, AmmUserReconciliation,
     reconcile_pump_amm_transaction,
 };
+pub use raydium_clmm_event::{
+    ClmmEventLayout, RAYDIUM_CLMM_EVENTS, RAYDIUM_CLMM_IDL_SHA256, RAYDIUM_CLMM_PROGRAM_ID,
+    RAYDIUM_CLMM_PROGRAM_ID_BYTES, RAYDIUM_CLMM_SWAP_EVENT_DISCRIMINATOR,
+    RAYDIUM_CLMM_SWAP_EVENT_IDL_LEN, RAYDIUM_CLMM_SWAP_EVENT_LIVE_LEN, RAYDIUM_IDL_COMMIT,
+    RaydiumClmmSwapEvent, RaydiumClmmSwapIx, RaydiumClmmSwapVariant, classify_raydium_clmm_event,
+    parse_raydium_clmm_swap_instruction,
+};
+pub use raydium_clmm_event::{
+    RAYDIUM_CLMM_SWAP_DISCRIMINATOR, RAYDIUM_CLMM_SWAP_ROUTER_BASE_IN_DISCRIMINATOR,
+    RAYDIUM_CLMM_SWAP_V2_DISCRIMINATOR,
+};
+pub use raydium_cpmm_event::{
+    RAYDIUM_CPMM_EVENTS, RAYDIUM_CPMM_IDL_SHA256, RAYDIUM_CPMM_PROGRAM_ID,
+    RAYDIUM_CPMM_PROGRAM_ID_BYTES, RAYDIUM_CPMM_SWAP_EVENT_DISCRIMINATOR,
+    RAYDIUM_CPMM_SWAP_EVENT_LEN, RaydiumCpmmSwapEvent, RaydiumCpmmSwapIx, RaydiumCpmmSwapVariant,
+    classify_raydium_cpmm_event, parse_raydium_cpmm_swap_instruction,
+};
+pub use raydium_cpmm_event::{
+    RAYDIUM_CPMM_SWAP_BASE_INPUT_DISCRIMINATOR, RAYDIUM_CPMM_SWAP_BASE_OUTPUT_DISCRIMINATOR,
+};
 pub use swap_math::{
     AmmBuyQuote, AmmSellQuote, CurveSellQuote, amm_buy_quote, amm_sell_quote, curve_buy_tokens_out,
     curve_sell_quote, effective_quote_reserve, fee_ceil, price_impact_bps,
@@ -100,4 +138,19 @@ pub use trade_event::{
     MAX_TRAILING_EVENT_BYTES, PairMismatch, PairedTrade, PumpEventOutcome, Shareholder,
     TRADE_EVENT_DISCRIMINATOR, TRADE_EVENT_REQUIRED_LEN, TradeEvent, TradeEventPairing,
     TradeEventPairingReport, classify_pump_event, event_name, pair_trades_with_events,
+};
+pub use venue_legs::{
+    MintSource, VenueIssue, VenueIssueKind, VenueKind, VenueLeg, VenueScan, scan_venue_events,
+};
+pub use venue_log::{LogAttribution, ProgramDataEvent, attribute_program_data};
+pub use venue_wire::{SwapInstructionParse, VenueEventOutcome};
+pub use whirlpool_event::{
+    WHIRLPOOL_EVENTS, WHIRLPOOL_IDL_SHA256, WHIRLPOOL_PROGRAM_ID, WHIRLPOOL_PROGRAM_ID_BYTES,
+    WHIRLPOOL_TRADED_DISCRIMINATOR, WHIRLPOOL_TRADED_LEN, WhirlpoolSwapIx, WhirlpoolSwapVariant,
+    WhirlpoolTraded, classify_whirlpool_event, parse_whirlpool_swap_instruction,
+    whirlpool_traded_verification,
+};
+pub use whirlpool_event::{
+    WHIRLPOOL_SWAP_DISCRIMINATOR, WHIRLPOOL_SWAP_V2_DISCRIMINATOR,
+    WHIRLPOOL_TWO_HOP_SWAP_DISCRIMINATOR, WHIRLPOOL_TWO_HOP_SWAP_V2_DISCRIMINATOR,
 };

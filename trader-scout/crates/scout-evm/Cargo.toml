@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 scout-core.workspace = true
+scout-api.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-eth.workspace = true
 serde.workspace = true

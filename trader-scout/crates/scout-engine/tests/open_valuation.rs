@@ -247,6 +247,7 @@ fn curve_buy_tx(user: u8, mint: u8, sig: u8, with_event: bool) -> RawSolanaTrans
         ixs.push(buy_event_ix(user, mint, sol, tokens, fee, cfee, 1));
     }
     RawSolanaTransaction {
+        log_messages: None,
         block_time: Some(T0 - 600),
         signature: [sig; 64],
         execution: SolanaExecutionStatus::Succeeded,

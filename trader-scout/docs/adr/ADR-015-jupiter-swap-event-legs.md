@@ -91,3 +91,19 @@ input_amount u64, output_mint, output_amount u64, amm }` — exactly the layout 
 above. `SwapsEvent` is now IDL-confirmed and fixture-verified; IDL-equality tests pin it.
 `CandidateSwapResults`, `CandidateSwapQuoteError`, `BestSwapOutAmountViolation` are known non-leg
 events (gated, named, never legs).
+
+## Amendment — direct-venue swap events (2026-10-03)
+
+Orca Whirlpool `Traded`, Meteora DLMM `Swap`/`Swap2Evt`, Raydium CLMM/CPMM `SwapEvent` are leg evidence
+under the same constraints as §§1–3 (IDL pins in `fixtures/README.md`). DLMM: event-CPI + authority
+`D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6`; the others emit `Program data:` log lines, attributed
+to the emitting program by the runtime invoke/success stack, which must align exactly with the flattened
+instruction list (missing/misaligned/truncated logs → no leg, counted `unresolved`). Mints come from the
+swap instruction accounts (CPMM events carry them; v1 Whirlpool/CLMM `swap` only via the pool's own vault
+deltas under strict single-swap constraints); event pool/direction must match the instruction. Evidence
+(`crates/scout-engine/tests/venue_swap_legs.rs`): 275 live events, every one exact on ≥1 side against
+pool-owned and instruction-named vault deltas (input 264, output 273). Deployed Raydium CLMM `SwapEvent`
+is 213 bytes (IDL 197 + 16 unpinned bytes, 19/19 samples): 213 verified, 197 IdlOnly. Variants without
+samples (Whirlpool two-hop, CLMM router, DLMM exact-out/price-impact, CPMM `swap_base_output`) are never
+evidence. Router fixtures unchanged (51/79; venue events redundant there); no direct top-level venue
+trade in the fixtures yet. Ledger/14, trade qualification v11.

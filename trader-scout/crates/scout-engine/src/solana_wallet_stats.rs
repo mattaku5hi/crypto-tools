@@ -576,6 +576,7 @@ async fn scan_wallet(
             d.okx_unknown_events
         ));
     }
+    reasons.extend(d.venue_events.gap_reasons());
     if ledger.trades.idl_only_variant > 0 {
         reasons.push(format!(
             "{} trade(s) via IdlOnly variant without verified fixture",

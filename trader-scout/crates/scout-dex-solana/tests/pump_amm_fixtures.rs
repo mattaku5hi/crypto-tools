@@ -153,6 +153,7 @@ fn parse_tx(rec: &serde_json::Value) -> RawSolanaTransaction {
         .try_into()
         .unwrap();
     RawSolanaTransaction {
+        log_messages: None,
         block_time: rec["blockTime"].as_i64(),
         signature: sig,
         execution: if meta["err"].is_null() {

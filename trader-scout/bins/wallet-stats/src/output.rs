@@ -949,6 +949,9 @@ pub struct DiagnosticsDto {
     pub okx_swap_with_receiver_not_attributed: u64,
     /// Order events of an IdlOnly variant: counted, not leg evidence.
     pub okx_idl_only_order_events: u64,
+    /// ADR-013 section 2b: direct-venue swap-event coverage (malformed/unknown
+    /// are gaps; idl_only/unresolved informational).
+    pub venue_events: scout_app::VenueEventsDto,
     /// At most 5 samples (canonical chain order) of malformed trade
     /// instructions, unknown discriminators and orphan events.
     pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
@@ -1062,6 +1065,13 @@ pub struct RouteEvidenceDto {
     pub okx_only: u64,
     /// OKX swaps whose order event names the wallet itself as owner.
     pub okx_owner_is_wallet: u64,
+    /// ADR-013 section 2b: direct-venue swap-event legs (non-exclusive).
+    pub whirlpool: u64,
+    pub dlmm: u64,
+    pub raydium_clmm: u64,
+    pub raydium_cpmm: u64,
+    /// Booked only because of a direct-venue leg.
+    pub venue_only: u64,
 }
 
 /// ADR-013 §1/§2 counters.
@@ -1629,6 +1639,11 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
                 okx: t.route_swaps_by_evidence.okx,
                 okx_only: t.route_swaps_by_evidence.okx_only,
                 okx_owner_is_wallet: t.route_swaps_by_evidence.okx_owner_is_wallet,
+                whirlpool: t.route_swaps_by_evidence.whirlpool,
+                dlmm: t.route_swaps_by_evidence.dlmm,
+                raydium_clmm: t.route_swaps_by_evidence.raydium_clmm,
+                raydium_cpmm: t.route_swaps_by_evidence.raydium_cpmm,
+                venue_only: t.route_swaps_by_evidence.venue_only,
             },
             route_leg_not_wallet_price: t.route_leg_not_wallet_price,
             route_rejected_wallet_not_signer: d.route_rejected.wallet_not_signer,
@@ -1767,6 +1782,7 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
             okx_unknown_events: d.okx_unknown_events,
             okx_swap_with_receiver_not_attributed: d.okx_swap_with_receiver_not_attributed,
             okx_idl_only_order_events: d.okx_idl_only_order_events,
+            venue_events: (&d.venue_events).into(),
             evidence_samples: scout_app::evidence_dtos(&l.evidence_samples, &str::to_owned),
         },
     }

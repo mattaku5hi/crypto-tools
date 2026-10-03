@@ -22,17 +22,55 @@ pub struct RawEvmLog {
     pub log_index: u64,
 }
 
-/// Minimal transaction context a decoder needs: who sent it, and its
-/// canonical position (block_number, tx_index) per ADR-002's ordering
-/// contract — never wall-clock/fetch order.
+/// Execution status of an EVM transaction (receipt `status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EvmTxStatus {
+    Success,
+    Failed,
+}
+
+/// One native-currency movement inside a transaction that is not visible in
+/// logs (call-value transfers between contracts). Source: a trace RPC or an
+/// explorer's internal-transaction list that reported complete processing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InternalTransfer {
+    pub from: Address,
+    pub to: Address,
+    pub value: U256,
+}
+
+/// A transaction with everything the EVM trade extraction needs (ADR-020 §1):
+/// chain identity, canonical position, execution outcome, fee fields and all
+/// receipt logs.
+///
+/// `internal_transfers = None` means "native internal flows were NOT
+/// observed" — never "there were none". `Some(vec![])` means observed and
+/// empty. `Some(..)` from a wallet-centric source only lists transfers that
+/// involve the listed wallet (enough for that wallet's native delta).
+///
+/// Fees: Base (OP stack) pays an L1 data fee on top of `gas_used *
+/// effective_gas_price` (`l1_fee`, receipt `l1Fee`); Robinhood (Arbitrum
+/// Orbit) already includes the L1 component in `gas_used`
+/// (`gasUsedForL1`), so no separate field is needed there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawEvmTransaction {
+    pub chain: crate::ChainKey,
     pub hash: B256,
     pub from: Address,
     pub to: Option<Address>,
     pub block_number: u64,
     pub transaction_index: u64,
+    /// Block timestamp, unix seconds.
+    pub block_time: u64,
     pub value: U256,
+    pub status: EvmTxStatus,
+    pub gas_used: u64,
+    pub effective_gas_price: U256,
+    /// OP-stack `l1Fee` (wei); `None` when the receipt did not carry it.
+    pub l1_fee: Option<U256>,
+    /// Receipt logs in log-index order.
+    pub logs: Vec<RawEvmLog>,
+    pub internal_transfers: Option<Vec<InternalTransfer>>,
 }
 
 /// A 32-byte Solana address (program id, mint, or account pubkey). Kept
@@ -132,6 +170,16 @@ pub struct RawSolanaTransaction {
     /// output is deterministic. Raw: includes fee, rent and WSOL
     /// effects uninterpreted.
     pub native_balance_changes: Vec<SolanaNativeBalanceChange>,
+    /// Attribution-relevant runtime log lines of `meta.logMessages` (ADR-013
+    /// section 2b, venue events): `Program <id> invoke [<depth>]`,
+    /// `Program <id> success`, `Program <id> failed: ...`, `Program data: <base64>`
+    /// and the runtime's `Log truncated` marker, in order; every other line
+    /// (`Program log:`, `consumed`, `return`) is dropped by the provider.
+    /// `None` = the provider did not observe logs (never "no events").
+    /// Anchor `emit!` events (Orca Whirlpool, Raydium CLMM/CPMM) exist ONLY
+    /// here; a `Program data:` line is attributed to a program by the
+    /// invoke/success stack, never by its payload.
+    pub log_messages: Option<Vec<String>>,
 }
 
 /// One account's native SOL balance before/after a transaction, in

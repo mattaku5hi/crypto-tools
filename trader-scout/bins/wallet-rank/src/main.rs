@@ -874,6 +874,7 @@ fn print_diagnostics(
             + d.okx_unknown_events
             + d.okx_swap_with_receiver_not_attributed
             + d.okx_idl_only_order_events
+            + d.venue_events.coverage_gaps()
             > 0
         {
             eprintln!(
@@ -881,7 +882,8 @@ fn print_diagnostics(
                  unknown_discriminator_instructions={} jupiter_malformed_events={} \
                  jupiter_unknown_events={} dflow_malformed_events={} dflow_unknown_events={} \
                  okx_malformed_events={} okx_unknown_events={} \
-                 okx_swap_with_receiver_not_attributed={} okx_idl_only_order_events={}",
+                 okx_swap_with_receiver_not_attributed={} okx_idl_only_order_events={} \
+                 venue_events={:?}",
                 bs58::encode(w.wallet).into_string(),
                 d.malformed_trade_instructions,
                 d.orphan_trade_events,
@@ -893,7 +895,8 @@ fn print_diagnostics(
                 d.okx_malformed_events,
                 d.okx_unknown_events,
                 d.okx_swap_with_receiver_not_attributed,
-                d.okx_idl_only_order_events
+                d.okx_idl_only_order_events,
+                d.venue_events
             );
         }
         for e in &l.evidence_samples {

@@ -33,6 +33,9 @@ use tokio_util::sync::CancellationToken;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[path = "support/venue_ablation.rs"]
+mod venue_ablation;
+
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/p0/measurements/fixtures")
@@ -618,7 +621,13 @@ fn ledger(wallet: &str, txs: &[RawSolanaTransaction]) -> SolanaWalletLedgerRepor
     let opts = LedgerOptions {
         left_censoring: true,
     };
-    build_solana_wallet_ledger_venues(&pubkey(wallet), txs, &decoders, opts).unwrap()
+    build_solana_wallet_ledger_venues(
+        &pubkey(wallet),
+        &venue_ablation::without_venue_events(txs),
+        &decoders,
+        opts,
+    )
+    .unwrap()
 }
 
 fn without_program(

@@ -40,7 +40,9 @@
 //! * Route swap (§2): wallet is a signer, a FixtureVerified decoded leg
 //!   (pump.fun curve, PumpSwap, or -- ADR-015, full venue runs only -- a
 //!   Jupiter v6 `SwapEvent`/`SwapsEvent`, DFlow v4 `SwapEvent` leg, or a FixtureVerified OKX DEX Router
-//!   order event naming the wallet as source and destination owner) trades token `T`, the wallet's non-zero deltas are exactly `T` and one
+//!   order event naming the wallet as source and destination owner, or -- ADR-013 §2b -- a FixtureVerified
+//!   direct-venue swap event: Orca Whirlpool `Traded`, Meteora DLMM `Swap`/`Swap2Evt`, Raydium CLMM/CPMM
+//!   `SwapEvent`; leg evidence only, never ownership) trades token `T`, the wallet's non-zero deltas are exactly `T` and one
 //!   quote asset `Q` (SOL, USDC, USDT) with opposite signs, and every other
 //!   leg `user` is a non-signing pass-through netting zero on every mint.
 //!   The trade is booked from the wallet's own deltas in `Q`'s unit.
@@ -77,14 +79,15 @@ use scout_dex_solana::{
     AmmAttribution, AmmTradeEventPairing, BondingCurveBuyDecoder, DflowEventDecoder,
     DflowEventOutcome, JupiterEventDecoder, JupiterEventOutcome, OkxEventDecoder, OkxEventOutcome,
     OkxOrderEventKind, PairedAmmTrade, PumpAmmDecoder, PumpAmmEvent, PumpAmmInstructionOutcome,
-    PumpInstructionOutcome, TradeEventPairing, TradeSide, VariantVerification, WRAPPED_SOL_MINT,
-    dflow_swap_event_verification, pair_trades_with_events, reconcile_pump_amm_transaction,
+    PumpInstructionOutcome, TradeEventPairing, TradeSide, VariantVerification, VenueIssue,
+    VenueKind, WRAPPED_SOL_MINT, dflow_swap_event_verification, pair_trades_with_events,
+    reconcile_pump_amm_transaction, scan_venue_events,
 };
 pub use scout_ledger::QuoteUnit;
 use scout_ledger::{BasisStatus, Ledger};
 use scout_normalize::{SolanaBalanceAggregationError, solana_owner_net_deltas};
 
-use crate::decode_evidence::{DecodeEvidence, scan_tx_evidence};
+use crate::decode_evidence::{DecodeEvidence, VenueEventDiagnostics, scan_tx_evidence};
 use crate::solana_buy_qualification::{
     VariantPolicy, default_variant_policy, solana_mainnet_chain,
 };
@@ -94,11 +97,11 @@ use crate::solana_open_valuation::{
 use crate::solana_wallet_usd::{UsdDisposal, UsdJournal, UsdLedgerView, UsdLotSlice};
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
-pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/13 (ADR-004/018 failed-tx fee journal for the USD net, ADR-019 open lot USD journal, ADR-019 open-position venue/fee/basis inputs + realizable valuation view, ADR-018 USD execution-pricing journal + USD view, OKX DEX Router SwapWithFeesCpiEvent2 FixtureVerified legs + ownership evidence (ADR-017), ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
+pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/14 (ADR-013 section 2b direct-venue swap events as leg evidence: Orca Whirlpool Traded, Meteora DLMM Swap/Swap2Evt, Raydium CLMM/CPMM SwapEvent, ADR-004/018 failed-tx fee journal for the USD net, ADR-019 open lot USD journal, ADR-019 open-position venue/fee/basis inputs + realizable valuation view, ADR-018 USD execution-pricing journal + USD view, OKX DEX Router SwapWithFeesCpiEvent2 FixtureVerified legs + ownership evidence (ADR-017), ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
 
 /// Scope text for report metadata (invariant #10): allowed quote units and
 /// the route-swap rule of ADR-013.
-pub const SOLANA_WALLET_LEDGER_SCOPE: &str = "quote units: SOL (lamports, native+wSOL), USDC (6 dp raw), USDT (6 dp raw); no FX, per-unit PnL never summed; route swap = signer wallet, FixtureVerified decoded leg (pump curve/PumpSwap, or a Jupiter v6 / DFlow Aggregator v4 swap event hop trading the token, ADR-015, or a FixtureVerified OKX DEX Router order event of the signer that trades the token, ADR-017; an order event with a distinct receiver is attributed to nobody), exactly one traded token and one quote asset with opposite signs, other leg users non-signing zero-net pass-through (ADR-013 section 2)";
+pub const SOLANA_WALLET_LEDGER_SCOPE: &str = "quote units: SOL (lamports, native+wSOL), USDC (6 dp raw), USDT (6 dp raw); no FX, per-unit PnL never summed; route swap = signer wallet, FixtureVerified decoded leg (pump curve/PumpSwap, or a Jupiter v6 / DFlow Aggregator v4 swap event hop trading the token, ADR-015, or a FixtureVerified OKX DEX Router order event of the signer that trades the token, ADR-017, or a FixtureVerified direct-venue swap event (Orca Whirlpool Traded, Meteora DLMM Swap/Swap2Evt, Raydium CLMM/CPMM SwapEvent; leg evidence only, never ownership) trading the token, ADR-013 section 2b; an order event with a distinct receiver is attributed to nobody), exactly one traded token and one quote asset with opposite signs, other leg users non-signing zero-net pass-through (ADR-013 section 2)";
 
 /// Wrapped SOL, the only non-native quote asset treated as SOL (ADR-010 §3).
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -530,6 +533,15 @@ pub struct RouteEvidenceCounts {
     pub okx_only: u64,
     /// OKX swaps whose order event names the wallet itself as owner.
     pub okx_owner_is_wallet: u64,
+    /// ADR-013 section 2b: direct-venue swap-event legs (leg evidence only;
+    /// ownership still comes from the wallet's deltas). Non-exclusive.
+    pub whirlpool: u64,
+    pub dlmm: u64,
+    pub raydium_clmm: u64,
+    pub raydium_cpmm: u64,
+    /// Swaps booked ONLY because of a direct-venue leg (no curve, PumpSwap,
+    /// Jupiter, DFlow or OKX evidence).
+    pub venue_only: u64,
 }
 
 /// Evidence sources of one booked route swap.
@@ -541,6 +553,20 @@ pub(crate) struct RouteEvidence {
     dflow: bool,
     okx: bool,
     okx_owner_is_wallet: bool,
+    whirlpool: bool,
+    dlmm: bool,
+    raydium_clmm: bool,
+    raydium_cpmm: bool,
+}
+
+impl RouteEvidence {
+    const fn any_venue(self) -> bool {
+        self.whirlpool || self.dlmm || self.raydium_clmm || self.raydium_cpmm
+    }
+
+    const fn any(self) -> bool {
+        self.curve || self.pump_amm || self.jupiter || self.dflow || self.okx || self.any_venue()
+    }
 }
 
 impl RouteEvidenceCounts {
@@ -549,15 +575,36 @@ impl RouteEvidenceCounts {
         self.pump_amm += u64::from(e.pump_amm);
         self.jupiter += u64::from(e.jupiter);
         self.dflow += u64::from(e.dflow);
-        // `*_only`: booked ONLY because of that aggregator's leg.
         self.okx += u64::from(e.okx);
         self.okx_owner_is_wallet += u64::from(e.okx_owner_is_wallet);
-        let other_than = |jup: bool, dfl: bool, okx: bool| {
-            !e.curve && !e.pump_amm && e.jupiter == jup && e.dflow == dfl && e.okx == okx
+        self.whirlpool += u64::from(e.whirlpool);
+        self.dlmm += u64::from(e.dlmm);
+        self.raydium_clmm += u64::from(e.raydium_clmm);
+        self.raydium_cpmm += u64::from(e.raydium_cpmm);
+        // `*_only`: booked ONLY because of that source's leg (no other
+        // evidence of any source).
+        let only = |own: bool| {
+            own && [
+                e.curve,
+                e.pump_amm,
+                e.jupiter,
+                e.dflow,
+                e.okx,
+                e.whirlpool,
+                e.dlmm,
+                e.raydium_clmm,
+                e.raydium_cpmm,
+            ]
+            .into_iter()
+            .filter(|f| *f)
+            .count()
+                == 1
         };
-        self.jupiter_only += u64::from(e.jupiter && other_than(true, false, false));
-        self.dflow_only += u64::from(e.dflow && other_than(false, true, false));
-        self.okx_only += u64::from(e.okx && other_than(false, false, true));
+        self.jupiter_only += u64::from(only(e.jupiter));
+        self.dflow_only += u64::from(only(e.dflow));
+        self.okx_only += u64::from(only(e.okx));
+        self.venue_only +=
+            u64::from(e.any_venue() && !e.curve && !e.pump_amm && !e.jupiter && !e.dflow && !e.okx);
     }
 }
 
@@ -677,6 +724,10 @@ pub struct LedgerDiagnostics {
     /// transactions this leaves unbooked surface in the existing unknown /
     /// continuity diagnostics.
     pub okx_idl_only_order_events: u64,
+    /// ADR-013 section 2b: direct-venue (Whirlpool, DLMM, Raydium CLMM/CPMM)
+    /// swap-event coverage. `malformed`/`unknown` are coverage gaps;
+    /// `idl_only`/`unresolved` are informational.
+    pub venue_events: VenueEventDiagnostics,
 }
 
 /// Program ids counted as swap venues by the atomic round-trip signal:
@@ -1089,6 +1140,8 @@ enum AggSource {
     Dflow,
     /// OKX DEX Router order event (carries the owner, unlike Jupiter/DFlow).
     Okx,
+    /// ADR-013 section 2b: direct-venue swap event (no owner, no price).
+    Venue(VenueKind),
 }
 
 /// ADR-015: one aggregator (Jupiter / DFlow) hop. Carries no owner and no
@@ -1546,6 +1599,8 @@ struct TxWork<'a> {
     route_evidence: RouteEvidence,
     /// Orphan events found by the extractors: `(instruction_index, name)`.
     orphan_events: Vec<(u32, &'static str)>,
+    /// ADR-013 section 2b: direct-venue events that did not become legs.
+    venue_issues: Vec<VenueIssue>,
     /// Bounded coverage-gap samples and counters of this transaction.
     scan: crate::decode_evidence::TxScan,
     /// ADR-019: fee observations of every paired event, instruction order.
@@ -1791,6 +1846,27 @@ fn extract_okx_legs(tx: &RawSolanaTransaction, policy: OkxOrderPolicy, work: &mu
             });
         }
     }
+}
+
+/// ADR-013 section 2b: collect direct-venue swap legs (Orca Whirlpool, Meteora
+/// DLMM, Raydium CLMM/CPMM). Event gates (program id, event-CPI tag +
+/// authority or log attribution by the invoke stack, exact layout) and mint
+/// resolution live in `scout_dex_solana::scan_venue_events`. Only legs of a
+/// `FixtureVerified` variant AND layout count as evidence; everything else is
+/// an issue counted by the evidence scan. A venue leg never carries an owner.
+fn extract_venue_legs(tx: &RawSolanaTransaction, work: &mut TxWork<'_>) {
+    let scan = scan_venue_events(tx);
+    for l in scan.legs {
+        work.jup_legs.push(JupLeg {
+            source: AggSource::Venue(l.venue),
+            owner: None,
+            input_mint: l.input_mint,
+            output_mint: l.output_mint,
+            fixture_verified: l.verification == VariantVerification::FixtureVerified,
+            instruction_index: l.instruction_index,
+        });
+    }
+    work.venue_issues = scan.issues;
 }
 
 /// Owner-keyed net wSOL token delta of `owner` (all of its wSOL accounts).
@@ -2105,6 +2181,7 @@ fn classify_trades<'a>(
         jup_legs: Vec::new(),
         route_evidence: RouteEvidence::default(),
         orphan_events: Vec::new(),
+        venue_issues: Vec::new(),
         scan: crate::decode_evidence::TxScan::default(),
         fee_obs: Vec::new(),
     };
@@ -2115,9 +2192,16 @@ fn classify_trades<'a>(
         extract_jupiter_legs(tx, &mut work);
         extract_dflow_legs(tx, &mut work);
         extract_okx_legs(tx, decoders.okx_order_policy, &mut work);
+        extract_venue_legs(tx, &mut work);
     }
     if scan {
-        work.scan = scan_tx_evidence(tx, decoders, decoders.amm.is_some(), &work.orphan_events);
+        work.scan = scan_tx_evidence(
+            tx,
+            decoders,
+            decoders.amm.is_some(),
+            &work.orphan_events,
+            &work.venue_issues,
+        );
     }
     // Both extractors yield execution order; merge across venues by the
     // flattened instruction index.
@@ -2170,6 +2254,7 @@ pub(crate) struct TxAttribution {
     pub okx_unknown: u64,
     pub okx_receiver: u64,
     pub okx_idl_only: u64,
+    pub venue_events: VenueEventDiagnostics,
 }
 
 /// Attribute every trade of `tx` that touches one of `focus_mints` to the
@@ -2206,6 +2291,7 @@ pub(crate) fn attribute_transaction_trades(
     out.okx_unknown = probe.scan.okx_unknown;
     out.okx_receiver = probe.scan.okx_receiver;
     out.okx_idl_only = probe.scan.okx_idl_only;
+    out.venue_events = probe.scan.venue;
     let touches_focus = probe.legs.iter().any(|l| focus_mints.contains(&l.mint))
         || probe
             .jup_legs
@@ -2478,9 +2564,12 @@ fn route_candidate(
         dflow: agg_leg(AggSource::Dflow),
         okx: okx_trades_token(None),
         okx_owner_is_wallet: okx_trades_token(Some(true)),
+        whirlpool: agg_leg(AggSource::Venue(VenueKind::Whirlpool)),
+        dlmm: agg_leg(AggSource::Venue(VenueKind::Dlmm)),
+        raydium_clmm: agg_leg(AggSource::Venue(VenueKind::RaydiumClmm)),
+        raydium_cpmm: agg_leg(AggSource::Venue(VenueKind::RaydiumCpmm)),
     };
-    if !(evidence.curve || evidence.pump_amm || evidence.jupiter || evidence.dflow || evidence.okx)
-    {
+    if !evidence.any() {
         return Err(RouteReject::NoVerifiedLeg);
     }
     // d. every other leg user is a non-signing, zero-net pass-through.
@@ -2651,6 +2740,7 @@ impl Builder {
         self.diag.okx_unknown_events += w.scan.okx_unknown;
         self.diag.okx_swap_with_receiver_not_attributed += w.scan.okx_receiver;
         self.diag.okx_idl_only_order_events += w.scan.okx_idl_only;
+        self.diag.venue_events.add(&w.scan.venue);
         crate::decode_evidence::merge_evidence(
             &mut self.evidence_samples,
             w.scan.evidence.iter().cloned(),

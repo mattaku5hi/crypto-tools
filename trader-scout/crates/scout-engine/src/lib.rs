@@ -27,6 +27,7 @@
 mod analysis_window;
 mod buyer_intersect;
 mod decode_evidence;
+mod evm_trade_extraction;
 mod solana_buy_qualification;
 mod solana_buyer_intersect;
 mod solana_open_valuation;
@@ -42,6 +43,13 @@ pub use analysis_window::{
 pub use buyer_intersect::{BuyerIntersectReport, BuyerMatch, run_buyer_intersect};
 pub use decode_evidence::{
     DecodeEvidence, EvidenceKind, MAX_EVIDENCE_SAMPLES, merge_evidence, program_name,
+};
+pub use decode_evidence::{VenueDiag, VenueEventDiagnostics};
+pub use evm_trade_extraction::{
+    Consideration, EVM_TRADE_EXTRACTION_VERSION, EvmAttributedTrade, EvmExtractionConfig,
+    EvmExtractionSummary, EvmFee, EvmQuoteToken, EvmTxExtraction, EvmTxOutcome, NativeLegStatus,
+    NoTradeReason, QuoteAsset, UnknownConsideration, UnknownFee, extract_evm_trade,
+    extract_evm_trades,
 };
 pub use scout_dex_solana::{PumpTradeVariant, TradeSide, VariantVerification};
 pub use solana_buy_qualification::{

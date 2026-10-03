@@ -475,6 +475,13 @@ pub struct RouteCountsDto {
     pub route_swaps_evidence_okx: u64,
     pub route_swaps_evidence_okx_only: u64,
     pub route_swaps_evidence_okx_owner_is_wallet: u64,
+    /// ADR-013 section 2b: direct-venue swap-event legs (non-exclusive) and
+    /// swaps booked only because of one.
+    pub route_swaps_evidence_whirlpool: u64,
+    pub route_swaps_evidence_dlmm: u64,
+    pub route_swaps_evidence_raydium_clmm: u64,
+    pub route_swaps_evidence_raydium_cpmm: u64,
+    pub route_swaps_evidence_venue_only: u64,
     pub route_leg_not_wallet_price: u64,
     /// Coverage gaps traceable through `evidence_samples` (<= 5, canonical order).
     pub malformed_trade_instructions: u64,
@@ -488,6 +495,8 @@ pub struct RouteCountsDto {
     pub okx_unknown_events: u64,
     pub okx_swap_with_receiver_not_attributed: u64,
     pub okx_idl_only_order_events: u64,
+    /// Direct-venue swap-event coverage (malformed/unknown are gaps).
+    pub venue_events: scout_app::VenueEventsDto,
     pub evidence_samples: Vec<scout_app::DecodeEvidenceDto>,
 }
 
@@ -879,6 +888,11 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             route_swaps_evidence_okx: t.route_swaps_by_evidence.okx,
             route_swaps_evidence_okx_only: t.route_swaps_by_evidence.okx_only,
             route_swaps_evidence_okx_owner_is_wallet: t.route_swaps_by_evidence.okx_owner_is_wallet,
+            route_swaps_evidence_whirlpool: t.route_swaps_by_evidence.whirlpool,
+            route_swaps_evidence_dlmm: t.route_swaps_by_evidence.dlmm,
+            route_swaps_evidence_raydium_clmm: t.route_swaps_by_evidence.raydium_clmm,
+            route_swaps_evidence_raydium_cpmm: t.route_swaps_by_evidence.raydium_cpmm,
+            route_swaps_evidence_venue_only: t.route_swaps_by_evidence.venue_only,
             route_leg_not_wallet_price: t.route_leg_not_wallet_price,
             malformed_trade_instructions: l.diagnostics.malformed_trade_instructions,
             orphan_trade_events: l.diagnostics.orphan_trade_events,
@@ -893,6 +907,7 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
                 .diagnostics
                 .okx_swap_with_receiver_not_attributed,
             okx_idl_only_order_events: l.diagnostics.okx_idl_only_order_events,
+            venue_events: (&l.diagnostics.venue_events).into(),
             evidence_samples: scout_app::evidence_dtos(&l.evidence_samples, &str::to_owned),
         },
         realized_net_pnl: MoneyDto {

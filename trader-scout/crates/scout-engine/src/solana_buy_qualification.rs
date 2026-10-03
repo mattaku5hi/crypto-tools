@@ -73,7 +73,7 @@ pub const SOLANA_BUY_QUALIFICATION_VERSION: &str = "pump-bonding-curve-buy/idl-e
 /// Rule identifier of the `buyer-intersect` trade-side qualification
 /// (ADR-014): bonding-curve buys and sells, PumpSwap trades and ADR-013
 /// route swaps, side in token terms.
-pub const SOLANA_TRADE_QUALIFICATION_VERSION: &str = "solana-trade-qualification/v10 (curve+pumpswap+route, ADR-014, ADR-009 26-byte track_volume, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs, OKX DEX Router order-event legs + ownership evidence ADR-017)";
+pub const SOLANA_TRADE_QUALIFICATION_VERSION: &str = "solana-trade-qualification/v11 (curve+pumpswap+route, ADR-014, ADR-009 26-byte track_volume, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs, OKX DEX Router order-event legs + ownership evidence ADR-017, ADR-013 section 2b direct-venue swap events: Orca Whirlpool Traded, Meteora DLMM Swap/Swap2Evt, Raydium CLMM/CPMM SwapEvent)";
 
 /// Why the confirmed deployment scope could not be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -547,6 +547,7 @@ mod tests {
         balances: Vec<SolanaTokenBalanceChange>,
     ) -> RawSolanaTransaction {
         RawSolanaTransaction {
+            log_messages: None,
             block_time: None,
             signature: [9; 64],
             execution: scout_core::SolanaExecutionStatus::Succeeded,

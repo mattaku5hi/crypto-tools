@@ -13,6 +13,10 @@
     )
 )]
 
+mod chain;
+mod events;
 mod raw;
 
-pub use raw::{RawEvmLog, RawEvmTransaction};
+pub use chain::{BASE, BSC, EvmChainProfile, ROBINHOOD};
+pub use events::*;
+pub use raw::{EvmTxStatus, InternalTransfer, RawEvmLog, RawEvmTransaction};

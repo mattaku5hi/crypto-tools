@@ -13,7 +13,7 @@ use scout_core::{RawSolanaInstruction, RawSolanaTransaction, SolanaPubkey};
 use scout_dex_solana::{
     DflowEventDecoder, DflowEventOutcome, JupiterEventDecoder, JupiterEventOutcome,
     OkxEventDecoder, OkxEventOutcome, PumpAmmInstructionOutcome, PumpEventOutcome,
-    PumpInstructionOutcome, VariantVerification, hex8,
+    PumpInstructionOutcome, VariantVerification, VenueIssue, VenueIssueKind, VenueKind, hex8,
 };
 
 use crate::solana_wallet_ledger::LedgerDecoders;
@@ -41,6 +41,14 @@ pub enum EvidenceKind {
     /// OKX DEX Router order event of a variant that is not `FixtureVerified`
     /// (decoded, counted, never leg evidence).
     UnverifiedOrderEvent,
+    /// Direct-venue (Whirlpool, DLMM, Raydium CLMM/CPMM) swap event or swap
+    /// instruction that could not become a leg: logs missing/misaligned/
+    /// truncated, pool or direction mismatch, ambiguous or unresolvable mints
+    /// (ADR-013 section 2b). Counted, never evidence.
+    UnresolvedVenueEvent,
+    /// Direct-venue event of a variant/layout without a live sample
+    /// (`IdlOnly`): decoded and counted, never leg evidence.
+    UnverifiedVenueEvent,
 }
 
 impl EvidenceKind {
@@ -53,6 +61,8 @@ impl EvidenceKind {
             Self::OrphanEvent => "orphan_event",
             Self::SwapWithReceiverNotAttributed => "okx_swap_with_receiver_not_attributed",
             Self::UnverifiedOrderEvent => "okx_unverified_order_event",
+            Self::UnresolvedVenueEvent => "venue_unresolved_event",
+            Self::UnverifiedVenueEvent => "venue_unverified_event",
         }
     }
 }
@@ -113,6 +123,8 @@ pub fn program_name(program: &SolanaPubkey) -> &'static str {
         "dflow_v4"
     } else if *program == scout_dex_solana::OKX_DEX_ROUTER_PROGRAM_ID_BYTES {
         "okx_dex_router"
+    } else if let Some(v) = VenueKind::from_program(program) {
+        v.label()
     } else {
         "pump_curve"
     }
@@ -159,6 +171,111 @@ fn discriminator_hex(ix: &RawSolanaInstruction, offset: usize) -> String {
         .map_or_else(|| "unknown".to_owned(), |d| hex8(&d))
 }
 
+/// Coverage counters of one direct venue (ADR-013 section 2b).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VenueDiag {
+    /// Events / swap instructions that did not decode exactly. COVERAGE GAP.
+    pub malformed: u64,
+    /// Event discriminators outside the pinned IDL. COVERAGE GAP.
+    pub unknown: u64,
+    /// Decoded events of an `IdlOnly` variant/layout (never evidence).
+    /// Informational.
+    pub idl_only: u64,
+    /// Events or swap instructions that could not become a leg (logs
+    /// missing/misaligned/truncated, mismatch, ambiguity). Informational: the
+    /// transaction may be explained by another leg; what stays unbooked
+    /// surfaces in the existing unknown/continuity diagnostics.
+    pub unresolved: u64,
+}
+
+impl VenueDiag {
+    fn add(&mut self, o: &Self) {
+        self.malformed = self.malformed.saturating_add(o.malformed);
+        self.unknown = self.unknown.saturating_add(o.unknown);
+        self.idl_only = self.idl_only.saturating_add(o.idl_only);
+        self.unresolved = self.unresolved.saturating_add(o.unresolved);
+    }
+}
+
+/// [`VenueDiag`] per direct venue.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VenueEventDiagnostics {
+    pub whirlpool: VenueDiag,
+    pub dlmm: VenueDiag,
+    pub raydium_clmm: VenueDiag,
+    pub raydium_cpmm: VenueDiag,
+}
+
+impl VenueEventDiagnostics {
+    /// Counters of one venue.
+    #[must_use]
+    pub const fn of(&self, venue: VenueKind) -> &VenueDiag {
+        match venue {
+            VenueKind::Whirlpool => &self.whirlpool,
+            VenueKind::Dlmm => &self.dlmm,
+            VenueKind::RaydiumClmm => &self.raydium_clmm,
+            VenueKind::RaydiumCpmm => &self.raydium_cpmm,
+        }
+    }
+
+    const fn of_mut(&mut self, venue: VenueKind) -> &mut VenueDiag {
+        match venue {
+            VenueKind::Whirlpool => &mut self.whirlpool,
+            VenueKind::Dlmm => &mut self.dlmm,
+            VenueKind::RaydiumClmm => &mut self.raydium_clmm,
+            VenueKind::RaydiumCpmm => &mut self.raydium_cpmm,
+        }
+    }
+
+    /// Adds `other` (saturating).
+    pub fn add(&mut self, other: &Self) {
+        for v in VenueKind::ALL {
+            self.of_mut(v).add(other.of(v));
+        }
+    }
+
+    /// Malformed + unknown events over all venues: the part that is a real
+    /// coverage gap (marks a run Partial like the other decoders').
+    #[must_use]
+    pub fn coverage_gaps(&self) -> u64 {
+        VenueKind::ALL.into_iter().fold(0u64, |a, v| {
+            a.saturating_add(self.of(v).malformed)
+                .saturating_add(self.of(v).unknown)
+        })
+    }
+
+    /// Partial-run reasons (one per venue and kind) for the coverage-gap
+    /// counters (malformed, unknown). Empty when there is no gap.
+    #[must_use]
+    pub fn gap_reasons(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for v in VenueKind::ALL {
+            let d = self.of(v);
+            if d.malformed > 0 {
+                out.push(format!(
+                    "{} {} event(s)/swap instruction(s) did not decode exactly (not used as swap evidence)",
+                    d.malformed,
+                    v.label()
+                ));
+            }
+            if d.unknown > 0 {
+                out.push(format!(
+                    "{} {} event(s) with an unknown discriminator",
+                    d.unknown,
+                    v.label()
+                ));
+            }
+        }
+        out
+    }
+
+    /// `true` when every counter is zero.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Counters and bounded samples of one transaction.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TxScan {
@@ -175,6 +292,8 @@ pub(crate) struct TxScan {
     pub okx_receiver: u64,
     /// OKX order events whose variant is not `FixtureVerified`.
     pub okx_idl_only: u64,
+    /// Direct-venue event coverage (ADR-013 section 2b).
+    pub venue: VenueEventDiagnostics,
 }
 
 impl TxScan {
@@ -212,6 +331,7 @@ pub(crate) fn scan_tx_evidence(
     decoders: &LedgerDecoders<'_>,
     jupiter: bool,
     orphans: &[(u32, &'static str)],
+    venue_issues: &[VenueIssue],
 ) -> TxScan {
     let mut scan = TxScan::default();
     for ix in &tx.instructions {
@@ -392,6 +512,24 @@ pub(crate) fn scan_tx_evidence(
                 _ => {}
             }
         }
+    }
+    for v in venue_issues {
+        let Some(ix) = tx
+            .instructions
+            .iter()
+            .find(|i| i.instruction_index == v.instruction_index)
+        else {
+            continue;
+        };
+        let d = scan.venue.of_mut(v.venue);
+        let (kind, counter) = match v.kind {
+            VenueIssueKind::Malformed => (EvidenceKind::MalformedEvent, &mut d.malformed),
+            VenueIssueKind::UnknownEvent => (EvidenceKind::UnknownDiscriminator, &mut d.unknown),
+            VenueIssueKind::IdlOnly => (EvidenceKind::UnverifiedVenueEvent, &mut d.idl_only),
+            VenueIssueKind::Unresolved => (EvidenceKind::UnresolvedVenueEvent, &mut d.unresolved),
+        };
+        *counter = counter.saturating_add(1);
+        scan.push(tx, ix, kind, v.name.clone(), &v.reason);
     }
     for (idx, name) in orphans {
         if let Some(ix) = tx.instructions.iter().find(|i| i.instruction_index == *idx) {

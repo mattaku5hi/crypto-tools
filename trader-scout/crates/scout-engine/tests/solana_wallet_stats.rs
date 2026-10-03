@@ -493,6 +493,7 @@ async fn other_errors_do_not_set_a_stop() {
 
 fn bare_tx(sig: u8, slot: u64, block_time: Option<i64>) -> RawSolanaTransaction {
     RawSolanaTransaction {
+        log_messages: None,
         block_time,
         signature: [sig; 64],
         execution: scout_core::SolanaExecutionStatus::Succeeded,

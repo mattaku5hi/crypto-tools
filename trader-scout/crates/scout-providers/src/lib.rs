@@ -14,11 +14,27 @@
 )]
 
 mod accounts;
+mod evm_blockscout;
+mod evm_rpc;
+mod evm_scan;
+mod evm_wire;
 mod fixture;
 mod helius;
 mod unconfigured;
 
 pub use accounts::{AccountRead, AccountsRead, GET_MULTIPLE_ACCOUNTS_MAX, MAX_ACCOUNT_DATA_BYTES};
+pub use evm_blockscout::{
+    BlockscoutApiKey, BlockscoutEvmConfig, BlockscoutEvmSource, BlockscoutInternal,
+    BlockscoutTokenTransfer, BlockscoutTx, Closest, Listing,
+};
+pub use evm_rpc::{
+    CallRecorder, EvmRpcClient, EvmRpcConfig, EvmSourceError, LogFilter, LogsResult,
+    is_range_or_cap_error,
+};
+pub use evm_scan::{
+    EvmHistoryScanner, InternalIndex, ReceiptMode, ScanLimits, TokenScanOutput, WalletScanOutput,
+};
+pub use evm_wire::{EvmReceiptInfo, EvmTxInfo};
 pub use fixture::{Fixture, FixtureProvenance, FixtureProvider};
 pub use helius::{
     DEFAULT_PAGE_LIMIT, HeliusProvider, HeliusRequestOptions, MAX_DERIVED_RESPONSE_BYTES,

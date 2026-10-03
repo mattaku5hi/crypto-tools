@@ -3,4 +3,4 @@
 //! crate's dependency footprint. Re-exported here unchanged so existing
 //! `scout_evm::RawEvmLog`/`RawEvmTransaction` call sites keep compiling.
 
-pub use scout_core::{RawEvmLog, RawEvmTransaction};
+pub use scout_core::{EvmTxStatus, InternalTransfer, RawEvmLog, RawEvmTransaction};

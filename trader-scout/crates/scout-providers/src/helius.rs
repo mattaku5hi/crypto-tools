@@ -146,6 +146,10 @@ struct TransactionMeta {
     pre_balances: Option<Vec<u64>>,
     #[serde(default, rename = "postBalances")]
     post_balances: Option<Vec<u64>>,
+    // Runtime log lines. `null`/absent -> `None` (not observed). Only the
+    // attribution-relevant lines are kept, see `retain_attribution_logs`.
+    #[serde(default, rename = "logMessages")]
+    log_messages: Option<Vec<String>>,
 }
 
 /// One entry from `preTokenBalances`/`postTokenBalances`. `owner` is
@@ -701,7 +705,9 @@ fn decode_full_transaction_record(
         &account_keys,
         static_key_count,
     )?;
+    let mut log_messages = None;
     if let Some(meta) = record.meta {
+        log_messages = meta.log_messages.as_deref().map(retain_attribution_logs);
         for group in meta.inner_instructions {
             inner_by_top_level_index.insert(group.index, group.instructions);
         }
@@ -758,7 +764,50 @@ fn decode_full_transaction_record(
         fee_payer,
         signers,
         native_balance_changes,
+        log_messages,
     })
+}
+
+/// Maximum number of retained log lines per transaction (external input is
+/// bounded, invariant 13/17). Past the cap the list ends with the runtime's
+/// own `Log truncated` marker, so a consumer stops attributing exactly as it
+/// does for a runtime-truncated log.
+const MAX_RETAINED_LOG_LINES: usize = 4096;
+/// Runtime marker line after which no further log line exists.
+const LOG_TRUNCATED: &str = "Log truncated";
+
+/// Keeps only the lines the invoke/success stack attribution needs
+/// (`Program <id> invoke [d]`, `Program <id> success`, `Program <id> failed...`,
+/// `Program data: ...`, `Log truncated`); `Program log:`, `consumed` and
+/// `return` lines are dropped to keep raw transactions small. A
+/// `Program log: ...` line never starts with `Program <id> ` because the id
+/// token would be `log:`, which no base58 id contains.
+fn retain_attribution_logs(lines: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in lines {
+        let keep = line == LOG_TRUNCATED
+            || line.starts_with("Program data: ")
+            || line
+                .strip_prefix("Program ")
+                .and_then(|rest| rest.split_once(' '))
+                .is_some_and(|(id, tail)| {
+                    id != "log:"
+                        && id != "data:"
+                        && id != "return:"
+                        && (tail.starts_with("invoke [")
+                            || tail == "success"
+                            || tail.starts_with("failed"))
+                });
+        if !keep {
+            continue;
+        }
+        if out.len() >= MAX_RETAINED_LOG_LINES {
+            out.push(LOG_TRUNCATED.to_owned());
+            break;
+        }
+        out.push(line.clone());
+    }
+    out
 }
 
 /// Extracts the raw native-SOL accounting facts: fee, fee payer,
@@ -1502,6 +1551,59 @@ mod tests {
         assert_eq!(tx.instructions.len(), 2);
         assert_eq!(tx.instructions[0].instruction_index, 0);
         assert_eq!(tx.instructions[1].instruction_index, 1);
+    }
+
+    #[test]
+    fn log_messages_are_absent_when_not_returned_and_filtered_when_returned() {
+        // The shared full-mode body has no `logMessages`: `None`, never an
+        // empty list ("no events observed").
+        let body = full_mode_body(None);
+        let result: TransactionsForAddressResult =
+            serde_json::from_value(body["result"].clone()).unwrap();
+        let tx = decode_full_transaction_record(result.data.into_iter().next().unwrap()).unwrap();
+        assert_eq!(tx.log_messages, None);
+
+        let mut body = full_mode_body(None);
+        body["result"]["data"][0]["meta"]["logMessages"] = json!([
+            "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+            "Program ComputeBudget111111111111111111111111111111 success",
+            "Program log: Program data: spoof",
+            "Program log: Instruction: Swap",
+            "Program whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc invoke [1]",
+            "Program data: AAEC",
+            "Program whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc consumed 10 of 20 compute units",
+            "Program return: whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc AAAA",
+            "Program whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc failed: custom program error: 0x1",
+            "Log truncated"
+        ]);
+        let result: TransactionsForAddressResult =
+            serde_json::from_value(body["result"].clone()).unwrap();
+        let tx = decode_full_transaction_record(result.data.into_iter().next().unwrap()).unwrap();
+        assert_eq!(
+            tx.log_messages.unwrap(),
+            vec![
+                "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+                "Program ComputeBudget111111111111111111111111111111 success",
+                "Program whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc invoke [1]",
+                "Program data: AAEC",
+                "Program whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc failed: custom program error: 0x1",
+                "Log truncated",
+            ]
+        );
+    }
+
+    #[test]
+    fn retained_log_lines_are_bounded_and_end_with_the_truncation_marker() {
+        let lines: Vec<String> = (0..MAX_RETAINED_LOG_LINES + 10)
+            .map(|_| "Program data: AAEC".to_owned())
+            .collect();
+        let kept = retain_attribution_logs(&lines);
+        assert_eq!(kept.len(), MAX_RETAINED_LOG_LINES + 1);
+        assert_eq!(kept.last().map(String::as_str), Some("Log truncated"));
+        // At the cap exactly: nothing is added.
+        let exact = retain_attribution_logs(&lines[..MAX_RETAINED_LOG_LINES]);
+        assert_eq!(exact.len(), MAX_RETAINED_LOG_LINES);
+        assert!(exact.iter().all(|l| l.starts_with("Program data")));
     }
 
     #[test]

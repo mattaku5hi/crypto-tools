@@ -28,7 +28,8 @@ pub use identity::{
     SolanaCluster, WalletKey,
 };
 pub use raw_payload::{
-    RawEvmLog, RawEvmTransaction, RawPayload, RawSolanaInstruction, RawSolanaTransaction,
-    SolanaExecutionStatus, SolanaNativeBalanceChange, SolanaPubkey, SolanaTokenBalanceChange,
+    EvmTxStatus, InternalTransfer, RawEvmLog, RawEvmTransaction, RawPayload, RawSolanaInstruction,
+    RawSolanaTransaction, SolanaExecutionStatus, SolanaNativeBalanceChange, SolanaPubkey,
+    SolanaTokenBalanceChange,
 };
 pub use trust::{ExternalDataAcknowledgement, ExternalDataOptIn, TrustLevel};

@@ -45,3 +45,13 @@ fixtures, `scout-engine/tests/okx_router_legs.rs` (order events vs owner-keyed d
 | `meteora_dlmm_onchain_idl_2026-10-03.json` | `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` | on-chain Anchor IDL account `7UZRobkzaKVm1RbCH5WdFaYCGzCRjnu3prziHAsYiSyr` | `57ee0b91fb1505f9af4be8d073ecdea65adc395bae49c96a707a263b257eca84` |
 | `raydium_clmm_idl_e7e0c96f.json` | `CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK` | official `raydium-io/raydium-idl` @ `e7e0c96fe77bcf6a020b84a44c47a722aac8e359` (no on-chain IDL account) | `040a8c4866317fa028be8a81db54325ce6d9b92aeb10582d89992855bbbce5c1` |
 | `raydium_cpmm_idl_e7e0c96f.json` | `CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C` | official `raydium-io/raydium-idl` @ `e7e0c96f…` | `1202f6dc8e1c3216598f2ad5c620b9aa8c64ac584563fafed68125c27fb6df81` |
+
+Checked by (P4.9, ADR-013 section 2b): `scout-dex-solana` (`whirlpool_event`, `dlmm_event`, `raydium_clmm_event`,
+`raydium_cpmm_event`: IDL-equality tests for the full event set with discriminators, the swap-event layouts and the swap
+instruction discriminators/account positions; DLMM `Swap`/`Swap2Evt` via `emit_cpi!` with event authority `D1ZN9Wj1...`,
+the other three via `emit!` `Program data:` log lines attributed by the invoke/success stack, `venue_log`) and, over the
+committed live fixtures, `scout-engine/tests/venue_swap_legs.rs`: 275 events (Whirlpool `Traded` 20, DLMM `Swap` 111 and
+`Swap2Evt` 111, CLMM `SwapEvent` 19, CPMM `SwapEvent` 14); every event passes at least one side against the pool-owned
+token-account deltas AND against the vault accounts named by the swap instruction, whose raw mints equal the leg's mints
+(input side exact 264, output side exact 273). The deployed Raydium CLMM `SwapEvent` is 213 bytes, the pinned IDL layout
+(197 bytes) plus 16 unpinned trailing bytes (19/19 samples); 213 is FixtureVerified, 197 IdlOnly.

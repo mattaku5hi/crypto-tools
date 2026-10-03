@@ -584,6 +584,7 @@ fn bal(mint: u8, owner: u8, pre: Option<u64>, post: u64) -> SolanaTokenBalanceCh
 
 fn curve_tx(buy: bool, user: u8, mint: u8, sig: u8, slot: u64) -> RawSolanaTransaction {
     RawSolanaTransaction {
+        log_messages: None,
         block_time: None,
         signature: [sig; 64],
         execution: SolanaExecutionStatus::Succeeded,
@@ -687,6 +688,7 @@ async fn transfer_only_recipient_never_hits() {
     // The wallet RECEIVES token 10 through a plain transfer (positive owner
     // delta, no decoded trade) and sends token 11 away the same way.
     let transfer = |mint: u8, pre: Option<u64>, post: u64, sig: u8| RawSolanaTransaction {
+        log_messages: None,
         block_time: None,
         signature: [sig; 64],
         execution: SolanaExecutionStatus::Succeeded,
@@ -919,6 +921,7 @@ fn jupiter_route_tx(
         closed: false,
     };
     RawSolanaTransaction {
+        log_messages: None,
         block_time: None,
         signature: [sig; 64],
         execution: SolanaExecutionStatus::Succeeded,
@@ -1149,6 +1152,199 @@ async fn okx_order_event_makes_a_signer_route_swap_a_hit_in_buyer_intersect() {
     assert!(r.base.matches.is_empty());
     assert_eq!(r.trade.okx_idl_only_order_events, 4);
     assert_eq!(r.trade.okx_swap_with_receiver_not_attributed, 1);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VenueMode {
+    /// DLMM `swap2` + `Swap2Evt` event-CPI (emit_cpi!).
+    Dlmm,
+    /// Whirlpool `swap_v2` + `Traded` as a `Program data:` log line (emit!).
+    Whirlpool,
+    /// Whirlpool without any log (the provider did not return logs).
+    WhirlpoolNoLogs,
+    /// The swap instruction alone, no event: a transfer-shaped transaction.
+    NoEvent,
+}
+
+/// Signer wallet 1 (relayer 88 pays) swaps USDC for / into token `trade_mint`
+/// through ONE direct venue; the only evidence is that venue's swap event
+/// (ADR-013 section 2b). X/A mint = USDC, Y/B mint = the token.
+fn venue_route_tx(
+    mode: VenueMode,
+    buy: bool,
+    event_mint: u8,
+    sig: u8,
+    slot: u64,
+) -> RawSolanaTransaction {
+    use base64::Engine as _;
+    use scout_dex_solana::{
+        DLMM_EVENT_AUTHORITY_BYTES, DLMM_PROGRAM_ID_BYTES, DLMM_SWAP2_EVENT_DISCRIMINATOR,
+        WHIRLPOOL_PROGRAM_ID_BYTES, WHIRLPOOL_TRADED_DISCRIMINATOR,
+    };
+    let mut tx = jupiter_route_tx(buy, 10, sig, slot, false);
+    let usdc = pubkey(USDC_MINT);
+    let ev_token = pk(event_mint);
+    let pool = pk(0x60);
+    // Direction: buy = USDC in (X/A in), sell = token in.
+    let (amount_in, amount_out) = if buy {
+        (5_000_000u64, 1_000u64)
+    } else {
+        (1_000u64, 5_000_000u64)
+    };
+    let mut accounts: Vec<SolanaPubkey> = (0..16u8).map(|i| pk(100 + i)).collect();
+    let mut data: Vec<u8>;
+    match mode {
+        VenueMode::Dlmm => {
+            data = scout_dex_solana::DLMM_SWAP2_DISCRIMINATOR.to_vec();
+            data.resize(28, 0);
+            accounts[0] = pool;
+            accounts[6] = usdc;
+            accounts[7] = ev_token;
+            tx.instructions.push(RawSolanaInstruction {
+                program_id: DLMM_PROGRAM_ID_BYTES,
+                accounts,
+                data,
+                instruction_index: 0,
+            });
+            if event_mint != 0 {
+                let mut ev = EVENT_CPI_DISCRIMINATOR.to_vec();
+                ev.extend(DLMM_SWAP2_EVENT_DISCRIMINATOR);
+                ev.extend(pool);
+                ev.extend(pk(1));
+                ev.extend([0u8; 8]);
+                ev.push(u8::from(buy)); // swap_for_y: X (USDC) in on a buy
+                ev.extend([0u8; 16]);
+                ev.extend(amount_in.to_le_bytes());
+                ev.extend(0u64.to_le_bytes());
+                ev.extend(amount_out.to_le_bytes());
+                ev.extend([0u8; 32]);
+                ev.extend([0u8, 0u8]);
+                tx.instructions.push(RawSolanaInstruction {
+                    program_id: DLMM_PROGRAM_ID_BYTES,
+                    accounts: vec![DLMM_EVENT_AUTHORITY_BYTES],
+                    data: ev,
+                    instruction_index: 1,
+                });
+            }
+        }
+        VenueMode::Whirlpool | VenueMode::WhirlpoolNoLogs | VenueMode::NoEvent => {
+            data = scout_dex_solana::WHIRLPOOL_SWAP_V2_DISCRIMINATOR.to_vec();
+            data.resize(43, 0);
+            data[41] = u8::from(buy); // a_to_b: A (USDC) in on a buy
+            accounts.truncate(15);
+            accounts[4] = pool;
+            accounts[5] = usdc;
+            accounts[6] = ev_token;
+            tx.instructions.push(RawSolanaInstruction {
+                program_id: WHIRLPOOL_PROGRAM_ID_BYTES,
+                accounts,
+                data,
+                instruction_index: 0,
+            });
+            if mode == VenueMode::Whirlpool {
+                let mut ev = WHIRLPOOL_TRADED_DISCRIMINATOR.to_vec();
+                ev.extend(pool);
+                ev.push(u8::from(buy));
+                ev.extend([0u8; 32]);
+                for v in [amount_in, amount_out, 0, 0, 0, 0] {
+                    ev.extend(v.to_le_bytes());
+                }
+                let id = bs58::encode(WHIRLPOOL_PROGRAM_ID_BYTES).into_string();
+                tx.log_messages = Some(vec![
+                    format!("Program {id} invoke [1]"),
+                    format!(
+                        "Program data: {}",
+                        base64::engine::general_purpose::STANDARD.encode(ev)
+                    ),
+                    format!("Program {id} success"),
+                ]);
+            }
+        }
+    }
+    tx
+}
+
+#[tokio::test]
+async fn direct_venue_events_make_a_signer_route_swap_a_hit_in_buyer_intersect() {
+    let provider = scripted(vec![(
+        10,
+        vec![
+            // Meteora DLMM, emit_cpi!: buy and sell by signer wallet 1.
+            venue_route_tx(VenueMode::Dlmm, true, 10, 1, 100),
+            venue_route_tx(VenueMode::Dlmm, false, 10, 2, 101),
+            // Orca Whirlpool, emit! log line (attributed by the invoke stack).
+            venue_route_tx(VenueMode::Whirlpool, true, 10, 3, 102),
+            // The same movements with the swap instruction but no event.
+            venue_route_tx(VenueMode::NoEvent, true, 10, 4, 103),
+            // The event trades another token: not evidence for token 10.
+            venue_route_tx(VenueMode::Dlmm, true, 11, 5, 104),
+            // Whirlpool event lines not observed (provider returned no logs).
+            venue_route_tx(VenueMode::WhirlpoolNoLogs, true, 10, 6, 105),
+        ],
+        false,
+    )]);
+    let r = run(&provider, &[10], 1, opts(SideFilter::Any)).await;
+    assert_eq!(r.base.matches.len(), 1);
+    let hits = &r.side_hits[&wallet(1)][&token(10)];
+    let (b, s) = (hits.buy.clone().unwrap(), hits.sell.clone().unwrap());
+    assert_eq!(
+        (b.venue, b.variant, b.count),
+        (Venue::Route, "route_swap", 2)
+    );
+    assert_eq!((s.venue, s.count), (Venue::Route, 1));
+    assert_eq!(r.trade.ops(Venue::Route, TradeSide::Buy), 2);
+    assert_eq!(r.trade.ops(Venue::Route, TradeSide::Sell), 1);
+    // Relayer (fee payer) and the venue programs are never attributed.
+    assert_eq!(r.side_hits.len(), 1);
+    // Coverage: the token-11 event is a DLMM leg for another token (decoded
+    // fine, no counter); the two txs without observable events are counted
+    // `unresolved` (the swap instruction has no event); nothing malformed.
+    let d = &r.trade.venue_events;
+    assert_eq!((d.dlmm.malformed, d.whirlpool.malformed), (0, 0));
+    assert_eq!(d.whirlpool.unresolved, 2);
+    assert_eq!(d.dlmm.unresolved, 0);
+}
+
+#[tokio::test]
+async fn malformed_venue_events_are_counted_and_never_evidence_in_buyer_intersect() {
+    let mut bad_dlmm = venue_route_tx(VenueMode::Dlmm, true, 10, 1, 100);
+    bad_dlmm.instructions[1].data.push(0);
+    let mut bad_whirlpool = venue_route_tx(VenueMode::Whirlpool, true, 10, 2, 101);
+    // One byte more in the base64 payload line.
+    {
+        use base64::Engine as _;
+        let logs = bad_whirlpool.log_messages.as_mut().unwrap();
+        let b64 = logs[1].strip_prefix("Program data: ").unwrap().to_owned();
+        let mut bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        bytes.push(0);
+        logs[1] = format!(
+            "Program data: {}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        );
+    }
+    let provider = scripted(vec![(10, vec![bad_dlmm, bad_whirlpool], false)]);
+    let r = run(&provider, &[10], 1, opts(SideFilter::Any)).await;
+    assert!(r.base.matches.is_empty());
+    assert_eq!(r.trade.venue_events.dlmm.malformed, 1);
+    assert_eq!(r.trade.venue_events.whirlpool.malformed, 1);
+    assert_eq!(r.trade.venue_events.coverage_gaps(), 2);
+    // Both are coverage gaps: the run is Partial with a reason naming them.
+    assert!(
+        r.incomplete_reasons()
+            .iter()
+            .any(|x| x.contains("dlmm") && x.contains("did not decode exactly")),
+        "{:?}",
+        r.incomplete_reasons()
+    );
+    let kinds: Vec<&str> = r
+        .trade
+        .evidence_samples
+        .iter()
+        .map(|e| e.kind.label())
+        .collect();
+    assert!(kinds.contains(&"malformed_event"), "{kinds:?}");
 }
 
 #[tokio::test]
