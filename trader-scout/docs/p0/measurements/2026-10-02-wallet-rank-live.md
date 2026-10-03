@@ -89,3 +89,28 @@ themselves high-frequency (e.g. 257, 264, 137, 124 trades per active day).
 Complete wallets now carry mostly known episodes, e.g. known/unknown closed: 48/2, 49/3, 52/1,
 28/2, 28/4, 10/1, 57/5, 112/16, 97/19 (outliers 33/64, 3/6). The binding constraint for eligibility
 is now the strict rule "any `ClosedUnknown` episode excludes the wallet" (P4.10), not decoding.
+
+## First non-empty rankings — ADR-016 materiality policy (commit `0698d1e`, 2026-10-03)
+
+GMGN K≥2 set, `--quote sol`:
+
+| Profile / window | Pages × 500 | Requests | Ranked | Primary exclusions |
+|---|---|---|---|---|
+| insider / 3d | 5 | 157 | 1 | incomplete 20, unknown share 11, activity ceiling 6, days 1 |
+| quality / 7d | 12 | 296 | 4 | incomplete 15, unknown share 14, days 4, closed episodes 2 |
+
+insider #1 `3eGj9qx6…`: tier 1, known-subset realized −4.62 SOL, lower bound −11.40 SOL, win rate
+lower bound 4/11, unknown share 1/11.
+
+quality (7d), all tier 2 (an unknown episode with unknown basis → lower bound unbounded):
+
+| # | Wallet | Known-subset realized (SOL) | Win-rate LB | Unknown share | Closed known + unknown |
+|---|---|---|---|---|---|
+| 1 | `AZtU5hPN…` | +226.14 | 43.24 % | 8.11 % | 34 + 3 |
+| 2 | `HQLeWLJR…` | +25.37 | 32.53 % | 7.23 % | 77 + 6 |
+| 3 | `CCpcz76L…` | −53.72 | 24.07 % | 9.26 % | 49 + 5 |
+| 4 | `EtJ99fc1…` | −129.02 | 18.75 % | 6.25 % | 90 + 6 |
+
+Two of four GMGN "top traders" have negative own realized SOL PnL over the last 7 days — a reminder
+that leaderboard figures (USD, 30d, incl. unrealized) are not our metric. Still a single tiny
+research sample, not a validation of the policy.
