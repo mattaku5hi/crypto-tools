@@ -87,9 +87,62 @@ fn meta(out: &Out) -> Value {
 }
 
 #[tokio::test]
-async fn defaults_send_the_legacy_request_and_echo_options() {
+async fn defaults_send_the_live_verified_request_and_echo_options() {
     let server = single_page_server().await;
     let out = run(server.uri(), vec![]).await;
+    assert_eq!(
+        first_request_options(&server).await,
+        json!({"transactionDetails": "full", "sortOrder": "desc", "limit": 500,
+               "filters": {"tokenAccounts": "balanceChanged"}})
+    );
+    let po = &meta(&out)["scan"]["provider_options"];
+    assert_eq!(po["page_limit"], 500);
+    assert_eq!(po["token_accounts"], "BalanceChanged");
+    assert_eq!(po["status"], "Any");
+    assert_eq!(po["server_window"], true);
+    assert!(
+        out.stderr.contains("provider options: page_limit=500"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[tokio::test]
+async fn defaults_with_a_window_add_block_time_to_the_filters() {
+    let server = single_page_server().await;
+    run(
+        server.uri(),
+        args(&[
+            "--since",
+            "2026-08-01T00:00:00Z",
+            "--until",
+            "2026-08-02T00:00:00Z",
+        ]),
+    )
+    .await;
+    assert_eq!(
+        first_request_options(&server).await,
+        json!({"transactionDetails": "full", "sortOrder": "desc", "limit": 500,
+               "filters": {
+                   "blockTime": {"gte": 1_785_542_400i64, "lt": 1_785_628_800i64},
+                   "tokenAccounts": "balanceChanged"}})
+    );
+}
+
+#[tokio::test]
+async fn explicit_opt_outs_reproduce_the_legacy_request() {
+    let server = single_page_server().await;
+    let out = run(
+        server.uri(),
+        args(&[
+            "--page-limit",
+            "100",
+            "--server-window=false",
+            "--token-accounts",
+            "none",
+        ]),
+    )
+    .await;
     assert_eq!(
         first_request_options(&server).await,
         json!({"transactionDetails": "full", "sortOrder": "desc", "limit": 100})
@@ -99,11 +152,6 @@ async fn defaults_send_the_legacy_request_and_echo_options() {
     assert_eq!(po["token_accounts"], "None");
     assert_eq!(po["status"], "Any");
     assert_eq!(po["server_window"], false);
-    assert!(
-        out.stderr.contains("provider options: page_limit=100"),
-        "{}",
-        out.stderr
-    );
 }
 
 #[tokio::test]
@@ -144,17 +192,18 @@ async fn options_reach_the_request_without_a_status_filter() {
 async fn server_window_without_a_window_and_flag_off_send_no_block_time() {
     let server = single_page_server().await;
     run(server.uri(), args(&["--server-window"])).await;
-    assert!(
-        first_request_options(&server)
-            .await
-            .get("filters")
-            .is_none()
+    assert_eq!(
+        first_request_options(&server).await["filters"],
+        json!({"tokenAccounts": "balanceChanged"})
     );
 
     let server = single_page_server().await;
     run(
         server.uri(),
         args(&[
+            "--server-window=false",
+            "--token-accounts",
+            "none",
             "--since",
             "2026-08-01T00:00:00Z",
             "--until",

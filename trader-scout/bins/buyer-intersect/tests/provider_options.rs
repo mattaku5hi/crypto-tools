@@ -97,23 +97,48 @@ fn meta(out: &Out) -> Value {
 }
 
 #[tokio::test]
-async fn defaults_send_the_legacy_request_and_echo_options() {
+async fn defaults_send_the_live_verified_request_and_echo_options() {
     let server = single_page_server().await;
     let out = run(Some(server.uri()), args(&[])).await;
     let options = first_request_options(&server).await;
     assert_eq!(
         options,
+        json!({"transactionDetails": "full", "sortOrder": "asc", "limit": 500,
+               "filters": {"status": "succeeded"}})
+    );
+    let m = meta(&out);
+    assert_eq!(m["provider_options"]["page_limit"], 500);
+    assert_eq!(m["provider_options"]["status"], "Succeeded");
+    assert_eq!(m["provider_options"]["server_window"], true);
+    assert!(
+        out.stderr.contains("provider options: page_limit=500"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[tokio::test]
+async fn explicit_opt_outs_reproduce_the_legacy_request() {
+    let server = single_page_server().await;
+    let out = run(
+        Some(server.uri()),
+        args(&[
+            "--page-limit",
+            "100",
+            "--provider-status-filter",
+            "any",
+            "--server-window=false",
+        ]),
+    )
+    .await;
+    assert_eq!(
+        first_request_options(&server).await,
         json!({"transactionDetails": "full", "sortOrder": "asc", "limit": 100})
     );
     let m = meta(&out);
     assert_eq!(m["provider_options"]["page_limit"], 100);
     assert_eq!(m["provider_options"]["status"], "Any");
     assert_eq!(m["provider_options"]["server_window"], false);
-    assert!(
-        out.stderr.contains("provider options: page_limit=100"),
-        "{}",
-        out.stderr
-    );
 }
 
 #[tokio::test]
@@ -158,18 +183,24 @@ async fn server_window_sends_block_time_filter_only_with_a_window() {
     .await;
     assert_eq!(
         first_request_options(&server).await,
-        json!({"transactionDetails": "full", "sortOrder": "desc", "limit": 100,
-               "filters": {"blockTime": {"gte": 1_785_542_400i64, "lt": 1_785_628_800i64}}})
+        json!({"transactionDetails": "full", "sortOrder": "desc", "limit": 500,
+               "filters": {"status": "succeeded",
+                           "blockTime": {"gte": 1_785_542_400i64, "lt": 1_785_628_800i64}}})
     );
     let m = meta(&out);
     assert_eq!(m["provider_options"]["block_time_gte"], 1_785_542_400i64);
     assert_eq!(m["provider_options"]["server_window"], true);
 
-    // Without --server-window the same window sends no filters key.
+    // With --server-window=false the same window sends no blockTime filter.
     let server = single_page_server().await;
     run(
         Some(server.uri()),
         args(&[
+            "--server-window=false",
+            "--provider-status-filter",
+            "any",
+            "--page-limit",
+            "100",
             "--since",
             "2026-08-01T00:00:00Z",
             "--until",
@@ -182,14 +213,12 @@ async fn server_window_sends_block_time_filter_only_with_a_window() {
         json!({"transactionDetails": "full", "sortOrder": "desc", "limit": 100})
     );
 
-    // --server-window without any window: no filters either.
+    // --server-window without any window: no blockTime (status filter only).
     let server = single_page_server().await;
     run(Some(server.uri()), args(&["--server-window"])).await;
-    assert!(
-        first_request_options(&server)
-            .await
-            .get("filters")
-            .is_none()
+    assert_eq!(
+        first_request_options(&server).await["filters"],
+        json!({"status": "succeeded"})
     );
 }
 

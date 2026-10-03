@@ -67,16 +67,16 @@ const ENDPOINT_OVERRIDE_ENV: &str = "SCOUT_WALLET_STATS_ENDPOINT";
 const HELIUS_TIMEOUT_MS: u64 = 30_000;
 const HELIUS_MAX_ATTEMPTS: u32 = 3;
 
-// Defaults of the provider request options. NOT yet live-verified, so they
-// reproduce the legacy request; flip these constants (one line each) after
-// live verification. No status filter is ever applied to wallet scans:
-// failed transactions still cost fees (ADR-004).
+// Defaults of the provider request options: live-verified 2026-10-03, see
+// docs/p0/measurements/2026-10-03-helius-filters-live.md. The opt-out flags
+// reproduce the legacy request. No status filter is ever applied to wallet
+// scans: failed transactions still cost fees (ADR-004).
 /// `--page-limit` default (`limit` per `getTransactionsForAddress` page).
-const DEFAULT_PAGE_LIMIT_ARG: u32 = 100;
+const DEFAULT_PAGE_LIMIT_ARG: u32 = 500;
 /// `--server-window` default: send the window as `filters.blockTime`.
-const DEFAULT_SERVER_WINDOW: bool = false;
+const DEFAULT_SERVER_WINDOW: bool = true;
 /// `--token-accounts` default: `none` or `balance-changed`.
-const DEFAULT_TOKEN_ACCOUNTS: &str = "none";
+const DEFAULT_TOKEN_ACCOUNTS: &str = "balance-changed";
 
 /// Print stats for every input wallet, including N/A and no-activity cases.
 #[derive(Debug, Parser)]
@@ -119,7 +119,7 @@ struct Args {
     /// Transactions per provider page (`limit`, 1..=1000). The page budget
     /// stays in PAGES: per-wallet transaction budget is
     /// `max-pages-per-wallet * page-limit`. Pages above 500 txs raise the
-    /// response-size cap (~20 KB/tx, max 64 MiB). Not yet live-verified.
+    /// response-size cap (~20 KB/tx, max 64 MiB). Live-verified 2026-10-03.
     #[arg(
         long,
         default_value_t = DEFAULT_PAGE_LIMIT_ARG,
@@ -129,7 +129,7 @@ struct Args {
 
     /// With a window, also send it server-side as `filters.blockTime`
     /// (gte since, lt until) in addition to the newest-first boundary
-    /// walk. `--server-window=false` disables. Not yet live-verified.
+    /// walk. `--server-window=false` disables. Live-verified 2026-10-03.
     #[arg(
         long,
         num_args = 0..=1,
@@ -141,7 +141,7 @@ struct Args {
 
     /// `filters.tokenAccounts`: `none` (only txs referencing the wallet) or
     /// `balance-changed` (also txs changing the balance of a token account
-    /// the wallet owns; Helius-recommended). Not yet live-verified.
+    /// the wallet owns; Helius-recommended). Live-verified 2026-10-03.
     #[arg(
         long,
         default_value = DEFAULT_TOKEN_ACCOUNTS,

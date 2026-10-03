@@ -85,15 +85,15 @@ const ENDPOINT_OVERRIDE_ENV: &str = "SCOUT_BUYER_INTERSECT_ENDPOINT";
 const HELIUS_TIMEOUT_MS: u64 = 30_000;
 const HELIUS_MAX_ATTEMPTS: u32 = 3;
 
-// Defaults of the provider request options. NOT yet live-verified, so they
-// reproduce the legacy request; flip these constants (one line each) after
-// live verification.
+// Defaults of the provider request options: live-verified 2026-10-03, see
+// docs/p0/measurements/2026-10-03-helius-filters-live.md. The opt-out flags
+// reproduce the legacy request.
 /// `--page-limit` default (`limit` per `getTransactionsForAddress` page).
-const DEFAULT_PAGE_LIMIT_ARG: u32 = 100;
+const DEFAULT_PAGE_LIMIT_ARG: u32 = 500;
 /// `--provider-status-filter` default: `any` or `succeeded`.
-const DEFAULT_PROVIDER_STATUS_FILTER: &str = "any";
+const DEFAULT_PROVIDER_STATUS_FILTER: &str = "succeeded";
 /// `--server-window` default: send the window as `filters.blockTime`.
-const DEFAULT_SERVER_WINDOW: bool = false;
+const DEFAULT_SERVER_WINDOW: bool = true;
 
 /// Find wallets that traded (bought and/or sold, `--side`) at least K
 /// distinct input tokens.
@@ -148,8 +148,8 @@ struct Args {
     /// Transactions per provider page (`limit`, 1..=1000; Solana/Helius
     /// only). `--max-pages-per-token` counts PAGES, so the per-token
     /// transaction budget is `max-pages-per-token * page-limit`. Pages above
-    /// 500 txs raise the response-size cap (~20 KB/tx, max 64 MiB). Not yet
-    /// live-verified.
+    /// 500 txs raise the response-size cap (~20 KB/tx, max 64 MiB). Live-verified
+    /// 2026-10-03.
     #[arg(
         long,
         default_value_t = DEFAULT_PAGE_LIMIT_ARG,
@@ -159,7 +159,7 @@ struct Args {
 
     /// Server-side status filter: `any` (no filter) or `succeeded` (failed
     /// transactions are then invisible; buyer-intersect only needs
-    /// successful trades). Not yet live-verified.
+    /// successful trades). Live-verified 2026-10-03.
     #[arg(
         long,
         default_value = DEFAULT_PROVIDER_STATUS_FILTER,
@@ -169,7 +169,7 @@ struct Args {
 
     /// With a window, also send it server-side as `filters.blockTime`
     /// (gte since, lt until) in addition to the newest-first boundary
-    /// walk. `--server-window=false` disables. Not yet live-verified.
+    /// walk. `--server-window=false` disables. Live-verified 2026-10-03.
     #[arg(
         long,
         num_args = 0..=1,
