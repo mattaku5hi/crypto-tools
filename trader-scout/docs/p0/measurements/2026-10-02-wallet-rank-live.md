@@ -123,3 +123,11 @@ OKX evidence closed the last unbooked route-shaped txs on the router fixtures (0
 live set only marginally: decoding is now past the point of diminishing returns for it. Remaining
 blockers are window coverage (budget) and unknown episodes with unknown basis (unbounded → tier 2),
 mostly from inbound token transfers whose acquisition basis is genuinely unknowable on-chain.
+
+## USD ranking (ADR-018, commit `89a4992`, 2026-10-03)
+
+`wallet-rank --profile quality --quote usd --period 7d --max-pages-per-wallet 12 --max-requests 500
+--max-price-requests 400`: 296 Helius requests + **34 Coinbase candle requests**; price legs
+**36,715, priced 100 %** (`cex_reference_1m`; USDC par assumed on 44 legs). Ranked 4 (same set as
+the SOL run, all tier 2): `AZtU5hPN…` +$27,523.92, `HQLeWLJR…` +$3,263.64, `CCpcz76L…` −$3,635.55,
+`EtJ99fc1…` −$16,831.92 (known-subset realized USD; lower bounds unbounded).
