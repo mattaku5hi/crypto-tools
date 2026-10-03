@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use alloy_primitives::{Address, B256, U256};
 use scout_api::ProviderError;
-use scout_rpc::RequestBudgetExhausted;
+use scout_rpc::{RateLimiter, RequestBudgetExhausted};
 use serde_json::Value;
 
 use crate::evm_rpc::EvmSourceError;
@@ -94,6 +94,9 @@ pub struct BlockscoutEvmConfig {
     pub max_response_bytes: usize,
     /// Shared HTTP-attempt budget (`None` = unlimited).
     pub max_total_requests: Option<u64>,
+    /// Client-side limiter in front of every HTTP attempt (shared by clones;
+    /// a 429 halves its rate). `None` = unthrottled.
+    pub rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl BlockscoutEvmConfig {
@@ -110,6 +113,7 @@ impl BlockscoutEvmConfig {
             max_pages: 20,
             max_response_bytes: 16 * 1024 * 1024,
             max_total_requests: None,
+            rate_limiter: None,
         }
     }
 }
@@ -219,6 +223,13 @@ impl BlockscoutEvmSource {
         }
     }
 
+    /// A 429 / "rate limit" answer: halve the client-side rate.
+    fn note_rate_limited(&self) {
+        if let Some(l) = &self.cfg.rate_limiter {
+            l.on_rate_limited();
+        }
+    }
+
     fn scrub(&self, text: &str) -> String {
         sanitize_text(&text.replace(&self.cfg.api_key.0, "<redacted>"))
     }
@@ -235,6 +246,19 @@ impl BlockscoutEvmSource {
                     .saturating_mul(1u64 << shift)
                     .min(30_000);
                 tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+            if let Some(l) = &self.cfg.rate_limiter {
+                // Do not queue for a request the budget would refuse.
+                if self
+                    .cfg
+                    .max_total_requests
+                    .is_some_and(|m| self.total_requests_made() >= m)
+                {
+                    self.reserve()?; // spent: returns the typed error
+                }
+                l.acquire(1)
+                    .await
+                    .map_err(|e| ProviderError::Other(Box::new(e)))?;
             }
             self.reserve()?;
             let sent = self
@@ -254,6 +278,7 @@ impl BlockscoutEvmSource {
             };
             let status = response.status();
             if status.as_u16() == 429 {
+                self.note_rate_limited();
                 last = Some(ProviderError::RateLimited { retry_after: None }.into());
                 continue;
             }
@@ -298,6 +323,7 @@ impl BlockscoutEvmSource {
             };
             let blob = format!("{} {}", env.message, env.result.as_str().unwrap_or(""));
             if blob.to_ascii_lowercase().contains("rate limit") {
+                self.note_rate_limited();
                 last = Some(ProviderError::RateLimited { retry_after: None }.into());
                 continue;
             }
@@ -771,6 +797,37 @@ mod tests {
             src.block_no_by_time(99, Closest::Before).await.unwrap(),
             123
         );
+        assert_eq!(src.total_requests_made(), 2);
+    }
+
+    #[tokio::test]
+    async fn limiter_paces_attempts_and_429_halves_the_rate() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"status":"1","message":"OK","result":"7"})),
+            )
+            .mount(&s)
+            .await;
+        let limiter = Arc::new(RateLimiter::new(40, 1));
+        let lim = limiter.clone();
+        let src = source(&s, move |c| {
+            c.rate_limiter = Some(lim);
+            c.max_total_requests = Some(5);
+        });
+        let t0 = std::time::Instant::now();
+        assert_eq!(src.block_no_by_time(1, Closest::After).await.unwrap(), 7);
+        let st = limiter.stats();
+        assert_eq!((st.acquired, st.halvings), (2, 1));
+        assert_eq!(st.rate_milli, 20_000);
+        // second attempt waited for a token at the halved rate (50 ms)
+        assert!(t0.elapsed() >= std::time::Duration::from_millis(45));
         assert_eq!(src.total_requests_made(), 2);
     }
 

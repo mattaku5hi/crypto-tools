@@ -396,6 +396,7 @@ async fn scan(
                 ReceiptsArg::Block => ReceiptMode::BlockReceipts,
                 ReceiptsArg::Tx => ReceiptMode::PerTransaction,
             },
+            ..ScanLimits::default()
         },
     );
     let blocks = match window {

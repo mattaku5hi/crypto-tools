@@ -35,13 +35,34 @@ struct Out {
 }
 
 async fn rpc() -> MockServer {
+    rpc_with(false).await
+}
+
+/// `capped`: `eth_getLogs` answers like Alchemy's free tier (10-block cap)
+/// for every window wider than 10 blocks.
+async fn rpc_with(capped: bool) -> MockServer {
     let p = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../docs/p0/measurements/fixtures/evm_robinhood_token_aiden_v4_2026-10-03.json"
     );
     let replay = EvmFixtureReplay::from_path(std::path::Path::new(p))
         .unwrap()
-        .with_handler(Box::new(|m, params| {
+        .with_handler(Box::new(move |m, params| {
+            if capped && m == "eth_getLogs" {
+                let hex = |v: &Value| {
+                    u64::from_str_radix(v.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
+                };
+                let (a, b) = (hex(&params[0]["fromBlock"]), hex(&params[0]["toBlock"]));
+                if b - a >= 10 {
+                    return Some(ReplayReply::Error {
+                        code: -32600,
+                        message: format!(
+                            "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range. Based on your parameters, this block range should work: [{a:#x}, {:#x}]",
+                            a + 9
+                        ),
+                    });
+                }
+            }
             if m == "eth_call" {
                 return Some(ReplayReply::Result(json!(format!("0x{:064x}", 6))));
             }
@@ -66,7 +87,7 @@ async fn run(env: Vec<(&'static str, String)>, extra: &[&str], input: String) ->
     let extra: Vec<String> = extra.iter().map(|s| (*s).to_string()).collect();
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new(BIN);
-        cmd.args(["--input", "-"])
+        cmd.args(["--input", "-", "--rpc-rps", "5000"])
             .args(WINDOW)
             .args(extra)
             .env_remove("SCOUT_ROBINHOOD_RPC_URL")
@@ -184,6 +205,59 @@ async fn aiden_window_reports_the_fixture_numbers_in_table_and_jsonl() {
     assert_eq!(tok["extraction"]["trades"], 44);
     assert_eq!(tok["extraction"]["nft_transfer_logs"], 2);
     assert_eq!(summary["tokens"][1]["transactions_scanned"], 0);
+}
+
+async fn count(s: &MockServer, m: &str) -> usize {
+    s.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| {
+            serde_json::from_slice::<Value>(&r.body).is_ok_and(|b| b["method"].as_str() == Some(m))
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn capped_keyed_rpc_sends_logs_to_the_public_endpoint_and_keeps_the_rest() {
+    let keyed = rpc_with(true).await;
+    let public = rpc().await;
+    let mut env = env_of(&keyed);
+    env.push(("SCOUT_EVM_PUBLIC_RPC_URL", public.uri()));
+    let o = run(
+        env,
+        &["--min-token-hits", "1", "--format", "jsonl"],
+        input(),
+    )
+    .await;
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(!o.stdout.contains(SECRET) && !o.stderr.contains(SECRET));
+    // keyed: one probe, no window logs; public: the real log scan
+    assert_eq!(count(&keyed, "eth_getLogs").await, 1);
+    assert!(count(&public, "eth_getLogs").await >= 2);
+    // receipts stay on the keyed endpoint
+    assert!(count(&keyed, "eth_getBlockReceipts").await > 0);
+    assert_eq!(count(&public, "eth_getBlockReceipts").await, 0);
+    assert!(o.stderr.contains("eth_getLogs ONLY"), "{}", o.stderr);
+    assert!(
+        o.stderr
+            .contains("routing: eth_getLogs -> public robinhood rpc (auto")
+    );
+    let meta: Value = serde_json::from_str(o.stdout.lines().next().unwrap()).unwrap();
+    assert_eq!(meta["kind"], "run_meta");
+    assert!(
+        meta["scope"]["logs_source"]
+            .as_str()
+            .unwrap()
+            .contains("auto")
+    );
+    assert!(
+        meta["scope"]["state_source"]
+            .as_str()
+            .unwrap()
+            .starts_with("keyed rpc")
+    );
+    assert_eq!(meta["scope"]["rate_limits"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]

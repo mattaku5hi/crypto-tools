@@ -1300,6 +1300,9 @@ fn patch_evm_run_meta(
     v["scan"] = json!({
         "provider": "evm_rpc",
         "history_source": info.history_source,
+        "logs_source": info.logs_source,
+        "state_source": info.state_source,
+        "rate_limits": info.rate_limits,
         "block_range": info.block_range.map(|(a, b)| json!([a, b])),
         "max_requests": max_requests,
         "requests_made": requests_made,

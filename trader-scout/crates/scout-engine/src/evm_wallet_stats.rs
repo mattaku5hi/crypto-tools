@@ -1,6 +1,7 @@
-//! `wallet-stats` engine for EVM chains (ADR-020 step 2): per wallet, the
-//! signer transactions of the window (explorer `txlist` -> RPC receipts and
-//! block times), native legs resolved through the trace / archive sources
+//! `wallet-stats` engine for EVM chains (ADR-020 step 2, Amendment 2): per
+//! wallet, the transactions of the window named by the explorer listings
+//! (`txlist` signer txs + `tokentx` transfers, never a window `eth_getLogs`)
+//! with RPC receipts and block times, native legs resolved through the trace / archive sources
 //! when the endpoint has them, then [`build_evm_wallet_ledger`]. The result
 //! is the SAME `SolanaWalletStatsReport` card list the Solana runner
 //! produces, so `wallet-stats` / `wallet-rank` render it with one output
@@ -73,6 +74,14 @@ pub struct EvmRunInfo {
     pub quote_assets: Vec<EvmQuoteInfo>,
     /// How the wallet's history was listed and assembled.
     pub history_source: String,
+    /// Endpoint class serving `eth_getLogs` (never a URL): `keyed rpc`,
+    /// `public rpc`, a separate logs endpoint, or `not used`.
+    pub logs_source: String,
+    /// Endpoint class serving receipts, transactions, blocks, balances,
+    /// traces (never a URL).
+    pub state_source: String,
+    /// Client-side rate-limit settings of the run, one line per endpoint.
+    pub rate_limits: Vec<String>,
     /// `supported` / `unsupported (reason)` / `not checked`.
     pub trace: String,
     pub archive_state: String,
@@ -120,6 +129,9 @@ impl EvmRunInfo {
             venues,
             quote_assets,
             history_source: history_source.into(),
+            logs_source: "not reported".to_string(),
+            state_source: "not reported".to_string(),
+            rate_limits: Vec::new(),
             trace: "not checked".to_string(),
             archive_state: "not checked".to_string(),
             block_range: None,
@@ -216,7 +228,13 @@ pub async fn run_evm_wallet_stats(
     })
     .await?;
 
-    let mut info = EvmRunInfo::from_config(cfg, "explorer txlist (wallet-centric) + RPC receipts");
+    let mut info = EvmRunInfo::from_config(
+        cfg,
+        "indexer listings (txlist + tokentx + txlistinternal, wallet-centric, block-range \
+         restricted) + RPC receipts",
+    );
+    info.logs_source =
+        "not used (wallet scans use indexer listings, never window getLogs)".to_string();
     info.block_range = blocks;
     if let Some(r) = sources.resolver
         && let Some(c) = r.capabilities()
@@ -373,6 +391,13 @@ async fn scan_evm_wallet(
                 .to_string(),
         );
     }
+    if !out.tokentx_complete {
+        reasons.push(
+            "explorer tokentx hit its page cap: part of the wallet's token transfers in the \
+             window was not seen (figures are a subset; inventory continuity is not proven)"
+                .to_string(),
+        );
+    }
     if let Some(ev) = &ledger.evm {
         if ev.ungated_swap_logs > 0 {
             reasons.push(format!(
@@ -417,7 +442,7 @@ async fn scan_evm_wallet(
         status,
         transactions_scanned: Some(scanned_n),
         transactions_in_window: bounded.then_some(in_window),
-        truncated: !out.txlist_complete,
+        truncated: !out.txlist_complete || !out.tokentx_complete,
         unexpected_payloads: 0,
         error: None,
         ledger: Some(ledger),

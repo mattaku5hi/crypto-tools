@@ -28,6 +28,9 @@ pub type ReplayHandler = Box<dyn Fn(&str, &Value) -> Option<ReplayReply> + Send 
 /// Recorded-exchange responder.
 pub struct EvmFixtureReplay {
     recorded: HashMap<String, Value>,
+    /// Receipts of recorded `eth_getBlockReceipts` results by lowercase tx
+    /// hash, so `eth_getTransactionReceipt` is answered from the same data.
+    receipts_by_hash: HashMap<String, Value>,
     handler: Option<ReplayHandler>,
 }
 
@@ -51,6 +54,7 @@ impl EvmFixtureReplay {
     #[must_use]
     pub fn from_fixture(fixture: &Value) -> Self {
         let mut recorded = HashMap::new();
+        let mut receipts_by_hash = HashMap::new();
         if let Some(calls) = fixture.get("calls").and_then(Value::as_array) {
             for c in calls {
                 if let (Some(m), Some(p), Some(r)) = (
@@ -59,11 +63,21 @@ impl EvmFixtureReplay {
                     c.get("result"),
                 ) {
                     recorded.insert(key(m, p), r.clone());
+                    if m == "eth_getBlockReceipts"
+                        && let Some(rs) = r.as_array()
+                    {
+                        for rc in rs {
+                            if let Some(h) = rc.get("transactionHash").and_then(Value::as_str) {
+                                receipts_by_hash.insert(h.to_ascii_lowercase(), rc.clone());
+                            }
+                        }
+                    }
                 }
             }
         }
         Self {
             recorded,
+            receipts_by_hash,
             handler: None,
         }
     }
@@ -97,6 +111,12 @@ impl EvmFixtureReplay {
         }
         if let Some(v) = self.recorded.get(&key(method, params)) {
             return ReplayReply::Result(v.clone());
+        }
+        if method == "eth_getTransactionReceipt"
+            && let Some(h) = params.get(0).and_then(Value::as_str)
+            && let Some(r) = self.receipts_by_hash.get(&h.to_ascii_lowercase())
+        {
+            return ReplayReply::Result(r.clone());
         }
         match method {
             "debug_traceTransaction" => ReplayReply::Error {

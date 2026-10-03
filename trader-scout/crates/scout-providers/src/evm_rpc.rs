@@ -196,6 +196,9 @@ impl CallRecorder {
 #[derive(Debug, Clone)]
 pub struct EvmRpcClient {
     rpc: RpcClient,
+    /// Separate endpoint for `eth_getLogs` only (per-method routing); it
+    /// shares the main client's request budget. `None` = logs go to `rpc`.
+    logs_rpc: Option<RpcClient>,
     profile: EvmChainProfile,
     cfg: EvmRpcConfig,
     timestamps: Arc<Mutex<TimestampCache>>,
@@ -253,6 +256,18 @@ pub fn suggested_range(text: &str) -> Option<(u64, u64)> {
     (a <= b).then_some((a, b))
 }
 
+/// The block span a range-cap error announces: the suggested range's length
+/// (`should work: [0x10, 0x19]`), else the number in `up to a N block range`.
+#[must_use]
+pub fn capped_span_from_error(text: &str) -> Option<u64> {
+    if let Some((a, b)) = suggested_range(text) {
+        return b.checked_sub(a).map(|d| d.saturating_add(1));
+    }
+    let tail = text.split_once("up to a ")?.1;
+    let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 fn is_empty_envelope(err: &ProviderError) -> bool {
     matches!(err, ProviderError::Other(e) if e.to_string().contains("neither `result` nor `error`"))
 }
@@ -268,11 +283,27 @@ impl EvmRpcClient {
         cfg.concurrency = cfg.concurrency.clamp(1, 64);
         Self {
             rpc,
+            logs_rpc: None,
             profile,
             cfg,
             timestamps: Arc::new(Mutex::new(TimestampCache::default())),
             recorder: None,
         }
+    }
+
+    /// Route `eth_getLogs` (and only it) to `logs_rpc`; receipts, archive
+    /// state, traces and everything else stay on the main endpoint. The two
+    /// endpoints share ONE request budget.
+    #[must_use]
+    pub fn with_logs_endpoint(mut self, logs_rpc: RpcClient) -> Self {
+        self.logs_rpc = Some(logs_rpc.sharing_budget_with(&self.rpc));
+        self
+    }
+
+    /// `true` when `eth_getLogs` goes to a separate endpoint.
+    #[must_use]
+    pub fn has_logs_endpoint(&self) -> bool {
+        self.logs_rpc.is_some()
     }
 
     #[must_use]
@@ -299,7 +330,11 @@ impl EvmRpcClient {
     /// One call; a JSON `null` result (legit for unknown tx/block) comes
     /// back as `Value::Null` instead of the transport's "empty envelope".
     async fn call_json(&self, method: &str, params: Value) -> Result<Value, EvmSourceError> {
-        let result = match self.rpc.call::<_, Value>(method, &params).await {
+        let rpc = match (&self.logs_rpc, method) {
+            (Some(logs), "eth_getLogs") => logs,
+            _ => &self.rpc,
+        };
+        let result = match rpc.call::<_, Value>(method, &params).await {
             Ok(v) => v,
             Err(e) if is_empty_envelope(&e) => Value::Null,
             Err(e) => return Err(e.into()),
@@ -432,6 +467,34 @@ impl EvmRpcClient {
             requests,
             splits,
         })
+    }
+
+    /// Does the MAIN endpoint cap the `eth_getLogs` block range? Issues one
+    /// 100-block query (after `eth_blockNumber`): a range error naming a span
+    /// (Alchemy free: "up to a 10 block range" / "should work: [a, b]")
+    /// yields `Some(span)`; success or an error that names no span yields
+    /// `None` (adaptive splitting still copes with the latter).
+    ///
+    /// # Errors
+    /// Transport/budget errors (anything that is not a range/cap error).
+    pub async fn probe_logs_span(&self) -> Result<Option<u64>, EvmSourceError> {
+        let head = self.block_number().await?;
+        let from = head.saturating_sub(99);
+        let filter = LogFilter {
+            addresses: vec![Address::ZERO],
+            topics: [Some(vec![scout_evm::TRANSFER_TOPIC0]), None, None, None],
+        };
+        match self
+            .rpc
+            .call::<_, Value>("eth_getLogs", json!([filter.to_json(from, head)]))
+            .await
+        {
+            Ok(_) => Ok(None),
+            Err(e) if is_range_or_cap_error(&e) => {
+                Ok(capped_span_from_error(&e.to_string()).filter(|s| *s > 0))
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Native balance of `account` at the END of `block`
@@ -567,6 +630,17 @@ impl EvmRpcClient {
                 if let Some(old) = c.order.pop_front() {
                     c.map.remove(&old);
                 }
+            }
+        }
+    }
+
+    /// Pre-fill the timestamp cache from a source that already carries block
+    /// times (explorer listings), saving one `eth_getBlockByNumber` per
+    /// block. Zero timestamps are ignored; entries already cached win.
+    pub fn seed_block_timestamps(&self, pairs: impl IntoIterator<Item = (u64, u64)>) {
+        for (block, ts) in pairs {
+            if ts > 0 && self.cached_timestamp(block).is_none() {
+                self.cache_timestamp(block, ts);
             }
         }
     }
@@ -1002,5 +1076,76 @@ mod tests {
         assert_eq!(calls[0]["method"], "eth_chainId");
         assert_eq!(calls[0]["result"], "0x2105");
         assert!(!calls[0].to_string().contains("127.0.0.1"));
+    }
+
+    async fn methods_called(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+            .filter_map(|b| b["method"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn logs_go_to_the_logs_endpoint_everything_else_to_the_main_one() {
+        let main = MockServer::start().await;
+        let logs = MockServer::start().await;
+        mount_method(&main, "eth_getBalance", ok(json!("0x5"))).await;
+        mount_method(&main, "eth_getBlockReceipts", ok(json!([]))).await;
+        mount_method(&main, "eth_blockNumber", ok(json!("0x10"))).await;
+        mount_method(&logs, "eth_getLogs", ok(json!([log_json(3, 0)]))).await;
+        let logs_rpc = RpcClient::new(RpcEndpoint::new(logs.uri()), 5_000, 1).unwrap();
+        let c = client(&main, ROBINHOOD, Some(4)).with_logs_endpoint(logs_rpc);
+        assert!(c.has_logs_endpoint());
+        let r = c.get_logs(&LogFilter::default(), 0, 10).await.unwrap();
+        assert_eq!(r.logs.len(), 1);
+        assert_eq!(
+            c.balance_at(Address::ZERO, 5).await.unwrap(),
+            U256::from(5u8)
+        );
+        c.block_receipts(5).await.unwrap();
+        assert_eq!(c.block_number().await.unwrap(), 16);
+        assert_eq!(methods_called(&logs).await, vec!["eth_getLogs"]);
+        let m = methods_called(&main).await;
+        assert!(!m.iter().any(|x| x == "eth_getLogs"), "{m:?}");
+        assert_eq!(m.len(), 3);
+        // ONE budget across both endpoints: 4 requests made, the 5th refused
+        assert_eq!(c.total_requests_made(), 4);
+        assert!(c.block_number().await.is_err());
+        assert_eq!(
+            methods_called(&main).await.len() + methods_called(&logs).await.len(),
+            4
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_detects_alchemy_style_range_caps() {
+        let s = MockServer::start().await;
+        mount_method(&s, "eth_blockNumber", ok(json!("0x1000"))).await;
+        mount_method(
+            &s,
+            "eth_getLogs",
+            err(
+                -32600,
+                "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range. Based on your parameters, this block range should work: [0xf00, 0xf09]",
+            ),
+        )
+        .await;
+        assert_eq!(
+            client(&s, ROBINHOOD, None).probe_logs_span().await.unwrap(),
+            Some(10)
+        );
+        let w = MockServer::start().await;
+        mount_method(&w, "eth_blockNumber", ok(json!("0x1000"))).await;
+        mount_method(&w, "eth_getLogs", ok(json!([]))).await;
+        assert_eq!(
+            client(&w, ROBINHOOD, None).probe_logs_span().await.unwrap(),
+            None
+        );
+        assert_eq!(capped_span_from_error("up to a 25 block range"), Some(25));
+        assert_eq!(capped_span_from_error("limit exceeded"), None);
     }
 }

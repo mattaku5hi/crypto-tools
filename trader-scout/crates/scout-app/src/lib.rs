@@ -24,11 +24,13 @@ pub use config::{
     ScanConfig, ScoutConfig, StorageConfig,
 };
 pub use evm_run::{
-    BLOCKSCOUT_URL_OVERRIDE_ENV, EvmSetup, EvmSetupError, EvmStatsError, EvmStatsRun, RunFamily,
-    collect_evm_stats, run_family, setup_evm,
+    BLOCKSCOUT_URL_OVERRIDE_ENV, DEFAULT_LOG_SCAN_REQUEST_LIMIT, EvmSetup, EvmSetupError,
+    EvmStatsError, EvmStatsRun, LimiterNotice, PUBLIC_RPC_OVERRIDE_ENV, RunFamily,
+    check_log_scan_feasible, collect_evm_stats, rate_limit_line, run_family, setup_evm,
 };
 pub use evm_source::{
-    BLOCKSCOUT_KEY_ENV, EvmRpcUrl, ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env, rpc_env_name,
+    BLOCKSCOUT_KEY_ENV, EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS,
+    ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env, logs_rpc_env_name, rpc_env_name,
 };
 pub use input::{
     IdentityKind, IdentityRecord, InputError, InputFormat, ParsedInput, UpstreamInfo,

@@ -250,6 +250,9 @@ struct Args {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
 
+    #[command(flatten)]
+    net: scout_app::EvmNetOptions,
+
     /// Analysis window start, UTC RFC 3339 `2026-08-01T00:00:00Z` (inclusive;
     /// no offsets). Window `[since, until)`; see ADR-011. Conflicts with --period.
     #[arg(long, conflicts_with = "period")]

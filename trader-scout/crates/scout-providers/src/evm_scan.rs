@@ -25,6 +25,12 @@ pub enum ReceiptMode {
     BlockReceipts,
     /// One `eth_getTransactionReceipt` per transaction.
     PerTransaction,
+    /// Per block: `eth_getBlockReceipts` when at least
+    /// `ScanLimits::block_receipts_min_txs` of the needed transactions share
+    /// it, else one `eth_getTransactionReceipt` each. A block's receipts are
+    /// one big body (and a heavy call on metered providers), so isolated
+    /// transactions of a wallet are cheaper one by one.
+    Auto,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -32,13 +38,17 @@ pub struct ScanLimits {
     /// Max distinct transactions assembled per call.
     pub max_transactions: usize,
     pub receipt_mode: ReceiptMode,
+    /// `ReceiptMode::Auto`: blocks with at least this many needed
+    /// transactions are fetched with `eth_getBlockReceipts`.
+    pub block_receipts_min_txs: usize,
 }
 
 impl Default for ScanLimits {
     fn default() -> Self {
         Self {
             max_transactions: 20_000,
-            receipt_mode: ReceiptMode::BlockReceipts,
+            receipt_mode: ReceiptMode::Auto,
+            block_receipts_min_txs: 4,
         }
     }
 }
@@ -94,6 +104,12 @@ pub struct WalletScanOutput {
     pub transactions: Vec<RawEvmTransaction>,
     /// `false`: the wallet's `txlist` was truncated by the page cap.
     pub txlist_complete: bool,
+    /// `false`: the wallet's `tokentx` listing was truncated by the page cap.
+    pub tokentx_complete: bool,
+    /// Distinct transactions the listings named (before the transaction cap).
+    pub listed_transactions: usize,
+    /// How many of them only appeared in `tokentx` (W did not sign them).
+    pub token_only_transactions: usize,
     /// `false`: internal transfers were not (completely) available; every
     /// transaction then carries `internal_transfers = None`.
     pub internal_complete: bool,
@@ -196,11 +212,8 @@ impl EvmHistoryScanner {
         }
         let hash_list: Vec<B256> = hashes.iter().map(|(_, _, h)| *h).collect();
         let transactions = self
-            .build(
-                &hash_list,
-                None,
-                Some(receipt_by_pos.into_values().collect()),
-            )
+            // The needed receipts are already in hand: no second fetch.
+            .build(&hash_list, None, Some(needed))
             .await?;
         Ok(TokenScanOutput {
             transactions,
@@ -210,8 +223,22 @@ impl EvmHistoryScanner {
         })
     }
 
-    /// Wallet-centric scan via Blockscout: the wallet's own (`from ==
-    /// wallet`) transactions in `[from, to]`, plus its internal transfers.
+    /// Wallet-centric scan through the indexer listings (never a window-wide
+    /// `eth_getLogs`, which is infeasible on 0.1 s-block chains with
+    /// range-capped providers). Over the block range `[from, to]`:
+    ///
+    /// - `txlist`: the wallet's own signed transactions (failed included);
+    /// - `tokentx`: every ERC-20 transfer to/from the wallet, which also
+    ///   names transactions the wallet did NOT sign (needed for inventory
+    ///   continuity);
+    /// - `txlistinternal`: native internal transfers, used only when the
+    ///   explorer reports complete processing.
+    ///
+    /// Hashes are deduplicated, the explorer's block timestamps seed the
+    /// block-time cache, and receipts/transactions come from RPC
+    /// (`eth_getTransactionReceipt`, or `eth_getBlockReceipts` for blocks
+    /// holding several of them). A truncated listing is reported
+    /// (`txlist_complete` / `tokentx_complete`), never hidden.
     pub async fn scan_wallet(
         &self,
         source: &BlockscoutEvmSource,
@@ -220,27 +247,45 @@ impl EvmHistoryScanner {
         to_block: u64,
     ) -> Result<WalletScanOutput, EvmSourceError> {
         let txlist = source.txlist(wallet, from_block, to_block).await?;
+        let tokentx = source
+            .token_transfers(wallet, None, from_block, to_block)
+            .await?;
         let internal = source
             .internal_transfers(wallet, from_block, to_block)
             .await?;
         let index = InternalIndex::from_complete_listing(&internal);
-        let mut hashes: Vec<B256> = txlist
+        let mut own: Vec<B256> = txlist
             .rows
             .iter()
             .filter(|t| t.from == wallet)
             .map(|t| t.hash)
             .collect();
+        own.sort();
+        own.dedup();
+        let mut hashes = own.clone();
+        hashes.extend(tokentx.rows.iter().map(|t| t.hash));
         hashes.sort();
         hashes.dedup();
+        let token_only = hashes.len().saturating_sub(own.len());
         if hashes.len() > self.limits.max_transactions {
             return Err(EvmSourceError::TooManyTransactions {
                 cap: self.limits.max_transactions,
             });
         }
+        self.rpc.seed_block_timestamps(
+            txlist
+                .rows
+                .iter()
+                .map(|t| (t.block_number, t.time_stamp))
+                .chain(tokentx.rows.iter().map(|t| (t.block_number, t.time_stamp))),
+        );
         let transactions = self.build(&hashes, index.as_ref(), None).await?;
         Ok(WalletScanOutput {
             transactions,
             txlist_complete: txlist.complete,
+            tokentx_complete: tokentx.complete,
+            listed_transactions: hashes.len(),
+            token_only_transactions: token_only,
             internal_complete: index.is_some(),
         })
     }
@@ -276,24 +321,37 @@ impl EvmHistoryScanner {
             .iter()
             .filter(|t| !receipts.contains_key(&t.hash))
             .collect();
-        match self.limits.receipt_mode {
-            ReceiptMode::PerTransaction => {
-                let hs: Vec<B256> = missing.iter().map(|t| t.hash).collect();
-                for r in self.rpc.receipts_by_hashes(&hs).await? {
-                    receipts.insert(r.tx_hash, r);
-                }
+        // (block -> needed tx count) decides block vs per-transaction fetch.
+        let mut per_block: BTreeMap<u64, usize> = BTreeMap::new();
+        for t in &missing {
+            *per_block.entry(t.block_number).or_insert(0) += 1;
+        }
+        let use_block = |block: u64| match self.limits.receipt_mode {
+            ReceiptMode::BlockReceipts => true,
+            ReceiptMode::PerTransaction => false,
+            ReceiptMode::Auto => {
+                per_block.get(&block).copied().unwrap_or(0) >= self.limits.block_receipts_min_txs
             }
-            ReceiptMode::BlockReceipts => {
-                let blocks: Vec<u64> = missing
-                    .iter()
-                    .map(|t| t.block_number)
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-                for (_, rs) in self.rpc.receipts_by_blocks(&blocks).await? {
-                    for r in rs {
-                        receipts.insert(r.tx_hash, r);
-                    }
+        };
+        let single: Vec<B256> = missing
+            .iter()
+            .filter(|t| !use_block(t.block_number))
+            .map(|t| t.hash)
+            .collect();
+        let whole_blocks: Vec<u64> = per_block
+            .keys()
+            .copied()
+            .filter(|b| use_block(*b))
+            .collect();
+        if !single.is_empty() {
+            for r in self.rpc.receipts_by_hashes(&single).await? {
+                receipts.insert(r.tx_hash, r);
+            }
+        }
+        if !whole_blocks.is_empty() {
+            for (_, rs) in self.rpc.receipts_by_blocks(&whole_blocks).await? {
+                for r in rs {
+                    receipts.insert(r.tx_hash, r);
                 }
             }
         }
@@ -371,6 +429,30 @@ mod tests {
         B256::repeat_byte(n)
     }
 
+    const OTHER: &str = "0x00000000000000000000000000000000000000bb";
+
+    /// `(block, index, from)` of the fake chain's transactions by hash.
+    fn pos_of(hash: &str) -> (&'static str, &'static str, &'static str) {
+        if hash == format!("{:#x}", h(0xa1)) {
+            ("0x7", "0x1", WALLET)
+        } else if hash == format!("{:#x}", h(0xee)) {
+            ("0x8", "0x0", OTHER)
+        } else {
+            ("0x5", "0x0", WALLET)
+        }
+    }
+
+    async fn methods(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+            .filter_map(|b| b["method"].as_str().map(str::to_string))
+            .collect()
+    }
+
     /// Fake chain: tx 0xa1 in block 7 idx 1 (wallet sends), tx 0xa2 in block 5 idx 0.
     struct Chain;
     impl Respond for Chain {
@@ -398,12 +480,15 @@ mod tests {
                 }
                 "eth_getTransactionByHash" => {
                     let hs = body["params"][0].as_str().unwrap().to_string();
-                    let (block, idx) = if hs == format!("{:#x}", h(0xa1)) {
-                        ("0x7", "0x1")
-                    } else {
-                        ("0x5", "0x0")
-                    };
-                    json!({"hash":hs,"from":WALLET,"to":null,"value":"0x9","blockNumber":block,"transactionIndex":idx})
+                    let (block, idx, from) = pos_of(&hs);
+                    json!({"hash":hs,"from":from,"to":null,"value":"0x9","blockNumber":block,"transactionIndex":idx})
+                }
+                "eth_getTransactionReceipt" => {
+                    let hs = body["params"][0].as_str().unwrap().to_string();
+                    let (block, idx, _) = pos_of(&hs);
+                    json!({"transactionHash":hs,"blockNumber":block,
+                        "transactionIndex":idx,"status":"0x1","gasUsed":"0x64",
+                        "effectiveGasPrice":"0x2","logs":[]})
                 }
                 "eth_getBlockByNumber" => json!({"timestamp":"0x3e8"}),
                 other => panic!("unexpected {other}"),
@@ -534,6 +619,11 @@ mod tests {
                         {"hash":format!("{:#x}",h(0xee)),"blockNumber":"8","timeStamp":"1",
                          "from":"0x00000000000000000000000000000000000000bb","to":WALLET,"value":"1",
                          "gasUsed":"1","gasPrice":"1","isError":"0"}]}),
+                    "tokentx" => json!({"status":"1","message":"OK","result":[
+                        {"hash":format!("{:#x}",h(0xee)),"blockNumber":"8","timeStamp":"1","from":OTHER,
+                         "to":WALLET,"contractAddress":TOKEN,"value":"5"},
+                        {"hash":format!("{:#x}",h(0xa1)),"blockNumber":"7","timeStamp":"1","from":WALLET,
+                         "to":OTHER,"contractAddress":TOKEN,"value":"5"}]}),
                     "txlistinternal" if self.0 => json!({"status":"1","message":"OK","result":[
                         {"hash":format!("{:#x}",h(0xa1)),"blockNumber":"7","timeStamp":"1",
                          "from":"0x00000000000000000000000000000000000000bb","to":WALLET,"value":"77","isError":"0"}]}),
@@ -555,17 +645,208 @@ mod tests {
                 .scan_wallet(&src, WALLET.parse().unwrap(), 0, 100)
                 .await
                 .unwrap();
-            // Only the wallet-signed tx is assembled.
-            assert_eq!(out.transactions.len(), 1);
-            assert!(out.txlist_complete);
+            // The signed tx plus the token-only tx the wallet did not sign
+            // (tokentx names it); the plain incoming txlist row (0xee as an
+            // ETH transfer) is deduplicated against it.
+            assert_eq!(out.transactions.len(), 2);
+            assert_eq!(
+                (out.listed_transactions, out.token_only_transactions),
+                (2, 1)
+            );
+            assert!(out.txlist_complete && out.tokentx_complete);
             assert_eq!(out.internal_complete, complete);
-            let it = &out.transactions[0].internal_transfers;
+            let a1 = out.transactions.iter().find(|t| t.hash == h(0xa1)).unwrap();
+            assert_eq!(a1.from.to_string().to_lowercase(), WALLET);
+            let it = &a1.internal_transfers;
             if complete {
                 assert_eq!(it.as_ref().unwrap()[0].value, U256::from(77u8));
             } else {
                 assert_eq!(*it, None);
             }
         }
+    }
+
+    /// Explorer fake: txlist 1 signed tx; tokentx pages as configured.
+    struct Listings {
+        tokentx_rows: Vec<Value>,
+    }
+    impl Respond for Listings {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let q: HashMap<String, String> = req.url.query_pairs().into_owned().collect();
+            let body = match q["action"].as_str() {
+                "txlist" => json!({"status":"1","message":"OK","result":[
+                    {"hash":format!("{:#x}",h(0xa1)),"blockNumber":"7","timeStamp":"1","from":WALLET,
+                     "to":"","value":"9","gasUsed":"100","gasPrice":"2","isError":"1","txreceipt_status":"0"}]}),
+                "tokentx" => json!({"status":"1","message":"OK","result":self.tokentx_rows}),
+                _ => json!({"status":"0","message":"No transactions found","result":[]}),
+            };
+            ResponseTemplate::new(200).set_body_json(body)
+        }
+    }
+
+    fn token_row(hash: B256, block: u64) -> Value {
+        json!({"hash":format!("{hash:#x}"),"blockNumber":block.to_string(),"timeStamp":"1",
+            "from":OTHER,"to":WALLET,"contractAddress":TOKEN,"value":"5"})
+    }
+
+    #[tokio::test]
+    async fn wallet_scan_never_calls_window_get_logs_and_skips_timestamp_calls() {
+        let rpc = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Chain)
+            .mount(&rpc)
+            .await;
+        let sc = scanner(&rpc, ScanLimits::default()).await;
+        let bs = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(Listings {
+                tokentx_rows: vec![token_row(h(0xee), 8)],
+            })
+            .mount(&bs)
+            .await;
+        let mut cfg = BlockscoutEvmConfig::new(4663, BlockscoutApiKey::new("k"));
+        cfg.base_url = bs.uri();
+        let src = BlockscoutEvmSource::new(cfg).unwrap();
+        // a 864,000-block window: the scan must not care
+        let out = sc
+            .scan_wallet(&src, WALLET.parse().unwrap(), 1_000, 865_000)
+            .await
+            .unwrap();
+        assert_eq!(out.transactions.len(), 2);
+        // the FAILED signed tx is kept (fee is real)
+        let ms = methods(&rpc).await;
+        assert!(!ms.iter().any(|m| m == "eth_getLogs"), "{ms:?}");
+        // timestamps come from the listings, receipts are per transaction
+        assert!(!ms.iter().any(|m| m == "eth_getBlockByNumber"), "{ms:?}");
+        assert!(!ms.iter().any(|m| m == "eth_getBlockReceipts"), "{ms:?}");
+        assert_eq!(
+            ms.iter()
+                .filter(|m| *m == "eth_getTransactionReceipt")
+                .count(),
+            2
+        );
+        assert!(out.transactions.iter().all(|t| t.block_time == 1));
+        // listing requests carry the block range
+        let q: Vec<String> = bs
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.url.query().unwrap_or("").to_string())
+            .collect();
+        assert!(
+            q.iter()
+                .all(|u| !u.contains("startblock") || u.contains("startblock=1000"))
+        );
+        assert!(
+            q.iter()
+                .any(|u| u.contains("action=tokentx") && u.contains("endblock=865000"))
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_token_listing_is_reported_incomplete() {
+        let rpc = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Chain)
+            .mount(&rpc)
+            .await;
+        let sc = scanner(&rpc, ScanLimits::default()).await;
+        let bs = MockServer::start().await;
+        // every page is full (page_size 1) -> page cap reached
+        Mock::given(method("GET"))
+            .respond_with(Listings {
+                tokentx_rows: vec![token_row(h(0xee), 8)],
+            })
+            .mount(&bs)
+            .await;
+        let mut cfg = BlockscoutEvmConfig::new(4663, BlockscoutApiKey::new("k"));
+        cfg.base_url = bs.uri();
+        cfg.page_size = 1;
+        cfg.max_pages = 2;
+        let src = BlockscoutEvmSource::new(cfg).unwrap();
+        let out = sc
+            .scan_wallet(&src, WALLET.parse().unwrap(), 0, 100)
+            .await
+            .unwrap();
+        assert!(!out.tokentx_complete && !out.txlist_complete);
+        // duplicates across pages collapse to distinct transactions
+        assert_eq!(out.listed_transactions, 2);
+    }
+
+    #[tokio::test]
+    async fn auto_receipts_use_block_receipts_only_for_crowded_blocks() {
+        struct Crowded;
+        impl Respond for Crowded {
+            fn respond(&self, req: &Request) -> ResponseTemplate {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                let hash_of = |i: u8| format!("{:#x}", h(i));
+                let result = match body["method"].as_str().unwrap() {
+                    "eth_getTransactionByHash" => {
+                        let hs = body["params"][0].as_str().unwrap().to_string();
+                        // 0x01, 0x02 in block 3 (idx 0, 1); 0x03 alone in block 9
+                        let (b, i) = match hs.as_str() {
+                            x if x == hash_of(1) => ("0x3", "0x0"),
+                            x if x == hash_of(2) => ("0x3", "0x1"),
+                            _ => ("0x9", "0x0"),
+                        };
+                        json!({"hash":hs,"from":WALLET,"to":null,"value":"0x0","blockNumber":b,"transactionIndex":i})
+                    }
+                    "eth_getBlockReceipts" => json!([
+                        {"transactionHash":hash_of(1),"blockNumber":"0x3","transactionIndex":"0x0","status":"0x1","gasUsed":"0x1","effectiveGasPrice":"0x1","logs":[]},
+                        {"transactionHash":hash_of(2),"blockNumber":"0x3","transactionIndex":"0x1","status":"0x1","gasUsed":"0x1","effectiveGasPrice":"0x1","logs":[]}]),
+                    "eth_getTransactionReceipt" => json!({"transactionHash":hash_of(3),
+                        "blockNumber":"0x9","transactionIndex":"0x0","status":"0x1","gasUsed":"0x1","effectiveGasPrice":"0x1","logs":[]}),
+                    "eth_getBlockByNumber" => json!({"timestamp":"0x5"}),
+                    other => panic!("unexpected {other}"),
+                };
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc":"2.0","id":1,"result":result}))
+            }
+        }
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Crowded)
+            .mount(&s)
+            .await;
+        let sc = scanner(
+            &s,
+            ScanLimits {
+                block_receipts_min_txs: 2,
+                ..ScanLimits::default()
+            },
+        )
+        .await;
+        let txs = sc.assemble(&[h(1), h(2), h(3)], None).await.unwrap();
+        assert_eq!(txs.len(), 3);
+        let ms = methods(&s).await;
+        assert_eq!(
+            ms.iter().filter(|m| *m == "eth_getBlockReceipts").count(),
+            1
+        );
+        assert_eq!(
+            ms.iter()
+                .filter(|m| *m == "eth_getTransactionReceipt")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn token_scan_fetches_each_block_receipts_once() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Chain)
+            .mount(&s)
+            .await;
+        let sc = scanner(&s, ScanLimits::default()).await;
+        sc.scan_token(TOKEN.parse().unwrap(), 0, 10).await.unwrap();
+        let ms = methods(&s).await;
+        // blocks 5 and 7, once each (no second fetch inside the assembly)
+        assert_eq!(
+            ms.iter().filter(|m| *m == "eth_getBlockReceipts").count(),
+            2
+        );
     }
 
     #[tokio::test]

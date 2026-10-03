@@ -177,6 +177,9 @@ struct Args {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
 
+    #[command(flatten)]
+    net: scout_app::EvmNetOptions,
+
     /// Skip USD pricing (ADR-018). By default the realized figures are also
     /// valued in USD with Coinbase Exchange one-minute candles (SOL-USD,
     /// USDT-USD; USDC at par, labelled), cached per 300-minute page.

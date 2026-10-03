@@ -13,6 +13,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::backoff::{JitterSource, RetryPolicy, Sleeper, TokioSleeper};
 use crate::endpoint::RpcEndpoint;
 use crate::jsonrpc::{JsonRpcEnvelopeError, JsonRpcRequest, JsonRpcResponse};
+use crate::ratelimit::RateLimiter;
 
 /// A JSON-RPC client bound to one endpoint, with retry/backoff. Reads
 /// are idempotent by construction (this crate never issues a
@@ -31,6 +32,26 @@ pub struct RpcClient {
     max_response_bytes: usize,
     max_retry_after: Duration,
     budget: Arc<RequestBudget>,
+    limiter: Option<MethodLimiter>,
+}
+
+/// A shared limiter plus the per-method cost table of this endpoint.
+#[derive(Clone)]
+struct MethodLimiter {
+    limiter: Arc<RateLimiter>,
+    cost: fn(&str) -> u64,
+}
+
+impl std::fmt::Debug for MethodLimiter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MethodLimiter")
+            .field("limiter", &self.limiter)
+            .finish_non_exhaustive()
+    }
+}
+
+fn unit_cost(_method: &str) -> u64 {
+    1
 }
 
 /// Default cap on a single `Retry-After` wait: 60 s. A server asking
@@ -143,7 +164,33 @@ impl RpcClient {
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             max_retry_after: DEFAULT_MAX_RETRY_AFTER,
             budget: Arc::new(RequestBudget::default()),
+            limiter: None,
         })
+    }
+
+    /// Puts a client-side rate limiter in front of EVERY HTTP attempt of
+    /// this client and its clones (retries included). `cost` maps a method
+    /// name to its weight in limiter units (`None` = 1 unit per request).
+    /// A 429 without `Retry-After` additionally halves the limiter's rate.
+    #[must_use]
+    pub fn with_rate_limiter(
+        mut self,
+        limiter: Arc<RateLimiter>,
+        cost: Option<fn(&str) -> u64>,
+    ) -> Self {
+        self.limiter = Some(MethodLimiter {
+            limiter,
+            cost: cost.unwrap_or(unit_cost),
+        });
+        self
+    }
+
+    /// Makes this client count against the SAME request budget as `other`
+    /// (several endpoints of one run, one exact `--max-requests`).
+    #[must_use]
+    pub fn sharing_budget_with(mut self, other: &RpcClient) -> Self {
+        self.budget = Arc::clone(&other.budget);
+        self
     }
 
     /// Caps a single `Retry-After` wait (default
@@ -255,9 +302,18 @@ impl RpcClient {
                 sleeper.sleep(delay).await;
             }
 
-            match self.try_once::<_, R>(&body).await {
+            match self.try_once::<_, R>(&body, method).await {
                 Ok(value) => return Ok(value),
                 Err(Classified::Retryable(err)) => {
+                    if matches!(err, ProviderError::RateLimited { retry_after: None })
+                        && let Some(l) = &self.limiter
+                        && let Some(new_milli) = l.limiter.on_rate_limited()
+                    {
+                        tracing::warn!(
+                            new_rate_milli_per_sec = new_milli,
+                            "provider answered 429 without Retry-After: client rate halved"
+                        );
+                    }
                     if let ProviderError::RateLimited {
                         retry_after: Some(ra),
                     } = &err
@@ -278,11 +334,25 @@ impl RpcClient {
         )
     }
 
-    async fn try_once<P, R>(&self, body: &JsonRpcRequest<'_, P>) -> Result<R, Classified>
+    async fn try_once<P, R>(
+        &self,
+        body: &JsonRpcRequest<'_, P>,
+        method: &str,
+    ) -> Result<R, Classified>
     where
         P: Serialize,
         R: DeserializeOwned,
     {
+        if let Some(l) = &self.limiter {
+            // Do not queue for a request the budget would refuse anyway.
+            if self.budget.is_exhausted() {
+                return Err(Classified::Terminal(self.budget_error()));
+            }
+            l.limiter
+                .acquire((l.cost)(method))
+                .await
+                .map_err(|e| Classified::Terminal(ProviderError::Other(Box::new(e))))?;
+        }
         if !self.budget.try_reserve() {
             return Err(Classified::Terminal(self.budget_error()));
         }
@@ -894,5 +964,125 @@ mod tests {
         );
         assert!(!shown.contains(&server.uri()), "{shown}");
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    fn ok_resp() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": "ok"}))
+    }
+
+    #[tokio::test]
+    async fn limiter_paces_real_requests_and_weights_apply() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ok_resp())
+            .mount(&server)
+            .await;
+        // 20 units/s, bucket 1: 5 unit-cost calls need >= 4 * 50 ms.
+        let limiter = Arc::new(RateLimiter::new(20, 1));
+        let client = client_for(&server, 1)
+            .await
+            .with_rate_limiter(limiter.clone(), None);
+        let t0 = std::time::Instant::now();
+        for _ in 0..5 {
+            let _: String = client.call("m", json!([])).await.unwrap();
+        }
+        assert!(
+            t0.elapsed() >= Duration::from_millis(190),
+            "{:?}",
+            t0.elapsed()
+        );
+        assert_eq!(limiter.stats().acquired, 5);
+        // a weighted method costs its weight
+        fn cost(m: &str) -> u64 {
+            if m == "heavy" { 3 } else { 1 }
+        }
+        let limiter = Arc::new(RateLimiter::new(30, 3));
+        let client = client_for(&server, 1)
+            .await
+            .with_rate_limiter(limiter.clone(), Some(cost));
+        let t0 = std::time::Instant::now();
+        for _ in 0..3 {
+            let _: String = client.call("heavy", json!([])).await.unwrap();
+        }
+        // 9 units at 30/s with 3 free: 200 ms
+        assert!(
+            t0.elapsed() >= Duration::from_millis(180),
+            "{:?}",
+            t0.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_without_retry_after_backs_off_and_halves_the_rate() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ok_resp())
+            .mount(&server)
+            .await;
+        let limiter = Arc::new(RateLimiter::new(1_000, 10));
+        let client = client_for(&server, 4)
+            .await
+            .with_max_total_requests(Some(10))
+            .with_rate_limiter(limiter.clone(), None);
+        let sleeper = FakeSleeper(std::sync::Mutex::new(Vec::new()));
+        let r: String = client
+            .call_with("m", json!([]), &NoJitter, &sleeper)
+            .await
+            .unwrap();
+        assert_eq!(r, "ok");
+        // exponential backoff between the three attempts (doubling)
+        assert_eq!(
+            sleeper.slept(),
+            vec![Duration::from_millis(500), Duration::from_millis(1_000)]
+        );
+        // two 429s inside the debounce window count once
+        let st = limiter.stats();
+        assert_eq!((st.halvings, st.rate_milli), (1, 500_000));
+        // every attempt is counted against the budget
+        assert_eq!(client.total_requests_made(), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_after_429_does_not_halve_and_budget_stays_exact() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .mount(&server)
+            .await;
+        let limiter = Arc::new(RateLimiter::new(1_000, 10));
+        let client = client_for(&server, 10)
+            .await
+            .with_max_total_requests(Some(3))
+            .with_rate_limiter(limiter.clone(), None);
+        let sleeper = FakeSleeper(std::sync::Mutex::new(Vec::new()));
+        let r: Result<String, _> = client.call_with("m", json!([]), &NoJitter, &sleeper).await;
+        assert!(r.is_err());
+        assert_eq!(limiter.stats().halvings, 0);
+        assert_eq!(client.total_requests_made(), 3);
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn clients_sharing_a_budget_count_together() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ok_resp())
+            .mount(&server)
+            .await;
+        let a = client_for(&server, 1)
+            .await
+            .with_max_total_requests(Some(2));
+        let b = client_for(&server, 1).await.sharing_budget_with(&a);
+        let _: String = a.call("m", json!([])).await.unwrap();
+        let _: String = b.call("m", json!([])).await.unwrap();
+        assert!(a.call::<_, String>("m", json!([])).await.is_err());
+        assert!(b.call::<_, String>("m", json!([])).await.is_err());
+        assert_eq!((a.total_requests_made(), b.total_requests_made()), (2, 2));
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 }

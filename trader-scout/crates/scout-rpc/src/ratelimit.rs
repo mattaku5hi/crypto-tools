@@ -1,0 +1,347 @@
+//! Client-side rate limiter: a token bucket in front of every HTTP attempt
+//! (AGENTS.md invariants #13 and #19: respect provider quota, bounded
+//! queues).
+//!
+//! - One limiter per endpoint, shared (`Arc`) by every clone of a client and
+//!   every concurrent task. Waiters queue FIFO behind one async mutex and
+//!   sleep exactly until their tokens exist (no polling loop). The queue is
+//!   bounded: more than `max_waiters` simultaneous waiters is a typed error.
+//! - Units are abstract: 1 unit per request by default, or a per-method
+//!   weight (compute units) supplied by the caller. The rate is stored in
+//!   milli-units per second and all math is integer (workspace
+//!   `float_arithmetic = deny`).
+//! - AIMD-style back-off: [`RateLimiter::on_rate_limited`] halves the rate
+//!   (floor [`MIN_RATE_MILLI`]) when a provider answers 429 without
+//!   `Retry-After`; halvings are debounced to one per second so a burst of
+//!   concurrent 429s counts once. The rate never grows back within a run
+//!   (a run is short; the conservative choice avoids oscillating into the
+//!   same quota wall).
+//! - Time comes from `tokio::time` so tests run with paused time.
+
+use std::fmt;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use tokio::time::Instant;
+
+const MICRO: u128 = 1_000_000;
+/// Lowest rate the limiter backs off to: 0.1 units per second.
+pub const MIN_RATE_MILLI: u64 = 100;
+/// Default bound of simultaneously waiting callers.
+pub const DEFAULT_MAX_WAITERS: usize = 4_096;
+const HALVE_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// More callers are waiting for the limiter than its configured bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimiterSaturated {
+    pub max_waiters: usize,
+}
+
+impl fmt::Display for RateLimiterSaturated {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "rate limiter queue is full ({} waiting callers)",
+            self.max_waiters
+        )
+    }
+}
+
+impl std::error::Error for RateLimiterSaturated {}
+
+/// Snapshot of a limiter's counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimiterStats {
+    pub initial_rate_milli: u64,
+    pub rate_milli: u64,
+    pub halvings: u64,
+    /// Granted acquisitions.
+    pub acquired: u64,
+    /// Total time callers slept waiting for tokens.
+    pub waited_ms: u64,
+}
+
+/// Called as `(old_rate_milli, new_rate_milli)` after each halving.
+pub type HalvingHook = Arc<dyn Fn(u64, u64) + Send + Sync>;
+
+#[derive(Debug)]
+struct State {
+    tokens_micro: u128,
+    last: Instant,
+    rate_milli: u64,
+    last_halved: Option<Instant>,
+}
+
+/// Token-bucket limiter, see the module docs.
+pub struct RateLimiter {
+    state: Mutex<State>,
+    turn: tokio::sync::Mutex<()>,
+    waiters: AtomicUsize,
+    max_waiters: usize,
+    burst_micro: u128,
+    initial_rate_milli: u64,
+    halvings: AtomicU64,
+    acquired: AtomicU64,
+    waited_ms: AtomicU64,
+    hook: Option<HalvingHook>,
+}
+
+impl fmt::Debug for RateLimiter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RateLimiter")
+            .field("stats", &self.stats())
+            .field("max_waiters", &self.max_waiters)
+            .finish_non_exhaustive()
+    }
+}
+
+struct WaiterGuard<'a>(&'a AtomicUsize);
+
+impl Drop for WaiterGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn div(a: u128, b: u128) -> u128 {
+    a.checked_div(b).unwrap_or(0)
+}
+
+impl RateLimiter {
+    /// `units_per_sec` sustained rate (>= 1), `burst_units` bucket size
+    /// (>= 1; the bucket starts full).
+    #[must_use]
+    pub fn new(units_per_sec: u64, burst_units: u64) -> Self {
+        let rate_milli = units_per_sec.max(1).saturating_mul(1_000);
+        let burst_micro = u128::from(burst_units.max(1)) * MICRO;
+        Self {
+            state: Mutex::new(State {
+                tokens_micro: burst_micro,
+                last: Instant::now(),
+                rate_milli,
+                last_halved: None,
+            }),
+            turn: tokio::sync::Mutex::new(()),
+            waiters: AtomicUsize::new(0),
+            max_waiters: DEFAULT_MAX_WAITERS,
+            burst_micro,
+            initial_rate_milli: rate_milli,
+            halvings: AtomicU64::new(0),
+            acquired: AtomicU64::new(0),
+            waited_ms: AtomicU64::new(0),
+            hook: None,
+        }
+    }
+
+    /// Bound of simultaneously waiting callers (>= 1).
+    #[must_use]
+    pub fn with_max_waiters(mut self, max_waiters: usize) -> Self {
+        self.max_waiters = max_waiters.max(1);
+        self
+    }
+
+    /// Report each halving (the CLIs print it on stderr).
+    #[must_use]
+    pub fn with_halving_hook(mut self, hook: HalvingHook) -> Self {
+        self.hook = Some(hook);
+        self
+    }
+
+    #[must_use]
+    pub fn stats(&self) -> RateLimiterStats {
+        let rate_milli = self.state.lock().map_or(0, |s| s.rate_milli);
+        RateLimiterStats {
+            initial_rate_milli: self.initial_rate_milli,
+            rate_milli,
+            halvings: self.halvings.load(Ordering::Acquire),
+            acquired: self.acquired.load(Ordering::Acquire),
+            waited_ms: self.waited_ms.load(Ordering::Acquire),
+        }
+    }
+
+    fn refill(&self, s: &mut State) {
+        let now = Instant::now();
+        let elapsed_us = now.saturating_duration_since(s.last).as_micros();
+        s.last = now;
+        let add = div(elapsed_us * u128::from(s.rate_milli), 1_000);
+        s.tokens_micro = s.tokens_micro.saturating_add(add).min(self.burst_micro);
+    }
+
+    /// Wait until `cost_units` tokens are available and take them. A cost
+    /// above the bucket size is clamped to it (so a heavy method is slow,
+    /// never stuck).
+    ///
+    /// # Errors
+    /// [`RateLimiterSaturated`] when the waiter bound is exceeded.
+    pub async fn acquire(&self, cost_units: u64) -> Result<(), RateLimiterSaturated> {
+        if self.waiters.fetch_add(1, Ordering::AcqRel) >= self.max_waiters {
+            self.waiters.fetch_sub(1, Ordering::AcqRel);
+            return Err(RateLimiterSaturated {
+                max_waiters: self.max_waiters,
+            });
+        }
+        let _waiting = WaiterGuard(&self.waiters);
+        let cost = (u128::from(cost_units.max(1)) * MICRO).min(self.burst_micro);
+        // FIFO: one caller at a time sleeps for its tokens.
+        let _turn = self.turn.lock().await;
+        loop {
+            let wait = {
+                let Ok(mut s) = self.state.lock() else {
+                    // Poisoned: never block the run on a broken limiter.
+                    break;
+                };
+                self.refill(&mut s);
+                if s.tokens_micro >= cost {
+                    s.tokens_micro -= cost;
+                    None
+                } else {
+                    let need = cost - s.tokens_micro;
+                    let us = div(
+                        need * 1_000 + u128::from(s.rate_milli) - 1,
+                        u128::from(s.rate_milli),
+                    );
+                    Some(Duration::from_micros(
+                        u64::try_from(us.max(1)).unwrap_or(u64::MAX),
+                    ))
+                }
+            };
+            match wait {
+                None => break,
+                Some(d) => {
+                    tokio::time::sleep(d).await;
+                    self.waited_ms.fetch_add(
+                        u64::try_from(d.as_millis()).unwrap_or(u64::MAX),
+                        Ordering::AcqRel,
+                    );
+                }
+            }
+        }
+        self.acquired.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// A provider answered 429 without `Retry-After`: halve the rate (once
+    /// per second at most) and empty the bucket. Returns the new rate in
+    /// milli-units/s when it was lowered.
+    pub fn on_rate_limited(&self) -> Option<u64> {
+        let (old, new) = {
+            let mut s = self.state.lock().ok()?;
+            let now = Instant::now();
+            s.tokens_micro = 0;
+            s.last = now;
+            if s.last_halved
+                .is_some_and(|t| now.saturating_duration_since(t) < HALVE_DEBOUNCE)
+            {
+                return None;
+            }
+            let old = s.rate_milli;
+            let new = old.checked_div(2).unwrap_or(old).max(MIN_RATE_MILLI);
+            if new >= old {
+                return None;
+            }
+            s.rate_milli = new;
+            s.last_halved = Some(now);
+            (old, new)
+        };
+        self.halvings.fetch_add(1, Ordering::AcqRel);
+        if let Some(h) = &self.hook {
+            h(old, new);
+        }
+        Some(new)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn sustained_rate_is_respected_with_paused_time() {
+        let l = RateLimiter::new(2, 1); // 2 units/s, bucket of 1
+        let t0 = Instant::now();
+        for _ in 0..5 {
+            l.acquire(1).await.unwrap();
+        }
+        // first is free (full bucket), the other 4 take 500 ms each
+        let el = Instant::now() - t0;
+        assert!(el >= Duration::from_millis(2_000), "{el:?}");
+        assert!(el < Duration::from_millis(2_100), "{el:?}");
+        assert_eq!(l.stats().acquired, 5);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn weights_cost_proportionally_and_oversize_is_clamped() {
+        let l = RateLimiter::new(100, 100);
+        let t0 = Instant::now();
+        l.acquire(100).await.unwrap(); // drains the bucket
+        l.acquire(50).await.unwrap(); // 0.5 s
+        l.acquire(10_000).await.unwrap(); // clamped to 100 -> 1 s
+        let el = Instant::now() - t0;
+        assert!(el >= Duration::from_millis(1_500) && el < Duration::from_millis(1_600));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_callers_share_one_rate() {
+        let l = Arc::new(RateLimiter::new(10, 1));
+        let t0 = Instant::now();
+        let mut hs = Vec::new();
+        for _ in 0..11 {
+            let l = l.clone();
+            hs.push(tokio::spawn(async move { l.acquire(1).await.unwrap() }));
+        }
+        for h in hs {
+            h.await.unwrap();
+        }
+        // 11 tokens at 10/s with one free: 1.0 s
+        let el = Instant::now() - t0;
+        assert!(el >= Duration::from_millis(1_000) && el < Duration::from_millis(1_100));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn halving_is_debounced_floored_and_reported() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        let l = RateLimiter::new(8, 1).with_halving_hook(Arc::new(move |a, b| {
+            if let Ok(mut v) = s2.lock() {
+                v.push((a, b));
+            }
+        }));
+        assert_eq!(l.on_rate_limited(), Some(4_000));
+        assert_eq!(l.on_rate_limited(), None, "same instant: debounced");
+        tokio::time::advance(Duration::from_millis(1_100)).await;
+        assert_eq!(l.on_rate_limited(), Some(2_000));
+        for _ in 0..20 {
+            tokio::time::advance(Duration::from_millis(1_100)).await;
+            l.on_rate_limited();
+        }
+        let st = l.stats();
+        assert_eq!(
+            (st.initial_rate_milli, st.rate_milli),
+            (8_000, MIN_RATE_MILLI)
+        );
+        assert_eq!(seen.lock().unwrap().first(), Some(&(8_000, 4_000)));
+        // after halving to 4/s a token takes 250 ms (bucket was emptied)
+        let l = RateLimiter::new(8, 1);
+        l.on_rate_limited();
+        let t0 = Instant::now();
+        l.acquire(1).await.unwrap();
+        let el = Instant::now() - t0;
+        assert!(el >= Duration::from_millis(250) && el < Duration::from_millis(300));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn waiter_queue_is_bounded() {
+        let l = Arc::new(RateLimiter::new(1, 1).with_max_waiters(2));
+        l.acquire(1).await.unwrap();
+        let (a, b) = (l.clone(), l.clone());
+        let h1 = tokio::spawn(async move { a.acquire(1).await });
+        let h2 = tokio::spawn(async move { b.acquire(1).await });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        let r = l.acquire(1).await;
+        assert_eq!(r, Err(RateLimiterSaturated { max_waiters: 2 }));
+        h1.await.unwrap().unwrap();
+        h2.await.unwrap().unwrap();
+    }
+}

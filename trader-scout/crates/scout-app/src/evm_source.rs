@@ -19,6 +19,46 @@ pub fn rpc_env_name(chain: &str) -> Option<&'static str> {
     }
 }
 
+/// Env var with the OPTIONAL separate `eth_getLogs` endpoint of a chain
+/// profile (per-method routing: logs there, receipts/state/balance on the
+/// main RPC). Secret like the main URL.
+#[must_use]
+pub fn logs_rpc_env_name(chain: &str) -> Option<&'static str> {
+    match chain {
+        "robinhood" => Some("SCOUT_ROBINHOOD_LOGS_RPC_URL"),
+        "base" => Some("SCOUT_BASE_LOGS_RPC_URL"),
+        "bsc" => Some("SCOUT_BSC_LOGS_RPC_URL"),
+        _ => None,
+    }
+}
+
+/// Default client-side request rate of a KEYED endpoint (requests/s).
+pub const KEYED_RPC_RPS: u32 = 10;
+/// Default (and ceiling) request rate of a PUBLIC keyless endpoint.
+pub const PUBLIC_RPC_RPS: u32 = 5;
+
+/// Network politeness options shared by the three CLIs (`#[command(flatten)]`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
+pub struct EvmNetOptions {
+    /// EVM only: client-side request rate of keyed RPC endpoints, requests
+    /// per second (default 10; the keyless public endpoint is capped at 5
+    /// whatever this says; the explorer defaults to 5). Applies to every HTTP
+    /// attempt, retries included, and is shared by all concurrent tasks. A
+    /// 429 without Retry-After halves the rate for the rest of the run.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+    pub rpc_rps: Option<u32>,
+    /// EVM only: weight requests by an APPROXIMATE per-method compute-unit
+    /// table (Alchemy-shaped: eth_getLogs 75, eth_getBlockReceipts 500, ...)
+    /// and pace them to this many units per second (Alchemy free tier is
+    /// about 300). Replaces the flat --rpc-rps for RPC endpoints.
+    #[arg(
+        long,
+        conflicts_with = "rpc_rps",
+        value_parser = clap::value_parser!(u32).range(1..=1_000_000)
+    )]
+    pub rpc_cu_per_sec: Option<u32>,
+}
+
 /// Env var with the optional Blockscout API key (wallet-centric history).
 pub const BLOCKSCOUT_KEY_ENV: &str = "SCOUT_BLOCKSCOUT_API_KEY";
 

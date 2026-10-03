@@ -21,6 +21,7 @@ mod backoff;
 mod client;
 mod endpoint;
 mod jsonrpc;
+mod ratelimit;
 
 pub use backoff::{
     CounterJitter, JitterSource, NoJitter, RetryPolicy, SleepFuture, Sleeper, TokioSleeper,
@@ -31,3 +32,7 @@ pub use client::{
 };
 pub use endpoint::RpcEndpoint;
 pub use jsonrpc::{JsonRpcEnvelopeError, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+pub use ratelimit::{
+    DEFAULT_MAX_WAITERS, HalvingHook, MIN_RATE_MILLI, RateLimiter, RateLimiterSaturated,
+    RateLimiterStats,
+};

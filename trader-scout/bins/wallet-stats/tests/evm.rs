@@ -133,7 +133,10 @@ fn env_of(m: &Mocks) -> Vec<(&'static str, String)> {
 }
 
 fn args(extra: &[&str]) -> Vec<String> {
-    let mut a: Vec<String> = ["--input", "-"].iter().map(|s| (*s).to_string()).collect();
+    let mut a: Vec<String> = ["--input", "-", "--rpc-rps", "5000"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     a.extend(WINDOW.iter().map(|s| (*s).to_string()));
     a.extend(extra.iter().map(|s| (*s).to_string()));
     a
@@ -345,4 +348,60 @@ async fn chain_identity_mismatch_is_refused_before_any_scan() {
     assert!(o.stderr.contains("preflight failed"));
     no_secret(&o);
     assert_eq!(m.explorer.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn wallet_scan_lists_through_the_indexer_and_never_calls_get_logs() {
+    let m = mocks().await;
+    let o = run(env_of(&m), args(&["--format", "jsonl"]), input()).await;
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    no_secret(&o);
+    let methods: Vec<String> = m
+        .rpc
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter_map(|b| b["method"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        !methods.iter().any(|x| x == "eth_getLogs"),
+        "wallet scans never use window getLogs: {methods:?}"
+    );
+    // the explorer was asked for the window's listings, block-range restricted
+    let q: Vec<String> = m
+        .explorer
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.url.query().unwrap_or("").to_string())
+        .collect();
+    for action in ["txlist", "tokentx", "txlistinternal"] {
+        assert!(
+            q.iter().any(|u| u.contains(&format!("action={action}"))
+                && u.contains("startblock=")
+                && u.contains("endblock=")),
+            "{action}: {q:?}"
+        );
+    }
+    assert!(
+        o.stderr.contains("routing: eth_getLogs -> not used"),
+        "{}",
+        o.stderr
+    );
+    let meta: Value = serde_json::from_str(o.stdout.lines().next().unwrap()).unwrap();
+    assert!(
+        meta["scan"]["logs_source"]
+            .as_str()
+            .unwrap()
+            .starts_with("not used")
+    );
+    assert!(
+        meta["scan"]["state_source"]
+            .as_str()
+            .unwrap()
+            .starts_with("keyed rpc")
+    );
 }

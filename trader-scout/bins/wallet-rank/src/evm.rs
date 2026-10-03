@@ -32,6 +32,8 @@ pub(crate) fn run_evm(
         .collect();
     let started = std::time::Instant::now();
     let concurrency = usize::try_from(args.concurrency).unwrap_or(1);
+    let notice: scout_app::LimiterNotice =
+        std::sync::Arc::new(|m| eprintln!("wallet-rank: warning: {m}"));
     let run = match rt.block_on(scout_app::collect_evm_stats(
         "wallet-rank",
         chain,
@@ -40,6 +42,8 @@ pub(crate) fn run_evm(
         args.max_requests,
         concurrency,
         window,
+        &args.net,
+        &notice,
         |k| std::env::var(k).ok(),
     )) {
         Ok(r) => r,
@@ -58,6 +62,9 @@ pub(crate) fn run_evm(
     };
     for w in &run.warnings {
         eprintln!("wallet-rank: warning: {w}");
+    }
+    for l in &run.rate_limits {
+        eprintln!("wallet-rank: rate limit: {l}");
     }
     let requests_made = run.requests_made;
     let secrets = run.secrets.clone();
@@ -208,6 +215,10 @@ fn print_diagnostics(
         );
         eprintln!("  venues: {}", i.venues_text());
         eprintln!("  history: {}", i.history_source);
+        eprintln!(
+            "  routing: eth_getLogs -> {}; receipts/state -> {}",
+            i.logs_source, i.state_source
+        );
         eprintln!("  {}", i.native_leg_text());
         eprintln!(
             "  native legs of native-quoted trades by source: {:?}",

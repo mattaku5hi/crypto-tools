@@ -31,11 +31,16 @@ pub(crate) fn run_evm(
     window: &AnalysisWindow,
 ) -> ExitCode {
     let started = std::time::Instant::now();
+    let notice: scout_app::LimiterNotice =
+        std::sync::Arc::new(|m| eprintln!("buyer-intersect: warning: {m}"));
     let setup = match rt.block_on(scout_app::setup_evm(
         chain,
         args.allow_unverified_chain,
         args.max_requests,
         usize::try_from(args.concurrency).unwrap_or(1).max(1) * 2,
+        &args.net,
+        &notice,
+        true,
         |k| std::env::var(k).ok(),
     )) {
         Ok(s) => s,
@@ -51,7 +56,7 @@ pub(crate) fn run_evm(
     for w in &setup.warnings {
         eprintln!("buyer-intersect: warning: {w}");
     }
-    let secrets = setup.url.secrets();
+    let secrets = setup.secrets();
     let scrub = move |t: &str| {
         let mut o = t.to_string();
         for s in &secrets {
@@ -66,12 +71,42 @@ pub(crate) fn run_evm(
         setup.chain.clone(),
         ScanLimits::default(),
     );
+    // Up-front cost estimate for a range-capped logs endpoint (never burn the
+    // whole budget on a scan that cannot finish).
+    if setup.logs_span_cap.is_some() {
+        let (since, until) = match window.bounds() {
+            Some((s, u)) => (u64::try_from(s).ok(), u64::try_from(u).ok()),
+            None => (None, None),
+        };
+        let blocks = match rt.block_on(scanner.resolve_window(since, until)) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "buyer-intersect: could not resolve the window: {}",
+                    scrub(&e.to_string())
+                );
+                return ExitCode::from(4);
+            }
+        };
+        let hint = scout_app::logs_rpc_env_name(setup.profile.name)
+            .unwrap_or("SCOUT_<CHAIN>_LOGS_RPC_URL");
+        if let Err(m) = scout_app::check_log_scan_feasible(
+            setup.logs_span_cap,
+            blocks,
+            tokens.len(),
+            args.max_requests,
+            hint,
+        ) {
+            eprintln!("buyer-intersect: {m}");
+            return ExitCode::from(4);
+        }
+    }
     let mut info = setup.info.clone();
     info.history_source = "eth_getLogs token scan (RPC) + receipts".to_string();
     // Native legs are not needed for sides; say so in the scope.
     info.trace = "not used (sides need no native leg)".to_string();
     info.archive_state = "not used (sides need no native leg)".to_string();
-    let report = match rt.block_on(run_evm_buyer_intersect(
+    let mut report = match rt.block_on(run_evm_buyer_intersect(
         &setup.cfg,
         &scanner,
         tokens,
@@ -106,6 +141,7 @@ pub(crate) fn run_evm(
         }
     };
     let requests_made = setup.rpc.total_requests_made();
+    report.info.rate_limits = setup.rate_limit_report();
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     print_diagnostics(&report, requests_made, elapsed_ms, &scrub, args);
     let incomplete = report.is_coverage_incomplete();
@@ -233,6 +269,9 @@ fn jsonl_lines(
                 "symbol": q.symbol, "address": q.address, "decimals": q.decimals,
                 "decimals_check": q.decimals_check})).collect::<Vec<_>>(),
             "native_leg": "not resolved: sides do not need the native leg",
+            "logs_source": i.logs_source,
+            "state_source": i.state_source,
+            "rate_limits": i.rate_limits,
             "wallet_set_is_lower_bound": true,
         },
         "budget": {"max_requests": args.max_requests, "concurrency": 1},
@@ -350,6 +389,13 @@ fn print_diagnostics(
         "  source: {}; native leg: not resolved (sides need none)",
         i.history_source
     );
+    eprintln!(
+        "  routing: eth_getLogs -> {}; receipts/state -> {}",
+        i.logs_source, i.state_source
+    );
+    for l in &i.rate_limits {
+        eprintln!("  rate limit: {l}");
+    }
     eprintln!(
         "  extraction: {}",
         scout_engine::EVM_BUYER_INTERSECT_VERSION

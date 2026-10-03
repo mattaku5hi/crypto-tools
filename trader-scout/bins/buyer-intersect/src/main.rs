@@ -186,6 +186,9 @@ struct Args {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
 
+    #[command(flatten)]
+    net: scout_app::EvmNetOptions,
+
     /// Max scan units in flight at once (a token, or one time slice of a
     /// token; 1..=16, default 4). Each unit keeps one provider request in
     /// flight, so this also caps concurrent requests. The shared

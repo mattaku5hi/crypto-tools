@@ -61,6 +61,8 @@ async fn run(rpc: &MockServer, ex: &MockServer, extra: &[&str], input: String) -
         cmd.args([
             "--input",
             "-",
+            "--rpc-rps",
+            "5000",
             "--since",
             "2026-10-03T17:54:46Z",
             "--until",
