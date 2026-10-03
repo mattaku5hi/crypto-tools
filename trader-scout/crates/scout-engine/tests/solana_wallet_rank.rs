@@ -1038,6 +1038,16 @@ fn with_usd(
             episodes: closed + unknown,
         }),
         coverage: UsdCoverage::default(),
+        failed_fees: scout_engine::UsdFailedFees {
+            priced_usd: Money::ZERO,
+            priced_txs: 0,
+            unpriced_txs: 0,
+            unpriced_by_reason: std::collections::BTreeMap::new(),
+        },
+        net: scout_engine::UsdNet {
+            status: scout_engine::UsdNetStatus::Known,
+            value: Some(Money::from_scaled_units(pnl)),
+        },
     });
     w
 }
@@ -1099,4 +1109,55 @@ fn quote_usd_gates_use_usd_counts_and_usd_unknown_share() {
             .reasons
             .contains(&R::UnknownEpisodeShare)
     );
+}
+
+#[test]
+fn quote_usd_rank_uses_the_usd_net_after_failed_fees() {
+    use scout_core::Money;
+    use scout_engine::{QuoteUnit, UsdNet, UsdNetStatus};
+    let with_fee = |w: SolanaWalletStats, fee: i128, status: UsdNetStatus| {
+        let mut w = w;
+        let u = w.ledger.as_mut().unwrap().usd.as_mut().unwrap();
+        u.failed_fees.priced_usd = Money::from_scaled_units(fee);
+        u.failed_fees.priced_txs = 1;
+        if status != UsdNetStatus::Known {
+            u.failed_fees.unpriced_txs = 1;
+        }
+        let pnl = u.block.realized_trade_pnl_exact.scaled_units();
+        u.net = UsdNet {
+            status,
+            value: Some(Money::from_scaled_units(pnl - fee)),
+        };
+        w
+    };
+    let wallets = vec![
+        // USD pnl 900 - fees 500 = net 400.
+        with_fee(
+            with_usd(Spec::new(1).build(), 25, 900, 10_000, 0),
+            500,
+            UsdNetStatus::Known,
+        ),
+        // USD pnl 600, no fee entry: net 600 ranks first.
+        with_usd(Spec::new(2).build(), 25, 600, 10_000, 0),
+        // Unpriced fee: known subset, never ranked on the optimistic figure.
+        with_fee(
+            with_usd(Spec::new(3).build(), 25, 5_000, 10_000, 0),
+            1,
+            UsdNetStatus::KnownSubset,
+        ),
+    ];
+    let usd = rank_solana_wallets(
+        &wallets,
+        &policy(RankProfile::None, RankBy::RealizedNetPnl, 10)
+            .with_quote(QuoteUnit::ReportCurrency),
+    );
+    let ids = ranked_ids(&usd);
+    assert_eq!(&ids[..2], &[2, 1]);
+    assert!(!ids.contains(&3) || *ids.last().unwrap() == 3);
+    let a = usd
+        .ranked
+        .iter()
+        .find(|r| r.observation.wallet == wallets[0].wallet)
+        .unwrap();
+    assert_eq!(a.observation.net_pnl_raw, Some(400));
 }

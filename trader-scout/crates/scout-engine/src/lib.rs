@@ -92,7 +92,7 @@ pub use solana_wallet_stats::{
     run_solana_wallet_stats_windowed_venues,
 };
 pub use solana_wallet_usd::{
-    SOLANA_WALLET_USD_VERSION, UsdCoverage, UsdDisposal, UsdEpisode, UsdJournal, UsdLedgerView,
-    UsdLotSlice, UsdOutcome, UsdPricingRun, apply_usd_pricing, convert_quote_to_usd,
-    quote_asset_of,
+    SOLANA_WALLET_USD_VERSION, UsdCoverage, UsdDisposal, UsdEpisode, UsdFailedFees, UsdJournal,
+    UsdLedgerView, UsdLotSlice, UsdNet, UsdNetStatus, UsdOutcome, UsdPricingRun, apply_usd_pricing,
+    convert_quote_to_usd, quote_asset_of,
 };

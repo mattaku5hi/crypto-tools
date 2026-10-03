@@ -94,7 +94,7 @@ use crate::solana_open_valuation::{
 use crate::solana_wallet_usd::{UsdDisposal, UsdJournal, UsdLedgerView, UsdLotSlice};
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
-pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/12 (ADR-019 open-position venue/fee/basis inputs + realizable valuation view, ADR-018 USD execution-pricing journal + USD view, OKX DEX Router SwapWithFeesCpiEvent2 FixtureVerified legs + ownership evidence (ADR-017), ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
+pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/13 (ADR-004/018 failed-tx fee journal for the USD net, ADR-019 open lot USD journal, ADR-019 open-position venue/fee/basis inputs + realizable valuation view, ADR-018 USD execution-pricing journal + USD view, OKX DEX Router SwapWithFeesCpiEvent2 FixtureVerified legs + ownership evidence (ADR-017), ADR-016 unknown-episode lower bounds, ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units, ADR-009 PumpSwap 26-byte track_volume trades now priced, ADR-015 Jupiter route legs, ADR-015 amendment DFlow v4 route legs)";
 
 /// Scope text for report metadata (invariant #10): allowed quote units and
 /// the route-swap rule of ADR-013.
@@ -781,6 +781,8 @@ pub struct SolanaWalletLedgerReport {
     /// the wallet paid the fee for its own pump trade instruction.
     pub failed_trade_fees_lamports: i128,
     pub failed_trade_fee_txs: u64,
+    /// ADR-018: `(pricing time = block time, fee lamports)` of each attributable failed tx.
+    pub failed_fee_journal: Vec<(Option<i64>, u64)>,
     /// `realized_trade_pnl - failed_trade_fees` (ADR-004), over known closed episodes.
     pub realized_net_pnl_lamports: i128,
     pub realized_net_pnl_exact: Money,
@@ -1153,6 +1155,7 @@ struct Builder {
     unknown_lots: u64,
     failed_fees: i128,
     failed_fee_txs: u64,
+    failed_fee_journal: Vec<(Option<i64>, u64)>,
     stamped: Vec<(i64, SolanaPubkey)>,
     traded: BTreeSet<SolanaPubkey>,
     evidence_samples: Vec<DecodeEvidence>,
@@ -2566,6 +2569,7 @@ pub fn build_solana_wallet_ledger_venues(
         unknown_lots: 0,
         failed_fees: 0,
         failed_fee_txs: 0,
+        failed_fee_journal: Vec::new(),
         stamped: Vec::new(),
         traded: BTreeSet::new(),
         evidence_samples: Vec::new(),
@@ -2610,6 +2614,7 @@ pub fn build_solana_wallet_ledger_venues(
                     b.failed_fees =
                         checked_add_i(b.failed_fees, i128::from(tx.fee_lamports), "failed fees")?;
                     b.failed_fee_txs += 1;
+                    b.failed_fee_journal.push((tx.block_time, tx.fee_lamports));
                 }
             }
             SolanaExecutionStatus::Succeeded => {
@@ -3092,7 +3097,18 @@ impl Builder {
             // the venue accounts with their latest observed fee bps.
             let mut known_sol_basis = Money::ZERO;
             let mut fully_known_sol = true;
+            let mut usd_lots: Vec<UsdLotSlice> = Vec::new();
             for lot in state.ledger.open_lots() {
+                usd_lots.push(UsdLotSlice {
+                    unit: lot.quote_unit,
+                    acquired_price_ts: state
+                        .lot_price_ts
+                        .get(&lot.acquisition_sequence)
+                        .copied()
+                        .flatten(),
+                    basis: lot.remaining_basis,
+                    basis_known: matches!(lot.basis_status, BasisStatus::Known),
+                });
                 if matches!(lot.basis_status, BasisStatus::Known)
                     && lot.quote_unit == QuoteUnit::Lamports
                 {
@@ -3122,6 +3138,7 @@ impl Builder {
                     known_sol_basis,
                     fully_known_sol,
                 },
+                lots: usd_lots,
             });
             self.records
                 .push(close_record(mint, ep, None, (0, 0), true)?);
@@ -3298,6 +3315,7 @@ impl Builder {
             open_episode_known_disposals: sol.open_episode_known_disposals,
             failed_trade_fees_lamports: self.failed_fees,
             failed_trade_fee_txs: self.failed_fee_txs,
+            failed_fee_journal: self.failed_fee_journal,
             realized_net_pnl_lamports: money_to_lamports_trunc(net),
             realized_net_pnl_exact: net,
             win_rate,

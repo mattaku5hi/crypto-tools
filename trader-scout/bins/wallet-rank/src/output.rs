@@ -407,6 +407,13 @@ pub struct UsdSummaryDto {
     pub left_censored: u64,
     pub open_unvalued: u64,
     pub price_coverage: PriceCoverageDto,
+    /// ADR-004 in USD: failed-tx fees priced at block time.
+    pub failed_fees_priced_txs: u64,
+    pub failed_fees_unpriced_txs: u64,
+    /// Σ priced fees, 8 dp (`null` when none priced).
+    pub failed_fees_priced_usd: Option<String>,
+    /// `known`, `known_subset` or `unknown`; value = realized - PRICED fees.
+    pub net_status: &'static str,
 }
 
 /// ADR-016: a worst-case lower bound that may not exist. `status` is
@@ -847,6 +854,16 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             left_censored: u.left_censored_episodes,
             open_unvalued: u.open_episodes,
             price_coverage: PriceCoverageDto::from_coverage(&u.coverage),
+            failed_fees_priced_txs: u.failed_fees.priced_txs,
+            failed_fees_unpriced_txs: u.failed_fees.unpriced_txs,
+            failed_fees_priced_usd: (u.failed_fees.priced_txs > 0).then(|| {
+                scout_engine::format_quote_money(
+                    scout_engine::QuoteUnit::ReportCurrency,
+                    u.failed_fees.priced_usd,
+                )
+                .unwrap_or_default()
+            }),
+            net_status: u.net.status.label(),
         }),
         route: RouteCountsDto {
             route_swaps: t.route_swaps,

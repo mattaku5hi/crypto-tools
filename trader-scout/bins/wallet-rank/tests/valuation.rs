@@ -124,7 +124,7 @@ async fn unvalued_exposure_is_reported_with_reasons_and_budget_counts_the_reads(
         meta["rank_version"]
             .as_str()
             .unwrap()
-            .starts_with("solana-wallet-rank/5")
+            .starts_with("solana-wallet-rank/6")
     );
     // 1 scan page + 1 account pass (every pool missing -> no vault pass).
     assert_eq!(meta["scan"]["requests_made"], 2);

@@ -14,9 +14,9 @@ use scout_engine::{
     AnalysisWindow, EpisodeOutcome, EpisodePnlBound, EpisodeRecord, LowerBound, OpenPosition,
     QuoteUnit, QuoteUnitBlock, Ratio, SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION,
     ScanFailureKind, ScanStop, SolanaProtocolScope, SolanaWalletLedgerReport, SolanaWalletStats,
-    SolanaWalletStatsReport, UsdEpisode, UsdLedgerView, UsdOutcome, format_quote_money,
-    format_scaled_decimal, lamports_to_sol_string, quote_unit_decimals, quote_unit_label,
-    rational_to_decimal_string,
+    SolanaWalletStatsReport, UsdEpisode, UsdLedgerView, UsdNetStatus, UsdOutcome,
+    format_quote_money, format_scaled_decimal, lamports_to_sol_string, quote_unit_decimals,
+    quote_unit_label, rational_to_decimal_string,
 };
 use serde::Serialize;
 
@@ -146,13 +146,14 @@ fn ratio_cell(r: &RatioStatus<Money>, what: &str) -> String {
 // Table
 // ---------------------------------------------------------------------
 
-const HEADER: [&str; 30] = [
+const HEADER: [&str; 33] = [
     "wallet",
     "status",
     "realized_net_pnl_sol",
     "realized_pnl_usdc",
     "realized_pnl_usdt",
     "realized_pnl_usd",
+    "realized_net_pnl_usd",
     "route_swaps",
     "closed_known/unknown",
     "left_censored",
@@ -160,6 +161,8 @@ const HEADER: [&str; 30] = [
     "open_valued",
     "open_realizable_sol",
     "open_unrealized_sol",
+    "open_value_usd",
+    "open_unrealized_usd",
     "W/L/BE",
     "win_rate",
     "profit_factor",
@@ -219,6 +222,7 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
                 cells.push(unit_pnl_cell(w, l, unit));
             }
             cells.push(usd_pnl_cell(w, l));
+            cells.push(usd_net_cell(l));
             cells.push(l.trades.route_swaps.to_string());
             let ratios_ok = w.coverage_complete();
             cells.push(format!(
@@ -279,17 +283,19 @@ fn row(w: &SolanaWalletStats) -> Vec<String> {
 
 /// ADR-019 cells: `valued/positions`, Σ realizable SOL, Σ known unrealized
 /// SOL (each `N/A (reason)` when nothing is known; never zero for unknown).
-fn open_valuation_cells(l: &SolanaWalletLedgerReport) -> [String; 3] {
+fn open_valuation_cells(l: &SolanaWalletLedgerReport) -> [String; 5] {
     if l.open_positions.is_empty() {
         return [
             "0/0".to_string(),
             "0.000000000".to_string(),
             "0.000000000".to_string(),
+            "0.00000000".to_string(),
+            "0.00000000".to_string(),
         ];
     }
     let Some(v) = &l.open_valuation else {
         let r = na("valuation not run");
-        return [r.clone(), r.clone(), r];
+        return [r.clone(), r.clone(), r.clone(), r.clone(), r];
     };
     let t = v.totals();
     let realizable = if t.valued == 0 {
@@ -319,10 +325,32 @@ fn open_valuation_cells(l: &SolanaWalletLedgerReport) -> [String; 3] {
     } else {
         money_exact_sol(Money::from_scaled_units(t.unrealized_known_scaled))
     };
+    let value_usd = if t.usd_priced_positions == 0 {
+        na(USD_NOT_PRICED)
+    } else if t.usd_priced_positions < t.positions {
+        format!(
+            "N/A (known subset: {})",
+            money_str(Money::from_scaled_units(t.usd_value_scaled))
+        )
+    } else {
+        money_str(Money::from_scaled_units(t.usd_value_scaled))
+    };
+    let unrealized_usd = if t.usd_unrealized_known_positions == 0 {
+        na("no known USD unrealized position")
+    } else if t.usd_unrealized_unknown_positions > 0 || t.unvalued > 0 {
+        format!(
+            "N/A (known subset: {})",
+            money_str(Money::from_scaled_units(t.usd_unrealized_known_scaled))
+        )
+    } else {
+        money_str(Money::from_scaled_units(t.usd_unrealized_known_scaled))
+    };
     [
         format!("{}/{}", t.valued, t.positions),
         realizable,
         unrealized,
+        value_usd,
+        unrealized_usd,
     ]
 }
 
@@ -377,6 +405,22 @@ fn usd_pnl_cell(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> String {
         v
     } else {
         format!("N/A (known subset: {v})")
+    }
+}
+
+/// ADR-004 in USD: realized trade PnL minus priced failed-tx fees.
+fn usd_net_cell(l: &SolanaWalletLedgerReport) -> String {
+    let Some(u) = &l.usd else {
+        return na(USD_NOT_PRICED);
+    };
+    match (u.net.status, u.net.value) {
+        (UsdNetStatus::Known, Some(v)) => money_str(v),
+        (UsdNetStatus::KnownSubset, Some(v)) => format!(
+            "N/A (known subset: {v}; {} failed fees unpriced)",
+            u.failed_fees.unpriced_txs,
+            v = money_str(v)
+        ),
+        _ => na("failed fees unpriced"),
     }
 }
 
@@ -1062,6 +1106,27 @@ pub struct UsdStatsDto {
     pub win_rate_lower_bound: Option<WinRateBoundDto>,
     pub unknown_episode_share: UnknownShareDto,
     pub price_coverage: PriceCoverageDto,
+    /// ADR-004 in USD: failed-tx fees priced at their block time.
+    pub failed_trade_fees: UsdFailedFeesDto,
+    /// `realized_trade_pnl - failed_trade_fees` (USD).
+    pub realized_net_pnl: UsdNetDto,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UsdFailedFeesDto {
+    /// Σ priced fees, 8 dp (`null` when none priced).
+    pub priced: Option<String>,
+    pub priced_txs: u64,
+    pub unpriced_txs: u64,
+    pub unpriced_by_reason: std::collections::BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UsdNetDto {
+    /// `known`, `known_subset` (value = realized - PRICED fees only) or `unknown`.
+    pub status: &'static str,
+    pub raw: Option<String>,
+    pub decimal: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1520,6 +1585,17 @@ fn usd_stats_dto(w: &SolanaWalletStats, u: &UsdLedgerView) -> UsdStatsDto {
                 .and_then(|r| r.percent_string(2)),
         },
         price_coverage: PriceCoverageDto::from_coverage(&u.coverage),
+        failed_trade_fees: UsdFailedFeesDto {
+            priced: (u.failed_fees.priced_txs > 0).then(|| money_str(u.failed_fees.priced_usd)),
+            priced_txs: u.failed_fees.priced_txs,
+            unpriced_txs: u.failed_fees.unpriced_txs,
+            unpriced_by_reason: u.failed_fees.unpriced_by_reason.clone(),
+        },
+        realized_net_pnl: UsdNetDto {
+            status: u.net.status.label(),
+            raw: u.net.value.map(|m| m.scaled_units().to_string()),
+            decimal: u.net.value.map(money_str),
+        },
     }
 }
 

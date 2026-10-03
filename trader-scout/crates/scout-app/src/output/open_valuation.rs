@@ -65,6 +65,10 @@ pub struct OpenPositionDto {
     pub value_usd: Option<String>,
     pub usd_price_label: Option<String>,
     pub usd_unpriced_reason: Option<String>,
+    /// `usd value - Σ usd basis of remaining lots` (8 dp); `null` = unknown.
+    pub usd_unrealized_pnl: Option<String>,
+    /// `known` or the reason it is unknown (valued positions only).
+    pub usd_unrealized_status: Option<String>,
 }
 
 /// Totals over a set of open positions.
@@ -83,6 +87,11 @@ pub struct OpenValuationTotalsDto {
     /// Σ USD value of the USD-priced positions (`null` when none).
     pub value_usd: Option<String>,
     pub usd_priced_positions: u64,
+    /// Σ USD unrealized PnL over the positions where it is known (`null`
+    /// when none); the counts say how many are known / unknown.
+    pub usd_unrealized_known_pnl: Option<String>,
+    pub usd_unrealized_known_positions: u64,
+    pub usd_unrealized_unknown_positions: u64,
     pub unvalued_by_reason: BTreeMap<&'static str, u64>,
 }
 
@@ -106,6 +115,10 @@ pub fn totals_dto(t: &OpenValuationTotals) -> OpenValuationTotalsDto {
         unrealized_unknown_positions: t.unrealized_unknown_positions,
         value_usd: (t.usd_priced_positions > 0).then(|| usd_str(t.usd_value_scaled)),
         usd_priced_positions: t.usd_priced_positions,
+        usd_unrealized_known_pnl: (t.usd_unrealized_known_positions > 0)
+            .then(|| usd_str(t.usd_unrealized_known_scaled)),
+        usd_unrealized_known_positions: t.usd_unrealized_known_positions,
+        usd_unrealized_unknown_positions: t.usd_unrealized_unknown_positions,
         unvalued_by_reason: t.unvalued_by_reason.clone(),
     }
 }
@@ -142,6 +155,8 @@ fn position_dto(p: &OpenPosition, v: Option<&PositionValuation>) -> OpenPosition
         value_usd: None,
         usd_price_label: None,
         usd_unpriced_reason: None,
+        usd_unrealized_pnl: None,
+        usd_unrealized_status: None,
     };
     let Some(v) = v else { return d };
     d.basis_known_lamports = v
@@ -205,6 +220,19 @@ fn position_dto(p: &OpenPosition, v: Option<&PositionValuation>) -> OpenPosition
                 d.usd_price_label = Some(u.price_label.clone());
             }
             d.usd_unpriced_reason.clone_from(&x.usd_unpriced_reason);
+            match x.usd_unrealized {
+                Some(m) => {
+                    d.usd_unrealized_pnl = Some(usd_str(m.scaled_units()));
+                    d.usd_unrealized_status = Some("known".to_string());
+                }
+                None => {
+                    d.usd_unrealized_status = Some(
+                        x.usd_unrealized_reason
+                            .clone()
+                            .unwrap_or_else(|| "usd_not_priced".to_string()),
+                    );
+                }
+            }
         }
     }
     d

@@ -347,10 +347,16 @@ async fn curve_position_is_valued_with_event_fees_slot_basis_and_usd() {
     );
 
     // USD at as_of (minute T0+60), one half-even conversion.
-    let src =
-        InMemoryPriceSource::new().with_candles(QuoteAsset::Sol, &[flat_candle(T0 + 60, "100.00")]);
+    let src = InMemoryPriceSource::new().with_candles(
+        QuoteAsset::Sol,
+        &[
+            flat_candle(T0 - 600, "90.00"),
+            flat_candle(T0 + 60, "100.00"),
+        ],
+    );
     let upr = apply_usd_pricing(&mut cards, &src).await;
-    assert_eq!(upr.minutes_requested[&QuoteAsset::Sol], 1);
+    // as_of minute + the lot's acquisition minute.
+    assert_eq!(upr.minutes_requested[&QuoteAsset::Sol], 2);
     let v = cards[0]
         .ledger
         .as_ref()
@@ -366,6 +372,26 @@ async fn curve_position_is_valued_with_event_fees_slot_basis_and_usd() {
     let usd = v.usd.unwrap();
     assert_eq!(usd.value.scaled_units(), 19_730_240);
     assert_eq!(usd.price_label, "cex_reference_1m");
+    // USD unrealized = 19_730_240 - basis 1_020_000 lamports * 90 USD/SOL
+    // (0.0918 USD = 9_180_000) = 10_550_240 (1e-8 USD).
+    assert_eq!(v.usd_unrealized.unwrap().scaled_units(), 10_550_240);
+    assert_eq!(v.usd_unrealized_reason, None);
+    let totals = cards[0]
+        .ledger
+        .as_ref()
+        .unwrap()
+        .open_valuation
+        .as_ref()
+        .unwrap()
+        .totals();
+    assert_eq!(
+        (
+            totals.usd_unrealized_known_scaled,
+            totals.usd_unrealized_known_positions,
+            totals.usd_unrealized_unknown_positions
+        ),
+        (10_550_240, 1, 0)
+    );
     // A realized figure never reads the valuation.
     assert!(cards[0].ledger.as_ref().unwrap().usd.is_some());
 }
@@ -403,6 +429,50 @@ async fn usd_price_labels_stale_and_unknown_never_zero() {
         assert_eq!(v.usd_unpriced_reason.as_deref(), expect_reason);
         // The SOL value is still there; USD is absent, never zero.
         assert_eq!(v.realizable_lamports, 1_973_024);
+    }
+}
+
+#[tokio::test]
+async fn usd_unrealized_is_unknown_when_basis_or_value_is_unpriced() {
+    // (candles, expected reason): the lot's acquisition minute has no
+    // candle -> basis unpriced; the as_of minute has none -> value unpriced.
+    let cases = [
+        (
+            vec![flat_candle(T0 + 60, "100.00")],
+            "basis_no_candle_within_5m",
+        ),
+        (vec![flat_candle(T0 - 600, "90.00")], "no_candle_within_5m"),
+    ];
+    for (candles, reason) in cases {
+        let ledger = curve_ledger(W, M1, true);
+        let curve = ledger.open_venues[0].curve.unwrap();
+        let accounts = BTreeMap::from([(
+            b58(&curve.address),
+            curve_account(false, 2_000_000_000, 1_000_000),
+        )]);
+        let server = chain_server(accounts).await;
+        let mut cards = vec![card(ledger, W)];
+        apply_open_valuation(&mut cards, &provider(&server), &AnalysisWindow::none(AS_OF)).await;
+        let src = InMemoryPriceSource::new().with_candles(QuoteAsset::Sol, &candles);
+        apply_usd_pricing(&mut cards, &src).await;
+        let view = cards[0]
+            .ledger
+            .as_ref()
+            .unwrap()
+            .open_valuation
+            .as_ref()
+            .unwrap();
+        let v = view.positions[0].valued().unwrap();
+        assert_eq!(v.usd_unrealized, None, "{reason}");
+        assert_eq!(v.usd_unrealized_reason.as_deref(), Some(reason));
+        let t = view.totals();
+        assert_eq!(
+            (
+                t.usd_unrealized_known_positions,
+                t.usd_unrealized_unknown_positions
+            ),
+            (0, 1)
+        );
     }
 }
 

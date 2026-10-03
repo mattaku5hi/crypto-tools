@@ -314,11 +314,20 @@ async fn concurrency_does_not_change_results_and_is_echoed() {
             !out.stdout.contains("elapsed_ms"),
             "JSONL stays deterministic"
         );
+        // `run_id` embeds the wall-clock second of the run, so it differs
+        // between two runs that straddle a second boundary; drop it before
+        // comparing the deterministic payload.
         matches_by_concurrency.push(
             out.stdout
                 .lines()
                 .filter(|l| !l.contains("\"run_meta\""))
-                .map(str::to_string)
+                .map(|l| {
+                    let mut v: serde_json::Value = serde_json::from_str(l).unwrap();
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.remove("run_id");
+                    }
+                    v.to_string()
+                })
                 .collect(),
         );
     }

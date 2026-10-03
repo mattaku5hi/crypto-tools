@@ -20,7 +20,7 @@
 //! valued in USD are known there) and the win-rate bound all read the USD
 //! block, whose "raw" figures are the 1e-8 USD integers. A wallet without a
 //! USD view has no metric (`metric_unknown`), never a zero. Failed-tx fees
-//! (SOL) are not in the USD net figure; open positions stay unvalued.
+//! (SOL) are priced at block time into the USD net (ADR-004); open USD unrealized is reported, never ranked.
 //!
 //! # Contract
 //! * Every input wallet lands in exactly one of [`WalletRankReport::ranked`]
@@ -134,7 +134,7 @@ pub const DEFAULT_TOP: usize = 20;
 pub const DEFAULT_MAX_UNKNOWN_EPISODE_SHARE_PERCENT: u8 = 10;
 
 /// Version tag of the ranking rules for report metadata.
-pub const SOLANA_WALLET_RANK_VERSION: &str = "solana-wallet-rank/5 (ADR-019 open-exposure valuation totals + --require-valued-open, ADR-013 --quote, ADR-016 unknown-episode lower bounds, ADR-018 --quote usd)";
+pub const SOLANA_WALLET_RANK_VERSION: &str = "solana-wallet-rank/6 (ADR-004 --quote usd net = USD realized - USD failed-tx fees, USD unrealized in open exposure, ADR-019 open-exposure valuation totals + --require-valued-open, ADR-013 --quote, ADR-016 unknown-episode lower bounds, ADR-018 --quote usd)";
 
 /// Ranking metric. `period-equity-pnl` needs a price source (P5.2) and is
 /// deliberately not representable.
@@ -466,7 +466,7 @@ pub struct WalletRankObservation {
     /// Quote unit of `net_pnl_raw`, `roi` and the closed-episode gate.
     pub quote: QuoteUnit,
     /// Realized net PnL in raw base units of `quote` (lamports for SOL,
-    /// 6-dp units for USDC/USDT; net of failed-trade fees for SOL only)
+    /// 6-dp units for USDC/USDT; net of failed-trade fees for SOL and USD)
     /// when known; `None` is N/A, not zero.
     pub net_pnl_raw: Option<i128>,
     /// `realized_trade_pnl / consumed_acquisition_basis` of `quote` (exact,
@@ -595,16 +595,31 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
     let net = if quote == QuoteUnit::Lamports {
         // Failed-trade fees are SOL overhead (ADR-004): SOL only.
         (closed > 0 || l.failed_trade_fees_lamports != 0).then_some(l.realized_net_pnl_lamports)
+    } else if quote == QuoteUnit::ReportCurrency {
+        // ADR-004 in USD: realized - priced failed fees; unpriced fees make
+        // the net unknown (never zero).
+        l.usd.as_ref().and_then(|u| {
+            let fee_txs = u.failed_fees.priced_txs + u.failed_fees.unpriced_txs;
+            (closed > 0 || fee_txs > 0)
+                .then_some(u.net.value)
+                .flatten()
+                .map(|m| m.scaled_units())
+        })
     } else {
         block
             .filter(|_| closed > 0)
             .map(|b| b.realized_trade_pnl_raw)
     };
+    let usd_fees_incomplete = quote == QuoteUnit::ReportCurrency
+        && l.usd
+            .as_ref()
+            .is_some_and(|u| u.net.status != crate::solana_wallet_usd::UsdNetStatus::Known);
     let unbounded = block.is_some_and(|b| b.unknown_pnl_bound == LowerBound::Unbounded);
     let zero_bound = block.is_none_or(|b| b.unknown_pnl_bound == LowerBound::Bounded(Money::ZERO));
     obs.rank_tier = if unbounded { 2 } else { 1 };
     obs.pnl_status = match net {
         None => PnlStatus::NotAvailable,
+        Some(_) if usd_fees_incomplete => PnlStatus::KnownSubset,
         Some(_) if w.coverage_complete() && closed_unknown == 0 => PnlStatus::Observed,
         Some(_) if unbounded => PnlStatus::KnownSubsetUnbounded,
         Some(_) => PnlStatus::KnownSubset,
@@ -619,7 +634,7 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
     // Lower bounds (ADR-016). Without unknown episodes they equal the
     // known figures exactly.
     obs.net_pnl_lower_bound = net.map(|n| {
-        if unbounded {
+        if unbounded || usd_fees_incomplete {
             return LowerBound::Unbounded;
         }
         if zero_bound {
@@ -628,6 +643,8 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
         let pnl_lb = block.and_then(|b| b.realized_pnl_lower_bound().bounded().copied());
         let failed = if quote == QuoteUnit::Lamports {
             lamports_to_money(l.failed_trade_fees_lamports).ok()
+        } else if quote == QuoteUnit::ReportCurrency {
+            l.usd.as_ref().map(|u| u.failed_fees.priced_usd)
         } else {
             Some(Money::ZERO)
         };

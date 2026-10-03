@@ -39,8 +39,10 @@
 //! * The USD block reuses [`QuoteUnitBlock`] with unit `ReportCurrency`;
 //!   its `Money` figures are USD at `MONEY_SCALE` and its `*_raw` figures
 //!   are those scaled integers (1e-8 USD). Open-episode figures are not
-//!   valued (zero, not rendered). Failed-transaction fees (SOL) are not
-//!   part of the USD net figure.
+//!   valued (zero, not rendered). Failed-transaction fees (ADR-004) are
+//!   priced at their block time into [`UsdFailedFees`]; USD net = USD
+//!   realized trade PnL - USD failed fees ([`UsdNet`]); an unpriced fee never
+//!   counts as zero.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,12 +53,13 @@ use scout_pricing::{DecimalPrice, PriceLabel, PriceSource, QuoteAsset, minute_st
 use crate::solana_buy_qualification::solana_mainnet_chain;
 use crate::solana_wallet_ledger::{
     EpisodeOutcome, EpisodeRecord, LowerBound, QuoteUnit, QuoteUnitBlock, SolanaWalletLedgerError,
-    SolanaWalletLedgerReport, UnknownReason, WinRateLowerBound, quote_unit_decimals,
+    SolanaWalletLedgerReport, UnknownReason, WinRateLowerBound, lamports_to_money,
+    quote_unit_decimals,
 };
 use crate::solana_wallet_stats::SolanaWalletStats;
 
 /// Version tag of the USD view rules for report metadata (invariant #10).
-pub const SOLANA_WALLET_USD_VERSION: &str = "solana-wallet-usd/1 (ADR-018: realized USD only, half-even once per leg, open positions unvalued)";
+pub const SOLANA_WALLET_USD_VERSION: &str = "solana-wallet-usd/2 (ADR-018: realized USD, failed-tx fees priced at block time -> USD net (ADR-004), open-position USD unrealized (ADR-019), half-even once per leg)";
 
 /// Native legs of one disposal, journalled while the ledger is built.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +166,47 @@ impl UsdCoverage {
     }
 }
 
+/// ADR-004 failed-tx fees in USD.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsdFailedFees {
+    /// Σ USD of the priced fees (`MONEY_SCALE`).
+    pub priced_usd: Money,
+    pub priced_txs: u64,
+    pub unpriced_txs: u64,
+    pub unpriced_by_reason: BTreeMap<String, u64>,
+}
+
+/// Status of the USD net figure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsdNetStatus {
+    /// Every failed fee priced: `net = realized - fees` exactly.
+    Known,
+    /// Some fees unpriced: `value = realized - priced fees` ONLY (the true net
+    /// is lower by the unpriced fees; not a zero-fee claim).
+    KnownSubset,
+    /// All fees unpriced: no net value.
+    Unknown,
+}
+
+impl UsdNetStatus {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Known => "known",
+            Self::KnownSubset => "known_subset",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// `usd realized trade pnl - usd failed fees` (ADR-004 in USD).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsdNet {
+    pub status: UsdNetStatus,
+    /// `None` iff `Unknown`.
+    pub value: Option<Money>,
+}
+
 /// The USD view of one wallet ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsdLedgerView {
@@ -177,6 +221,8 @@ pub struct UsdLedgerView {
     /// ADR-016: `wins / (closed_known + closed_unknown)` in USD.
     pub win_rate_lower_bound: Option<WinRateLowerBound>,
     pub coverage: UsdCoverage,
+    pub failed_fees: UsdFailedFees,
+    pub net: UsdNet,
 }
 
 impl UsdLedgerView {
@@ -353,6 +399,31 @@ impl SolanaWalletLedgerReport {
                 }
             }
         }
+        for (ts, _) in &self.failed_fee_journal {
+            if let Some(t) = ts {
+                out.entry(QuoteAsset::Sol)
+                    .or_default()
+                    .insert(minute_start(*t));
+            }
+        }
+        // Open-lot basis minutes: only for positions that are valued (the
+        // USD unrealized needs a USD value first).
+        for info in self.open_venues.iter().filter(|i| {
+            self.open_valuation.as_ref().is_some_and(|v| {
+                v.positions
+                    .iter()
+                    .any(|p| p.mint == i.mint && p.valued().is_some())
+            })
+        }) {
+            for l in &info.lots {
+                if l.basis_known
+                    && let (Some(asset), Some(t)) = (quote_asset_of(l.unit), l.acquired_price_ts)
+                    && asset != QuoteAsset::Usdc
+                {
+                    out.entry(asset).or_default().insert(minute_start(t));
+                }
+            }
+        }
         out
     }
 
@@ -425,7 +496,47 @@ impl SolanaWalletLedgerReport {
             LowerBound::Bounded(unknown_bound_sum)
         };
         let total_closed = block.closed_episodes_known.saturating_add(closed_unknown);
+        let mut failed_fees = UsdFailedFees {
+            priced_usd: Money::ZERO,
+            priced_txs: 0,
+            unpriced_txs: 0,
+            unpriced_by_reason: BTreeMap::new(),
+        };
+        for (ts, lamports) in &self.failed_fee_journal {
+            let fee = lamports_to_money(i128::from(*lamports))?;
+            match price_leg(source, QuoteUnit::Lamports, *ts, fee, &mut cov) {
+                Leg::Priced(m) => {
+                    failed_fees.priced_txs += 1;
+                    failed_fees.priced_usd = sum(failed_fees.priced_usd, m)?;
+                }
+                Leg::Unpriced(reason) => {
+                    failed_fees.unpriced_txs += 1;
+                    *failed_fees.unpriced_by_reason.entry(reason).or_insert(0) += 1;
+                }
+            }
+        }
+        let net_value = block
+            .realized_trade_pnl_exact
+            .checked_sub(&failed_fees.priced_usd)?;
+        let net = if failed_fees.unpriced_txs == 0 {
+            UsdNet {
+                status: UsdNetStatus::Known,
+                value: Some(net_value),
+            }
+        } else if failed_fees.priced_txs > 0 {
+            UsdNet {
+                status: UsdNetStatus::KnownSubset,
+                value: Some(net_value),
+            }
+        } else {
+            UsdNet {
+                status: UsdNetStatus::Unknown,
+                value: None,
+            }
+        };
         Ok(UsdLedgerView {
+            failed_fees,
+            net,
             version: SOLANA_WALLET_USD_VERSION,
             episodes,
             win_rate_lower_bound: (total_closed > 0).then_some(WinRateLowerBound {
@@ -446,7 +557,68 @@ impl SolanaWalletLedgerReport {
         source: &dyn PriceSource,
     ) -> Result<(), SolanaWalletLedgerError> {
         self.usd = Some(self.compute_usd_view(source)?);
+        self.apply_open_usd_unrealized(source);
         Ok(())
+    }
+
+    /// ADR-019 x ADR-018: `usd unrealized = usd realizable value(as_of) -
+    /// Σ usd basis of the remaining lots` per valued position. Each lot's
+    /// remaining native basis (already pro-rata exact) is converted once,
+    /// half-even, at its acquisition minute. Unknown (never zero) when the
+    /// position is unvalued or unpriced, or any lot basis is unknown/unpriced.
+    /// Never read by realized rank keys.
+    pub fn apply_open_usd_unrealized(&mut self, source: &dyn PriceSource) {
+        let Some(view) = self.open_valuation.as_mut() else {
+            return;
+        };
+        for p in &mut view.positions {
+            let crate::solana_open_valuation::ValuationOutcome::Valued(v) = &mut p.outcome else {
+                continue;
+            };
+            v.usd_unrealized = None;
+            v.usd_unrealized_reason = None;
+            let Some(usd) = v.usd.as_ref() else {
+                v.usd_unrealized_reason = Some(
+                    v.usd_unpriced_reason
+                        .clone()
+                        .unwrap_or_else(|| "value_usd_unpriced".to_string()),
+                );
+                continue;
+            };
+            let Some(info) = self.open_venues.iter().find(|i| i.mint == p.mint) else {
+                v.usd_unrealized_reason = Some("lots_unavailable".to_string());
+                continue;
+            };
+            let mut cov = UsdCoverage::default();
+            let mut basis = Money::ZERO;
+            let mut reason: Option<String> = None;
+            for l in &info.lots {
+                if !l.basis_known {
+                    reason = Some("unknown_basis".to_string());
+                    break;
+                }
+                match price_leg(source, l.unit, l.acquired_price_ts, l.basis, &mut cov) {
+                    Leg::Priced(m) => match sum(basis, m) {
+                        Ok(b) => basis = b,
+                        Err(_) => {
+                            reason = Some("conversion_overflow".to_string());
+                            break;
+                        }
+                    },
+                    Leg::Unpriced(r) => {
+                        reason = Some(format!("basis_{r}"));
+                        break;
+                    }
+                }
+            }
+            match reason {
+                Some(r) => v.usd_unrealized_reason = Some(r),
+                None => match usd.value.checked_sub(&basis) {
+                    Ok(m) => v.usd_unrealized = Some(m),
+                    Err(_) => v.usd_unrealized_reason = Some("conversion_overflow".to_string()),
+                },
+            }
+        }
     }
 }
 

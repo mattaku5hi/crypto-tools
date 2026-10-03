@@ -3751,7 +3751,8 @@ fn production_policy_books_swap_with_fees_event2_and_keeps_the_other_variants_id
 // ---------------------------------------------------------------------
 
 use scout_engine::{
-    SolanaWalletStats, UsdOutcome, WalletScanStatus, apply_usd_pricing, convert_quote_to_usd,
+    SolanaWalletStats, UsdNetStatus, UsdOutcome, WalletScanStatus, apply_usd_pricing,
+    convert_quote_to_usd,
 };
 use scout_pricing::{
     Candle, DecimalPrice, InMemoryPriceSource, PriceErrorClass, QuoteAsset, parse_candles,
@@ -4535,4 +4536,139 @@ async fn usd_apply_pricing_over_stats_cards_prefetches_once_and_sets_views() {
     assert_eq!(run.minutes_requested[&QuoteAsset::Sol], 2);
     assert!(cards[0].ledger.as_ref().unwrap().usd.is_some());
     assert!(cards[1].ledger.is_none());
+}
+
+// ---------------------------------------------------------------------
+// ADR-004 in USD: failed-tx fees priced at their block time -> USD net.
+// ---------------------------------------------------------------------
+
+fn failed_fee_txs_source() -> InMemoryPriceSource {
+    // buy minute T0: 100.00, failed-fee minute T0+180: 200.00, sell minute T0+300: 110.00.
+    InMemoryPriceSource::new().with_candles(
+        QuoteAsset::Sol,
+        &[
+            flat_candle(T0, "100.00"),
+            flat_candle(T0 + 180, "200.00"),
+            flat_candle(T0 + 300, "110.00"),
+        ],
+    )
+}
+
+fn failed_own_tx(sig: u8, slot: u64, fee: u64, block_time: i64) -> RawSolanaTransaction {
+    at(
+        Tx {
+            sig,
+            slot,
+            index: 0,
+            ixs: vec![trade_ix(TradeSide::Buy, None, W, M1, 0)],
+            bals: vec![],
+            fee,
+            payer: W,
+            native: vec![],
+            ok: false,
+        }
+        .build(),
+        block_time,
+    )
+}
+
+fn round_trip_txs() -> Vec<RawSolanaTransaction> {
+    vec![
+        at(
+            trade_tx(
+                1,
+                100,
+                TradeSide::Buy,
+                M1,
+                1000,
+                0,
+                1_000_000_000,
+                0,
+                0,
+                BUY_TS,
+                5_000,
+                W,
+            ),
+            BUY_TS,
+        ),
+        at(
+            trade_tx(
+                2,
+                101,
+                TradeSide::Sell,
+                M1,
+                1000,
+                1000,
+                1_100_000_000,
+                0,
+                0,
+                SELL_TS,
+                5_000,
+                W,
+            ),
+            SELL_TS,
+        ),
+    ]
+}
+
+#[test]
+fn usd_net_golden_subtracts_failed_fees_priced_at_their_block_time() {
+    // Basis 1.000005 SOL * 100 = 100.0005 USD; net proceeds 1.099995 SOL * 110
+    // = 120.99945 USD; USD PnL = 20.99895 USD = 2_099_895_000.
+    // Failed fee 7_000 lamports * 200 = 0.0014 USD = 140_000.
+    // USD net = 2_099_755_000 (native SOL net = 99_990_000 - 7_000 lamports).
+    let mut txs = round_trip_txs();
+    txs.push(failed_own_tx(3, 102, 7_000, T0 + 190));
+    let r = usd_run(&txs, &failed_fee_txs_source());
+    assert_eq!(r.realized_net_pnl_lamports, 99_983_000);
+    assert_eq!(r.failed_fee_journal, vec![(Some(T0 + 190), 7_000)]);
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(u.block.realized_trade_pnl_exact, usd(2_099_895_000));
+    assert_eq!(u.failed_fees.priced_usd, usd(140_000));
+    assert_eq!(
+        (u.failed_fees.priced_txs, u.failed_fees.unpriced_txs),
+        (1, 0)
+    );
+    assert_eq!(u.net.status, UsdNetStatus::Known);
+    assert_eq!(u.net.value, Some(usd(2_099_755_000)));
+    // The fee leg is part of the shared coverage (3 closed legs + 1 fee).
+    assert_eq!(
+        (u.coverage.legs, u.coverage.priced, u.coverage.unpriced),
+        (3, 3, 0)
+    );
+    // The fee minute is part of the one prefetch batch.
+    let need = r.usd_price_requirements();
+    assert!(need[&QuoteAsset::Sol].contains(&(T0 + 180)));
+}
+
+#[test]
+fn usd_net_unpriced_fee_is_subset_or_unknown_never_zero() {
+    let mut txs = round_trip_txs();
+    txs.push(failed_own_tx(3, 102, 7_000, T0 + 190)); // priced
+    txs.push(failed_own_tx(4, 103, 9_000, T0 + 1_200)); // no candle within 5 min
+    let r = usd_run(&txs, &failed_fee_txs_source());
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(
+        (u.failed_fees.priced_txs, u.failed_fees.unpriced_txs),
+        (1, 1)
+    );
+    assert_eq!(u.net.status, UsdNetStatus::KnownSubset);
+    assert_eq!(u.net.value, Some(usd(2_099_755_000))); // priced fees only
+    assert_eq!(
+        u.failed_fees.unpriced_by_reason.get("no_candle_within_5m"),
+        Some(&1)
+    );
+
+    let mut txs = round_trip_txs();
+    txs.push(failed_own_tx(4, 103, 9_000, T0 + 1_200));
+    let r = usd_run(&txs, &failed_fee_txs_source());
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(u.net.status, UsdNetStatus::Unknown);
+    assert_eq!(u.net.value, None);
+
+    // No failed fees: net == realized, status known.
+    let r = usd_run(&round_trip_txs(), &failed_fee_txs_source());
+    let u = r.usd.as_ref().unwrap();
+    assert_eq!(u.net.status, UsdNetStatus::Known);
+    assert_eq!(u.net.value, Some(usd(2_099_895_000)));
 }

@@ -115,6 +115,9 @@ pub struct OpenVenueInfo {
     /// Latest PumpSwap pool the wallet traded this mint on.
     pub pool: Option<VenueAddress>,
     pub basis: OpenBasis,
+    /// ADR-018/019: remaining open lots (native basis + acquisition pricing
+    /// time) for the USD unrealized PnL.
+    pub lots: Vec<crate::solana_wallet_usd::UsdLotSlice>,
 }
 
 /// Why a position is not valued (ADR-019 §§1-3). Never a zero value.
@@ -212,6 +215,11 @@ pub struct ValuedPosition {
     pub usd: Option<OpenUsd>,
     /// Why the USD figure is missing (after pricing was attempted).
     pub usd_unpriced_reason: Option<String>,
+    /// `usd value - Σ usd basis of remaining lots` (USD `MONEY_SCALE`);
+    /// `Some` only when every lot basis and the value are USD-priced.
+    pub usd_unrealized: Option<Money>,
+    /// Why `usd_unrealized` is missing (after USD pricing was attempted).
+    pub usd_unrealized_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,6 +273,11 @@ pub struct OpenValuationTotals {
     /// Σ USD value (`MONEY_SCALE` scaled integer) of the USD-priced positions.
     pub usd_value_scaled: i128,
     pub usd_priced_positions: u64,
+    /// Σ USD unrealized PnL (`MONEY_SCALE`) over positions where it is known.
+    pub usd_unrealized_known_scaled: i128,
+    pub usd_unrealized_known_positions: u64,
+    /// Valued positions whose USD unrealized PnL is unknown (any cause).
+    pub usd_unrealized_unknown_positions: u64,
     pub unvalued_by_reason: BTreeMap<&'static str, u64>,
 }
 
@@ -289,6 +302,15 @@ impl OpenValuationTotals {
         self.usd_priced_positions = self
             .usd_priced_positions
             .saturating_add(o.usd_priced_positions);
+        self.usd_unrealized_known_scaled = self
+            .usd_unrealized_known_scaled
+            .saturating_add(o.usd_unrealized_known_scaled);
+        self.usd_unrealized_known_positions = self
+            .usd_unrealized_known_positions
+            .saturating_add(o.usd_unrealized_known_positions);
+        self.usd_unrealized_unknown_positions = self
+            .usd_unrealized_unknown_positions
+            .saturating_add(o.usd_unrealized_unknown_positions);
         for (k, v) in &o.unvalued_by_reason {
             let e = self.unvalued_by_reason.entry(k).or_insert(0);
             *e = e.saturating_add(*v);
@@ -332,6 +354,15 @@ impl OpenValuationView {
                                 t.unrealized_known_scaled.saturating_add(m.scaled_units());
                         }
                         None => t.unrealized_unknown_positions += 1,
+                    }
+                    match v.usd_unrealized {
+                        Some(m) => {
+                            t.usd_unrealized_known_positions += 1;
+                            t.usd_unrealized_known_scaled = t
+                                .usd_unrealized_known_scaled
+                                .saturating_add(m.scaled_units());
+                        }
+                        None => t.usd_unrealized_unknown_positions += 1,
                     }
                     if let Some(u) = &v.usd {
                         t.usd_priced_positions += 1;
@@ -548,6 +579,8 @@ fn value_curve(
             unrealized_pnl: unrealized(&info.basis, q.net),
             usd: None,
             usd_unpriced_reason: None,
+            usd_unrealized: None,
+            usd_unrealized_reason: None,
         })),
     }
 }
@@ -641,6 +674,8 @@ fn value_pool(
             unrealized_pnl: unrealized(&info.basis, q.net),
             usd: None,
             usd_unpriced_reason: None,
+            usd_unrealized: None,
+            usd_unrealized_reason: None,
         })),
     }
 }
@@ -999,6 +1034,7 @@ mod tests {
                 fee: if fee { amm_fee() } else { None },
             }),
             basis: b,
+            lots: Vec::new(),
         }
     }
 
