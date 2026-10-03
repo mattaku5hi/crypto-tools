@@ -5,7 +5,9 @@
 //!
 //! Solana: when EVERY input token is a Solana mint and
 //! `SCOUT_HELIUS_API_KEY` is set (non-empty), a `HeliusProvider` drives
-//! `run_solana_buyer_intersect` (pump.fun bonding-curve buys only; the
+//! `run_solana_trade_intersect` (ADR-014: pump.fun bonding-curve, PumpSwap
+//! and ADR-013 route-swap trades; `--side buy|sell|any`, default `any`;
+//! optional `--since/--until/--period` window scanned newest-first; the
 //! scope/lower-bound caveat is printed on stderr). Without the key, or
 //! for EVM/mixed input, `UnconfiguredProvider` is used and the run
 //! exits 4 (`ConfigurationRequired`) -- the honest outcome, not a stub.
@@ -62,10 +64,11 @@ use scout_api::ProviderError;
 use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
 use scout_core::{AddressBytes, AssetKey, ChainFamily};
 use scout_engine::{
-    PumpTradeVariant, ScanStop, SolanaBuyerIntersectReport, SolanaProtocolScope, TokenScanStatus,
-    run_buyer_intersect, run_solana_buyer_intersect, sanitize_provider_text,
+    AnalysisWindow, IntersectOptions, PumpTradeVariant, ScanStop, SideFilter,
+    SolanaBuyerIntersectReport, SolanaProtocolScope, TokenScanStatus, TradeSide, Venue,
+    run_buyer_intersect, run_solana_trade_intersect, sanitize_provider_text,
 };
-use scout_providers::{HeliusProvider, UnconfiguredProvider};
+use scout_providers::{HeliusProvider, ScanOrder, UnconfiguredProvider};
 use scout_rpc::{DEFAULT_MAX_RETRY_AFTER, RequestBudgetExhausted};
 use tokio_util::sync::CancellationToken;
 
@@ -79,7 +82,8 @@ const ENDPOINT_OVERRIDE_ENV: &str = "SCOUT_BUYER_INTERSECT_ENDPOINT";
 const HELIUS_TIMEOUT_MS: u64 = 30_000;
 const HELIUS_MAX_ATTEMPTS: u32 = 3;
 
-/// Find wallets that bought at least K distinct input tokens.
+/// Find wallets that traded (bought and/or sold, `--side`) at least K
+/// distinct input tokens.
 #[derive(Debug, Parser)]
 #[command(name = "buyer-intersect", version)]
 struct Args {
@@ -87,9 +91,29 @@ struct Args {
     #[arg(long)]
     input: Option<String>,
 
-    /// Minimum number of distinct input tokens that must have been bought.
+    /// Minimum number of distinct input tokens a wallet must have traded
+    /// (on the selected `--side`).
     #[arg(long, default_value_t = 2)]
     min_token_hits: usize,
+
+    /// Which trades count as a hit on a token: `buy`, `sell`, or `any` (a
+    /// buy OR a sell on each token; default, ADR-014).
+    #[arg(long, default_value = "any", value_parser = ["buy", "sell", "any"])]
+    side: String,
+
+    /// Analysis window start, UTC RFC 3339 `2026-08-01T00:00:00Z` (inclusive;
+    /// no offsets). Window `[since, until)`; the scan walks newest-first
+    /// to the window start (ADR-011/ADR-014). Conflicts with --period.
+    #[arg(long, conflicts_with = "period")]
+    since: Option<String>,
+    /// Analysis window end (exclusive), same format; default: run start.
+    /// Requires --since or --period.
+    #[arg(long)]
+    until: Option<String>,
+    /// Window of the last N days (`30d`, 1..=365) ending at --until (default
+    /// run start). Conflicts with --since.
+    #[arg(long, conflicts_with = "since")]
+    period: Option<String>,
 
     /// Output format: table or jsonl.
     #[arg(long, default_value = "table", value_parser = ["table", "jsonl"])]
@@ -115,8 +139,39 @@ struct Args {
     max_requests: Option<u64>,
 }
 
+/// Run start in unix seconds (pinned once per run as `as_of`).
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0)
+}
+
+fn side_filter(args: &Args) -> SideFilter {
+    match args.side.as_str() {
+        "buy" => SideFilter::Buy,
+        "sell" => SideFilter::Sell,
+        _ => SideFilter::Any,
+    }
+}
+
 fn main() -> ExitCode {
     let args = Args::parse();
+
+    // ADR-011: the window is resolved (and `as_of` pinned) exactly once.
+    let window = match AnalysisWindow::resolve(
+        args.period.as_deref(),
+        args.since.as_deref(),
+        args.until.as_deref(),
+        unix_now(),
+    ) {
+        Ok(w) => w,
+        Err(err) => {
+            eprintln!("buyer-intersect: {err}");
+            return ExitCode::from(2);
+        }
+    };
 
     let input_text = match read_input(args.input.as_deref()) {
         Ok(text) => text,
@@ -169,7 +224,7 @@ fn main() -> ExitCode {
             .ok()
             .filter(|k| !k.trim().is_empty());
         if let Some(api_key) = api_key {
-            return run_solana(&rt, &input_tokens, &args, &api_key);
+            return run_solana(&rt, &input_tokens, &args, &window, &api_key);
         }
         let provider = UnconfiguredProvider::new("solana_history", HELIUS_KEY_ENV);
         return run_legacy(&rt, &provider, &input_tokens, &args);
@@ -293,6 +348,7 @@ fn build_provider(
     api_key: &str,
     max_pages: NonZeroU32,
     max_requests: Option<u64>,
+    window: &AnalysisWindow,
 ) -> Result<HeliusProvider, ProviderError> {
     let provider = match std::env::var(ENDPOINT_OVERRIDE_ENV) {
         Ok(url) if !url.is_empty() => HeliusProvider::new_with_endpoint(
@@ -301,6 +357,15 @@ fn build_provider(
             HELIUS_MAX_ATTEMPTS,
         )?,
         _ => HeliusProvider::new(api_key, HELIUS_TIMEOUT_MS, HELIUS_MAX_ATTEMPTS)?,
+    };
+    // No window: oldest-first from token creation (early activity first).
+    // Window: newest-first to the boundary = complete for the window.
+    let provider = if window.is_bounded() {
+        provider
+            .with_scan_order(ScanOrder::NewestFirst)
+            .with_stop_before_block_time(window.bounds().map(|(since, _)| since))
+    } else {
+        provider
     };
     Ok(provider
         .with_max_pages(max_pages)
@@ -311,6 +376,7 @@ fn run_solana(
     rt: &tokio::runtime::Runtime,
     input_tokens: &[AssetKey],
     args: &Args,
+    window: &AnalysisWindow,
     api_key: &str,
 ) -> ExitCode {
     let Some(max_pages) = NonZeroU32::new(args.max_pages_per_token) else {
@@ -319,14 +385,18 @@ fn run_solana(
     };
     // ONE provider for the whole run: the request budget and counter are
     // shared by every token's scan.
-    let provider = match build_provider(api_key, max_pages, args.max_requests) {
+    let provider = match build_provider(api_key, max_pages, args.max_requests, window) {
         Ok(provider) => provider,
         Err(err) => return provider_error_exit(&err, Some(api_key)),
     };
-    let result = rt.block_on(run_solana_buyer_intersect(
+    let result = rt.block_on(run_solana_trade_intersect(
         &provider,
         input_tokens,
         args.min_token_hits,
+        IntersectOptions {
+            side: side_filter(args),
+            window: *window,
+        },
         CancellationToken::new(),
     ));
     let requests_made = provider.total_requests_made();
@@ -392,6 +462,28 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
         "  program={} idl_commit={} idl_file_sha256={} rule={}",
         scope.program_id, scope.idl_commit, scope.idl_sha256, scope.qualification_version
     );
+    if let (Some(program), Some(commit), Some(sha)) = (
+        scope.amm_program_id,
+        scope.amm_idl_commit,
+        scope.amm_idl_sha256,
+    ) {
+        eprintln!("  amm_program={program} idl_commit={commit} idl_file_sha256={sha}");
+    }
+    eprintln!("  side={}", report.side.label());
+    match report.window.bounds() {
+        Some((since, until)) => eprintln!(
+            "  window [{}, {}) source={} as_of={}: newest-first walk, stops after the first page \
+             holding a tx older than the window start; a token that exhausts the page budget \
+             before it is incomplete",
+            scout_app::format_unix_utc(u64::try_from(since).unwrap_or(0)),
+            scout_app::format_unix_utc(u64::try_from(until).unwrap_or(0)),
+            report.window.source.label(),
+            scout_app::format_unix_utc(u64::try_from(report.window.as_of).unwrap_or(0)),
+        ),
+        None => eprintln!(
+            "  window: none (oldest-first from token creation; a truncated token lacks NEWER activity)"
+        ),
+    }
     eprintln!(
         "  budget: max_pages_per_token={} (provider pages per input token, \
          100 txs/page; retries are not counted)",
@@ -424,14 +516,17 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
             TokenScanStatus::Ok => "ok".to_string(),
         };
         eprintln!(
-            "  token {}: status={} txs_scanned={} qualified_buyers={} decoded_buys={} \
-             malformed={} unknown_discriminator={} unverified_variant_buys={} \
+            "  token {}: status={} txs_scanned={} wallets={} buyers={} sellers={} decoded_buys={} \
+             decoded_sells={} malformed={} unknown_discriminator={} idl_only_trades={} \
              positive_delta_without_instruction={} failed_transactions={}",
             token.asset_label(),
             status,
             token.transactions_scanned,
+            token.qualified_wallets,
             token.qualified_buyers,
+            token.qualified_sellers,
             token.diagnostics.decoded_buys,
+            token.diagnostics.decoded_sells,
             token.diagnostics.malformed_instructions,
             unknown_or_na(
                 token.is_unknown(),
@@ -440,11 +535,34 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
             if token.is_unknown() {
                 "n/a (scan failed)".to_string()
             } else {
-                format_unverified(&token.diagnostics.unverified_variant_buys)
+                token.trade.idl_only_trades.to_string()
             },
             token.positive_delta_without_instruction,
             token.diagnostics.failed_transactions,
         );
+        if !token.is_unknown() {
+            let t = &token.trade;
+            eprintln!(
+                "    ops(buy/sell) curve={}/{} pumpswap={}/{} route={}/{} \
+                 router_forwards_not_attributed={} amm_unreconciled={} \
+                 no_matching_delta={} route_rejections[multi_asset={} not_opposite_signs={} \
+                 no_quote_leg={} no_verified_leg={} passthrough_nonzero={}]",
+                t.ops(Venue::BondingCurve, TradeSide::Buy),
+                t.ops(Venue::BondingCurve, TradeSide::Sell),
+                t.ops(Venue::PumpAmm, TradeSide::Buy),
+                t.ops(Venue::PumpAmm, TradeSide::Sell),
+                t.ops(Venue::Route, TradeSide::Buy),
+                t.ops(Venue::Route, TradeSide::Sell),
+                t.router_forwards_not_attributed,
+                t.amm_unreconciled,
+                t.trades_without_matching_delta,
+                t.route_rejections.multi_asset,
+                t.route_rejections.not_opposite_signs,
+                t.route_rejections.no_quote_leg,
+                t.route_rejections.no_verified_leg,
+                t.route_rejections.passthrough_nonzero,
+            );
+        }
     }
     let d = &report.diagnostics;
     eprintln!(
@@ -465,7 +583,7 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
     };
     eprintln!(
         "  program instructions: known_non_trade={} unknown_discriminator={} \
-         unverified_variant_buys={}{partial_note}",
+         unverified_variant_trades={}{partial_note}",
         d.known_non_trade_instructions,
         d.unknown_discriminator_instructions,
         format_unverified(&d.unverified_variant_buys),
@@ -503,7 +621,7 @@ fn print_solana_diagnostics(report: &SolanaBuyerIntersectReport, api_key: &str, 
     if reasons.is_empty() {
         eprintln!(
             "buyer-intersect: status=complete within declared protocol scope \
-             (buyer set is a lower bound for migrated tokens)"
+             (wallet set is a lower bound: venues outside the scope are not decoded)"
         );
     } else {
         eprintln!("buyer-intersect: status=partial (IncompleteCoverage, exit 3):");
@@ -558,7 +676,7 @@ fn emit_solana_matches(
             &|text| redact(text, api_key),
         )?
     } else {
-        table_lines(&report.base)
+        solana_table_lines(report)
     };
     Ok(write_lines_to_stdout(lines))
 }
@@ -570,6 +688,45 @@ fn run_id_from(captured_at: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric())
         .collect();
     format!("buyer-intersect-{compact}")
+}
+
+/// Solana table: full wallet address, `hit_count` and per matched token its
+/// full mint with the observed sides, `B` (buy), `S` (sell) or `B/S`:
+/// `<wallet> hit_count=2 <mint>=B/S <mint>=S`.
+fn solana_table_lines(report: &SolanaBuyerIntersectReport) -> Vec<String> {
+    report
+        .base
+        .matches
+        .iter()
+        .map(|m| {
+            let hits = report.side_hits.get(&m.wallet);
+            let tokens: Vec<String> = m
+                .matched_assets
+                .iter()
+                .map(|asset| {
+                    let mint = match asset {
+                        AssetKey::Token(_, address) => address.to_string(),
+                        AssetKey::Native(_) => "native".to_string(),
+                    };
+                    let sides = hits.and_then(|h| h.get(asset)).map_or("?", |h| {
+                        match (h.buy.is_some(), h.sell.is_some()) {
+                            (true, true) => "B/S",
+                            (true, false) => "B",
+                            (false, true) => "S",
+                            (false, false) => "?",
+                        }
+                    });
+                    format!("{mint}={sides}")
+                })
+                .collect();
+            format!(
+                "{} hit_count={} {}",
+                m.wallet.address,
+                m.hit_count,
+                tokens.join(" ")
+            )
+        })
+        .collect()
 }
 
 /// Full address (base58 for Solana, 0x-hex for EVM) and hit count.
@@ -587,7 +744,7 @@ fn emit_report(report: &scout_engine::BuyerIntersectReport, format: &str) -> Exi
             .matches
             .iter()
             .map(|m| {
-                output::buyer_match_record(m)
+                output::buyer_match_record(m, None)
                     .and_then(|r| serde_json::to_string(&r).map_err(|e| e.to_string()))
             })
             .collect();

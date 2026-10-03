@@ -65,7 +65,16 @@ pub const PUMP_BONDING_CURVE_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKub
 /// Official IDL commit (`pump-fun/pump-public-docs`, `idl/pump.json`).
 pub const PUMP_BONDING_CURVE_IDL_COMMIT: &str = "e0687ae9b7e064a0f54efc7297c65eecfbba3a8f";
 /// Decoder/qualification rule identifier recorded in reports (invariant 10).
+///
+/// Meaning: the rule of [`qualify_bonding_curve_buys`] (curve buys only,
+/// ADR-003). `buyer-intersect` since ADR-014 reports
+/// [`SOLANA_TRADE_QUALIFICATION_VERSION`] instead.
 pub const SOLANA_BUY_QUALIFICATION_VERSION: &str = "pump-bonding-curve-buy/idl-e0687ae/v4";
+/// Rule identifier of the `buyer-intersect` trade-side qualification
+/// (ADR-014): bonding-curve buys and sells, PumpSwap trades and ADR-013
+/// route swaps, side in token terms.
+pub const SOLANA_TRADE_QUALIFICATION_VERSION: &str =
+    "solana-trade-qualification/v5 (curve+pumpswap+route, ADR-014)";
 
 /// Why the confirmed deployment scope could not be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

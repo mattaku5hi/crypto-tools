@@ -29,7 +29,7 @@ use scout_dex_solana::{
     VariantVerification,
 };
 use scout_engine::{
-    PUMP_BONDING_CURVE_PROGRAM_ID, ScanFailureKind, ScanStop, TokenScanStatus,
+    PUMP_BONDING_CURVE_PROGRAM_ID, ScanFailureKind, ScanStop, TokenScanStatus, Venue,
     classify_provider_error, pump_bonding_curve_decoder, qualify_bonding_curve_buys,
     qualify_bonding_curve_buys_with_policy, run_solana_buyer_intersect,
     run_solana_buyer_intersect_with_policy, sanitize_provider_text, solana_mainnet_chain,
@@ -155,7 +155,7 @@ async fn real_probe_fixture_yields_exactly_the_known_bonding_curve_buyer() {
 }
 
 #[tokio::test]
-async fn real_post_migration_fixtures_have_zero_bonding_curve_buys() {
+async fn real_post_migration_fixtures_have_zero_curve_buys_but_pumpswap_buys() {
     let server = MockServer::start().await;
     mount_fixture(&server, MINT1, "pump_mint1_full.json").await;
     mount_fixture(&server, MINT2, "pump_mint2_full.json").await;
@@ -183,15 +183,25 @@ async fn real_post_migration_fixtures_have_zero_bonding_curve_buys() {
     )
     .await
     .unwrap();
-    assert!(report.base.matches.is_empty());
+    // ADR-014 (changed expectation): these tokens migrated, so there is no
+    // curve buy, but the PumpSwap buys on them now qualify (before: the
+    // buyer set was empty because PumpSwap was not decoded). Real
+    // fixtures: 2 distinct PumpSwap buyers of MINT1, 1 of MINT2.
     assert_eq!(report.base.input_token_count, 2);
     assert_eq!(report.per_token.len(), 2);
     assert_eq!(report.diagnostics.decoded_buys, 0);
     assert_eq!(report.diagnostics.unknown_discriminator_instructions, 0);
     assert!(!report.is_coverage_incomplete());
-    // Empty result is complete-within-scope, but the scope block states
-    // the lower-bound caveat.
-    assert!(report.scope.not_decoded.contains("PumpSwap"));
+    assert_eq!(report.trade.ops(Venue::BondingCurve, TradeSide::Buy), 0);
+    assert_eq!(report.per_token[0].qualified_buyers, 2);
+    assert_eq!(report.per_token[1].qualified_buyers, 1);
+    assert_eq!(report.trade.ops(Venue::PumpAmm, TradeSide::Buy), 3);
+    // K=1 over both tokens: three distinct buyers.
+    assert_eq!(report.base.matches.len(), 3);
+    // The scope block names PumpSwap as decoded and the remaining gaps.
+    assert!(report.scope.recognized.contains("PumpSwap"));
+    assert!(report.scope.not_decoded.contains("Raydium"));
+    assert!(!report.scope.not_decoded.contains("PumpSwap AMM,"));
     // Positive deltas without decoded instructions are counted, not hidden.
     assert!(report.positive_delta_without_instruction > 0);
 }

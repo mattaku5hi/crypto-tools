@@ -80,7 +80,9 @@ pub use scout_ledger::QuoteUnit;
 use scout_ledger::{BasisStatus, Ledger};
 use scout_normalize::{SolanaBalanceAggregationError, solana_owner_net_deltas};
 
-use crate::solana_buy_qualification::solana_mainnet_chain;
+use crate::solana_buy_qualification::{
+    VariantPolicy, default_variant_policy, solana_mainnet_chain,
+};
 
 /// Version tag of the ledger rules, for report metadata (invariant #10).
 pub const SOLANA_WALLET_LEDGER_VERSION: &str = "solana-wallet-ledger/4 (ADR-010, ADR-004, ADR-011 left-censoring, ADR-012 PumpSwap AMM, ADR-013 route swaps + quote units)";
@@ -744,6 +746,9 @@ struct WalletTrade {
     unreconciled: bool,
     /// PumpSwap pool whose base mint is wSOL (ADR-012 §2).
     reversed_pool: bool,
+    /// PumpSwap: how the user's own legs reconcile with the events
+    /// (ADR-012 §3); `None` for other venues.
+    amm_attribution: Option<AmmAttribution>,
 }
 
 /// One decoded swap leg of the transaction (any `user`), evidence for the
@@ -1143,7 +1148,7 @@ impl QuoteMints {
 
 /// Why a route-swap candidate was rejected (ADR-013 §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RouteReject {
+pub(crate) enum RouteReject {
     NothingMoved,
     NotSigner,
     MultiAsset,
@@ -1167,6 +1172,7 @@ fn extract_curve_trades(
     wallet: &SolanaPubkey,
     decoder: &BondingCurveBuyDecoder,
     wsol: &SolanaPubkey,
+    policy: VariantPolicy,
     work: &mut TxWork<'_>,
 ) {
     let rep = pair_trades_with_events(decoder, &tx.instructions, tx.slot, tx.transaction_index);
@@ -1174,7 +1180,7 @@ fn extract_curve_trades(
         work.legs.push(LegInfo {
             user: p.trade.user,
             mint: p.trade.mint,
-            fixture_verified: p.trade.verification() == VariantVerification::FixtureVerified,
+            fixture_verified: policy(p.trade.variant) == VariantVerification::FixtureVerified,
             instruction_index: p.trade.instruction_index,
             timestamp: match &p.pairing {
                 TradeEventPairing::Paired(ev) => Some(ev.timestamp),
@@ -1238,10 +1244,11 @@ fn extract_curve_trades(
             instruction_index: t.instruction_index,
             consideration,
             timestamp,
-            verification: t.verification(),
+            verification: policy(t.variant),
             mismatched: matches!(p.pairing, TradeEventPairing::Mismatch { .. }),
             unreconciled: false,
             reversed_pool: false,
+            amm_attribution: None,
         });
     }
     work.malformed_trades = work
@@ -1389,6 +1396,7 @@ fn extract_amm_trades(
                 mismatched,
                 unreconciled,
                 reversed_pool: reading.reversed,
+                amm_attribution: Some(u.attribution),
             };
             let unverified = Consideration::Unknown {
                 reason: UnknownReason::ConsiderationUnverified,
@@ -1504,6 +1512,7 @@ fn classify_trades<'a>(
     wallet: &SolanaPubkey,
     decoders: &LedgerDecoders<'_>,
     qm: &QuoteMints,
+    policy: VariantPolicy,
 ) -> Result<TxWork<'a>, SolanaWalletLedgerError> {
     let mut work = TxWork {
         tx,
@@ -1516,7 +1525,7 @@ fn classify_trades<'a>(
         legs: Vec::new(),
         route_reject: None,
     };
-    extract_curve_trades(tx, wallet, decoders.curve, &qm.wsol, &mut work);
+    extract_curve_trades(tx, wallet, decoders.curve, &qm.wsol, policy, &mut work);
     if let Some(amm) = decoders.amm {
         extract_amm_trades(tx, wallet, amm, &mut work);
     }
@@ -1525,6 +1534,114 @@ fn classify_trades<'a>(
     work.trades.sort_by_key(|t| t.instruction_index);
     apply_route_rules(&mut work, wallet, qm)?;
     Ok(work)
+}
+
+/// One wallet-attributed trade of a transaction (shared by the ledger's
+/// classification and `buyer-intersect`, ADR-014). Side is in TOKEN terms.
+#[derive(Debug, Clone)]
+pub(crate) struct AttributedTrade {
+    pub wallet: SolanaPubkey,
+    pub venue: Venue,
+    pub variant: &'static str,
+    pub side: TradeSide,
+    pub mint: SolanaPubkey,
+    /// Verification of the decoded variant (curve: through the injected policy).
+    pub verification: VariantVerification,
+    /// PumpSwap: the wallet's base leg reconciles with the events (ADR-012
+    /// §3: `Exact`, `QuoteResidual` or `QuoteFundedElsewhere`). Always true
+    /// for the other venues (curve is checked by delta, a route by rule).
+    pub reconciled: bool,
+    /// Owner-keyed net delta of `mint` for `wallet` in this transaction.
+    pub owner_delta: i128,
+}
+
+/// Every wallet-attributed trade of one transaction plus the rejections
+/// that explain what was NOT attributed.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TxAttribution {
+    pub trades: Vec<AttributedTrade>,
+    /// Decoded trade instructions with broken structure / events without a
+    /// trade (both venues), counted once per transaction.
+    pub malformed_trades: u64,
+    pub orphan_events: u64,
+    /// PumpSwap trades whose decoded user is a non-signing zero-net
+    /// forwarder (ADR-012 §3): not attributed to anybody.
+    pub router_forwards: u64,
+    /// ADR-013 §2 rejections of signer candidates (first failing bucket).
+    pub route_rejections: Vec<RouteReject>,
+}
+
+/// Attribute every trade of `tx` that touches one of `focus_mints` to the
+/// wallets that own it, for ALL wallets of the transaction. Candidates are
+/// the signers, every decoded leg user and every owner with a non-zero
+/// delta of a focus mint; each candidate goes through the SAME per-wallet
+/// classification the ledger uses (`classify_trades`: curve and PumpSwap
+/// extractors, reversed pools, router-forward guard, ADR-013 route rule), so
+/// the two consumers cannot drift apart. A transaction without a decoded leg
+/// on a focus mint yields no trade.
+pub(crate) fn attribute_transaction_trades(
+    tx: &RawSolanaTransaction,
+    decoders: &LedgerDecoders<'_>,
+    focus_mints: &BTreeSet<SolanaPubkey>,
+    policy: VariantPolicy,
+) -> Result<TxAttribution, SolanaWalletLedgerError> {
+    let mut out = TxAttribution::default();
+    if !tx.execution.is_success() {
+        return Ok(out);
+    }
+    let qm = QuoteMints::new()?;
+    // Pass 0 with a sentinel wallet that is nobody: yields the decoded legs
+    // and the per-transaction decode counters.
+    let probe = classify_trades(tx, &[0u8; 32], decoders, &qm, policy)?;
+    out.malformed_trades = probe.malformed_trades;
+    out.orphan_events = probe.orphans;
+    if !probe.legs.iter().any(|l| focus_mints.contains(&l.mint)) {
+        return Ok(out);
+    }
+    let deltas = solana_owner_net_deltas(&tx.token_balance_changes)?;
+    let mut candidates: BTreeSet<SolanaPubkey> = tx.signers.iter().copied().collect();
+    candidates.extend(probe.legs.iter().map(|l| l.user));
+    for ((mint, owner), d) in &deltas.deltas {
+        if *d != 0 && focus_mints.contains(mint) {
+            candidates.insert(*owner);
+        }
+    }
+    for wallet in &candidates {
+        let work = classify_trades(tx, wallet, decoders, &qm, policy)?;
+        out.router_forwards = out.router_forwards.max(work.router_forwards);
+        if let Some(reject) = work.route_reject
+            && tx.signers.contains(wallet)
+        {
+            out.route_rejections.push(reject);
+        }
+        for t in &work.trades {
+            if !focus_mints.contains(&t.mint) {
+                continue;
+            }
+            let reconciled = match t.venue {
+                Venue::PumpAmm => matches!(
+                    t.amm_attribution,
+                    Some(
+                        AmmAttribution::Exact
+                            | AmmAttribution::QuoteResidual
+                            | AmmAttribution::QuoteFundedElsewhere
+                    )
+                ),
+                Venue::BondingCurve | Venue::Route => true,
+            };
+            out.trades.push(AttributedTrade {
+                wallet: *wallet,
+                venue: t.venue,
+                variant: t.variant,
+                side: t.side,
+                mint: t.mint,
+                verification: t.verification,
+                reconciled,
+                owner_delta: deltas.deltas.get(&(t.mint, *wallet)).copied().unwrap_or(0),
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// ADR-013 §1/§2: decide whether the wallet's event trades are its own
@@ -1628,6 +1745,7 @@ fn apply_route_rules(
                 mismatched: false,
                 unreconciled: false,
                 reversed_pool: false,
+                amm_attribution: None,
             });
         }
         Err(reject) => {
@@ -1820,7 +1938,7 @@ pub fn build_solana_wallet_ledger_venues(
                 }
             }
             SolanaExecutionStatus::Succeeded => {
-                let w = classify_trades(tx, wallet, decoders, &qm)?;
+                let w = classify_trades(tx, wallet, decoders, &qm, default_variant_policy)?;
                 for t in &w.trades {
                     b.traded.insert(t.mint);
                 }

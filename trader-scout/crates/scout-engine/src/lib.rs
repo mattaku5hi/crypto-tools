@@ -37,18 +37,20 @@ pub use analysis_window::{
     parse_rfc3339_utc,
 };
 pub use buyer_intersect::{BuyerIntersectReport, BuyerMatch, run_buyer_intersect};
-pub use scout_dex_solana::{PumpTradeVariant, VariantVerification};
+pub use scout_dex_solana::{PumpTradeVariant, TradeSide, VariantVerification};
 pub use solana_buy_qualification::{
     PUMP_BONDING_CURVE_IDL_COMMIT, PUMP_BONDING_CURVE_PROGRAM_ID, QualifiedBuy,
-    SOLANA_BUY_QUALIFICATION_VERSION, ScopeError, TxQualification, TxQualificationDiagnostics,
-    UnverifiedVariantBuy, VariantPolicy, default_variant_policy, pump_bonding_curve_decoder,
-    pump_bonding_curve_scope, qualify_bonding_curve_buys, qualify_bonding_curve_buys_with_policy,
-    solana_mainnet_chain,
+    SOLANA_BUY_QUALIFICATION_VERSION, SOLANA_TRADE_QUALIFICATION_VERSION, ScopeError,
+    TxQualification, TxQualificationDiagnostics, UnverifiedVariantBuy, VariantPolicy,
+    default_variant_policy, pump_bonding_curve_decoder, pump_bonding_curve_scope,
+    qualify_bonding_curve_buys, qualify_bonding_curve_buys_with_policy, solana_mainnet_chain,
 };
 pub use solana_buyer_intersect::{
-    ScanFailureKind, ScanStop, SolanaBuyerIntersectReport, SolanaProtocolScope,
-    SolanaTokenScanSummary, TokenScanStatus, classify_provider_error, run_solana_buyer_intersect,
-    run_solana_buyer_intersect_with_policy, sanitize_provider_text,
+    IntersectOptions, ScanFailureKind, ScanStop, SideEvidence, SideFilter,
+    SolanaBuyerIntersectReport, SolanaProtocolScope, SolanaTokenScanSummary, TokenScanStatus,
+    TokenSideHits, TradeAttributionDiagnostics, classify_provider_error,
+    run_solana_buyer_intersect, run_solana_buyer_intersect_with_policy, run_solana_trade_intersect,
+    run_solana_trade_intersect_with_policy, sanitize_provider_text,
 };
 pub use solana_wallet_ledger::{
     ActivityMetrics, DailyActivity, EpisodeOutcome, EpisodeRecord, LedgerDecoders,

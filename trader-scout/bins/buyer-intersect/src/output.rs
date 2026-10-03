@@ -9,9 +9,12 @@
 
 use scout_app::{SCHEMA_VERSION, chain_profile_name};
 use scout_core::{AssetKey, ChainKey, WalletKey};
+use std::collections::BTreeMap;
+
 use scout_engine::{
-    BuyerMatch, PumpTradeVariant, ScanFailureKind, ScanStop, SolanaBuyerIntersectReport,
-    SolanaProtocolScope, SolanaTokenScanSummary, TokenScanStatus, TxQualificationDiagnostics,
+    AnalysisWindow, BuyerMatch, ScanFailureKind, ScanStop, SideEvidence,
+    SolanaBuyerIntersectReport, SolanaProtocolScope, SolanaTokenScanSummary, TokenScanStatus,
+    TokenSideHits, TradeAttributionDiagnostics, Venue,
 };
 use serde::Serialize;
 
@@ -35,6 +38,34 @@ pub struct BuyerMatchRecord {
     pub wallet: WalletDto,
     pub hit_count: usize,
     pub matched_assets: Vec<AssetDto>,
+    /// ADR-014: per matched token the sides observed and the first
+    /// qualifying evidence. Absent on the legacy (non-Solana) path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub matched_tokens: Vec<MatchedTokenDto>,
+}
+
+/// First qualifying operation of one side: lowest `(slot, tx index)`.
+#[derive(Debug, Serialize)]
+pub struct EvidenceDto {
+    pub signature: String,
+    pub slot: u64,
+    /// `bonding_curve`, `pump_amm` or `route`.
+    pub venue: &'static str,
+    /// IDL instruction name, or `route_swap`.
+    pub variant: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MatchedTokenDto {
+    pub chain: &'static str,
+    pub token: String,
+    /// Sides observed under the selected `--side`: `buy` and/or `sell`.
+    pub sides: Vec<&'static str>,
+    /// Qualifying transactions per side (`null` = side not observed).
+    pub buy_count: Option<u64>,
+    pub sell_count: Option<u64>,
+    pub first_buy: Option<EvidenceDto>,
+    pub first_sell: Option<EvidenceDto>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,6 +82,10 @@ pub struct ScopeDto {
     pub idl_commit: &'static str,
     pub idl_sha256: &'static str,
     pub qualification_version: &'static str,
+    /// PumpSwap AMM program and IDL pin (ADR-012).
+    pub amm_program_id: Option<&'static str>,
+    pub amm_idl_commit: Option<&'static str>,
+    pub amm_idl_sha256: Option<&'static str>,
     pub recognized: &'static str,
     pub not_decoded: &'static str,
     pub variants: Vec<VariantDto>,
@@ -90,16 +125,88 @@ pub struct RunMetaRecord {
     pub input_tokens: Vec<AssetDto>,
     pub input_token_count: usize,
     pub min_token_hits: usize,
+    /// ADR-014: `buy`, `sell` or `any`.
+    pub side: &'static str,
+    /// ADR-011 analysis window (`since`/`until` null without one).
+    pub window: WindowDto,
+    /// `oldest_first` (no window) or `newest_first` (window).
+    pub scan_order: &'static str,
+}
+
+/// ADR-011 analysis window of the run (`since`/`until` null without one).
+#[derive(Debug, Serialize)]
+pub struct WindowDto {
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub since_unix: Option<i64>,
+    pub until_unix: Option<i64>,
+    pub as_of: String,
+    pub as_of_unix: i64,
+    /// `period`, `explicit` or `none`.
+    pub source: &'static str,
+}
+
+fn rfc3339(unix: i64) -> String {
+    scout_app::format_unix_utc(u64::try_from(unix).unwrap_or(0))
+}
+
+pub fn window_dto(w: &AnalysisWindow) -> WindowDto {
+    let bounds = w.bounds();
+    WindowDto {
+        since: bounds.map(|(s, _)| rfc3339(s)),
+        until: bounds.map(|(_, u)| rfc3339(u)),
+        since_unix: bounds.map(|(s, _)| s),
+        until_unix: bounds.map(|(_, u)| u),
+        as_of: rfc3339(w.as_of),
+        as_of_unix: w.as_of,
+        source: w.source.label(),
+    }
+}
+
+/// Qualifying operations of one venue by side.
+#[derive(Debug, Serialize)]
+pub struct VenueSideDto {
+    pub buys: u64,
+    pub sells: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VenueOpsDto {
+    pub bonding_curve: VenueSideDto,
+    pub pump_amm: VenueSideDto,
+    pub route: VenueSideDto,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RouteRejectionsDto {
+    pub wallet_not_signer: u64,
+    pub multi_asset: u64,
+    pub not_opposite_signs: u64,
+    pub no_quote_leg: u64,
+    pub no_verified_leg: u64,
+    pub passthrough_nonzero: u64,
 }
 
 #[derive(Debug, Serialize)]
 pub struct TokenDiagnosticsDto {
     pub decoded_buys: u64,
+    pub decoded_sells: u64,
     pub malformed_instructions: u64,
     pub unknown_discriminator_instructions: u64,
+    /// IdlOnly trades that would qualify (any venue): never hits, coverage gap.
     pub unverified_variant_buys: u64,
     pub failed_transactions: u64,
     pub positive_delta_without_instruction: u64,
+    /// Qualifying (wallet, side, transaction) operations per venue and side.
+    pub qualified_ops: VenueOpsDto,
+    /// PumpSwap router-forwards (non-signing zero-net users): not attributed.
+    pub router_forwards_not_attributed: u64,
+    pub route_rejections: RouteRejectionsDto,
+    pub idl_only_trades: u64,
+    pub amm_unreconciled: u64,
+    pub trades_without_matching_delta: u64,
+    pub malformed_trades: u64,
+    pub orphan_events: u64,
 }
 
 /// Typed run-stop reason / failure kind: `kind` is `budget_exhausted`,
@@ -153,7 +260,13 @@ pub struct TokenStatusDto {
     /// For `not_scanned`: why the run stopped before this token.
     pub stop_reason: Option<ReasonDto>,
     pub transactions_scanned: Option<u64>,
+    /// Windowed scan only: transactions inside `[since, until)`.
+    pub transactions_in_window: Option<u64>,
+    /// Distinct wallets with a qualified buy of the token.
     pub qualified_buyers: Option<u64>,
+    pub qualified_sellers: Option<u64>,
+    /// Distinct wallets with a qualifying op of the selected side(s).
+    pub qualified_wallets: Option<u64>,
     pub diagnostics: Option<TokenDiagnosticsDto>,
 }
 
@@ -194,7 +307,49 @@ pub fn asset_dto(asset: &AssetKey) -> Result<AssetDto, String> {
     })
 }
 
-pub fn buyer_match_record(m: &BuyerMatch) -> Result<BuyerMatchRecord, String> {
+fn evidence_dto(e: &SideEvidence) -> EvidenceDto {
+    EvidenceDto {
+        signature: bs58::encode(e.signature).into_string(),
+        slot: e.slot,
+        venue: e.venue.label(),
+        variant: e.variant,
+    }
+}
+
+fn matched_token_dto(asset: &AssetKey, hits: &TokenSideHits) -> Result<MatchedTokenDto, String> {
+    let AssetDto::Token { chain, token } = asset_dto(asset)? else {
+        return Err("matched asset is not a token".to_string());
+    };
+    let mut sides = Vec::new();
+    if hits.buy.is_some() {
+        sides.push("buy");
+    }
+    if hits.sell.is_some() {
+        sides.push("sell");
+    }
+    Ok(MatchedTokenDto {
+        chain,
+        token,
+        sides,
+        buy_count: hits.buy.as_ref().map(|e| e.count),
+        sell_count: hits.sell.as_ref().map(|e| e.count),
+        first_buy: hits.buy.as_ref().map(evidence_dto),
+        first_sell: hits.sell.as_ref().map(evidence_dto),
+    })
+}
+
+pub fn buyer_match_record(
+    m: &BuyerMatch,
+    side_hits: Option<&BTreeMap<AssetKey, TokenSideHits>>,
+) -> Result<BuyerMatchRecord, String> {
+    let matched_tokens = match side_hits {
+        Some(per_asset) => m
+            .matched_assets
+            .iter()
+            .filter_map(|a| per_asset.get(a).map(|h| matched_token_dto(a, h)))
+            .collect::<Result<Vec<_>, _>>()?,
+        None => Vec::new(),
+    };
     Ok(BuyerMatchRecord {
         schema_version: SCHEMA_VERSION,
         kind: "buyer_match",
@@ -205,6 +360,7 @@ pub fn buyer_match_record(m: &BuyerMatch) -> Result<BuyerMatchRecord, String> {
             .iter()
             .map(asset_dto)
             .collect::<Result<_, _>>()?,
+        matched_tokens,
     })
 }
 
@@ -227,6 +383,9 @@ pub fn run_meta_record(
             idl_commit: scope.idl_commit,
             idl_sha256: scope.idl_sha256,
             qualification_version: scope.qualification_version,
+            amm_program_id: scope.amm_program_id,
+            amm_idl_commit: scope.amm_idl_commit,
+            amm_idl_sha256: scope.amm_idl_sha256,
             recognized: scope.recognized,
             not_decoded: scope.not_decoded,
             variants: SolanaProtocolScope::variants()
@@ -249,13 +408,26 @@ pub fn run_meta_record(
             .collect::<Result<_, _>>()?,
         input_token_count: report.base.input_token_count,
         min_token_hits: report.base.min_token_hits,
+        side: report.side.label(),
+        window: window_dto(&report.window),
+        scan_order: if report.window.is_bounded() {
+            "newest_first"
+        } else {
+            "oldest_first"
+        },
     })
 }
 
-fn unverified_total(d: &TxQualificationDiagnostics) -> u64 {
-    (0..PumpTradeVariant::COUNT)
-        .map(|i| d.unverified_variant_buys.get(i).copied().unwrap_or(0))
-        .fold(0u64, u64::saturating_add)
+fn venue_ops(t: &TradeAttributionDiagnostics) -> VenueOpsDto {
+    let of = |venue: Venue| VenueSideDto {
+        buys: t.ops(venue, scout_engine::TradeSide::Buy),
+        sells: t.ops(venue, scout_engine::TradeSide::Sell),
+    };
+    VenueOpsDto {
+        bonding_curve: of(Venue::BondingCurve),
+        pump_amm: of(Venue::PumpAmm),
+        route: of(Venue::Route),
+    }
 }
 
 fn token_status(
@@ -273,7 +445,10 @@ fn token_status(
                 error_kind: Some(failure_dto(*kind)),
                 stop_reason: None,
                 transactions_scanned: None,
+                transactions_in_window: None,
                 qualified_buyers: None,
+                qualified_sellers: None,
+                qualified_wallets: None,
                 diagnostics: None,
             });
         }
@@ -285,7 +460,10 @@ fn token_status(
                 error_kind: None,
                 stop_reason: Some(stop_dto(*reason)),
                 transactions_scanned: None,
+                transactions_in_window: None,
                 qualified_buyers: None,
+                qualified_sellers: None,
+                qualified_wallets: None,
                 diagnostics: None,
             });
         }
@@ -298,14 +476,33 @@ fn token_status(
         error_kind: None,
         stop_reason: None,
         transactions_scanned: Some(token.transactions_scanned),
+        transactions_in_window: token.transactions_in_window,
         qualified_buyers: Some(token.qualified_buyers),
+        qualified_sellers: Some(token.qualified_sellers),
+        qualified_wallets: Some(token.qualified_wallets),
         diagnostics: Some(TokenDiagnosticsDto {
             decoded_buys: d.decoded_buys,
+            decoded_sells: d.decoded_sells,
             malformed_instructions: d.malformed_instructions,
             unknown_discriminator_instructions: d.unknown_discriminator_instructions,
-            unverified_variant_buys: unverified_total(d),
+            unverified_variant_buys: token.trade.idl_only_trades,
             failed_transactions: d.failed_transactions,
             positive_delta_without_instruction: token.positive_delta_without_instruction,
+            qualified_ops: venue_ops(&token.trade),
+            router_forwards_not_attributed: token.trade.router_forwards_not_attributed,
+            route_rejections: RouteRejectionsDto {
+                wallet_not_signer: token.trade.route_rejections.wallet_not_signer,
+                multi_asset: token.trade.route_rejections.multi_asset,
+                not_opposite_signs: token.trade.route_rejections.not_opposite_signs,
+                no_quote_leg: token.trade.route_rejections.no_quote_leg,
+                no_verified_leg: token.trade.route_rejections.no_verified_leg,
+                passthrough_nonzero: token.trade.route_rejections.passthrough_nonzero,
+            },
+            idl_only_trades: token.trade.idl_only_trades,
+            amm_unreconciled: token.trade.amm_unreconciled,
+            trades_without_matching_delta: token.trade.trades_without_matching_delta,
+            malformed_trades: token.trade.malformed_trades,
+            orphan_events: token.trade.orphan_events,
         }),
     })
 }
@@ -357,7 +554,8 @@ pub fn solana_jsonl_lines(
         budget,
     )?))?);
     for m in &report.base.matches {
-        lines.push(ser(serde_json::to_string(&buyer_match_record(m)?))?);
+        let hits = report.side_hits.get(&m.wallet);
+        lines.push(ser(serde_json::to_string(&buyer_match_record(m, hits)?))?);
     }
     lines.push(ser(serde_json::to_string(&run_summary_record(
         run_id, report, incomplete, redact,
@@ -400,7 +598,13 @@ mod tests {
                 TokenScanStatus::Ok
             },
             qualified_buyers: 3,
-            diagnostics: TxQualificationDiagnostics::default(),
+            qualified_sellers: 1,
+            qualified_wallets: 4,
+            transactions_in_window: None,
+            boundary_reached: false,
+            missing_block_time: 0,
+            diagnostics: scout_engine::TxQualificationDiagnostics::default(),
+            trade: TradeAttributionDiagnostics::default(),
             positive_delta_without_instruction: 0,
             unexpected_payloads: 0,
         }
@@ -423,9 +627,13 @@ mod tests {
                 min_token_hits: 2,
                 coverage_truncated: false,
             },
-            scope: SolanaProtocolScope::pump_bonding_curve(),
+            scope: SolanaProtocolScope::pump_trade_intersect(),
             per_token: vec![token(a, false, false), token(b, failed, !failed)],
-            diagnostics: TxQualificationDiagnostics::default(),
+            diagnostics: scout_engine::TxQualificationDiagnostics::default(),
+            trade: TradeAttributionDiagnostics::default(),
+            side: scout_engine::SideFilter::Any,
+            window: AnalysisWindow::none(1_790_000_000),
+            side_hits: BTreeMap::new(),
             positive_delta_without_instruction: 0,
             unexpected_payloads: 0,
             malformed_samples: vec![],

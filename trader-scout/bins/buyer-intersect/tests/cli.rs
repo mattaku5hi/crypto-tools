@@ -190,3 +190,121 @@ fn buyer_intersect_help_documents_the_page_budget_honestly() {
     assert!(help.contains("--max-pages-per-token"));
     assert!(help.contains("max-requests"));
 }
+
+const SOL_A: &str = "solana:AB48pUATr4vEsxdAp54X9pvqyae2whMR2B52rEuJpump";
+const SOL_B: &str = "solana:NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump";
+
+fn sol_input() -> String {
+    format!("{SOL_A}\n{SOL_B}\n")
+}
+
+#[test]
+fn buyer_intersect_side_values_are_validated_exit_2() {
+    // ADR-014: `--side buy|sell|any`; anything else is a usage error.
+    let bin = env!("CARGO_BIN_EXE_buyer-intersect");
+    for bad in ["", "both", "BUY", "buys", "1"] {
+        let (code, _o, e) = run_with_stdin(
+            bin,
+            &["--input", "-", &format!("--side={bad}")],
+            &sol_input(),
+        );
+        assert_eq!(code, 2, "value {bad:?}: {e}");
+    }
+    // Every valid value reaches the key check (no key: exit 4).
+    for ok in ["buy", "sell", "any"] {
+        let mut child = Command::new(bin)
+            .args(["--input", "-", "--side", ok])
+            .env_remove("SCOUT_HELIUS_API_KEY")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let _ = child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(sol_input().as_bytes());
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(o.status.code(), Some(4), "{ok}");
+    }
+}
+
+#[test]
+fn buyer_intersect_help_documents_side_and_window() {
+    let bin = env!("CARGO_BIN_EXE_buyer-intersect");
+    let out = Command::new(bin).arg("--help").output().unwrap();
+    let help = String::from_utf8_lossy(&out.stdout);
+    for flag in ["--side", "--since", "--until", "--period"] {
+        assert!(help.contains(flag), "{flag}");
+    }
+    assert!(help.contains("[default: any]"));
+}
+
+#[test]
+fn buyer_intersect_window_options_are_validated_with_exit_2() {
+    // Same rules as wallet-stats (ADR-011).
+    let bin = env!("CARGO_BIN_EXE_buyer-intersect");
+    for args in [
+        vec!["--input", "-", "--period", "0d"],
+        vec!["--input", "-", "--period", "30x"],
+        vec!["--input", "-", "--period", "366d"],
+        vec!["--input", "-", "--since", "2026-08-01T00:00:00+03:00"],
+        vec!["--input", "-", "--since", "2026-08-01"],
+        vec!["--input", "-", "--until", "2026-09-01T00:00:00Z"],
+        vec![
+            "--input",
+            "-",
+            "--period",
+            "30d",
+            "--since",
+            "2026-08-01T00:00:00Z",
+        ],
+        vec![
+            "--input",
+            "-",
+            "--since",
+            "2026-09-01T00:00:00Z",
+            "--until",
+            "2026-08-01T00:00:00Z",
+        ],
+    ] {
+        let (code, _o, e) = run_with_stdin(bin, &args, &sol_input());
+        assert_eq!(code, 2, "{args:?}: {e}");
+    }
+}
+
+#[test]
+fn buyer_intersect_valid_window_options_reach_the_key_check() {
+    let bin = env!("CARGO_BIN_EXE_buyer-intersect");
+    for args in [
+        vec!["--input", "-", "--period", "30d"],
+        vec!["--input", "-", "--since", "2026-08-01T00:00:00Z"],
+        vec![
+            "--input",
+            "-",
+            "--since",
+            "2026-08-01T00:00:00Z",
+            "--until",
+            "2026-09-01T00:00:00Z",
+        ],
+    ] {
+        let mut child = Command::new(bin)
+            .args(&args)
+            .env_remove("SCOUT_HELIUS_API_KEY")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let _ = child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(sol_input().as_bytes());
+        let o = child.wait_with_output().unwrap();
+        let e = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(4), "{args:?}: {e}");
+        assert!(e.contains("configuration required"), "{e}");
+    }
+}
