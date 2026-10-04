@@ -96,7 +96,14 @@ pub const BSC: EvmChainProfile = EvmChainProfile {
     native_symbol: "BNB",
     wrapped_native: address!("bb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"),
     l1_fee_separate: false,
-    // TODO(ADR-020 step 3): USDT/USDC (18-decimals on BSC!) not verified yet.
+    // TODO(ADR-020 amendment 5): USDT/USDC on BSC are 18-decimal Binance-Peg
+    // tokens and are NOT pinned until their addresses are verified against an
+    // official source. Candidates from the 2026-10-04 exploratory fixture's
+    // busiest pools (NOT verified, do not pin from this comment):
+    // 0x55d398326f99059ff775485246999027b3197955 (44 pools, "BSC-USD"/USDT
+    // shape) and 0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d (5 pools, USDC
+    // shape). Until pinned, a trade quoted in them is `multi_asset` (counted,
+    // never booked): native BNB (WBNB merged) is the only quote.
     quote_assets: &[],
 };
 

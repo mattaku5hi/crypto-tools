@@ -24,6 +24,15 @@ pub fn build_coinbase_source_evm(
     build_source_from(CoinbaseConfig::evm(), max_requests)
 }
 
+/// [`build_coinbase_source_evm`] for BSC (ADR-020 amendment 5): the policy
+/// lists `BNB-USD` (native BNB valued per minute candle, staleness rule of
+/// ADR-018) and no par assumption.
+pub fn build_coinbase_source_evm_bsc(
+    max_requests: Option<u64>,
+) -> Result<(CoinbasePriceSource, bool), String> {
+    build_source_from(CoinbaseConfig::evm_bsc(), max_requests)
+}
+
 fn build_source_from(
     base: CoinbaseConfig,
     max_requests: Option<u64>,

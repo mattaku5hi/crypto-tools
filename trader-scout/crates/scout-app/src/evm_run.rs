@@ -17,7 +17,7 @@ use scout_providers::{
 use scout_rpc::{HalvingHook, RateLimiter, RateLimiterStats, RpcClient, RpcEndpoint};
 use scout_sdk::engine::{
     AnalysisWindow, EvmExtractionConfig, EvmRunInfo, EvmStatsSources, SolanaWalletStatsReport,
-    run_evm_wallet_stats,
+    chain_has_verified_venue, run_evm_wallet_stats,
 };
 use scout_sdk::evm::EvmChainProfile;
 use tokio_util::sync::CancellationToken;
@@ -180,11 +180,17 @@ pub fn check_log_scan_feasible(
         "the endpoint serving eth_getLogs caps the block range at {span}: scanning {n_blocks} \
          block(s) for {tokens} token(s) needs at least {estimate} requests, over the limit of \
          {limit}{}. Nothing was scanned. Options: set {logs_env_hint} to an endpoint without \
-         that cap, narrow the window, or raise --max-requests knowingly",
+         that cap, narrow the window, or raise --max-requests knowingly{}",
         if max_requests.is_some() {
             " (--max-requests)"
         } else {
             " (default; pass --max-requests to override)"
+        },
+        if logs_env_hint.contains("BSC") {
+            " (BSC blocks come every ~0.45 s: one hour is ~8,000 blocks, so a 10-block cap \
+             needs ~800 requests per token; a logs endpoint without the cap is recommended)"
+        } else {
+            ""
         }
     ))
 }
@@ -238,9 +244,11 @@ pub type LimiterNotice = Arc<dyn Fn(String) + Send + Sync>;
 
 /// Build the endpoint, preflight the chain and check the quote decimals.
 ///
-/// `allow_unverified`: BSC has no verified venue/quote set yet (Base is
-/// enabled since ADR-020 amendment 4: USDC pinned, venues FixtureVerified); without
-/// the explicit flag the run is refused (exit 4, "not verified yet").
+/// `allow_unverified`: a chain without any `FixtureVerified` venue is refused
+/// (exit 4, "not verified yet") unless the flag is given. Base is enabled since
+/// ADR-020 amendment 4 and BSC since amendment 5 (Pancake v2, Uniswap v2/v3
+/// verified; Pancake v3 and four.meme stay IdlOnly = lower bound, native BNB
+/// is the only quote asset until USDT/USDC are verified).
 ///
 /// # Errors
 /// [`EvmSetupError`]; every message is URL-free.
@@ -260,11 +268,11 @@ pub async fn setup_evm(
     };
     let profile = EvmChainProfile::by_chain_id(id)
         .ok_or_else(|| EvmSetupError::Usage(format!("no EVM profile for chain id {id}")))?;
-    if profile.quote_assets.is_empty() && profile.name != "robinhood" && !allow_unverified {
+    if !chain_has_verified_venue(profile.chain_id) && !allow_unverified {
         return Err(EvmSetupError::Config(format!(
-            "chain `{}`: venue/source not verified yet (no FixtureVerified venue and no pinned \
-             quote assets); pass --allow-unverified-chain to run anyway (every trade is then \
-             IdlOnly and the run is partial)",
+            "chain `{}`: venue/source not verified yet (no FixtureVerified venue); pass \
+             --allow-unverified-chain to run anyway (every trade is then IdlOnly and the run is \
+             partial)",
             profile.name
         )));
     }

@@ -203,6 +203,10 @@ pub enum NoTradeReason {
     NoQuoteLeg,
     /// No gated venue swap event involves the traded token (rule b).
     NoVerifiedSwapEvent,
+    /// A gated launchpad (four.meme) event names the traded token but its
+    /// `account` is not the wallet: a router/bot contract traded, the wallet
+    /// is not attributed (invariant #2). Counted, never booked.
+    LaunchpadAccountNotWallet,
     /// Broken log structure (invariant #18).
     MalformedLog(String),
     /// Delta arithmetic overflowed.
@@ -467,16 +471,26 @@ pub fn extract_evm_trade(
         return no(NoTradeReason::TokenFilterMismatch, ungated);
     }
 
-    // --- Rule b: a gated swap event whose emitter moved `token`.
+    // --- Rule b: a gated swap event whose emitter moved `token`; a launchpad
+    // event (four.meme TokenManager) instead names token and account itself:
+    // it counts only for the wallet it names (amounts still come from the
+    // wallet's own deltas, never from the event).
     let involved = swaps
         .iter()
-        .filter(|s| {
-            transfers
+        .filter(|s| match s.launchpad {
+            Some(lp) => lp.token == token && lp.account == w,
+            None => transfers
                 .iter()
-                .any(|t| t.token == token && (t.from == s.emitter || t.to == s.emitter))
+                .any(|t| t.token == token && (t.from == s.emitter || t.to == s.emitter)),
         })
         .max_by_key(|s| s.verification);
     let Some(venue) = involved else {
+        if swaps.iter().any(|s| {
+            s.launchpad
+                .is_some_and(|lp| lp.token == token && lp.account != w)
+        }) {
+            return no(NoTradeReason::LaunchpadAccountNotWallet, ungated);
+        }
         return no(NoTradeReason::NoVerifiedSwapEvent, ungated);
     };
 
@@ -575,6 +589,7 @@ fn reason_label(r: &NoTradeReason) -> &'static str {
         NoTradeReason::SameSign => "same_sign",
         NoTradeReason::NoQuoteLeg => "no_quote_leg",
         NoTradeReason::NoVerifiedSwapEvent => "no_verified_swap_event",
+        NoTradeReason::LaunchpadAccountNotWallet => "launchpad_account_not_wallet",
         NoTradeReason::MalformedLog(_) => "malformed_log",
         NoTradeReason::Overflow => "overflow",
     }
@@ -1061,5 +1076,101 @@ mod tests {
         assert_eq!(sum.trades, 2);
         let blocks: Vec<u64> = out.iter().map(|e| trade(e).block_number).collect();
         assert_eq!(blocks, vec![5, 20]);
+    }
+
+    // --- four.meme (BSC launchpad): the TokenManager names token + account.
+    const FM_V2: Address = address!("5c952063c7fc8610FFDB798152D69F0B9550762b");
+
+    fn bsc_tx(logs: Vec<RawEvmLog>, value: u64) -> RawEvmTransaction {
+        let mut t = tx(logs);
+        t.chain = scout_evm::BSC.verified_chain_key();
+        t.value = U256::from(value);
+        t
+    }
+
+    fn bsc_cfg() -> EvmExtractionConfig {
+        EvmExtractionConfig::for_profile(scout_evm::BSC)
+    }
+
+    /// V2 `TokenPurchase`/`TokenSale` event of `account` on `token`.
+    fn fm_v2(buy: bool, token: Address, account: Address) -> RawEvmLog {
+        let mut data = vec![0u8; 256];
+        data[12..32].copy_from_slice(token.as_slice());
+        data[44..64].copy_from_slice(account.as_slice());
+        let topic = if buy {
+            scout_dex_evm::FOURMEME_V2_PURCHASE_TOPIC0
+        } else {
+            scout_dex_evm::FOURMEME_V2_SALE_TOPIC0
+        };
+        lg(FM_V2, vec![topic], data)
+    }
+
+    #[test]
+    fn fourmeme_buy_for_the_signer_is_booked_from_the_wallets_own_deltas() {
+        // BNB in via tx.value (amounts come from deltas, not from the event).
+        let t = bsc_tx(
+            vec![transfer(TOKEN, FM_V2, W, 1_000), fm_v2(true, TOKEN, W)],
+            7,
+        );
+        let e = extract_evm_trade(&t, &bsc_cfg(), None, None);
+        let tr = trade(&e);
+        assert_eq!(
+            (tr.side, tr.token, tr.token_amount),
+            (TradeSide::Buy, TOKEN, U256::from(1_000u16))
+        );
+        assert_eq!(tr.consideration, Consideration::Exact(U256::from(7u8)));
+        assert_eq!(tr.venue, SwapVenue::FourMemeV2);
+        // Pinned but not fixture verified yet: lower-bound evidence only.
+        assert_eq!(tr.venue_verification, VenueVerification::IdlOnly);
+        assert_eq!(e.gated_swap_logs, 1);
+    }
+
+    #[test]
+    fn fourmeme_event_naming_another_account_does_not_attribute_the_signer() {
+        // A bot/router contract is the event's `account`; the signer ends up
+        // with the tokens after a forward. Not attributed, counted.
+        let bot = Address::repeat_byte(0x99);
+        let t = bsc_tx(
+            vec![
+                transfer(TOKEN, FM_V2, bot, 1_000),
+                transfer(TOKEN, bot, W, 1_000),
+                fm_v2(true, TOKEN, bot),
+            ],
+            7,
+        );
+        let e = extract_evm_trade(&t, &bsc_cfg(), None, None);
+        assert_eq!(reason(&e), &NoTradeReason::LaunchpadAccountNotWallet);
+        assert_eq!(e.gated_swap_logs, 1);
+        let (_, sum) = extract_evm_trades(&[t], &bsc_cfg(), None, None);
+        assert_eq!(sum.no_trade.get("launchpad_account_not_wallet"), Some(&1));
+        // An event for another token is not evidence for this one either.
+        let t = bsc_tx(
+            vec![transfer(TOKEN, FM_V2, W, 1_000), fm_v2(true, OTHER, W)],
+            7,
+        );
+        let e = extract_evm_trade(&t, &bsc_cfg(), None, None);
+        assert_eq!(reason(&e), &NoTradeReason::NoVerifiedSwapEvent);
+        // The same event from an unpinned address is not evidence at all.
+        let mut fake = fm_v2(true, TOKEN, W);
+        fake.address = Address::repeat_byte(0x55);
+        let t = bsc_tx(vec![transfer(TOKEN, FM_V2, W, 1_000), fake], 7);
+        let e = extract_evm_trade(&t, &bsc_cfg(), None, None);
+        assert_eq!(reason(&e), &NoTradeReason::NoVerifiedSwapEvent);
+        assert_eq!(e.ungated_swap_logs, 1);
+    }
+
+    #[test]
+    fn fourmeme_sell_without_observed_native_inflow_is_unknown_never_priced_from_the_event() {
+        let t = bsc_tx(
+            vec![transfer(TOKEN, W, FM_V2, 1_000), fm_v2(false, TOKEN, W)],
+            0,
+        );
+        let e = extract_evm_trade(&t, &bsc_cfg(), None, None);
+        let tr = trade(&e);
+        assert_eq!(tr.side, TradeSide::Sell);
+        assert_eq!(
+            tr.consideration,
+            Consideration::Unknown(UnknownConsideration::NativeLegNotObserved)
+        );
     }
 }

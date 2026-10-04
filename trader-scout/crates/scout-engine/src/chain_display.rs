@@ -42,6 +42,8 @@ const SOLANA_UNITS: [QuoteUnit; 3] = [
 ];
 const EVM_UNITS: [QuoteUnit; 2] = [QuoteUnit::Wei, QuoteUnit::UsdgUnits];
 const BASE_UNITS: [QuoteUnit; 2] = [QuoteUnit::Wei, QuoteUnit::UsdcUnits];
+/// BSC pins no stable quote asset yet: native BNB only.
+const BSC_UNITS: [QuoteUnit; 1] = [QuoteUnit::Wei];
 
 impl ChainDisplay {
     /// Display of an EVM chain profile.
@@ -76,9 +78,11 @@ impl ChainDisplay {
     #[must_use]
     pub fn quote_units(&self) -> &'static [QuoteUnit] {
         if self.is_evm() {
-            // Base quotes in USDC (Circle), Robinhood in USDG.
+            // Base quotes in USDC (Circle), Robinhood in USDG, BSC in BNB only.
             if self.name == "base" {
                 &BASE_UNITS
+            } else if self.name == "bsc" {
+                &BSC_UNITS
             } else {
                 &EVM_UNITS
             }

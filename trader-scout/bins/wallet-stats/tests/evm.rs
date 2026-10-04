@@ -311,10 +311,12 @@ async fn refusals_have_the_documented_exit_codes() {
     let o = run(env, args(&[]), input()).await;
     assert_eq!(o.code, 4);
     assert!(o.stderr.contains("SCOUT_BLOCKSCOUT_API_KEY"));
-    // BSC: not verified yet -> exit 4 unless explicitly enabled.
+    // BSC is enabled (ADR-020 amendment 5): only its RPC variable is missing;
+    // the flag is accepted and changes nothing.
     let o = run(env_of(&m), args(&[]), format!("bsc:{W1}\n")).await;
     assert_eq!(o.code, 4);
-    assert!(o.stderr.contains("not verified yet"), "{}", o.stderr);
+    assert!(o.stderr.contains("SCOUT_BSC_RPC_URL"), "{}", o.stderr);
+    assert!(!o.stderr.contains("not verified yet"), "{}", o.stderr);
     let o = run(
         env_of(&m),
         args(&["--allow-unverified-chain"]),

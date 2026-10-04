@@ -4,7 +4,7 @@
 //! logs of a token (`--token`, token-centric via `eth_getLogs`), the
 //! signer transactions of a wallet (`--wallet`, Blockscout `txlist` +
 //! `txlistinternal`), or the venue `Swap` events themselves (`--swaps
-//! uniswap-v2|uniswap-v3|uniswap-v4|all`, see below), over a block range or a
+//! uniswap-v2|uniswap-v3|uniswap-v4|aerodrome-v2|pancake-v3|fourmeme|all`, see below), over a block range or a
 //! `--since/--until` window, and
 //! writes the raw JSON-RPC exchanges (method, params, result) as a redacted
 //! fixture for golden tests. It prints a summary: transactions, logs,
@@ -18,9 +18,11 @@
 //! replaces the Blockscout base URL.
 //!
 //! Swap-topic mode (`--swaps`): `eth_getLogs` by the venue's `Swap` topic0
-//! (v2/v3: NO address filter, any emitter; v4: the PoolManager), the newest
+//! (v2/v3/Pancake v3: NO address filter, any emitter; v4: the PoolManager;
+//! `fourmeme`: the pinned TokenManager V1/V2 addresses with their
+//! `TokenPurchase`/`TokenSale` topics), the newest
 //! `--max-txs` distinct transactions are kept (receipts + transactions
-//! fetched), and for every distinct v2/v3 emitter in them (at most
+//! fetched), and for every distinct v2/v3/Pancake v3 emitter in them (at most
 //! `--max-pools`) `factory()`, `token0()`, `token1()`, `fee()` (v3) and the
 //! factory's `getPool`/`getPair` answer are read with `eth_call` at the head
 //! block and written to the fixture as `pool_metadata` (the calls themselves
@@ -71,9 +73,11 @@ use scout_app::{
 };
 use scout_core::RawEvmTransaction;
 use scout_dex_evm::{
-    AERODROME_V2_SWAP_TOPIC0, AnchorRole, GateOutcome, SwapVenue, SwapVenueGate,
-    V2_PAIR_CREATED_TOPIC0, V2_SWAP_EVENT_SIGNATURE, V3_POOL_CREATED_TOPIC0, V3_SWAP_TOPIC0,
-    V4_INITIALIZE_TOPIC0, V4_SWAP_TOPIC0, VENUE_DEPLOYMENTS,
+    AERODROME_V2_SWAP_TOPIC0, AnchorRole, FOURMEME_V1_PURCHASE_TOPIC0, FOURMEME_V1_SALE_TOPIC0,
+    FOURMEME_V2_PURCHASE_TOPIC0, FOURMEME_V2_SALE_TOPIC0, GateOutcome, PANCAKE_V3_SWAP_TOPIC0,
+    SwapVenue, SwapVenueGate, V2_PAIR_CREATED_TOPIC0, V2_SWAP_EVENT_SIGNATURE,
+    V3_POOL_CREATED_TOPIC0, V3_SWAP_TOPIC0, V4_INITIALIZE_TOPIC0, V4_SWAP_TOPIC0,
+    VENUE_DEPLOYMENTS,
 };
 use scout_engine::{
     EvmExtractionConfig, EvmTxOutcome, admit_recorded, extract_evm_trades, parse_rfc3339_utc,
@@ -129,7 +133,15 @@ enum SwapsArg {
     /// Aerodrome v2 (Solidly-style `Swap` topic, any emitter). Slipstream
     /// shares the Uniswap v3 topic and is captured by `uniswap-v3`/`all`.
     AerodromeV2,
-    /// v2 + v3 + Aerodrome v2 (any emitter) and v4 (PoolManager).
+    /// PancakeSwap v3 (its own `Swap` topic with two protocol-fee words, any
+    /// emitter; pools are admitted via the PoolDeployer CREATE2 / factory).
+    PancakeV3,
+    /// four.meme TokenManager V1/V2 `TokenPurchase`/`TokenSale` (logs by the
+    /// pinned manager addresses; BSC only).
+    #[value(name = "fourmeme")]
+    FourMeme,
+    /// v2 + v3 + Aerodrome v2 + Pancake v3 (any emitter), v4 (PoolManager)
+    /// and the four.meme managers where the chain pins them.
     All,
 }
 
@@ -140,6 +152,8 @@ impl SwapsArg {
             SwapsArg::UniswapV3 => "uniswap-v3",
             SwapsArg::UniswapV4 => "uniswap-v4",
             SwapsArg::AerodromeV2 => "aerodrome-v2",
+            SwapsArg::PancakeV3 => "pancake-v3",
+            SwapsArg::FourMeme => "fourmeme",
             SwapsArg::All => "all",
         }
     }
@@ -586,6 +600,9 @@ fn swap_filters(swaps: SwapsArg, chain_id: u64) -> Result<Vec<LogFilter>, EvmSou
     if matches!(swaps, SwapsArg::AerodromeV2 | SwapsArg::All) {
         topics.push(AERODROME_V2_SWAP_TOPIC0);
     }
+    if matches!(swaps, SwapsArg::PancakeV3 | SwapsArg::All) {
+        topics.push(PANCAKE_V3_SWAP_TOPIC0);
+    }
     let mut out = Vec::new();
     if !topics.is_empty() {
         out.push(LogFilter {
@@ -613,6 +630,40 @@ fn swap_filters(swaps: SwapsArg, chain_id: u64) -> Result<Vec<LogFilter>, EvmSou
             topics: [Some(vec![V4_SWAP_TOPIC0]), None, None, None],
         });
     }
+    if matches!(swaps, SwapsArg::FourMeme | SwapsArg::All) {
+        let managers: Vec<Address> = VENUE_DEPLOYMENTS
+            .iter()
+            .filter(|d| {
+                d.chain_id == chain_id
+                    && matches!(d.venue, SwapVenue::FourMemeV1 | SwapVenue::FourMemeV2)
+                    && d.role == AnchorRole::SwapEmitter
+            })
+            .map(|d| d.anchor)
+            .collect();
+        if managers.is_empty() {
+            // `all` skips chains without a launchpad; asking for it is an error.
+            if swaps == SwapsArg::FourMeme {
+                return Err(EvmSourceError::NotFound {
+                    what: format!("a pinned four.meme TokenManager for chain {chain_id}"),
+                });
+            }
+        } else {
+            out.push(LogFilter {
+                addresses: managers,
+                topics: [
+                    Some(vec![
+                        FOURMEME_V1_PURCHASE_TOPIC0,
+                        FOURMEME_V1_SALE_TOPIC0,
+                        FOURMEME_V2_PURCHASE_TOPIC0,
+                        FOURMEME_V2_SALE_TOPIC0,
+                    ]),
+                    None,
+                    None,
+                    None,
+                ],
+            });
+        }
+    }
     Ok(out)
 }
 
@@ -622,6 +673,7 @@ fn pool_emitters(txs: &[RawEvmTransaction]) -> Vec<(Address, PoolKind)> {
     for l in txs.iter().flat_map(|t| &t.logs) {
         match l.topics.first() {
             Some(t) if *t == V3_SWAP_TOPIC0 => out.insert((l.address, PoolKind::V3)),
+            Some(t) if *t == PANCAKE_V3_SWAP_TOPIC0 => out.insert((l.address, PoolKind::PancakeV3)),
             Some(t) if *t == V2_SWAP_EVENT_SIGNATURE => out.insert((l.address, PoolKind::V2)),
             Some(t) if *t == AERODROME_V2_SWAP_TOPIC0 => {
                 out.insert((l.address, PoolKind::AerodromeV2))
@@ -769,6 +821,11 @@ fn topic_label(t: &B256) -> Option<&'static str> {
         (V2_SWAP_EVENT_SIGNATURE, "v2_swap"),
         (AERODROME_V2_SWAP_TOPIC0, "aerodrome_v2_swap"),
         (V3_SWAP_TOPIC0, "v3_swap"),
+        (PANCAKE_V3_SWAP_TOPIC0, "pancake_v3_swap"),
+        (FOURMEME_V1_PURCHASE_TOPIC0, "fourmeme_v1_purchase"),
+        (FOURMEME_V1_SALE_TOPIC0, "fourmeme_v1_sale"),
+        (FOURMEME_V2_PURCHASE_TOPIC0, "fourmeme_v2_purchase"),
+        (FOURMEME_V2_SALE_TOPIC0, "fourmeme_v2_sale"),
         (V4_SWAP_TOPIC0, "v4_swap"),
         (V4_INITIALIZE_TOPIC0, "v4_initialize"),
         (V3_POOL_CREATED_TOPIC0, "v3_pool_created"),
@@ -856,6 +913,7 @@ fn summarize(s: &Scanned, profile: &EvmChainProfile, target: &Target) -> String 
         let mut swaps_by_emitter: BTreeMap<Address, u64> = BTreeMap::new();
         for l in s.transactions.iter().flat_map(|t| &t.logs) {
             if matches!(l.topics.first(), Some(t) if *t == V3_SWAP_TOPIC0
+                || *t == PANCAKE_V3_SWAP_TOPIC0
                 || *t == V2_SWAP_EVENT_SIGNATURE
                 || *t == AERODROME_V2_SWAP_TOPIC0)
             {
@@ -897,6 +955,26 @@ fn summarize(s: &Scanned, profile: &EvmChainProfile, target: &Target) -> String 
     }
     if counts.is_empty() {
         let _ = writeln!(out, "  (none)");
+    }
+    // four.meme: how many gated launchpad events name the signer as account
+    // (the rest are router/bot cases the extraction does not attribute).
+    let (mut fm_total, mut fm_signer) = (0u64, 0u64);
+    for tx in &s.transactions {
+        for l in &tx.logs {
+            if let GateOutcome::Verified(v) = gate.classify(l)
+                && let Some(lp) = v.launchpad
+            {
+                fm_total += 1;
+                fm_signer += u64::from(lp.account == tx.from);
+            }
+        }
+    }
+    if fm_total > 0 {
+        let _ = writeln!(
+            out,
+            "fourmeme: gated_events={fm_total} account_is_tx_from={fm_signer} account_other={}",
+            fm_total - fm_signer
+        );
     }
     // What the ADR-020 rule would do with default config (no quote tokens).
     let cfg = EvmExtractionConfig::new(*profile, gate);

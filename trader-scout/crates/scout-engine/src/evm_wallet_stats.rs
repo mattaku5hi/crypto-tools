@@ -99,6 +99,18 @@ pub struct EvmRunInfo {
     pub native_leg_counts: BTreeMap<String, u64>,
 }
 
+/// `true` when `chain_id` has at least one `FixtureVerified` venue deployment
+/// (ADR-020 amendment 5): only then do the CLIs run the chain without
+/// `--allow-unverified-chain`. Venues that are still `IdlOnly` stay lower-bound
+/// evidence either way (their wallets are `Incomplete`).
+#[must_use]
+pub fn chain_has_verified_venue(chain_id: u64) -> bool {
+    VENUE_DEPLOYMENTS.iter().any(|d| {
+        d.chain_id == chain_id
+            && d.verification == scout_dex_evm::VenueVerification::FixtureVerified
+    })
+}
+
 impl EvmRunInfo {
     /// Static part from the extraction config (sources are filled by the
     /// runner / CLI).

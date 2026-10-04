@@ -44,7 +44,8 @@ pub fn pool_kind(venue: SwapVenue) -> Option<PoolKind> {
         SwapVenue::UniswapV3 => Some(PoolKind::V3),
         SwapVenue::AerodromeV2 => Some(PoolKind::AerodromeV2),
         SwapVenue::AerodromeSlipstream => Some(PoolKind::Slipstream),
-        SwapVenue::UniswapV4 => None,
+        SwapVenue::PancakeV3 => Some(PoolKind::PancakeV3),
+        SwapVenue::UniswapV4 | SwapVenue::FourMemeV1 | SwapVenue::FourMemeV2 => None,
     }
 }
 
@@ -55,6 +56,7 @@ pub fn pool_venue(kind: PoolKind) -> SwapVenue {
         PoolKind::V3 => SwapVenue::UniswapV3,
         PoolKind::AerodromeV2 => SwapVenue::AerodromeV2,
         PoolKind::Slipstream => SwapVenue::AerodromeSlipstream,
+        PoolKind::PancakeV3 => SwapVenue::PancakeV3,
     }
 }
 
@@ -148,7 +150,7 @@ mod tests {
         UNISWAP_V3_CANONICAL_INIT_CODE_HASH, V2_SWAP_EVENT_SIGNATURE, V3_SWAP_TOPIC0,
         VenueVerification, v3_pool_address_create2,
     };
-    use scout_evm::{BSC, ROBINHOOD};
+    use scout_evm::{BASE, BSC, ROBINHOOD};
     use scout_rpc::{RpcClient, RpcEndpoint};
     use serde_json::{Value, json};
     use wiremock::matchers::method;
@@ -157,7 +159,10 @@ mod tests {
     use super::*;
 
     const RH_FACTORY: Address = address!("1f7d7550b1b028f7571e69a784071f0205fd2efa");
-    const BSC_V2_FACTORY: Address = address!("cA143Ce32Fe78f1f7019d7d551a6402fC5350c73");
+    /// Uniswap v2 on Base: pinned factory, no init-code hash (the record decides).
+    const BASE_V2_FACTORY: Address = address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6");
+    const PANCAKE_V3_FACTORY: Address = address!("0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865");
+    const PANCAKE_V3_DEPLOYER: Address = address!("41ff9AA7e16B8B1a8a8dc4f0eFacd93D02d071c9");
     const T0: Address = address!("0000000000000000000000000000000000000011");
     const T1: Address = address!("0000000000000000000000000000000000000022");
 
@@ -402,19 +407,19 @@ mod tests {
 
     #[tokio::test]
     async fn without_a_pinned_hash_the_factory_record_is_fetched_and_decides() {
-        // PancakeSwap v2 on BSC: pinned factory, no init-code hash -> getPair.
+        // Uniswap v2 on Base: pinned factory, no init-code hash -> getPair.
         let pair = Address::repeat_byte(0x77);
         let s = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(Node {
-                pools: vec![(pair, BSC_V2_FACTORY, None)],
-                record: Some((BSC_V2_FACTORY, pair)),
+                pools: vec![(pair, BASE_V2_FACTORY, None)],
+                record: Some((BASE_V2_FACTORY, pair)),
             })
             .mount(&s)
             .await;
-        let client = rpc(&s, BSC, None).await;
+        let client = rpc(&s, BASE, None).await;
         let txs = vec![tx_with(vec![swap(pair, V2_SWAP_EVENT_SIGNATURE, 128)])];
-        let mut gate = SwapVenueGate::new(BSC.chain_id);
+        let mut gate = SwapVenueGate::new(BASE.chain_id);
         let r = learn_pools(&mut gate, &client, &txs, 10).await.unwrap();
         assert_eq!((r.admitted, r.refused.len()), (1, 0), "{r:?}");
         assert!(
@@ -422,24 +427,64 @@ mod tests {
                 .iter()
                 .any(|c| c == "0xe6a43905")
         );
-        // The deployment is IdlOnly, so is the pool.
+        // Base's v2 deployment is FixtureVerified (evm_base_venues.rs), so is the pool.
         assert!(matches!(
             gate.classify(&txs[0].logs[0]),
-            scout_dex_evm::GateOutcome::Verified(v) if v.verification == VenueVerification::IdlOnly
+            scout_dex_evm::GateOutcome::Verified(v) if v.verification == VenueVerification::FixtureVerified
         ));
 
         // A factory that records another pair refuses it.
         let s2 = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(Node {
-                pools: vec![(pair, BSC_V2_FACTORY, None)],
-                record: Some((BSC_V2_FACTORY, Address::repeat_byte(0x78))),
+                pools: vec![(pair, BASE_V2_FACTORY, None)],
+                record: Some((BASE_V2_FACTORY, Address::repeat_byte(0x78))),
             })
             .mount(&s2)
             .await;
-        let client2 = rpc(&s2, BSC, None).await;
-        let mut gate2 = SwapVenueGate::new(BSC.chain_id);
+        let client2 = rpc(&s2, BASE, None).await;
+        let mut gate2 = SwapVenueGate::new(BASE.chain_id);
         let r2 = learn_pools(&mut gate2, &client2, &txs, 10).await.unwrap();
         assert_eq!((r2.admitted, r2.refused.len()), (0, 1), "{r2:?}");
+    }
+
+    #[tokio::test]
+    async fn bsc_pancake_v3_pool_is_admitted_through_the_pool_deployer_create2() {
+        let pool = v3_pool_address_create2(
+            PANCAKE_V3_DEPLOYER,
+            T0,
+            T1,
+            2500,
+            scout_dex_evm::PANCAKE_V3_INIT_CODE_HASH,
+        );
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Node {
+                pools: vec![(pool, PANCAKE_V3_FACTORY, Some(2500))],
+                record: None,
+            })
+            .mount(&s)
+            .await;
+        let client = rpc(&s, BSC, None).await;
+        let txs = vec![tx_with(vec![swap(
+            pool,
+            scout_dex_evm::PANCAKE_V3_SWAP_TOPIC0,
+            224,
+        )])];
+        let mut gate = SwapVenueGate::new(BSC.chain_id);
+        let r = learn_pools(&mut gate, &client, &txs, 10).await.unwrap();
+        assert_eq!((r.lookups, r.admitted, r.refused.len()), (1, 1, 0), "{r:?}");
+        // Pinned hash: identity reads only, no getPool.
+        assert!(
+            !calls(&s.received_requests().await.unwrap())
+                .iter()
+                .any(|c| c == "0x1698ee82")
+        );
+        assert!(matches!(
+            gate.classify(&txs[0].logs[0]),
+            scout_dex_evm::GateOutcome::Verified(v) if v.venue == SwapVenue::PancakeV3
+        ));
+        assert_eq!(pool_kind(SwapVenue::PancakeV3), Some(PoolKind::PancakeV3));
+        assert_eq!(pool_venue(PoolKind::PancakeV3), SwapVenue::PancakeV3);
     }
 }

@@ -61,7 +61,8 @@ pub use evm_trade_extraction::{
     extract_evm_trades,
 };
 pub use evm_wallet_stats::{
-    EvmQuoteInfo, EvmRunInfo, EvmStatsSources, EvmVenueInfo, run_evm_wallet_stats,
+    EvmQuoteInfo, EvmRunInfo, EvmStatsSources, EvmVenueInfo, chain_has_verified_venue,
+    run_evm_wallet_stats,
 };
 pub use pool_admission::{
     DEFAULT_MAX_POOL_LOOKUPS, PoolAdmissionReport, admit_recorded, gate_metadata, learn_pools,
@@ -119,5 +120,5 @@ pub use solana_wallet_stats::{
 pub use solana_wallet_usd::{
     SOLANA_WALLET_USD_VERSION, UsdCoverage, UsdDisposal, UsdEpisode, UsdFailedFees, UsdJournal,
     UsdLedgerView, UsdLotSlice, UsdNet, UsdNetStatus, UsdOutcome, UsdPricingRun, apply_usd_pricing,
-    convert_quote_to_usd, quote_asset_of,
+    convert_quote_to_usd, quote_asset_of, quote_asset_on,
 };

@@ -536,8 +536,12 @@ pub(crate) fn price_wallets(
     if !enabled {
         return out;
     }
-    let built = if stats.evm.is_some() {
-        scout_app::build_coinbase_source_evm(args.max_price_requests)
+    let built = if let Some(evm) = &stats.evm {
+        if evm.chain.native_label == "bnb" {
+            scout_app::build_coinbase_source_evm_bsc(args.max_price_requests)
+        } else {
+            scout_app::build_coinbase_source_evm(args.max_price_requests)
+        }
     } else {
         scout_app::build_coinbase_source(args.max_price_requests)
     };

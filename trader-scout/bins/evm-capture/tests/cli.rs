@@ -945,3 +945,282 @@ async fn base_capture_reads_aerodrome_stable_and_slipstream_tick_spacing() {
     assert!(slip["fee"].is_null());
     assert_eq!(slip["registered_pool"], SLIP_POOL);
 }
+
+// --- BSC: Pancake v3 and four.meme swap scans (chain id 56).
+
+const BSC_GENESIS: &str = "0x0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b";
+const FM_V1: &str = "0xec4549cadce5da21df6e6422d448034b5233bfbc";
+const FM_V2: &str = "0x5c952063c7fc8610ffdb798152d69f0b9550762b";
+const FM_V2_PURCHASE: &str = "0x7db52723a3b2cdd6164364b3b766e65e540d7be48ffa89582956d8eaebe62942";
+const PANCAKE_V3_SWAP: &str = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83";
+const PANCAKE_V3_FACTORY: &str = "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865";
+const PANCAKE_V3_DEPLOYER: &str = "0x41ff9aa7e16b8b1a8a8dc4f0efacd93d02d071c9";
+const FM_TOKEN: &str = "0x00000000000000000000000000000000000000c1";
+
+fn bsc_args(extra: &[&str]) -> Vec<String> {
+    let mut a: Vec<String> = ["--chain", "bsc", "--rpc-url-env", "EVM_TEST_RPC"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    a.extend(extra.iter().map(|s| (*s).to_string()));
+    a
+}
+
+fn fm_v2_event(account: &str) -> Value {
+    // TokenPurchase(token, account, price, amount, cost, fee, offers, funds)
+    let w = |a: &str| format!("{:0>64}", a.trim_start_matches("0x"));
+    let data = format!("0x{}{}{}", w(FM_TOKEN), w(account), "00".repeat(32 * 6));
+    json!({"address": FM_V2, "topics":[FM_V2_PURCHASE], "data": data,
+        "blockNumber":"0x7","transactionIndex":"0x1","logIndex":"0x1"})
+}
+
+/// BSC block 7, tx 0xa1.. (from WALLET, value 5) with a token Transfer from
+/// the four.meme V2 manager to WALLET plus the manager's purchase event, and a
+/// Pancake v3 pool swap in the same tx.
+struct BscChain {
+    pancake_pool: String,
+}
+
+impl Respond for BscChain {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let h = format!("0x{}", "a1".repeat(32));
+        let pancake_log = json!({"address": self.pancake_pool,
+            "topics":[PANCAKE_V3_SWAP, topic_addr(PM), topic_addr(WALLET)],
+            "data": format!("0x{}", "00".repeat(224)), "blockNumber":"0x7",
+            "transactionIndex":"0x1","logIndex":"0x2"});
+        let result = match body["method"].as_str().unwrap() {
+            "eth_chainId" => json!("0x38"),
+            "eth_blockNumber" => json!("0x10"),
+            "eth_getBlockByNumber" if body["params"][0] == "0x0" => {
+                json!({"hash": BSC_GENESIS, "timestamp": "0x3e8"})
+            }
+            "eth_getBlockByNumber" => json!({"timestamp": "0x3e8"}),
+            "eth_getLogs" => {
+                let f = &body["params"][0];
+                let t0 = &f["topics"][0];
+                let asks_pancake = t0 == PANCAKE_V3_SWAP
+                    || t0
+                        .as_array()
+                        .is_some_and(|a| a.contains(&json!(PANCAKE_V3_SWAP)));
+                if asks_pancake && f.get("address").is_none() {
+                    json!([pancake_log])
+                } else {
+                    json!([fm_v2_event(WALLET)])
+                }
+            }
+            "eth_getBlockReceipts" => json!([{"transactionHash": h, "blockNumber":"0x7",
+                "transactionIndex":"0x1","status":"0x1","gasUsed":"0x64","effectiveGasPrice":"0x2",
+                "logs":[
+                  {"address": FM_TOKEN, "topics":[TRANSFER, topic_addr(FM_V2), topic_addr(WALLET)],
+                   "data": word(1000), "blockNumber":"0x7","transactionIndex":"0x1","logIndex":"0x0"},
+                  fm_v2_event(WALLET), pancake_log]}]),
+            "eth_getTransactionByHash" => json!({"hash": h, "from": WALLET, "to": FM_V2,
+                "value":"0x5", "blockNumber":"0x7","transactionIndex":"0x1"}),
+            "eth_call" => {
+                let data = body["params"][0]["data"].as_str().unwrap().to_string();
+                let addr_word = |a: &str| format!("0x{:0>64}", a.trim_start_matches("0x"));
+                match &data[..10] {
+                    "0xc45a0155" => json!(addr_word(PANCAKE_V3_FACTORY)),
+                    "0x0dfe1681" => json!(addr_word(T0)),
+                    "0xd21220a7" => json!(addr_word(T1)),
+                    "0xddca3f43" => json!(word(2500)),
+                    "0x1698ee82" => json!(addr_word(&self.pancake_pool)),
+                    other => panic!("unexpected selector {other}"),
+                }
+            }
+            other => panic!("unexpected {other}"),
+        };
+        ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":1,"result":result}))
+    }
+}
+
+fn pancake_pool() -> String {
+    let p = scout_dex_evm::v3_pool_address_create2(
+        PANCAKE_V3_DEPLOYER.parse().unwrap(),
+        T0.parse().unwrap(),
+        T1.parse().unwrap(),
+        2500,
+        scout_dex_evm::PANCAKE_V3_INIT_CODE_HASH,
+    );
+    format!("{p:#x}")
+}
+
+async fn get_logs_filters(s: &MockServer) -> Vec<Value> {
+    s.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter(|b| b["method"] == "eth_getLogs")
+        .map(|b| b["params"][0].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn bsc_fourmeme_scan_filters_by_manager_and_topics_and_reports_account_vs_signer() {
+    let s = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(BscChain {
+            pancake_pool: pancake_pool(),
+        })
+        .mount(&s)
+        .await;
+    let out_path = tmp("bsc_fourmeme.json");
+    let out = run(
+        rpc_env(&s),
+        bsc_args(&[
+            "--swaps",
+            "fourmeme",
+            "--from-block",
+            "0",
+            "--to-block",
+            "16",
+            "--out",
+            &out_path,
+        ]),
+    )
+    .await;
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    for text in [&out.stdout, &out.stderr] {
+        assert!(!text.contains(SECRET), "{text}");
+    }
+    let filters = get_logs_filters(&s).await;
+    assert_eq!(filters.len(), 1, "{filters:?}");
+    assert_eq!(filters[0]["address"], json!([FM_V1, FM_V2]));
+    let topics = filters[0]["topics"][0].as_array().unwrap();
+    assert_eq!(topics.len(), 4);
+    assert!(topics.contains(&json!(FM_V2_PURCHASE)));
+    assert!(
+        out.stdout
+            .contains(&format!("fourmeme_v2_purchase {FM_V2} count=1 gate=gated")),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout
+            .contains("fourmeme: gated_events=1 account_is_tx_from=1 account_other=0"),
+        "{}",
+        out.stdout
+    );
+    // Booked from the wallet's own deltas (token in, tx.value out).
+    assert!(out.stdout.contains("trades=1"), "{}", out.stdout);
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(v["scope"]["swaps"], "fourmeme");
+    assert_eq!(v["chain_id"], 56);
+    // The managers are singletons: no metadata row for them (the only row is
+    // the Pancake pool that happens to sit in the same transaction).
+    assert!(
+        v["pool_metadata"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["emitter"] != FM_V2)
+    );
+}
+
+#[tokio::test]
+async fn bsc_pancake_v3_scan_uses_its_own_topic_and_records_pool_metadata() {
+    let s = MockServer::start().await;
+    let pool = pancake_pool();
+    Mock::given(method("POST"))
+        .respond_with(BscChain {
+            pancake_pool: pool.clone(),
+        })
+        .mount(&s)
+        .await;
+    let out_path = tmp("bsc_pancake_v3.json");
+    let out = run(
+        rpc_env(&s),
+        bsc_args(&[
+            "--swaps",
+            "pancake-v3",
+            "--from-block",
+            "0",
+            "--to-block",
+            "16",
+            "--out",
+            &out_path,
+        ]),
+    )
+    .await;
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    let filters = get_logs_filters(&s).await;
+    assert_eq!(filters.len(), 1);
+    assert!(filters[0].get("address").is_none());
+    // A single topic0 is sent as a plain string.
+    assert_eq!(filters[0]["topics"][0], PANCAKE_V3_SWAP);
+    assert!(
+        out.stdout
+            .contains(&format!("pancake_v3_swap {pool} count=1 gate=gated")),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout
+            .contains(&format!("factory {PANCAKE_V3_FACTORY} pools=1")),
+        "{}",
+        out.stdout
+    );
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+    let rows = v["pool_metadata"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["kind"], "pancake_v3");
+    assert_eq!(rows[0]["fee"], 2500);
+    assert_eq!(rows[0]["factory"], PANCAKE_V3_FACTORY);
+    assert_eq!(rows[0]["registered_pool"], pool.as_str());
+}
+
+#[tokio::test]
+async fn swaps_all_on_bsc_includes_pancake_and_fourmeme_and_fourmeme_needs_a_pinned_manager() {
+    let s = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(BscChain {
+            pancake_pool: pancake_pool(),
+        })
+        .mount(&s)
+        .await;
+    let out = run(
+        rpc_env(&s),
+        bsc_args(&["--swaps", "all", "--from-block", "0", "--to-block", "16"]),
+    )
+    .await;
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    let filters = get_logs_filters(&s).await;
+    // v2/v3/aerodrome/pancake topics (no address), the v4 manager, four.meme.
+    assert_eq!(filters.len(), 3, "{filters:?}");
+    let topic_sets: Vec<&Value> = filters.iter().map(|f| &f["topics"][0]).collect();
+    assert!(topic_sets.iter().any(|t| {
+        t.as_array()
+            .is_some_and(|a| a.contains(&json!(PANCAKE_V3_SWAP)))
+    }));
+    assert!(
+        filters
+            .iter()
+            .any(|f| f["address"] == json!([FM_V1, FM_V2]))
+    );
+    // Robinhood pins no four.meme manager: asking for it is a typed error.
+    let rh = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(SwapChain)
+        .mount(&rh)
+        .await;
+    let out = run(
+        rpc_env(&rh),
+        base_args(&[
+            "--swaps",
+            "fourmeme",
+            "--from-block",
+            "0",
+            "--to-block",
+            "16",
+        ]),
+    )
+    .await;
+    assert_eq!(out.code, 4, "{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stderr.contains("four.meme TokenManager"),
+        "{}",
+        out.stderr
+    );
+}

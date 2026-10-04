@@ -76,6 +76,19 @@ impl CoinbaseConfig {
             ..Self::default()
         }
     }
+
+    /// BSC runs (ADR-020 amendment 5): BNB-USD candles (Coinbase lists the
+    /// product but its minutes are sparse: gaps beyond the staleness limit
+    /// are `price_unknown`); no stable quote asset is pinned on BSC yet, so
+    /// there is no par assumption.
+    #[must_use]
+    pub fn evm_bsc() -> Self {
+        Self {
+            policy_products: vec!["BNB-USD"],
+            par_assumption: "none: no stable quote asset is pinned on BSC (native BNB is the only quote)",
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for CoinbaseConfig {
@@ -140,6 +153,7 @@ fn product_of(asset: QuoteAsset) -> Option<&'static str> {
         QuoteAsset::Sol => Some("SOL-USD"),
         QuoteAsset::Usdt => Some("USDT-USD"),
         QuoteAsset::Eth => Some("ETH-USD"),
+        QuoteAsset::Bnb => Some("BNB-USD"),
         QuoteAsset::Usdc | QuoteAsset::Usdg => None,
     }
 }
@@ -521,6 +535,37 @@ mod tests {
         assert_eq!(s2.pages_fetched, 0);
         assert_eq!(s2.pages_cached, s2.pages_needed);
         assert_eq!(src.requests_made(), n_req);
+    }
+
+    #[tokio::test]
+    async fn bnb_usd_uses_its_product_the_same_staleness_rule_and_never_zero() {
+        let server = MockServer::start().await;
+        let page = page_start_of(1_790_942_400);
+        Mock::given(method("GET"))
+            .and(path("/products/BNB-USD/candles"))
+            .and(query_param("start", iso_utc(page)))
+            .respond_with(ResponseTemplate::new(200).set_body_string(BODY))
+            .mount(&server)
+            .await;
+        let src = CoinbasePriceSource::new(CoinbaseConfig {
+            endpoint: server.uri(),
+            timeout_ms: 5_000,
+            retry_base_delay_ms: 1,
+            ..CoinbaseConfig::evm_bsc()
+        })
+        .unwrap();
+        assert_eq!(src.policy().products, vec!["BNB-USD"]);
+        assert_eq!(product_of(QuoteAsset::Bnb), Some("BNB-USD"));
+        assert_eq!(QuoteAsset::Bnb.label(), "bnb");
+        src.prefetch(&needs(QuoteAsset::Bnb, 1_790_942_405)).await;
+        // Present minute, stale minute (<= 5 min back), then a gap: unknown.
+        let o = src.usd_price(QuoteAsset::Bnb, 1_790_942_405);
+        assert_eq!(o.label, PriceLabel::CexReference1m);
+        assert_eq!(o.value.unwrap().to_decimal_string(), "121.89");
+        let o = src.usd_price(QuoteAsset::Bnb, 1_790_942_400 + 60);
+        assert_eq!(o.label, PriceLabel::Stale { minutes: 1 });
+        let o = src.usd_price(QuoteAsset::Bnb, 1_790_942_700 + 360);
+        assert!(o.value.is_none(), "a gap is price_unknown, never zero");
     }
 
     #[tokio::test]

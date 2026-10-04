@@ -17,6 +17,8 @@ pub enum QuoteAsset {
     Usdt,
     /// EVM native ETH (Coinbase `ETH-USD`, ADR-020 amendment).
     Eth,
+    /// BSC native BNB (Coinbase `BNB-USD`, ADR-020 amendment 5).
+    Bnb,
     /// USDG valued at par (`usdg_par_assumed`), no market source.
     Usdg,
 }
@@ -29,6 +31,7 @@ impl QuoteAsset {
             Self::Usdc => "usdc",
             Self::Usdt => "usdt",
             Self::Eth => "eth",
+            Self::Bnb => "bnb",
             Self::Usdg => "usdg",
         }
     }

@@ -35,7 +35,7 @@
 //! Robinhood Uniswap v3 and v2 factories' pool families (evidence:
 //! `crates/scout-engine/tests/evm_uniswap_v2v3_robinhood.rs`,
 //! `docs/p0/measurements/2026-10-04-uniswap-v2v3-robinhood-verification.md`).
-//! Base's Uniswap v2/v3 factories, Aerodrome v2 factory and the three Slipstream factories are `FixtureVerified` by `crates/scout-engine/tests/evm_base_venues.rs` (fixture `evm_base_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-base-venues-verification.md`). Everything else stays `IdlOnly`. `active_from_block` is `0` ("not
+//! Base's Uniswap v2/v3 factories, Aerodrome v2 factory and the three Slipstream factories are `FixtureVerified` by `crates/scout-engine/tests/evm_base_venues.rs` (fixture `evm_base_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-base-venues-verification.md`). BSC's PancakeSwap v2, Uniswap v3 and Uniswap v2 factories are `FixtureVerified` by `crates/scout-engine/tests/evm_bsc_venues.rs` (fixture `evm_bsc_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-bsc-venues-verification.md`); PancakeSwap v3 (its own `Swap` topic, CREATE2 deployer = PoolDeployer) and the four.meme TokenManagers (emitter-anchored launchpad events that name token and account) wait for a live capture. Everything else stays `IdlOnly`. `active_from_block` is `0` ("not
 //! pinned") until the deployment transaction is read from the chain (the
 //! public RPC has no historical state, so it cannot be derived offline).
 
@@ -45,6 +45,11 @@ use alloy_primitives::{Address, B256, address, b256};
 use scout_api::DecodeOutcome;
 use scout_core::RawEvmLog;
 
+use crate::fourmeme::{
+    FOURMEME_V1_PURCHASE_TOPIC0, FOURMEME_V1_SALE_TOPIC0, FOURMEME_V2_PURCHASE_TOPIC0,
+    FOURMEME_V2_SALE_TOPIC0, FourMemeVersion, LaunchpadSide, decode_fourmeme_trade,
+};
+use crate::pancake::{PANCAKE_V3_SWAP_TOPIC0, decode_pancake_v3_swap};
 use crate::uniswap::{
     V3_SWAP_TOPIC0, V4_SWAP_TOPIC0, decode_v3_swap, decode_v4_swap, v2_pair_address_create2,
     v3_pool_address_create2,
@@ -85,6 +90,15 @@ pub enum SwapVenue {
     /// clones admitted through `getPool(token0, token1, tickSpacing)`; several
     /// factory generations are live.
     AerodromeSlipstream,
+    /// PancakeSwap v3 pools (BSC): Uniswap-v3-shaped pools with their own
+    /// `Swap` topic (two extra protocol-fee words), CREATE2-deployed by the
+    /// PoolDeployer, `factory()` = the PancakeSwap v3 factory.
+    PancakeV3,
+    /// four.meme TokenManager V1 (bonding curve): the manager itself emits
+    /// `TokenPurchase`/`TokenSale` (V1 layout).
+    FourMemeV1,
+    /// four.meme TokenManager2 V2 (bonding curve), V2 layout.
+    FourMemeV2,
 }
 
 impl SwapVenue {
@@ -96,7 +110,18 @@ impl SwapVenue {
             Self::UniswapV4 => "uniswap_v4",
             Self::AerodromeV2 => "aerodrome_v2",
             Self::AerodromeSlipstream => "aerodrome_slipstream",
+            Self::PancakeV3 => "pancake_v3",
+            Self::FourMemeV1 => "fourmeme_v1",
+            Self::FourMemeV2 => "fourmeme_v2",
         }
+    }
+
+    /// `true` for venues whose anchor address itself emits the swap event
+    /// (a singleton: v4 PoolManager, four.meme TokenManagers); no pool
+    /// admission applies.
+    #[must_use]
+    pub const fn is_emitter_anchored(self) -> bool {
+        matches!(self, Self::UniswapV4 | Self::FourMemeV1 | Self::FourMemeV2)
     }
 
     /// Venues that can emit the swap event of `topic0` (several pool families
@@ -111,6 +136,12 @@ impl SwapVenue {
             &[SwapVenue::UniswapV2, SwapVenue::AerodromeV2]
         } else if *topic0 == AERODROME_V2_SWAP_TOPIC0 {
             &[SwapVenue::AerodromeV2]
+        } else if *topic0 == PANCAKE_V3_SWAP_TOPIC0 {
+            &[SwapVenue::PancakeV3]
+        } else if *topic0 == FOURMEME_V1_PURCHASE_TOPIC0 || *topic0 == FOURMEME_V1_SALE_TOPIC0 {
+            &[SwapVenue::FourMemeV1]
+        } else if *topic0 == FOURMEME_V2_PURCHASE_TOPIC0 || *topic0 == FOURMEME_V2_SALE_TOPIC0 {
+            &[SwapVenue::FourMemeV2]
         } else {
             &[]
         }
@@ -152,6 +183,9 @@ pub struct VenueDeployment {
     /// CREATE2 init-code hash of this factory's pools; `None` = not pinned
     /// (then the factory's `getPool`/`getPair` record is the check).
     pub init_code_hash: Option<B256>,
+    /// CREATE2 deployer when it is not the factory (PancakeSwap v3: the
+    /// PoolDeployer deploys the pools); `None` = the factory deploys.
+    pub pool_deployer: Option<Address>,
 }
 
 const fn dep(
@@ -168,6 +202,7 @@ const fn dep(
         active_from_block: 0,
         verification: VenueVerification::IdlOnly,
         init_code_hash: None,
+        pool_deployer: None,
     }
 }
 
@@ -185,6 +220,7 @@ const fn dep_fixture_verified(
         active_from_block: 0,
         verification: VenueVerification::FixtureVerified,
         init_code_hash: None,
+        pool_deployer: None,
     }
 }
 
@@ -195,6 +231,28 @@ pub const UNISWAP_V3_CANONICAL_INIT_CODE_HASH: B256 =
 /// Canonical Uniswap v2 pair init-code hash (pinned for the Robinhood v2 factory: reproduces its 8 live pairs).
 pub const UNISWAP_V2_CANONICAL_INIT_CODE_HASH: B256 =
     b256!("96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f");
+
+/// Canonical PancakeSwap v2 pair init-code hash (the widely used value). Pinned
+/// for the BSC PancakeSwap v2 factory: it reproduces every one of the 119
+/// recorded pairs of `evm_bsc_swaps_all_2026-10-04.json` (the test
+/// `pinned_init_code_hashes_reproduce_every_recorded_pool_of_their_factory`
+/// re-asserts it on every `evm_bsc_*` fixture).
+pub const PANCAKE_V2_INIT_CODE_HASH: B256 =
+    b256!("00fb7f630766e6a796048ea87d01acd3068e8ff67d078148a3fa3f4a84f69bd5");
+/// PancakeSwap v3 pool init-code hash (CREATE2 deployer = the PoolDeployer,
+/// NOT the factory). Not published on the official address pages; derived
+/// from the exploratory fixture, where it reproduces 64 of 64 swap emitters
+/// from `(PoolDeployer, token0, token1, fee)` (tokens and fee taken from the
+/// pool's own Transfers and tried over the four Pancake fee tiers: a CREATE2
+/// match is cryptographic). The live recapture re-checks it against recorded
+/// `factory()`/`getPool` rows; unpin it if any recorded pool fails.
+pub const PANCAKE_V3_INIT_CODE_HASH: B256 =
+    b256!("6ce8eb472fa82df5469c6ab6d485f17c3ad13c8cd7af59b3d4a8026c5ce0f7e2");
+
+const fn with_pool_deployer(mut d: VenueDeployment, deployer: Address) -> VenueDeployment {
+    d.pool_deployer = Some(deployer);
+    d
+}
 
 const fn with_init_code_hash(mut d: VenueDeployment, hash: B256) -> VenueDeployment {
     d.init_code_hash = Some(hash);
@@ -304,33 +362,83 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         address!("f8f2eB4940CFE7d13603DDDD87f123820Fc061Ef"),
         AnchorRole::PoolFactory,
     ),
-    // BSC (56)
+    // BSC (56). Sources: Uniswap docs (v2/v3/v4), developer.pancakeswap.finance
+    // (v2/v3 factories, PoolDeployer), four-meme-community/fourmeme-docs @
+    // 5f7f589b (TokenManager V1/V2); evidence: `evm_bsc_venues.rs` over
+    // `evm_bsc_*` fixtures (docs/p0/measurements/2026-10-04-bsc-venues-verification.md).
+    // Rows flip to `dep_fixture_verified` only with n >= 1 admitted samples
+    // that are all exact (see the test's header for what "exact" accounts).
     dep(
         56,
         SwapVenue::UniswapV4,
         address!("28e2ea090877bf75740558f6bfb36a5ffee9e9df"),
         AnchorRole::SwapEmitter,
     ),
-    dep(
-        56,
-        SwapVenue::UniswapV3,
-        address!("dB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"),
-        AnchorRole::PoolFactory,
+    // Uniswap v3 factory on BNB Chain (developers.uniswap.org v3 BNB deployments).
+    with_init_code_hash(
+        dep_fixture_verified(
+            56,
+            SwapVenue::UniswapV3,
+            address!("dB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"),
+            AnchorRole::PoolFactory,
+        ),
+        UNISWAP_V3_CANONICAL_INIT_CODE_HASH,
     ),
     // Uniswap v2 factory on BNB Chain (developers.uniswap.org v2 deployments,
     // fetched 2026-10-04; Router02 0x4752ba5DBc23f44D87826276BF6fD6b1C372aD24).
-    dep(
-        56,
-        SwapVenue::UniswapV2,
-        address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6"),
-        AnchorRole::PoolFactory,
+    // Verified on ONE admitted sample (1 pair): small n.
+    with_init_code_hash(
+        dep_fixture_verified(
+            56,
+            SwapVenue::UniswapV2,
+            address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6"),
+            AnchorRole::PoolFactory,
+        ),
+        UNISWAP_V2_CANONICAL_INIT_CODE_HASH,
     ),
-    // PancakeSwap v2 factory on BSC (v2 Swap/PairCreated shape).
+    // PancakeSwap v2 factory (developer.pancakeswap.finance/contracts/v2/addresses;
+    // Router 0x10ED43C718714eb63d5aA57B78B54704E256024E). v2-style Swap.
+    // 258 admitted samples (119 pairs): 256 strictly equal to the pair's net
+    // flow, 2 bot "skim after swap" transactions exact only under the
+    // position / round-trip accounting of the test (documented, printed).
+    with_init_code_hash(
+        dep_fixture_verified(
+            56,
+            SwapVenue::UniswapV2,
+            address!("cA143Ce32Fe78f1f7019d7d551a6402fC5350c73"),
+            AnchorRole::PoolFactory,
+        ),
+        PANCAKE_V2_INIT_CODE_HASH,
+    ),
+    // PancakeSwap v3 (developer.pancakeswap.finance/contracts/v3/addresses):
+    // Factory 0x0BFb..., PoolDeployer 0x41ff... (CREATE2 deployer), SwapRouter
+    // 0x1b81D678ffb9C0263b24A97847620C99d213eB14, Smart Router
+    // 0x13f4EA83D0bd40E75C8222255bc855a974568Dd4.
+    with_init_code_hash(
+        with_pool_deployer(
+            dep(
+                56,
+                SwapVenue::PancakeV3,
+                address!("0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865"),
+                AnchorRole::PoolFactory,
+            ),
+            address!("41ff9AA7e16B8B1a8a8dc4f0eFacd93D02d071c9"),
+        ),
+        PANCAKE_V3_INIT_CODE_HASH,
+    ),
+    // four.meme TokenManager V1 / TokenManager2 V2 (official integration guide,
+    // fourmeme-docs @ 5f7f589b): the managers emit TokenPurchase/TokenSale.
     dep(
         56,
-        SwapVenue::UniswapV2,
-        address!("cA143Ce32Fe78f1f7019d7d551a6402fC5350c73"),
-        AnchorRole::PoolFactory,
+        SwapVenue::FourMemeV1,
+        address!("EC4549caDcE5DA21Df6E6422d448034B5233bFbC"),
+        AnchorRole::SwapEmitter,
+    ),
+    dep(
+        56,
+        SwapVenue::FourMemeV2,
+        address!("5c952063c7fc8610FFDB798152D69F0B9550762b"),
+        AnchorRole::SwapEmitter,
     ),
 ];
 
@@ -345,6 +453,18 @@ pub struct VerifiedSwap {
     pub pool_id: Option<B256>,
     pub verification: VenueVerification,
     pub log_index: u64,
+    /// Launchpad (four.meme) events name the token and the trading account
+    /// themselves; `None` for pool swaps.
+    pub launchpad: Option<LaunchpadEvidence>,
+}
+
+/// What a launchpad trade event says (evidence of a swap, never amounts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaunchpadEvidence {
+    pub token: Address,
+    /// Trader named by the event; the extraction books it only for the signer.
+    pub account: Address,
+    pub side: LaunchpadSide,
 }
 
 /// Result of gating one log.
@@ -509,11 +629,11 @@ impl SwapVenueGate {
         let mut out = std::collections::BTreeSet::new();
         for log in logs {
             let candidates = log.topics.first().map_or(&[][..], SwapVenue::for_topic);
-            // v4 is the PoolManager (no pool lookup); other topics are not swaps.
+            // v4 / four.meme are emitter-anchored (no pool lookup); other topics are not swaps.
             let Some(venue) = candidates
                 .iter()
                 .copied()
-                .find(|v| *v != SwapVenue::UniswapV4 && self.has_factory(*v))
+                .find(|v| !v.is_emitter_anchored() && self.has_factory(*v))
             else {
                 continue;
             };
@@ -577,17 +697,26 @@ impl SwapVenueGate {
         }
         // Aerodrome pools are minimal-proxy clones: no init-code hash, the
         // factory's record decides.
-        let hash = d
-            .init_code_hash
-            .filter(|_| matches!(venue, SwapVenue::UniswapV2 | SwapVenue::UniswapV3));
+        let hash = d.init_code_hash.filter(|_| {
+            matches!(
+                venue,
+                SwapVenue::UniswapV2 | SwapVenue::UniswapV3 | SwapVenue::PancakeV3
+            )
+        });
         if let Some(hash) = hash {
             let computed = match venue {
-                SwapVenue::UniswapV3 => {
+                SwapVenue::UniswapV3 | SwapVenue::PancakeV3 => {
                     let fee = meta.fee.ok_or(PoolRejection::IncompleteIdentity)?;
-                    v3_pool_address_create2(factory, t0, t1, fee, hash)
+                    // Pancake v3 pools are deployed by the PoolDeployer.
+                    let deployer = d.pool_deployer.unwrap_or(factory);
+                    v3_pool_address_create2(deployer, t0, t1, fee, hash)
                 }
                 SwapVenue::UniswapV2 => v2_pair_address_create2(factory, t0, t1, hash),
-                SwapVenue::UniswapV4 | SwapVenue::AerodromeV2 | SwapVenue::AerodromeSlipstream => {
+                SwapVenue::UniswapV4
+                | SwapVenue::AerodromeV2
+                | SwapVenue::AerodromeSlipstream
+                | SwapVenue::FourMemeV1
+                | SwapVenue::FourMemeV2 => {
                     return Err(PoolRejection::UnpinnedFactory(factory));
                 }
             };
@@ -601,10 +730,13 @@ impl SwapVenueGate {
             }
         } else {
             let identity_ok = match venue {
-                SwapVenue::UniswapV3 => meta.fee.is_some(),
+                SwapVenue::UniswapV3 | SwapVenue::PancakeV3 => meta.fee.is_some(),
                 SwapVenue::AerodromeV2 => meta.stable.is_some(),
                 SwapVenue::AerodromeSlipstream => meta.tick_spacing.is_some(),
-                SwapVenue::UniswapV2 | SwapVenue::UniswapV4 => true,
+                SwapVenue::UniswapV2
+                | SwapVenue::UniswapV4
+                | SwapVenue::FourMemeV1
+                | SwapVenue::FourMemeV2 => true,
             };
             if !identity_ok {
                 return Err(PoolRejection::IncompleteIdentity);
@@ -650,7 +782,7 @@ impl SwapVenueGate {
         let Some(first) = candidates.first().copied() else {
             return GateOutcome::NotSwap;
         };
-        let (venue, gated) = if first == SwapVenue::UniswapV4 {
+        let (venue, gated) = if first.is_emitter_anchored() {
             (
                 first,
                 self.deployments()
@@ -684,9 +816,35 @@ impl SwapVenueGate {
                 emitter: log.address,
             };
         }
+        let mut launchpad = None;
         let (pool_id, log_index) = match venue {
             SwapVenue::UniswapV4 => match decode_v4_swap(log) {
                 DecodeOutcome::Decoded(s) => (Some(s.pool_id), s.log_index),
+                DecodeOutcome::Malformed(m) => return GateOutcome::Malformed(m),
+                DecodeOutcome::NotMine => return GateOutcome::NotSwap,
+            },
+            SwapVenue::PancakeV3 => match decode_pancake_v3_swap(log) {
+                DecodeOutcome::Decoded(s) => (None, s.log_index),
+                DecodeOutcome::Malformed(m) => return GateOutcome::Malformed(m),
+                DecodeOutcome::NotMine => return GateOutcome::NotSwap,
+            },
+            SwapVenue::FourMemeV1 | SwapVenue::FourMemeV2 => match decode_fourmeme_trade(log) {
+                DecodeOutcome::Decoded(t) => {
+                    let expected = if venue == SwapVenue::FourMemeV1 {
+                        FourMemeVersion::V1
+                    } else {
+                        FourMemeVersion::V2
+                    };
+                    if t.version != expected {
+                        return GateOutcome::NotSwap;
+                    }
+                    launchpad = Some(LaunchpadEvidence {
+                        token: t.token,
+                        account: t.account,
+                        side: t.side,
+                    });
+                    (None, t.log_index)
+                }
                 DecodeOutcome::Malformed(m) => return GateOutcome::Malformed(m),
                 DecodeOutcome::NotMine => return GateOutcome::NotSwap,
             },
@@ -712,6 +870,7 @@ impl SwapVenueGate {
             pool_id,
             verification,
             log_index,
+            launchpad,
         })
     }
 }
@@ -764,14 +923,25 @@ mod tests {
     #[test]
     fn only_evidenced_deployments_are_fixture_verified() {
         for d in VENUE_DEPLOYMENTS {
-            // Robinhood (all) and Base except Uniswap v4 (no Base v4 fixture
-            // yet; evidence: evm_base_venues.rs).
-            let expected =
-                if d.chain_id == 4663 || (d.chain_id == 8453 && d.venue != SwapVenue::UniswapV4) {
-                    VenueVerification::FixtureVerified
-                } else {
-                    VenueVerification::IdlOnly
-                };
+            // Robinhood (all), Base except Uniswap v4 (no Base v4 fixture yet;
+            // evidence: evm_base_venues.rs) and the three BSC v2/v3 factories
+            // of evm_bsc_venues.rs (Pancake v3 and four.meme await a live
+            // capture; BSC Uniswap v4 has no verification test).
+            let bsc_verified = d.chain_id == 56
+                && [
+                    address!("dB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"),
+                    address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6"),
+                    address!("cA143Ce32Fe78f1f7019d7d551a6402fC5350c73"),
+                ]
+                .contains(&d.anchor);
+            let expected = if d.chain_id == 4663
+                || (d.chain_id == 8453 && d.venue != SwapVenue::UniswapV4)
+                || bsc_verified
+            {
+                VenueVerification::FixtureVerified
+            } else {
+                VenueVerification::IdlOnly
+            };
             assert_eq!(d.verification, expected, "{d:?}");
         }
     }
@@ -958,10 +1128,10 @@ mod tests {
 
     #[test]
     fn without_a_pinned_hash_the_factory_record_decides() {
-        // PancakeSwap v2 on BSC: factory pinned, no init-code hash.
-        let factory = address!("cA143Ce32Fe78f1f7019d7d551a6402fC5350c73");
+        // Uniswap v2 on Base: factory pinned, no init-code hash.
+        let factory = address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6");
         let pair = Address::repeat_byte(0x77);
-        let gate0 = SwapVenueGate::new(56);
+        let gate0 = SwapVenueGate::new(8453);
         assert!(gate0.needs_registry_record(SwapVenue::UniswapV2, factory));
         assert!(!SwapVenueGate::new(RH).needs_registry_record(SwapVenue::UniswapV3, RH_V3_FACTORY));
         let meta = PoolMetadata {
@@ -990,11 +1160,224 @@ mod tests {
             registered_pool: Some(pair),
             ..meta
         };
-        // Admitted, but at the deployment's own level: IdlOnly.
+        // Admitted at the deployment's own level (Base v2: FixtureVerified).
         assert_eq!(
             gate.admit_pool(SwapVenue::UniswapV2, pair, &good),
+            Ok(VenueVerification::FixtureVerified)
+        );
+    }
+
+    const BSC: u64 = 56;
+    const PANCAKE_V2_FACTORY: Address = address!("cA143Ce32Fe78f1f7019d7d551a6402fC5350c73");
+    const PANCAKE_V3_FACTORY: Address = address!("0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865");
+    const PANCAKE_V3_DEPLOYER: Address = address!("41ff9AA7e16B8B1a8a8dc4f0eFacd93D02d071c9");
+    const FOURMEME_V1: Address = address!("EC4549caDcE5DA21Df6E6422d448034B5233bFbC");
+    const FOURMEME_V2: Address = address!("5c952063c7fc8610FFDB798152D69F0B9550762b");
+
+    fn pancake_v3_swap_at(pool: Address) -> RawEvmLog {
+        log(
+            pool,
+            vec![
+                PANCAKE_V3_SWAP_TOPIC0,
+                Address::ZERO.into_word(),
+                Address::ZERO.into_word(),
+            ],
+            vec![0u8; 224],
+        )
+    }
+
+    fn pancake_v3_create2(deployer: Address, fee: u32) -> Address {
+        v3_pool_address_create2(deployer, T0, T1, fee, PANCAKE_V3_INIT_CODE_HASH)
+    }
+
+    #[test]
+    fn pancake_v3_pools_are_created_by_the_pool_deployer_not_the_factory() {
+        let pool = pancake_v3_create2(PANCAKE_V3_DEPLOYER, 2500);
+        let swap = pancake_v3_swap_at(pool);
+        let mut gate = SwapVenueGate::new(BSC);
+        // Ungated until admitted; asked as PancakeV3.
+        assert!(matches!(
+            gate.classify(&swap),
+            GateOutcome::UngatedEmitter {
+                venue: SwapVenue::PancakeV3,
+                ..
+            }
+        ));
+        assert_eq!(
+            gate.pending_pool_emitters([&swap]),
+            vec![(SwapVenue::PancakeV3, pool)]
+        );
+        assert!(!gate.needs_registry_record(SwapVenue::PancakeV3, PANCAKE_V3_FACTORY));
+        let meta = PoolMetadata {
+            factory: Some(PANCAKE_V3_FACTORY),
+            token0: Some(T0),
+            token1: Some(T1),
+            fee: Some(2500),
+            ..PoolMetadata::default()
+        };
+        assert_eq!(
+            gate.admit_pool(SwapVenue::PancakeV3, pool, &meta),
             Ok(VenueVerification::IdlOnly)
         );
+        assert!(matches!(
+            gate.classify(&swap),
+            GateOutcome::Verified(v) if v.venue == SwapVenue::PancakeV3 && v.launchpad.is_none()
+        ));
+        // The factory as CREATE2 deployer is a different address: refused.
+        let wrong = pancake_v3_create2(PANCAKE_V3_FACTORY, 2500);
+        assert_ne!(wrong, pool);
+        assert!(matches!(
+            gate.admit_pool(SwapVenue::PancakeV3, wrong, &meta),
+            Err(PoolRejection::Create2Mismatch { computed }) if computed == pool
+        ));
+        // Another factory (a Uniswap v3 fork) and a missing fee are refused.
+        let fork = PoolMetadata {
+            factory: Some(Address::repeat_byte(0xfa)),
+            ..meta
+        };
+        assert!(matches!(
+            gate.admit_pool(SwapVenue::PancakeV3, Address::repeat_byte(5), &fork),
+            Err(PoolRejection::UnpinnedFactory(_))
+        ));
+        assert_eq!(
+            gate.admit_pool(
+                SwapVenue::PancakeV3,
+                pool,
+                &PoolMetadata { fee: None, ..meta }
+            ),
+            Err(PoolRejection::IncompleteIdentity)
+        );
+        // A Pancake v3 factory does not admit Uniswap-v3 venue pools and the
+        // Uniswap v3 topic is not the Pancake topic.
+        assert!(matches!(
+            gate.admit_pool(SwapVenue::UniswapV3, Address::repeat_byte(6), &meta),
+            Err(PoolRejection::UnpinnedFactory(_))
+        ));
+        assert!(matches!(
+            gate.classify(&v3_swap_at(pool)),
+            GateOutcome::UngatedEmitter { .. }
+        ));
+        // Another chain does not pin Pancake v3: the log is a counted gap and
+        // costs no lookup.
+        let other = SwapVenueGate::new(1);
+        assert!(other.pending_pool_emitters([&swap]).is_empty());
+        assert!(matches!(
+            other.classify(&swap),
+            GateOutcome::UngatedEmitter { .. }
+        ));
+        // A malformed Pancake swap at an admitted pool surfaces.
+        let mut bad = pancake_v3_swap_at(pool);
+        bad.data = vec![0u8; 160].into();
+        assert!(matches!(gate.classify(&bad), GateOutcome::Malformed(_)));
+    }
+
+    #[test]
+    fn bsc_pancake_v2_pins_its_hash_and_v2_style_pairs_are_admitted() {
+        let pair = v2_pair_address_create2(PANCAKE_V2_FACTORY, T0, T1, PANCAKE_V2_INIT_CODE_HASH);
+        let meta = PoolMetadata {
+            factory: Some(PANCAKE_V2_FACTORY),
+            token0: Some(T0),
+            token1: Some(T1),
+            ..PoolMetadata::default()
+        };
+        let mut gate = SwapVenueGate::new(BSC);
+        assert!(!gate.needs_registry_record(SwapVenue::UniswapV2, PANCAKE_V2_FACTORY));
+        assert!(gate.admit_pool(SwapVenue::UniswapV2, pair, &meta).is_ok());
+        // A different address with the same identity is refused.
+        assert!(matches!(
+            gate.admit_pool(SwapVenue::UniswapV2, Address::repeat_byte(3), &meta),
+            Err(PoolRejection::Create2Mismatch { .. })
+        ));
+        // The Uniswap v2 factory pinned on BSC is a different factory.
+        assert!(
+            gate.factory_venue(
+                SwapVenue::UniswapV2,
+                address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6")
+            )
+            .is_some()
+        );
+    }
+
+    fn fourmeme_log(manager: Address, topic: B256, words: usize, account: Address) -> RawEvmLog {
+        let mut data = vec![0u8; words * 32];
+        data[12..32].copy_from_slice(Address::repeat_byte(0x70).as_slice());
+        data[44..64].copy_from_slice(account.as_slice());
+        log(manager, vec![topic], data)
+    }
+
+    #[test]
+    fn fourmeme_managers_are_emitter_anchored_and_name_token_and_account() {
+        let acct = Address::repeat_byte(0x71);
+        let gate = SwapVenueGate::new(BSC);
+        for (manager, topic, words, venue, side) in [
+            (
+                FOURMEME_V1,
+                FOURMEME_V1_PURCHASE_TOPIC0,
+                5,
+                SwapVenue::FourMemeV1,
+                LaunchpadSide::Buy,
+            ),
+            (
+                FOURMEME_V1,
+                FOURMEME_V1_SALE_TOPIC0,
+                5,
+                SwapVenue::FourMemeV1,
+                LaunchpadSide::Sell,
+            ),
+            (
+                FOURMEME_V2,
+                FOURMEME_V2_PURCHASE_TOPIC0,
+                8,
+                SwapVenue::FourMemeV2,
+                LaunchpadSide::Buy,
+            ),
+            (
+                FOURMEME_V2,
+                FOURMEME_V2_SALE_TOPIC0,
+                8,
+                SwapVenue::FourMemeV2,
+                LaunchpadSide::Sell,
+            ),
+        ] {
+            let l = fourmeme_log(manager, topic, words, acct);
+            match gate.classify(&l) {
+                GateOutcome::Verified(v) => {
+                    assert_eq!((v.venue, v.emitter, v.pool_id), (venue, manager, None));
+                    // IdlOnly until a live fixture passes evm_bsc_venues.rs.
+                    assert_eq!(v.verification, VenueVerification::IdlOnly);
+                    assert_eq!(
+                        v.launchpad,
+                        Some(LaunchpadEvidence {
+                            token: Address::repeat_byte(0x70),
+                            account: acct,
+                            side
+                        })
+                    );
+                }
+                other => panic!("{other:?}"),
+            }
+            // Never pending: no pool lookup for a singleton.
+            assert!(gate.pending_pool_emitters([&l]).is_empty());
+            // Same event at another address or on another chain: not evidence.
+            let elsewhere = fourmeme_log(Address::repeat_byte(9), topic, words, acct);
+            assert!(matches!(
+                gate.classify(&elsewhere),
+                GateOutcome::UngatedEmitter { .. }
+            ));
+            assert!(matches!(
+                SwapVenueGate::new(8453).classify(&l),
+                GateOutcome::UngatedEmitter { .. }
+            ));
+        }
+        // A V2-shaped event at the V1 manager (and vice versa) is ungated.
+        let crossed = fourmeme_log(FOURMEME_V1, FOURMEME_V2_PURCHASE_TOPIC0, 8, acct);
+        assert!(matches!(
+            gate.classify(&crossed),
+            GateOutcome::UngatedEmitter { .. }
+        ));
+        // Broken shape at a gated manager surfaces.
+        let broken = fourmeme_log(FOURMEME_V2, FOURMEME_V2_SALE_TOPIC0, 5, acct);
+        assert!(matches!(gate.classify(&broken), GateOutcome::Malformed(_)));
     }
 
     #[test]

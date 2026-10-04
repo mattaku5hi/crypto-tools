@@ -238,7 +238,10 @@ fn pool_event_table(venue: SwapVenue) -> Vec<EventRow> {
             (t("Burn(address,uint256,uint256,address)"), [0, 1], -1),
             (t("Fees(address,uint256,uint256)"), [0, 1], -1),
         ],
-        SwapVenue::UniswapV4 => Vec::new(),
+        SwapVenue::UniswapV4
+        | SwapVenue::PancakeV3
+        | SwapVenue::FourMemeV1
+        | SwapVenue::FourMemeV2 => Vec::new(),
     }
 }
 
@@ -337,7 +340,12 @@ async fn all_rows() -> Vec<Row> {
                                 i256(s.amount1_in).checked_sub(i256(s.amount1_out)).unwrap(),
                             )
                         }
-                        SwapVenue::UniswapV4 => unreachable!("v4 has no pool emitters"),
+                        SwapVenue::UniswapV4
+                        | SwapVenue::PancakeV3
+                        | SwapVenue::FourMemeV1
+                        | SwapVenue::FourMemeV2 => {
+                            unreachable!("no such emitters in the Base fixtures")
+                        }
                     };
                     sum0 = sum0.checked_add(a0).unwrap();
                     sum1 = sum1.checked_add(a1).unwrap();
@@ -486,9 +494,11 @@ async fn pools_reporting_a_pinned_factory_are_admitted_and_nothing_else_is() {
                 PoolKind::V2 => V2_SWAP_EVENT_SIGNATURE,
                 PoolKind::V3 | PoolKind::Slipstream => V3_SWAP_TOPIC0,
                 PoolKind::AerodromeV2 => AERODROME_V2_SWAP_TOPIC0,
+                PoolKind::PancakeV3 => scout_dex_evm::PANCAKE_V3_SWAP_TOPIC0,
             };
             let data_len = match m.kind {
                 PoolKind::V3 | PoolKind::Slipstream => 160,
+                PoolKind::PancakeV3 => 224,
                 _ => 128,
             };
             let probe = scout_core::RawEvmLog {

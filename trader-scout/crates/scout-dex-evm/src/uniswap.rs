@@ -91,7 +91,7 @@ pub struct V2PairCreated {
     pub pair: Address,
 }
 
-fn word(data: &[u8], index: usize) -> Option<[u8; 32]> {
+pub(crate) fn word(data: &[u8], index: usize) -> Option<[u8; 32]> {
     let start = index.checked_mul(32)?;
     let end = start.checked_add(32)?;
     let mut out = [0u8; 32];
@@ -99,15 +99,15 @@ fn word(data: &[u8], index: usize) -> Option<[u8; 32]> {
     Some(out)
 }
 
-fn word_u256(data: &[u8], index: usize) -> Option<U256> {
+pub(crate) fn word_u256(data: &[u8], index: usize) -> Option<U256> {
     word(data, index).map(U256::from_be_bytes)
 }
 
-fn word_i256(data: &[u8], index: usize) -> Option<I256> {
+pub(crate) fn word_i256(data: &[u8], index: usize) -> Option<I256> {
     word_u256(data, index).map(I256::from_raw)
 }
 
-fn word_address(data: &[u8], index: usize) -> Option<Address> {
+pub(crate) fn word_address(data: &[u8], index: usize) -> Option<Address> {
     let w = word(data, index)?;
     // ABI-encoded address: upper 12 bytes must be zero.
     if w.get(..12)?.iter().any(|b| *b != 0) {
@@ -116,19 +116,19 @@ fn word_address(data: &[u8], index: usize) -> Option<Address> {
     Some(Address::from_slice(w.get(12..)?))
 }
 
-fn word_i128(data: &[u8], index: usize) -> Option<i128> {
+pub(crate) fn word_i128(data: &[u8], index: usize) -> Option<i128> {
     i128::try_from(word_i256(data, index)?).ok()
 }
 
-fn word_u128(data: &[u8], index: usize) -> Option<u128> {
+pub(crate) fn word_u128(data: &[u8], index: usize) -> Option<u128> {
     u128::try_from(word_u256(data, index)?).ok()
 }
 
-fn word_u32(data: &[u8], index: usize) -> Option<u32> {
+pub(crate) fn word_u32(data: &[u8], index: usize) -> Option<u32> {
     u32::try_from(word_u256(data, index)?).ok()
 }
 
-fn shape<T>(
+pub(crate) fn shape<T>(
     log: &RawEvmLog,
     topic0: B256,
     topics: usize,
@@ -148,7 +148,25 @@ fn shape<T>(
     Ok(())
 }
 
-fn bad<T>(name: &str) -> DecodeOutcome<T> {
+/// Like [`shape`] for event families checked by topic count and data length
+/// only (`topic0` already matched by the caller).
+pub(crate) fn shape_len<T>(
+    log: &RawEvmLog,
+    topics: usize,
+    data_len: usize,
+    name: &str,
+) -> Result<(), DecodeOutcome<T>> {
+    if log.topics.len() != topics || log.data.len() != data_len {
+        return Err(DecodeOutcome::Malformed(format!(
+            "{name}: {} topics / {} data bytes, expected {topics} / {data_len}",
+            log.topics.len(),
+            log.data.len()
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn bad<T>(name: &str) -> DecodeOutcome<T> {
     DecodeOutcome::Malformed(format!("{name}: a field is out of range for its ABI type"))
 }
 

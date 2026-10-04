@@ -50,6 +50,7 @@ use scout_analytics::{Episode, EpisodeCohort, profit_factor, win_rate};
 use scout_core::{Money, SolanaPubkey};
 use scout_pricing::{DecimalPrice, PriceLabel, PriceSource, QuoteAsset, minute_start};
 
+use crate::chain_display::ChainDisplay;
 use crate::solana_wallet_ledger::{
     EpisodeOutcome, EpisodeRecord, LowerBound, QuoteUnit, QuoteUnitBlock, SolanaWalletLedgerError,
     SolanaWalletLedgerReport, UnknownReason, WinRateLowerBound, quote_unit_decimals,
@@ -253,6 +254,19 @@ pub const fn quote_asset_of(unit: QuoteUnit) -> Option<QuoteAsset> {
     }
 }
 
+/// The quote asset a unit is valued through ON `chain`: the native unit
+/// (`Wei`, 18 decimals) is ETH on Base/Robinhood and BNB on BSC (ADR-020
+/// amendment 5: Coinbase `BNB-USD`, same staleness rule, a gap is
+/// `price_unknown`, never zero); every other unit is chain-independent.
+#[must_use]
+pub fn quote_asset_on(chain: &ChainDisplay, unit: QuoteUnit) -> Option<QuoteAsset> {
+    if unit == QuoteUnit::Wei && chain.native_label == "bnb" {
+        Some(QuoteAsset::Bnb)
+    } else {
+        quote_asset_of(unit)
+    }
+}
+
 /// THE USD conversion (ADR-018 §4): `amount` is `Money` of a native
 /// ledger of `unit` (`raw_base_units * 10^MONEY_SCALE`), `price` is USD per
 /// whole unit (SOL, USDC, USDT). Result: USD `Money` at `MONEY_SCALE`,
@@ -345,6 +359,7 @@ enum Leg {
 
 fn price_leg(
     source: &dyn PriceSource,
+    chain: &ChainDisplay,
     unit: QuoteUnit,
     ts: Option<i64>,
     amount: Money,
@@ -360,7 +375,7 @@ fn price_leg(
     let Some(t) = ts else {
         return fail(cov, "no_timestamp".to_string());
     };
-    let Some(asset) = quote_asset_of(unit) else {
+    let Some(asset) = quote_asset_on(chain, unit) else {
         return fail(cov, "unsupported_quote_unit".to_string());
     };
     let obs = source.usd_price(asset, t);
@@ -396,7 +411,7 @@ impl SolanaWalletLedgerReport {
         let mut out: BTreeMap<QuoteAsset, BTreeSet<i64>> = BTreeMap::new();
         for rec in self.episodes.iter().filter(|r| priced_episode(r)) {
             for (unit, ts) in leg_specs(rec) {
-                if let (Some(asset), Some(t)) = (quote_asset_of(unit), ts)
+                if let (Some(asset), Some(t)) = (quote_asset_on(&self.chain, unit), ts)
                     && asset != QuoteAsset::Usdc
                 {
                     out.entry(asset).or_default().insert(minute_start(t));
@@ -404,7 +419,9 @@ impl SolanaWalletLedgerReport {
             }
         }
         for (ts, _) in &self.failed_fee_journal {
-            if let (Some(t), Some(native)) = (ts, quote_asset_of(self.chain.native_unit)) {
+            if let (Some(t), Some(native)) =
+                (ts, quote_asset_on(&self.chain, self.chain.native_unit))
+            {
                 out.entry(native).or_default().insert(minute_start(*t));
             }
         }
@@ -419,7 +436,8 @@ impl SolanaWalletLedgerReport {
         }) {
             for l in &info.lots {
                 if l.basis_known
-                    && let (Some(asset), Some(t)) = (quote_asset_of(l.unit), l.acquired_price_ts)
+                    && let (Some(asset), Some(t)) =
+                        (quote_asset_on(&self.chain, l.unit), l.acquired_price_ts)
                     && asset != QuoteAsset::Usdc
                 {
                     out.entry(asset).or_default().insert(minute_start(t));
@@ -442,7 +460,7 @@ impl SolanaWalletLedgerReport {
         let mut any_unbounded = false;
         let (mut closed_unknown, mut left_censored, mut open) = (0u64, 0u64, 0u64);
         for rec in &self.episodes {
-            let ep = usd_episode(rec, source, &mut cov)?;
+            let ep = usd_episode(rec, source, &self.chain, &mut cov)?;
             match ep.outcome {
                 UsdOutcome::ClosedKnown {
                     pnl,
@@ -503,7 +521,14 @@ impl SolanaWalletLedgerReport {
         };
         for (ts, lamports) in &self.failed_fee_journal {
             let fee = quote_units_to_money(self.chain.native_unit, i128::from(*lamports))?;
-            match price_leg(source, self.chain.native_unit, *ts, fee, &mut cov) {
+            match price_leg(
+                source,
+                &self.chain,
+                self.chain.native_unit,
+                *ts,
+                fee,
+                &mut cov,
+            ) {
                 Leg::Priced(m) => {
                     failed_fees.priced_txs += 1;
                     failed_fees.priced_usd = sum(failed_fees.priced_usd, m)?;
@@ -596,7 +621,14 @@ impl SolanaWalletLedgerReport {
                     reason = Some("unknown_basis".to_string());
                     break;
                 }
-                match price_leg(source, l.unit, l.acquired_price_ts, l.basis, &mut cov) {
+                match price_leg(
+                    source,
+                    &self.chain,
+                    l.unit,
+                    l.acquired_price_ts,
+                    l.basis,
+                    &mut cov,
+                ) {
                     Leg::Priced(m) => match sum(basis, m) {
                         Ok(b) => basis = b,
                         Err(_) => {
@@ -624,6 +656,7 @@ impl SolanaWalletLedgerReport {
 fn usd_episode(
     rec: &EpisodeRecord,
     source: &dyn PriceSource,
+    chain: &ChainDisplay,
     cov: &mut UsdCoverage,
 ) -> Result<UsdEpisode, SolanaWalletLedgerError> {
     let native_other = other_reasons(rec);
@@ -652,7 +685,7 @@ fn usd_episode(
     let mut slice_unpriced = false;
     for d in &rec.usd_journal.disposals {
         match d.net_proceeds {
-            Some((unit, amount)) => match price_leg(source, unit, d.price_ts, amount, cov) {
+            Some((unit, amount)) => match price_leg(source, chain, unit, d.price_ts, amount, cov) {
                 Leg::Priced(m) => {
                     ep.legs_priced += 1;
                     proceeds_usd = sum(proceeds_usd, m)?;
@@ -671,7 +704,7 @@ fn usd_episode(
                 structurally_known = false;
                 continue;
             }
-            match price_leg(source, s.unit, s.acquired_price_ts, s.basis, cov) {
+            match price_leg(source, chain, s.unit, s.acquired_price_ts, s.basis, cov) {
                 Leg::Priced(m) => {
                     ep.legs_priced += 1;
                     basis_usd = sum(basis_usd, m)?;

@@ -45,5 +45,8 @@ pub use output::{
     evidence_line, evm_spelling, ledger_totals_dto, open_positions_dto, open_valuation_line,
     open_valuation_meta, pricing_line, pricing_meta, totals_dto, write_lines_to_stdout,
 };
-pub use price_source::{COINBASE_ENDPOINT_ENV, build_coinbase_source, build_coinbase_source_evm};
+pub use price_source::{
+    COINBASE_ENDPOINT_ENV, build_coinbase_source, build_coinbase_source_evm,
+    build_coinbase_source_evm_bsc,
+};
 pub use time::{format_unix_utc, now_utc_rfc3339};

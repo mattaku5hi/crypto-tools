@@ -257,6 +257,10 @@ pub enum PoolKind {
     /// Aerodrome Slipstream CL pool: `tickSpacing()`, factory
     /// `getPool(a, b, int24)`.
     Slipstream,
+    /// PancakeSwap v3 pool (BSC): `fee()`, factory `getPool(a, b, uint24)`
+    /// (same calls as Uniswap v3; the pool family differs only in its `Swap`
+    /// topic and CREATE2 deployer).
+    PancakeV3,
 }
 
 impl PoolKind {
@@ -268,15 +272,22 @@ impl PoolKind {
             Self::V3 => "v3",
             Self::AerodromeV2 => "aerodrome_v2",
             Self::Slipstream => "slipstream",
+            Self::PancakeV3 => "pancake_v3",
         }
     }
 
     /// Inverse of [`Self::label`].
     #[must_use]
     pub fn from_label(label: &str) -> Option<Self> {
-        [Self::V2, Self::V3, Self::AerodromeV2, Self::Slipstream]
-            .into_iter()
-            .find(|k| k.label() == label)
+        [
+            Self::V2,
+            Self::V3,
+            Self::AerodromeV2,
+            Self::Slipstream,
+            Self::PancakeV3,
+        ]
+        .into_iter()
+        .find(|k| k.label() == label)
     }
 }
 
@@ -291,7 +302,7 @@ pub struct PoolOnchainMetadata {
     pub factory: Option<Address>,
     pub token0: Option<Address>,
     pub token1: Option<Address>,
-    /// v3 only.
+    /// v3 / Pancake v3 only.
     pub fee: Option<u32>,
     /// `stable()` (Aerodrome v2 only).
     pub stable: Option<bool>,
@@ -804,7 +815,7 @@ impl EvmRpcClient {
         let (token0, token1) = futures::try_join!(ask(SEL_TOKEN0), ask(SEL_TOKEN1))?;
         let (mut fee, mut stable, mut tick_spacing) = (None, None, None);
         match kind {
-            PoolKind::V3 => fee = word_u32(&ask(SEL_FEE).await?),
+            PoolKind::V3 | PoolKind::PancakeV3 => fee = word_u32(&ask(SEL_FEE).await?),
             PoolKind::V2 => {}
             PoolKind::AerodromeV2 => stable = word_bool(&ask(SEL_STABLE).await?),
             PoolKind::Slipstream => {
@@ -843,7 +854,7 @@ impl EvmRpcClient {
             return Ok(None);
         };
         let data = match meta.kind {
-            PoolKind::V3 => {
+            PoolKind::V3 | PoolKind::PancakeV3 => {
                 let Some(fee) = meta.fee else {
                     return Ok(None);
                 };
