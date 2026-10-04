@@ -56,9 +56,9 @@ paper profits of thin markets must not lift strict ranking").
 - Residual (not a sell path): the fee-exempt mayhem-agent curve buy `2W63KrJw` does not follow the curve formula.
 
 
-## Amendment 1 (draft, 2026-10-04): EVM open positions (on-chain quote)
+## Amendment 1 (accepted, 2026-10-04): EVM open positions (on-chain quote)
 
-Status: Draft for review. Extends this ADR to Robinhood, Base and BSC wallet ledgers (ADR-020).
+Status: Accepted (2026-10-04). Extends this ADR to Robinhood, Base and BSC wallet ledgers (ADR-020).
 
 1. **Same contract, different source.** An EVM open position (`(wallet, token)` FIFO remainder) is valued
    only on a live run (window ends at `as_of`); a historical window is `unvalued { historical_window }` and
