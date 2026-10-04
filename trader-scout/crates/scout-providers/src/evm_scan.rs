@@ -573,6 +573,9 @@ impl EvmHistoryScanner {
         let own: HashSet<B256> = described.keys().copied().collect();
         let mut prefer_block: HashSet<B256> = HashSet::new();
         let mut signer_lookups: HashSet<B256> = HashSet::new();
+        // Complete internal transfers are authoritative for native legs: no
+        // sole-touch block receipts and no archive balance reads are needed.
+        let internals_complete = indexed.internal.is_some();
         for t in &indexed.transfers {
             described.entry(t.hash).or_insert(Described {
                 block_number: t.block_number,
@@ -582,6 +585,9 @@ impl EvmHistoryScanner {
                 continue;
             }
             if own.contains(&t.hash) {
+                if internals_complete {
+                    continue;
+                }
                 // A signed transaction in which the wallet SENDS a token may
                 // be a sell: its block's receipts are fetched whole (once) so
                 // the native-leg sole-touch check needs no second request.
@@ -589,7 +595,9 @@ impl EvmHistoryScanner {
             } else if !indexed.signer_known {
                 // Maybe signed by the wallet (receipt decides): same block
                 // policy, plus a possible transaction lookup for `value`.
-                prefer_block.insert(t.hash);
+                if !internals_complete {
+                    prefer_block.insert(t.hash);
+                }
                 signer_lookups.insert(t.hash);
             }
         }
@@ -1314,6 +1322,10 @@ mod tests {
                     {"hash":format!("{:#x}",h(0xa1)),"blockNumber":"7","timeStamp":"1","from":WALLET,
                      "to":"","value":"9","gasUsed":"100","gasPrice":"2","isError":"1","txreceipt_status":"0"}]}),
                 "tokentx" => json!({"status":"1","message":"OK","result":self.tokentx_rows}),
+                // Internals not indexed yet: incomplete, so sole-touch policy applies.
+                "txlistinternal" => {
+                    json!({"status":"2","message":"not yet processed","result":[]})
+                }
                 _ => json!({"status":"0","message":"No transactions found","result":[]}),
             };
             ResponseTemplate::new(200).set_body_json(body)
@@ -1323,6 +1335,66 @@ mod tests {
     fn token_row(hash: B256, block: u64) -> Value {
         json!({"hash":format!("{hash:#x}"),"blockNumber":block.to_string(),"timeStamp":"1",
             "from":OTHER,"to":WALLET,"contractAddress":TOKEN,"value":"5"})
+    }
+
+    #[tokio::test]
+    async fn complete_internals_need_no_sole_touch_receipts_or_balances() {
+        struct Api;
+        impl Respond for Api {
+            fn respond(&self, req: &Request) -> ResponseTemplate {
+                let q: HashMap<String, String> = req.url.query_pairs().into_owned().collect();
+                let sent = json!({"hash":format!("{:#x}",h(0xa1)),"blockNumber":"7","timeStamp":"1",
+                    "from":WALLET,"to":OTHER,"contractAddress":TOKEN,"value":"5"});
+                let body = match q["action"].as_str() {
+                    "txlist" => json!({"status":"1","message":"OK","result":[
+                        {"hash":format!("{:#x}",h(0xa1)),"blockNumber":"7","timeStamp":"1","from":WALLET,
+                         "to":"","value":"9","gasUsed":"100","gasPrice":"2","isError":"0","txreceipt_status":"1"}]}),
+                    "tokentx" => json!({"status":"1","message":"OK","result":[sent]}),
+                    "txlistinternal" => json!({"status":"1","message":"OK","result":[
+                        {"hash":format!("{:#x}",h(0xa1)),"blockNumber":"7","timeStamp":"1",
+                         "from":OTHER,"to":WALLET,"value":"77","isError":"0"}]}),
+                    _ => json!({"status":"2","message":"not yet processed","result":[]}),
+                };
+                ResponseTemplate::new(200).set_body_json(body)
+            }
+        }
+        let rpc = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Chain)
+            .mount(&rpc)
+            .await;
+        let sc = scanner(&rpc, ScanLimits::default()).await;
+        let bs = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(Api)
+            .mount(&bs)
+            .await;
+        let mut cfg = BlockscoutEvmConfig::new(4663, BlockscoutApiKey::new("k"));
+        cfg.base_url = bs.uri();
+        let src: WalletIndexer = BlockscoutEvmSource::new(cfg).unwrap().into();
+        let listing = sc
+            .list_wallet(&src, WALLET.parse().unwrap(), 0, 100)
+            .await
+            .unwrap();
+        assert!(listing.internal_complete);
+        let plan = listing.plan(&ScanLimits::default());
+        // One per-transaction receipt, no whole-block fetch, no balance reads.
+        assert_eq!(
+            (
+                plan.tx_receipt_calls,
+                plan.block_receipt_calls,
+                plan.candidate_sells
+            ),
+            (1, 0, 0)
+        );
+        assert_eq!((plan.base_requests(), plan.max_requests()), (1, 1));
+        assert_eq!(plan.by_method()["eth_getBalance(<=)"], 0);
+        sc.assemble_listing(listing).await.unwrap();
+        let ms = methods(&rpc).await;
+        assert!(
+            ms.iter()
+                .all(|m| m != "eth_getBlockReceipts" && m != "eth_getBalance")
+        );
     }
 
     #[tokio::test]
