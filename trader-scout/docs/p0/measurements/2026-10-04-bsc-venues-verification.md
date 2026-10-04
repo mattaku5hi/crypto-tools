@@ -83,7 +83,7 @@ of the first live run and their causes:
    (expected net += `TokenCreate.totalSupply` for the same token and manager in the tx) all 4 samples are exact on the
    token side (2 launches, 2 ordinary: one buy through a router `0x43dd...ae1bb` whose event account is still the signer,
    one `TokenSale`). Where tokens really are: the manager holds the supply from creation; no separate vault was needed.
-3. **four.meme native side stays UNEXPLAINED (venue stays IdlOnly).** Both direct launch buys have `tx.value` above
+3. **four.meme native side: a surcharge the event does not explain (resolved by the live check at the end; was IdlOnly, now FixtureVerified on the ADR-015/017 standard).** Both direct launch buys have `tx.value` above
    `cost + fee`: tx `0x72c96fae...caaa2`: value 2,361,000,000,000 = 1.03 x cost (cost 2,292,233,009,705, fee 1%); tx
    `0x06ab2e52...bf10`: value 1,780,000,000,000 = 1.11 x cost. The extra 2% / 10% of cost is in neither the event fields
    nor `launchFee` (0). A time-decaying launch/anti-sniper fee is a guess; no ABI field says it. These samples are
@@ -102,7 +102,7 @@ of the first live run and their causes:
 | Uniswap v3 | `0xdB1d1001...61F7` | 19 | 34 | 34 | 34 | none | FixtureVerified (canonical hash 19/19) |
 | Uniswap v2 | `0x8909Dc15...8eC6` | 2 | 2 | 2 | 2 | none | FixtureVerified, small n=2 (canonical v2 hash 2/2) |
 | PancakeSwap v3 | `0x0BFbCF9f...1865` | 40 (live metadata) | 130 | 130 | 130 | none | FixtureVerified (hash `0x6ce8eb47...f7e2` + PoolDeployer reproduces 40/40) |
-| four.meme V2 | `0x5c952063...762b` | 4 (tx, manager, token) | | token side 4/4 (launch class for 2) | | native side unexplained for 2 | IdlOnly (NOT PROMOTABLE) |
+| four.meme V2 | `0x5c952063...762b` | 4 (tx, manager, token) | | token side 4/4 (launch class for 2) | | paid >= cost+fee 2/2 direct buys (surcharge 198 / 990 bps, live-confirmed) | FixtureVerified (n = 4, small; ADR-020 amendment 7) |
 | four.meme V1 | `0xEC4549ca...` | 0 | | | | | IdlOnly: no event |
 | Uniswap v4 PoolManager | `0x28e2ea09...` | | | | | | IdlOnly (no BSC v4 verification test) |
 
@@ -173,3 +173,17 @@ already books the true cost incl. the surcharge; for venue *evidence* the quote 
 ADR-015/017 standard ("never better for the wallet than the event" — here the wallet pays more), and
 the token side is exact 4/4 → four.meme V2 promotable as evidence (n = 4, small; re-check on more
 samples). four.meme V1 has no samples (stays IdlOnly).
+
+Final criterion (ADR-020 amendment 7): `evm_bsc_venues.rs` fails if a four.meme sample has an inexact token side OR a direct
+native buy with `tx.value < cost + fee (+ launchFee)`; it prints the surcharge per sample (offline run: 2 direct buys,
+`paid/min` 1,780,000,000,000 / 1,619,639,639,636 = +990 bps and 2,361,000,000,000 / 2,315,155,339,802 = +198 bps; 2
+not-applicable). four.meme V2 is FixtureVerified with n = 4 (small); V1 stays IdlOnly (no samples).
+
+## Quoter pins (valuation, ADR-019 amendment 1 / ADR-020 amendment 7, orchestrator, 2026-10-04)
+Live getters: Pancake v3 QuoterV2 Base `0x4c650FB4…4e3B` and BSC `0xB048Bbc1…5997` (factory `0x0bfbcf9f…1865`, deployer
+`0x41ff9aa7…71c9`); Uniswap v3 QuoterV2 BSC `0x78D78E42…B077` (factory `0xdb1d1001…61f7`); V4Quoter Base `0x0d5e0f97…048d`
+(poolManager `0x498581ff…2b2b`), BSC `0x9f75dd27…37b0` (`0x28e2ea09…e9df`); Slipstream Base gen1 `0x254cF9E1…15b0`, gen2
+`0x3d4C2225…1c6C`, gen3 `0x514c8B5f…9259` (each `factory()` equals the generation's factory). Slipstream live quotes
+(`quoteExactInputSingle((address,address,uint256,int24,uint160))`, `0x9e7defe6`): gen1 on pool `0x47ca96ea…` (tickSpacing 1)
+1,140,890,463,828 out for 1e12 in; gen3 on `0x01271a20…` (100) 14,137,063,755; gen2 on `0xb1857b20…` (100) returned 0 for
+1e12 in (a tiny amount: a valid quote of 0, not a revert).

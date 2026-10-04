@@ -54,15 +54,19 @@
 //! (the curve holds the supply: a buy pays `amount` out of the manager, a sale
 //! pays `amount` into it; V1 `tokenAmount`). Native side, derived from the ABI
 //! (V1 `etherAmount`, V2 `cost` + `fee`; the buyer sends BNB): for a DIRECT buy
-//! (tx.to = manager, account = tx.from, buys only) `tx.value` must be
-//! `cost + fee` or `cost` (or 0 for a BEP20-quoted curve); anything else is
-//! inexact. Which of the two native forms is right, and that nothing is
-//! refunded, MUST BE CONFIRMED LIVE: no fixture holds manager balances and the
-//! BNB leg of a sale is an internal transfer. Launch transactions add one
-//! named class: a `TokenCreate` of the traded token in the same tx moves its
-//! whole `totalSupply` to the manager first, so the expected token net gains
-//! `+totalSupply` (and `launchFee` joins the native forms). A native side the
-//! ABI fields do not explain is `Other`: it fails nothing but blocks promotion.
+//! (tx.to = manager, account = tx.from, buys only) the wallet pays the whole
+//! `tx.value` (live archive balance diff 2026-10-04: refund 4 wei on both
+//! launch buys, so there is no refund), and the evidence standard is the
+//! ADR-015/017 one: the quote side must NEVER be better for the wallet than
+//! the event, i.e. `tx.value >= cost + fee (+ launchFee)`. A value above it is
+//! a surcharge the event does not carry (2-10 % in the launch-window samples);
+//! it is printed per sample, not an error. A value BELOW `cost + fee` fails
+//! (0 = BEP20-quoted curve: no native claim). The BNB leg of a sale is an
+//! internal transfer and stays unverified. Launch transactions add one named
+//! class: a `TokenCreate` of the traded token in the same tx moves its whole
+//! `totalSupply` to the manager first, so the expected token net gains
+//! `+totalSupply` (and `launchFee` joins the native minimum). The wallet's own
+//! consideration is still the wallet's own deltas (ADR-020), never the event.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -598,14 +602,15 @@ fn bsc_deployments() -> Vec<(SwapVenue, Address, VenueVerification, AnchorRole, 
 enum NativeForm {
     /// Not a direct BNB buy (router/bot account, sell, mixed): no claim.
     NotApplicable,
-    /// `tx.value == sum(cost) + sum(fee)`.
+    /// `tx.value == sum(cost) + sum(fee) + launch fee`.
     CostPlusFee,
-    /// `tx.value == sum(cost)`.
-    CostOnly,
+    /// `tx.value > cost + fee`: the wallet pays more than the event says.
+    Surcharge,
     /// `tx.value == 0`: a BEP20-quoted curve (quote leg is a token flow).
     ZeroValue,
-    /// Anything else (refund, bundle): inexact.
-    Other,
+    /// `0 < tx.value < cost + fee`: the quote side is better for the wallet
+    /// than the event; fails the evidence standard.
+    Below,
 }
 
 struct FmRow {
@@ -623,6 +628,8 @@ struct FmRow {
     /// Supply moved to the manager by a `TokenCreate` of this token in the same tx.
     launch_supply: I256,
     launch_fee: U256,
+    /// `(tx.value, cost + fee + launch fee)` of a direct native buy.
+    native_paid: Option<(U256, U256)>,
 }
 
 impl FmRow {
@@ -631,11 +638,18 @@ impl FmRow {
         self.token_exact
     }
 
-    /// Promotion also needs the native side to be explained by the ABI
-    /// fields; `Other` is an UNKNOWN pattern: it never fails the test but
-    /// keeps the venue IdlOnly (reported, not loosened).
+    /// Promotion also needs the quote side never better for the wallet than
+    /// the event (paid >= cost + fee).
     fn promotable(&self) -> bool {
-        self.token_exact && self.native != NativeForm::Other
+        self.token_exact && self.native != NativeForm::Below
+    }
+
+    /// Surcharge over `cost + fee` in basis points of `cost + fee`.
+    fn surcharge_bps(&self) -> Option<u128> {
+        let (paid, min) = self.native_paid?;
+        let extra = u128::try_from(paid.checked_sub(min)?).ok()?;
+        let min = u128::try_from(min).ok().filter(|m| *m > 0)?;
+        extra.checked_mul(10_000).map(|v| v / min)
     }
 }
 
@@ -693,17 +707,19 @@ async fn fourmeme_rows() -> Vec<FmRow> {
                 let account_is_signer = evs.iter().all(|e| Some(e.account) == signer);
                 let direct = tx.is_some_and(|t| t.to == Some(manager));
                 let buys_only = evs.iter().all(|e| e.side == LaunchpadSide::Buy);
+                let mut native_paid = None;
                 let native = match tx {
                     Some(t) if direct && account_is_signer && buys_only => {
-                        let (cost, fee) = (cost.saturating_add(launch_fee), fee);
-                        if t.value == cost.saturating_add(fee) {
-                            NativeForm::CostPlusFee
-                        } else if t.value == cost {
-                            NativeForm::CostOnly
-                        } else if t.value.is_zero() {
+                        let min = cost.saturating_add(fee).saturating_add(launch_fee);
+                        if t.value.is_zero() {
                             NativeForm::ZeroValue
                         } else {
-                            NativeForm::Other
+                            native_paid = Some((t.value, min));
+                            match t.value.cmp(&min) {
+                                std::cmp::Ordering::Equal => NativeForm::CostPlusFee,
+                                std::cmp::Ordering::Greater => NativeForm::Surcharge,
+                                std::cmp::Ordering::Less => NativeForm::Below,
+                            }
                         }
                     }
                     _ => NativeForm::NotApplicable,
@@ -722,6 +738,7 @@ async fn fourmeme_rows() -> Vec<FmRow> {
                     native,
                     launch_supply,
                     launch_fee,
+                    native_paid,
                 });
             }
         }
@@ -881,7 +898,7 @@ async fn fourmeme_samples_match_the_managers_token_flow_and_promotion_needs_exac
     println!("four.meme (tx, manager, token) samples: {}", rows.len());
     for (n, r) in rows.iter().enumerate() {
         println!(
-            "| {} | {} | `{:#x}` | {} `{:#x}` | token `{:#x}` | events {} | launch supply {} fee {} | account=signer {} | expected manager net {} | manager net {} | token exact {} | native {:?} |",
+            "| {} | {} | `{:#x}` | {} `{:#x}` | token `{:#x}` | events {} | launch supply {} fee {} | account=signer {} | expected manager net {} | manager net {} | token exact {} | native {:?} | paid/min {:?} | surcharge bps {:?} |",
             n + 1,
             r.fixture,
             r.tx,
@@ -895,32 +912,34 @@ async fn fourmeme_samples_match_the_managers_token_flow_and_promotion_needs_exac
             r.expected_net,
             r.manager_net,
             r.token_exact,
-            r.native
+            r.native,
+            r.native_paid,
+            r.surcharge_bps()
         );
     }
     let bad: Vec<String> = rows
         .iter()
-        .filter(|r| !r.token_side_exact())
+        .filter(|r| !r.token_side_exact() || r.native == NativeForm::Below)
         .map(|r| {
             format!(
-                "{} tx {:#x} manager {:#x}: expected net {} vs {} (native {:?})",
-                r.fixture, r.tx, r.manager, r.expected_net, r.manager_net, r.native
+                "{} tx {:#x} manager {:#x}: expected net {} vs {} (native {:?}, paid/min {:?})",
+                r.fixture, r.tx, r.manager, r.expected_net, r.manager_net, r.native, r.native_paid
             )
         })
         .collect();
     assert!(
         bad.is_empty(),
-        "{} inexact four.meme sample(s):\n{}",
+        "{} four.meme sample(s) with an inexact token side or a wallet paying LESS than cost+fee:\n{}",
         bad.len(),
         bad.join("\n")
     );
     let by_form = |f: NativeForm| rows.iter().filter(|r| r.native == f).count();
     println!(
-        "native forms: cost+fee {} cost {} zero-value {} unexplained(other) {} n/a {}",
+        "native forms: cost+fee {} surcharge {} zero-value {} below(fail) {} n/a {}",
         by_form(NativeForm::CostPlusFee),
-        by_form(NativeForm::CostOnly),
+        by_form(NativeForm::Surcharge),
         by_form(NativeForm::ZeroValue),
-        by_form(NativeForm::Other),
+        by_form(NativeForm::Below),
         by_form(NativeForm::NotApplicable)
     );
     let signer_other = rows.iter().filter(|r| !r.account_is_signer).count();
@@ -939,7 +958,7 @@ async fn fourmeme_samples_match_the_managers_token_flow_and_promotion_needs_exac
             .filter(|r| r.manager == manager && !r.promotable())
             .count();
         println!(
-            "{} {manager:#x}: {n} sample(s), all exact, verification {}",
+            "{} {manager:#x}: {n} sample(s), token side exact and paid >= cost+fee, verification {}",
             venue.label(),
             verification.label()
         );
@@ -947,18 +966,18 @@ async fn fourmeme_samples_match_the_managers_token_flow_and_promotion_needs_exac
             assert!(
                 n >= 1 && unexplained == 0,
                 "{} {manager:#x} is FixtureVerified without exact four.meme samples \
-                 ({n} samples, {unexplained} with an unexplained native side)",
+                 ({n} samples, {unexplained} not promotable)",
                 venue.label()
             );
         } else if unexplained > 0 {
             println!(
-                "NOT PROMOTABLE {} {manager:#x}: {unexplained} of {n} sample(s) have a native \
-                 side the ABI fields do not explain (see the table); stays IdlOnly",
+                "NOT PROMOTABLE {} {manager:#x}: {unexplained} of {n} sample(s) are inexact or \
+                 pay less than cost+fee (see the table); stays IdlOnly",
                 venue.label()
             );
         } else if n >= 1 {
             println!(
-                "PROMOTABLE {} {manager:#x}: {n} sample(s), all exact; flip its `dep(` to \
+                "PROMOTABLE {} {manager:#x}: {n} sample(s), exact token side, paid >= cost+fee; flip its `dep(` to \
                  `dep_fixture_verified(` in gate.rs and commit the fixture",
                 venue.label()
             );

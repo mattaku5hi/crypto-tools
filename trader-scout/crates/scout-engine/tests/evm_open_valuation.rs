@@ -46,6 +46,7 @@ const ROUTER: Address = address!("00000000000000000000000000000000000000b2");
 const TOKEN: Address = address!("00000000000000000000000000000000000000c1");
 const OTHER: Address = address!("00000000000000000000000000000000000000c2");
 const POOL: Address = address!("00000000000000000000000000000000000000d1");
+const SLIP_GEN2_FACTORY: Address = address!("aDe65c38CD4849aDBA595a4323a8C7DdfE89716a");
 const PM_RH: Address = address!("8366a39cc670b4001a1121b8f6a443a643e40951");
 
 // ---------------------------------------------------------------------
@@ -414,6 +415,11 @@ fn v3_rules(
     if family == QuoterFamily::Slipstream {
         rules.push(rule(
             pool,
+            &sel_hex("factory()"),
+            ok(words(&[addr_word(SLIP_GEN2_FACTORY)])),
+        ));
+        rules.push(rule(
+            pool,
             &sel_hex("tickSpacing()"),
             ok(words(&[word(u128::try_from(pool_selector).unwrap())])),
         ));
@@ -763,9 +769,10 @@ async fn v4_robinhood_key_from_initialize_and_quote_and_failure_paths() {
         Some(EvmUnvaluedReason::PoolKeyUnknown)
     );
 
-    // v4 on Base: no official quoter pinned (research doc has none).
+    // v4 on Base: the V4Quoter is pinned (live poolManager() getter).
     let base_cfg = cfg_with(BASE, &[]);
     let base_pm = address!("498581ff718922c3f8e6a244956af099b2652b2b");
+    let base_quoter = address!("0d5e0f971ed27fbff6c2837bf31316121532048d");
     let btx = buy(
         BASE,
         W,
@@ -777,7 +784,11 @@ async fn v4_robinhood_key_from_initialize_and_quote_and_failure_paths() {
         1_000_000_000,
         Some(1),
     );
-    let chain = Chain::start(vec![], vec![init_log(base_pm, &key, id)]).await;
+    let chain = Chain::start(
+        v4_rules(&key, base_quoter, 1_000_000_000, ETH / 2, ETH / 2000),
+        vec![init_log(base_pm, &key, id)],
+    )
+    .await;
     let mut cards = vec![card(&base_cfg, W, &[btx])];
     value(
         &mut cards,
@@ -786,22 +797,20 @@ async fn v4_robinhood_key_from_initialize_and_quote_and_failure_paths() {
         &EvmValuationOptions::default(),
     )
     .await;
-    assert_eq!(
-        only(&cards[0]).unvalued_reason(),
-        Some(EvmUnvaluedReason::VenueQuoterUnpinned)
-    );
-    assert!(chain.eth_calls().is_empty());
+    let v = only(&cards[0]).valued().unwrap();
+    assert_eq!((v.quoter, v.quoter_source), (Some(base_quoter), "pinned"));
 }
 
 // ---------------------------------------------------------------------
-// Pancake v3 / Slipstream: unpinned unless overridden
+// Pancake v3 / Slipstream: pinned on BSC/Base; unpinned (synthetic) unless overridden
 // ---------------------------------------------------------------------
 
 #[tokio::test]
-async fn pancake_v3_and_slipstream_are_unpinned_and_overridable() {
+async fn pancake_v3_and_slipstream_pinned_unpinned_and_overridable() {
     let usdt = BSC_USDT.address;
     let pq = address!("00000000000000000000000000000000000000e1");
-    // --- Pancake v3 on BSC (USDT-peg quote).
+    let pinned_pq = address!("B048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997");
+    // --- Pancake v3 on BSC (USDT-peg quote), pinned QuoterV2.
     let cfg = cfg_with(BSC, &[(SwapVenue::PancakeV3, POOL)]);
     let tx = buy(
         BSC,
@@ -821,7 +830,7 @@ async fn pancake_v3_and_slipstream_are_unpinned_and_overridable() {
     };
     let chain = Chain::start(
         v3_rules(
-            pq,
+            pinned_pq,
             QuoterFamily::PancakeV3,
             POOL,
             t0,
@@ -836,6 +845,48 @@ async fn pancake_v3_and_slipstream_are_unpinned_and_overridable() {
     .await;
     let mut cards = vec![card(&cfg, W, &[tx])];
     value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    let v = only(&cards[0]).valued().unwrap();
+    assert_eq!((v.quoter, v.quoter_source), (Some(pinned_pq), "pinned"));
+    assert_eq!(v.realizable_raw, 6 * ETH);
+
+    // Pancake v3 on Robinhood (synthetic gap): unpinned, no call, then override.
+    let rh_weth = ROBINHOOD.wrapped_native;
+    let rh_cfg = cfg_with(ROBINHOOD, &[(SwapVenue::PancakeV3, POOL)]);
+    let (t0, t1) = if TOKEN < rh_weth {
+        (TOKEN, rh_weth)
+    } else {
+        (rh_weth, TOKEN)
+    };
+    let rh_tx = || {
+        buy(
+            ROBINHOOD,
+            W,
+            1,
+            POOL,
+            Kind::Pancake,
+            rh_weth,
+            ETH / 2,
+            1_000_000_000,
+            None,
+        )
+    };
+    let chain = Chain::start(
+        v3_rules(
+            pq,
+            QuoterFamily::PancakeV3,
+            POOL,
+            t0,
+            t1,
+            2500,
+            1_000_000_000,
+            6 * ETH,
+            6_100_000_000_000_000_000,
+        ),
+        vec![],
+    )
+    .await;
+    let mut cards = vec![card(&rh_cfg, W, &[rh_tx()])];
+    value(&mut cards, &chain, &rh_cfg, &EvmValuationOptions::default()).await;
     assert_eq!(
         only(&cards[0]).unvalued_reason(),
         Some(EvmUnvaluedReason::VenueQuoterUnpinned)
@@ -846,6 +897,13 @@ async fn pancake_v3_and_slipstream_are_unpinned_and_overridable() {
     );
     let mut opts = EvmValuationOptions::default();
     opts.quoter_overrides.insert(QuoterFamily::PancakeV3, pq);
+    let mut cards = vec![card(&rh_cfg, W, &[rh_tx()])];
+    value(&mut cards, &chain, &rh_cfg, &opts).await;
+    let v = only(&cards[0]).valued().unwrap();
+    assert_eq!(v.quoter_source, "override");
+    assert_eq!(v.realizable_raw, 6 * ETH);
+    // USD: the pinned BSC Pancake USDT-peg card, candles at par-ish 1.001,
+    // flagged as a Binance-Peg asset.
     let mut cards = vec![card(
         &cfg,
         W,
@@ -861,13 +919,25 @@ async fn pancake_v3_and_slipstream_are_unpinned_and_overridable() {
             None,
         )],
     )];
-    value(&mut cards, &chain, &cfg, &opts).await;
+    let chain = Chain::start(
+        v3_rules(
+            pinned_pq,
+            QuoterFamily::PancakeV3,
+            POOL,
+            if TOKEN < usdt { TOKEN } else { usdt },
+            if TOKEN < usdt { usdt } else { TOKEN },
+            2500,
+            1_000_000_000,
+            6 * ETH,
+            6_100_000_000_000_000_000,
+        ),
+        vec![],
+    )
+    .await;
+    value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
     let v = only(&cards[0]).valued().unwrap();
-    assert_eq!(v.quoter_source, "override");
     assert_eq!(v.quote_unit, QuoteUnit::BinancePegUsdtUnits);
-    assert_eq!(v.realizable_raw, 6 * ETH);
     assert_eq!(v.unrealized_status, "known");
-    // USD: USDT candles at par-ish 1.001, flagged as a Binance-Peg asset.
     let src = InMemoryPriceSource::new().with_candles(
         QuoteAsset::Usdt,
         &[candle(1_789_999_980, "1.000"), candle(AS_OF, "1.001")],
@@ -877,15 +947,115 @@ async fn pancake_v3_and_slipstream_are_unpinned_and_overridable() {
     assert_eq!(u.value.scaled_units(), 600_600_000);
     assert!(u.price_label.ends_with("+binance_peg"), "{}", u.price_label);
 
-    // --- Slipstream on Base (tickSpacing selector, int24 struct).
+    // --- Slipstream on Base: quoter pinned per factory generation, selected
+    // by the pool's factory() (tickSpacing selector, int24 struct).
     let weth = BASE.wrapped_native;
     let cfg = cfg_with(BASE, &[(SwapVenue::AerodromeSlipstream, POOL)]);
-    let sq = address!("00000000000000000000000000000000000000e2");
+    let gen_quoters = [
+        (
+            address!("5e7BB104d84c7CB9B682AaC2F3d509f5F406809A"),
+            address!("254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0"),
+        ),
+        (
+            SLIP_GEN2_FACTORY,
+            address!("3d4C22254F86f64B7eC90ab8F7aeC1FBFD271c6C"),
+        ),
+        (
+            address!("f8f2eB4940CFE7d13603DDDD87f123820Fc061Ef"),
+            address!("514c8B5f54112481E28028F1166Bd78501089259"),
+        ),
+    ];
     let (t0, t1) = if TOKEN < weth {
         (TOKEN, weth)
     } else {
         (weth, TOKEN)
     };
+    let slip_tx = |chain: EvmChainProfile, quote: Address| {
+        buy(
+            chain,
+            W,
+            1,
+            POOL,
+            Kind::Slipstream,
+            quote,
+            ETH / 2,
+            1_000_000_000,
+            Some(1),
+        )
+    };
+    for (factory, sq) in gen_quoters {
+        let mut rules = v3_rules(
+            sq,
+            QuoterFamily::Slipstream,
+            POOL,
+            t0,
+            t1,
+            100,
+            1_000_000_000,
+            ETH,
+            1_020_000_000_000_000,
+        );
+        // This generation's factory (v3_rules answers gen2; first rule wins).
+        rules.insert(
+            0,
+            rule(
+                POOL,
+                &sel_hex("factory()"),
+                ok(words(&[addr_word(factory)])),
+            ),
+        );
+        let chain = Chain::start(rules, vec![]).await;
+        let mut cards = vec![card(&cfg, W, &[slip_tx(BASE, weth)])];
+        value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+        let v = only(&cards[0]).valued().unwrap();
+        assert_eq!(v.venue, SwapVenue::AerodromeSlipstream);
+        assert_eq!((v.quoter, v.quoter_source), (Some(sq), "pinned"));
+        assert_eq!(v.realizable_raw, ETH);
+        let data = chain
+            .eth_calls()
+            .iter()
+            .find(|c| c.0 == format!("{sq:#x}"))
+            .unwrap()
+            .1
+            .clone();
+        // Live-confirmed 2026-10-04: selector 0x9e7defe6.
+        assert!(data.starts_with("0x9e7defe6"));
+        assert!(data.starts_with(&sel_hex(
+            "quoteExactInputSingle((address,address,uint256,int24,uint160))"
+        )));
+    }
+
+    // A zero quote (tiny input, gen2 live) is a valid quote of 0, not an error.
+    let sq2 = gen_quoters[1].1;
+    let chain = Chain::start(
+        v3_rules(
+            sq2,
+            QuoterFamily::Slipstream,
+            POOL,
+            t0,
+            t1,
+            100,
+            1_000_000_000,
+            0,
+            0,
+        ),
+        vec![],
+    )
+    .await;
+    let mut cards = vec![card(&cfg, W, &[slip_tx(BASE, weth)])];
+    value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    let v = only(&cards[0]).valued().unwrap();
+    assert_eq!(v.realizable_raw, 0);
+
+    // Unpinned (synthetic): the same factory on Robinhood has no quoter.
+    let rh_weth = ROBINHOOD.wrapped_native;
+    let rh_cfg = cfg_with(ROBINHOOD, &[(SwapVenue::AerodromeSlipstream, POOL)]);
+    let (t0, t1) = if TOKEN < rh_weth {
+        (TOKEN, rh_weth)
+    } else {
+        (rh_weth, TOKEN)
+    };
+    let sq = address!("00000000000000000000000000000000000000e2");
     let chain = Chain::start(
         v3_rules(
             sq,
@@ -901,58 +1071,19 @@ async fn pancake_v3_and_slipstream_are_unpinned_and_overridable() {
         vec![],
     )
     .await;
-    let mut opts = EvmValuationOptions::default();
-    opts.quoter_overrides.insert(QuoterFamily::Slipstream, sq);
-    let mut cards = vec![card(
-        &cfg,
-        W,
-        &[buy(
-            BASE,
-            W,
-            1,
-            POOL,
-            Kind::Slipstream,
-            weth,
-            ETH / 2,
-            1_000_000_000,
-            Some(1),
-        )],
-    )];
-    value(&mut cards, &chain, &cfg, &opts).await;
-    let v = only(&cards[0]).valued().unwrap();
-    assert_eq!(v.venue, SwapVenue::AerodromeSlipstream);
-    assert_eq!(v.realizable_raw, ETH);
-    let data = &chain
-        .eth_calls()
-        .iter()
-        .find(|c| c.0 == format!("{sq:#x}"))
-        .unwrap()
-        .1
-        .clone();
-    assert!(data.starts_with(&sel_hex(
-        "quoteExactInputSingle((address,address,uint256,int24,uint160))"
-    )));
-    // Without the override the venue is unpinned.
-    let mut cards = vec![card(
-        &cfg,
-        W,
-        &[buy(
-            BASE,
-            W,
-            1,
-            POOL,
-            Kind::Slipstream,
-            weth,
-            ETH / 2,
-            1_000_000_000,
-            Some(1),
-        )],
-    )];
-    value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    let mut cards = vec![card(&rh_cfg, W, &[slip_tx(ROBINHOOD, rh_weth)])];
+    value(&mut cards, &chain, &rh_cfg, &EvmValuationOptions::default()).await;
     assert_eq!(
         only(&cards[0]).unvalued_reason(),
         Some(EvmUnvaluedReason::VenueQuoterUnpinned)
     );
+    assert!(chain.eth_calls().iter().all(|c| c.0 != format!("{sq:#x}")));
+    let mut opts = EvmValuationOptions::default();
+    opts.quoter_overrides.insert(QuoterFamily::Slipstream, sq);
+    let mut cards = vec![card(&rh_cfg, W, &[slip_tx(ROBINHOOD, rh_weth)])];
+    value(&mut cards, &chain, &rh_cfg, &opts).await;
+    let v = only(&cards[0]).valued().unwrap();
+    assert_eq!((v.quoter, v.quoter_source), (Some(sq), "override"));
 }
 
 // ---------------------------------------------------------------------

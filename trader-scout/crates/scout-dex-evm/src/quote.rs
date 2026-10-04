@@ -2,11 +2,13 @@
 //! decoders, the pinned official quoter table and the exact Uniswap-v2-style
 //! constant-product formula. Pure; the `eth_call`s live in the engine.
 //!
-//! Official quoters are pinned ONLY where the research doc
-//! (`docs/p0/evm-p0-research-2026-10-03.md` 2.2-2.4) names them: Uniswap v3
-//! QuoterV2 on Base and Robinhood, Uniswap v4 Quoter on Robinhood. Every other
-//! (chain, family) is unpinned and the valuation says `venue_quoter_unpinned`
-//! (invariant 16: no address from memory).
+//! Official quoters are pinned ONLY where a source names them and the
+//! address was read back live through its factory / pool-manager getter
+//! (ADR-020 amendment 7): research doc 2.2-2.4 (Uniswap v3 Base/Robinhood,
+//! v4 Robinhood) and the 2026-10-04 BSC/Base verification (PancakeSwap v3,
+//! Uniswap v3 BSC, Uniswap v4 Base/BSC, the three Slipstream generations).
+//! Every other (chain, family) is unpinned and the valuation says
+//! `venue_quoter_unpinned` (invariant 16: no address from memory).
 
 use alloy_primitives::{Address, B256, I256, U256, address, keccak256};
 
@@ -53,8 +55,55 @@ pub fn pinned_quoter(chain_id: u64, family: QuoterFamily) -> Option<Address> {
         (4663, QuoterFamily::UniswapV4) => {
             Some(address!("8dc178efb8111bb0973dd9d722ebeff267c98f94"))
         }
+        // developer.pancakeswap.finance v3 addresses; live getters on
+        // 2026-10-04: factory() = 0x0bfbcf9f..1865, deployer() = 0x41ff9aa7..71c9
+        // on both chains.
+        (8453, QuoterFamily::PancakeV3) => {
+            Some(address!("4c650FB471fe4e0f476fD3437C3411B1122c4e3B"))
+        }
+        (56, QuoterFamily::PancakeV3) => Some(address!("B048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997")),
+        // developers.uniswap.org v3 BNB deployments; live factory() = 0xdb1d1001..61f7.
+        (56, QuoterFamily::UniswapV3) => Some(address!("78D78E420Da98ad378D7799bE8f4AF69033EB077")),
+        // developers.uniswap.org v4 deployments; live poolManager() =
+        // 0x498581ff..2b2b (Base) / 0x28e2ea09..e9df (BSC).
+        (8453, QuoterFamily::UniswapV4) => {
+            Some(address!("0d5e0f971ed27fbff6c2837bf31316121532048d"))
+        }
+        (56, QuoterFamily::UniswapV4) => Some(address!("9f75dd27d6664c475b90e105573e550ff69437b0")),
+        // Slipstream quoters are per factory generation: see
+        // `pinned_slipstream_quoter`.
         _ => None,
     }
+}
+
+/// The pinned Slipstream quoter of a pool's `factory()` on `chain_id`
+/// (github.com/aerodrome-finance/slipstream README; each quoter's live
+/// `factory()` getter equals the key on 2026-10-04). The calldata shape
+/// (`tickSpacing` struct) is the orchestrator-supplied one: the orchestrator
+/// confirms it with a live quote.
+#[must_use]
+pub fn pinned_slipstream_quoter(chain_id: u64, factory: Address) -> Option<Address> {
+    if chain_id != 8453 {
+        return None;
+    }
+    // gen1 QuoterV2, gen2 Quoter, gen3 Quoter.
+    [
+        (
+            address!("5e7BB104d84c7CB9B682AaC2F3d509f5F406809A"),
+            address!("254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0"),
+        ),
+        (
+            address!("aDe65c38CD4849aDBA595a4323a8C7DdfE89716a"),
+            address!("3d4C22254F86f64B7eC90ab8F7aeC1FBFD271c6C"),
+        ),
+        (
+            address!("f8f2eB4940CFE7d13603DDDD87f123820Fc061Ef"),
+            address!("514c8B5f54112481E28028F1166Bd78501089259"),
+        ),
+    ]
+    .iter()
+    .find(|(f, _)| *f == factory)
+    .map(|(_, q)| *q)
 }
 
 /// First 4 bytes of `keccak256(signature)`.
@@ -363,9 +412,17 @@ mod tests {
     fn pinned_quoters_only_where_documented() {
         assert!(pinned_quoter(8453, QuoterFamily::UniswapV3).is_some());
         assert!(pinned_quoter(4663, QuoterFamily::UniswapV4).is_some());
-        assert!(pinned_quoter(8453, QuoterFamily::UniswapV4).is_none());
-        assert!(pinned_quoter(56, QuoterFamily::PancakeV3).is_none());
+        assert!(pinned_quoter(8453, QuoterFamily::UniswapV4).is_some());
+        assert!(pinned_quoter(56, QuoterFamily::PancakeV3).is_some());
+        assert!(pinned_quoter(8453, QuoterFamily::PancakeV3).is_some());
+        // Not documented: Uniswap v3 on a synthetic chain, Robinhood Pancake.
+        assert!(pinned_quoter(999, QuoterFamily::UniswapV3).is_none());
+        assert!(pinned_quoter(4663, QuoterFamily::PancakeV3).is_none());
         assert!(pinned_quoter(8453, QuoterFamily::Slipstream).is_none());
+        let gen2 = address!("aDe65c38CD4849aDBA595a4323a8C7DdfE89716a");
+        assert!(pinned_slipstream_quoter(8453, gen2).is_some());
+        assert!(pinned_slipstream_quoter(56, gen2).is_none());
+        assert!(pinned_slipstream_quoter(8453, Address::repeat_byte(1)).is_none());
     }
 
     #[test]

@@ -35,7 +35,7 @@
 //! Robinhood Uniswap v3 and v2 factories' pool families (evidence:
 //! `crates/scout-engine/tests/evm_uniswap_v2v3_robinhood.rs`,
 //! `docs/p0/measurements/2026-10-04-uniswap-v2v3-robinhood-verification.md`).
-//! Base's Uniswap v2/v3 factories, Aerodrome v2 factory and the three Slipstream factories are `FixtureVerified` by `crates/scout-engine/tests/evm_base_venues.rs` (fixture `evm_base_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-base-venues-verification.md`). BSC's PancakeSwap v2, Uniswap v3 and Uniswap v2 factories are `FixtureVerified` by `crates/scout-engine/tests/evm_bsc_venues.rs` (fixture `evm_bsc_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-bsc-venues-verification.md`); PancakeSwap v3 (its own `Swap` topic, CREATE2 deployer = PoolDeployer) became FixtureVerified with the live recapture `evm_bsc_swaps_all_2026-10-04b.json`; the four.meme TokenManagers (emitter-anchored launchpad events that name token and account) stay IdlOnly: the token side is exact but 2 of 4 launch-buy samples carry a native side the event fields do not explain. Everything else stays `IdlOnly`. `active_from_block` is `0` ("not
+//! Base's Uniswap v2/v3 factories, Aerodrome v2 factory and the three Slipstream factories are `FixtureVerified` by `crates/scout-engine/tests/evm_base_venues.rs` (fixture `evm_base_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-base-venues-verification.md`). BSC's PancakeSwap v2, Uniswap v3 and Uniswap v2 factories are `FixtureVerified` by `crates/scout-engine/tests/evm_bsc_venues.rs` (fixture `evm_bsc_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-bsc-venues-verification.md`); PancakeSwap v3 (its own `Swap` topic, CREATE2 deployer = PoolDeployer) became FixtureVerified with the live recapture `evm_bsc_swaps_all_2026-10-04b.json`; the four.meme TokenManager V2 (emitter-anchored launchpad events that name token and account) is FixtureVerified on the ADR-015/017 standard (token side exact 4/4, wallet never pays less than `cost + fee`; the 2 launch buys carry a live-confirmed 2-10 % native surcharge; n = 4, small; ADR-020 amendment 7); V1 has no samples and stays IdlOnly. Everything else stays `IdlOnly`. `active_from_block` is `0` ("not
 //! pinned") until the deployment transaction is read from the chain (the
 //! public RPC has no historical state, so it cannot be derived offline).
 
@@ -440,7 +440,10 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         address!("EC4549caDcE5DA21Df6E6422d448034B5233bFbC"),
         AnchorRole::SwapEmitter,
     ),
-    dep(
+    // V2: FixtureVerified on the ADR-015/017 standard (token side exact 4/4, quote
+    // side never better for the wallet than the event, native surcharge 2-10 %
+    // confirmed live by archive balance diff; n = 4, small; amendment 7).
+    dep_fixture_verified(
         56,
         SwapVenue::FourMemeV2,
         address!("5c952063c7fc8610FFDB798152D69F0B9550762b"),
@@ -931,14 +934,15 @@ mod tests {
         for d in VENUE_DEPLOYMENTS {
             // Robinhood (all), Base (all; v4: evm_uniswap_v4_base.rs, the rest:
             // evm_base_venues.rs) and the four BSC v2/v3 factories
-            // and Pancake v3 factories of evm_bsc_venues.rs (four.meme: token
-            // side exact but native side unexplained; BSC Uniswap v4 has no test).
+            // and Pancake v3 factories plus the four.meme V2 manager of evm_bsc_venues.rs
+            // (four.meme V1: no samples; BSC Uniswap v4 has no test).
             let bsc_verified = d.chain_id == 56
                 && [
                     address!("dB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"),
                     address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6"),
                     address!("cA143Ce32Fe78f1f7019d7d551a6402fC5350c73"),
                     address!("0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865"),
+                    address!("5c952063c7fc8610FFDB798152D69F0B9550762b"),
                 ]
                 .contains(&d.anchor);
             let expected = if d.chain_id == 4663 || d.chain_id == 8453 || bsc_verified {
@@ -1347,8 +1351,13 @@ mod tests {
             match gate.classify(&l) {
                 GateOutcome::Verified(v) => {
                     assert_eq!((v.venue, v.emitter, v.pool_id), (venue, manager, None));
-                    // IdlOnly until a live fixture passes evm_bsc_venues.rs.
-                    assert_eq!(v.verification, VenueVerification::IdlOnly);
+                    // V2: FixtureVerified (evm_bsc_venues.rs, amendment 7); V1: no samples.
+                    let want = if venue == SwapVenue::FourMemeV2 {
+                        VenueVerification::FixtureVerified
+                    } else {
+                        VenueVerification::IdlOnly
+                    };
+                    assert_eq!(v.verification, want);
                     assert_eq!(
                         v.launchpad,
                         Some(LaunchpadEvidence {

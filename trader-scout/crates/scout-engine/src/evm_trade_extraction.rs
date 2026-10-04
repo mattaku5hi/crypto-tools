@@ -1148,8 +1148,8 @@ mod tests {
         );
         assert_eq!(tr.consideration, Consideration::Exact(U256::from(7u8)));
         assert_eq!(tr.venue, SwapVenue::FourMemeV2);
-        // Pinned but not fixture verified yet: lower-bound evidence only.
-        assert_eq!(tr.venue_verification, VenueVerification::IdlOnly);
+        // V2 is FixtureVerified (ADR-020 amendment 7, n = 4); V1 stays IdlOnly.
+        assert_eq!(tr.venue_verification, VenueVerification::FixtureVerified);
         assert_eq!(e.gated_swap_logs, 1);
     }
 

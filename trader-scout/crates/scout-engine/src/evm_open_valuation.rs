@@ -14,7 +14,7 @@
 //!
 //! The pool is the one the wallet LAST traded the token on (ledger audit
 //! trail). A revert is `quote_reverted`, never zero. Quoters are pinned only
-//! where the research doc names them (`scout_dex_evm::pinned_quoter`); others
+//! where a live-verified source names them (`scout_dex_evm::pinned_quoter`, ADR-020 amendment 7); others
 //! are `venue_quoter_unpinned`. The quote ignores transfer tax and exit gas;
 //! a token with tax-shaped evidence in the run is labelled
 //! `transfer_tax_not_modelled`. All calls go through the run's RPC client
@@ -26,9 +26,9 @@ use alloy_primitives::{Address, B256, U256};
 use scout_core::Money;
 use scout_dex_evm::{
     QuoterFamily, SwapVenue, V2Fee, V4_INITIALIZE_TOPIC0, V4PoolKey, aerodrome_amount_out_calldata,
-    decode_amount_out, decode_reserves, decode_v4_initialize, pinned_quoter, price_impact_bps,
-    selector, v2_amount_out, v2_fee_for_factory, v2_reserves_calldata, v3_quote_calldata,
-    v4_quote_calldata,
+    decode_amount_out, decode_reserves, decode_v4_initialize, pinned_quoter,
+    pinned_slipstream_quoter, price_impact_bps, selector, v2_amount_out, v2_fee_for_factory,
+    v2_reserves_calldata, v3_quote_calldata, v4_quote_calldata,
 };
 use scout_pricing::{PriceLabel, PriceSource, QuoteAsset};
 use scout_providers::{EvmRpcClient, EvmSourceError, LogFilter};
@@ -583,6 +583,12 @@ impl Valuer<'_> {
                 }
             }
             SwapVenue::AerodromeSlipstream => {
+                // The pool's factory selects the quoter generation.
+                let r = self.call(pool, word("factory()")).await?;
+                factory = r.as_deref().and_then(word_address);
+                if factory.is_none() {
+                    return Err(EvmUnvaluedReason::PoolIdentityUnknown);
+                }
                 let r = self.call(pool, word("tickSpacing()")).await?;
                 // int24 sign-extended; spacings are positive.
                 tick_spacing = r
@@ -681,6 +687,20 @@ impl Valuer<'_> {
             .ok_or(EvmUnvaluedReason::VenueQuoterUnpinned)
     }
 
+    /// Slipstream: the pinned quoter of the pool's factory generation, else
+    /// the family override.
+    fn slipstream_quoter(
+        &self,
+        factory: Option<Address>,
+    ) -> Result<(Address, &'static str), EvmUnvaluedReason> {
+        if let Some(a) =
+            factory.and_then(|f| pinned_slipstream_quoter(self.cfg.profile.chain_id, f))
+        {
+            return Ok((a, "pinned"));
+        }
+        self.quoter(QuoterFamily::Slipstream)
+    }
+
     async fn quote(&mut self, plan: &Plan, amount: U256) -> Result<U256, QErr> {
         use EvmUnvaluedReason as R;
         let (to, data, words) = match plan {
@@ -764,8 +784,16 @@ impl Valuer<'_> {
                     SwapVenue::PancakeV3 => QuoterFamily::PancakeV3,
                     _ => QuoterFamily::Slipstream,
                 };
-                let (quoter, source) = self.quoter(family)?;
-                let id = self.ident(last.pool, venue).await?;
+                // Slipstream's quoter depends on the pool's factory, so the
+                // identity is read first; the others pin one quoter per chain.
+                let (quoter, source, id) = if family == QuoterFamily::Slipstream {
+                    let id = self.ident(last.pool, venue).await?;
+                    let (q, s) = self.slipstream_quoter(id.factory)?;
+                    (q, s, id)
+                } else {
+                    let (q, s) = self.quoter(family)?;
+                    (q, s, self.ident(last.pool, venue).await?)
+                };
                 let other = other_token(&id, token).ok_or(R::VenueNotSupported)?;
                 let (unit, qt) = self.quote_side(other).ok_or(R::QuoteAssetUnsupported)?;
                 let pool_selector = match family {

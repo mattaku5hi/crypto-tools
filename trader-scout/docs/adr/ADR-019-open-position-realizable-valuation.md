@@ -71,8 +71,10 @@ Status: Accepted (2026-10-04). Extends this ADR to Robinhood, Base and BSC walle
    Uniswap v2 / Pancake v2 `getReserves()` + exact constant product with the factory's fee (Uniswap 997/1000,
    Pancake v2 9975/10000; an unpinned v2 factory is `venue_not_supported`); Aerodrome v2 pool `getAmountOut`.
 3. **Pinned quoters only.** Addresses come from the research doc 2.2-2.4 (Uniswap v3 QuoterV2 Base/Robinhood,
-   V4Quoter Robinhood). Everything else is `venue_quoter_unpinned` (invariant 16); an SDK-only override exists
-   for tests and is reported as `quoter_source=override`.
+   V4Quoter Robinhood) and, since ADR-020 amendment 7, from live-verified official pages (Pancake v3 Base/BSC,
+   Uniswap v3 BSC, V4Quoter Base/BSC, Slipstream gen1-3 by the pool's `factory()`). Anything else is
+   `venue_quoter_unpinned` (invariant 16); an SDK-only override exists for tests and is reported as
+   `quoter_source=override`. A quoter answer of 0 is a valid quote of 0, never an error or "unknown".
 4. **Pinned block, bounded, counted.** One `eth_blockNumber` fixes `state_block`; every `eth_call` uses it, goes
    through the run's request budget and limiter and is cached per run. A revert is `quote_reverted`, an unreadable
    answer `quote_response_invalid`, a spent budget `request_budget_exhausted`; never zero.
