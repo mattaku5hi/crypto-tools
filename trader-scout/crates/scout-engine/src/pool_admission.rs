@@ -362,11 +362,11 @@ mod tests {
         let mut gate = SwapVenueGate::new(8453);
         let r = learn_pools(&mut gate, &client, &txs, 10).await.unwrap();
         assert_eq!((r.lookups, r.admitted, r.refused.len()), (2, 2, 0), "{r:?}");
-        // IdlOnly deployments: admitted at their own (unverified) level.
+        // Base Aerodrome deployments are FixtureVerified (evm_base_venues.rs).
         for l in &txs[0].logs {
             assert!(matches!(
                 gate.classify(l),
-                scout_dex_evm::GateOutcome::Verified(v) if v.verification == VenueVerification::IdlOnly
+                scout_dex_evm::GateOutcome::Verified(v) if v.verification == VenueVerification::FixtureVerified
             ));
         }
     }

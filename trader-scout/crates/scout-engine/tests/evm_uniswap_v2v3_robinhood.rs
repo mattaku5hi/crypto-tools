@@ -540,12 +540,10 @@ async fn uniswap_v2_on_robinhood_admitted_pairs_match_pair_deltas() {
             .unwrap()
     );
     assert_eq!(pinned.active_from_block, 0);
-    // Base/BSC v2 factories are pinned but stay IdlOnly (no fixture).
-    for chain in [8453, 56] {
-        assert!(VENUE_DEPLOYMENTS.iter().any(|d| d.chain_id == chain
-            && d.venue == SwapVenue::UniswapV2
-            && d.verification == VenueVerification::IdlOnly));
-    }
+    // The BSC v2 factories are pinned but stay IdlOnly (no fixture).
+    assert!(VENUE_DEPLOYMENTS.iter().any(|d| d.chain_id == 56
+        && d.venue == SwapVenue::UniswapV2
+        && d.verification == VenueVerification::IdlOnly));
 }
 
 #[tokio::test]

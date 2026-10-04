@@ -35,7 +35,7 @@
 //! Robinhood Uniswap v3 and v2 factories' pool families (evidence:
 //! `crates/scout-engine/tests/evm_uniswap_v2v3_robinhood.rs`,
 //! `docs/p0/measurements/2026-10-04-uniswap-v2v3-robinhood-verification.md`).
-//! Everything else stays `IdlOnly`. `active_from_block` is `0` ("not
+//! Base's Uniswap v2/v3 factories, Aerodrome v2 factory and the three Slipstream factories are `FixtureVerified` by `crates/scout-engine/tests/evm_base_venues.rs` (fixture `evm_base_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-base-venues-verification.md`). Everything else stays `IdlOnly`. `active_from_block` is `0` ("not
 //! pinned") until the deployment transaction is read from the chain (the
 //! public RPC has no historical state, so it cannot be derived offline).
 
@@ -252,7 +252,7 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
     // recorded pool of this factory; if it does not, drop the hash (the
     // factory record then decides) before flipping to `dep_fixture_verified`.
     with_init_code_hash(
-        dep(
+        dep_fixture_verified(
             8453,
             SwapVenue::UniswapV3,
             address!("33128a8fC17869897dcE68Ed026d694621f6FDfD"),
@@ -262,7 +262,7 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
     ),
     // Uniswap v2 factory on Base (developers.uniswap.org v2 deployments,
     // fetched 2026-10-04; Router02 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24).
-    dep(
+    dep_fixture_verified(
         8453,
         SwapVenue::UniswapV2,
         address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6"),
@@ -274,7 +274,7 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
     // `getPool(token0, token1, stable)` record (no init-code hash). IdlOnly
     // until `evm_base_*` fixtures pass `evm_base_venues.rs`; then flip this
     // row to `dep_fixture_verified`.
-    dep(
+    dep_fixture_verified(
         8453,
         SwapVenue::AerodromeV2,
         address!("420DD381b31aEf6683db6B902084cB0FFECe40Da"),
@@ -286,19 +286,19 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
     // `getPool(token0, token1, tickSpacing)` record. IdlOnly until verified
     // (flip each row to `dep_fixture_verified` once a fixture of THAT
     // generation passes).
-    dep(
+    dep_fixture_verified(
         8453,
         SwapVenue::AerodromeSlipstream,
         address!("5e7BB104d84c7CB9B682AaC2F3d509f5F406809A"),
         AnchorRole::PoolFactory,
     ),
-    dep(
+    dep_fixture_verified(
         8453,
         SwapVenue::AerodromeSlipstream,
         address!("aDe65c38CD4849aDBA595a4323a8C7DdfE89716a"),
         AnchorRole::PoolFactory,
     ),
-    dep(
+    dep_fixture_verified(
         8453,
         SwapVenue::AerodromeSlipstream,
         address!("f8f2eB4940CFE7d13603DDDD87f123820Fc061Ef"),
@@ -762,13 +762,16 @@ mod tests {
     }
 
     #[test]
-    fn only_robinhood_deployments_are_fixture_verified() {
+    fn only_evidenced_deployments_are_fixture_verified() {
         for d in VENUE_DEPLOYMENTS {
-            let expected = if d.chain_id == 4663 {
-                VenueVerification::FixtureVerified
-            } else {
-                VenueVerification::IdlOnly
-            };
+            // Robinhood (all) and Base except Uniswap v4 (no Base v4 fixture
+            // yet; evidence: evm_base_venues.rs).
+            let expected =
+                if d.chain_id == 4663 || (d.chain_id == 8453 && d.venue != SwapVenue::UniswapV4) {
+                    VenueVerification::FixtureVerified
+                } else {
+                    VenueVerification::IdlOnly
+                };
             assert_eq!(d.verification, expected, "{d:?}");
         }
     }
@@ -1097,7 +1100,7 @@ mod tests {
         );
         assert_eq!(
             gate.admit_pool(SwapVenue::AerodromeV2, pool, &meta),
-            Ok(VenueVerification::IdlOnly)
+            Ok(VenueVerification::FixtureVerified)
         );
         assert!(matches!(
             gate.classify(&swap),
@@ -1158,7 +1161,7 @@ mod tests {
             );
             assert_eq!(
                 gate.admit_pool(SwapVenue::AerodromeSlipstream, pool, &meta),
-                Ok(VenueVerification::IdlOnly)
+                Ok(VenueVerification::FixtureVerified)
             );
             assert!(matches!(
                 gate.classify(&swap),
@@ -1188,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn base_aerodrome_rows_are_idl_only_and_the_set_is_pinned() {
+    fn base_aerodrome_rows_are_pinned_without_init_code_hash() {
         let on_base = |v: SwapVenue| -> Vec<Address> {
             VENUE_DEPLOYMENTS
                 .iter()
@@ -1202,7 +1205,6 @@ mod tests {
             SLIP_FACTORIES.to_vec()
         );
         for d in VENUE_DEPLOYMENTS.iter().filter(|d| d.chain_id == 8453) {
-            assert_eq!(d.verification, VenueVerification::IdlOnly, "{d:?}");
             if matches!(
                 d.venue,
                 SwapVenue::AerodromeV2 | SwapVenue::AerodromeSlipstream

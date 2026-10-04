@@ -19,16 +19,13 @@
 //! factory's own `getPool`/`getPair` record names the emitter. Aerodrome v2
 //! and Slipstream pools are minimal-proxy clones: the record decides.
 //!
-//! Verification: the pool's ERC-20 net flow in the transaction equals the
-//! `Swap` event amounts, exactly. v3/Slipstream: `net_into_pool(token_i) ==
-//! amount_i`. v2 (Uniswap): `net_into_pool(token_i) == amount_iIn -
-//! amount_iOut`. Aerodrome v2 moves its swap fee from the pool to its
-//! PoolFees contract inside the swap, after the amounts are computed: for it
-//! the sample is exact when `net_into_pool(token_i) + fee_i == amount_iIn -
-//! amount_iOut` where `fee_i` is the pool's outgoing transfers of the INPUT
-//! token to a recipient that is neither the swap's `to` nor `sender`
-//! (`fee_adjusted` column; strict equality is reported next to it). If the
-//! live data shows another layout this is where it surfaces.
+//! Verification: per (tx, pool) the sum of the pool's `Swap` amounts plus
+//! the pool's other token-moving events equals the pool's ERC-20 net flow,
+//! EXACTLY. v3/Slipstream swap amounts are the pool's view (positive = pool
+//! received); v2 amounts are `amountIn - amountOut`. The other events are
+//! decoded explicitly (see `pool_event_table`): v3 Mint/Collect/Flash/
+//! CollectProtocol/CollectFees, v2 Mint/Burn and Aerodrome's `Fees` (the swap
+//! fee it moves to PoolFees). The equality itself is never loosened.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -177,27 +174,6 @@ fn pool_net(r: &EvmReceiptInfo, pool: Address) -> BTreeMap<Address, I256> {
     net
 }
 
-/// Aerodrome v2: per token, what the pool sent to recipients other than the
-/// swaps' own `to`/`sender` (the PoolFees contract), summed.
-fn fee_outflows(
-    r: &EvmReceiptInfo,
-    pool: Address,
-    not_these: &BTreeSet<Address>,
-) -> BTreeMap<Address, I256> {
-    let mut out: BTreeMap<Address, I256> = BTreeMap::new();
-    for l in &r.logs {
-        if let DecodeOutcome::Decoded(t) = decode_erc20_transfer(l)
-            && t.from == pool
-            && !not_these.contains(&t.to)
-            && t.to != pool
-        {
-            let e = out.entry(t.token).or_insert(I256::ZERO);
-            *e = e.checked_add(I256::try_from(t.amount).unwrap()).unwrap();
-        }
-    }
-    out
-}
-
 struct Row {
     fixture: String,
     tx: B256,
@@ -208,9 +184,92 @@ struct Row {
     swaps_in_group: usize,
     amounts: [I256; 2],
     net: [I256; 2],
+    /// Mint/Burn/Collect/Flash/... events of the pool in the same tx.
+    other_events: usize,
     strict_exact: bool,
     /// Exact under the venue's own rule (Aerodrome v2: fee-adjusted).
     exact: bool,
+}
+
+type EventRow = (B256, [usize; 2], i8);
+
+/// Non-swap pool events that move the pool's tokens, topics from the
+/// canonical ABI signatures (keccak at run time, never typed in). Each row is
+/// `(topic0, words of (amount0, amount1) in the data, sign into the pool)`.
+/// - v3 / Slipstream: Mint +, Collect -, Flash +paid, CollectProtocol -,
+///   Slipstream CollectFees -. (Burn moves no tokens: they stay owed until
+///   Collect; it is counted only.)
+/// - Uniswap v2 / Aerodrome v2: Mint +, Burn -; Aerodrome additionally emits
+///   `Fees(sender, amount0, amount1)` for the swap fee it moves from the pool
+///   to its PoolFees contract: -.
+fn pool_event_table(venue: SwapVenue) -> Vec<EventRow> {
+    let t = |s: &str| alloy_primitives::keccak256(s.as_bytes());
+    match venue {
+        SwapVenue::UniswapV3 | SwapVenue::AerodromeSlipstream => vec![
+            (
+                t("Mint(address,address,int24,int24,uint128,uint256,uint256)"),
+                [2, 3],
+                1,
+            ),
+            (
+                t("Collect(address,address,int24,int24,uint128,uint128)"),
+                [1, 2],
+                -1,
+            ),
+            (
+                t("Flash(address,address,uint256,uint256,uint256,uint256)"),
+                [2, 3],
+                1,
+            ),
+            (
+                t("CollectProtocol(address,address,uint128,uint128)"),
+                [0, 1],
+                -1,
+            ),
+            (t("CollectFees(address,uint128,uint128)"), [0, 1], -1),
+            (
+                t("Burn(address,int24,int24,uint128,uint256,uint256)"),
+                [0, 0],
+                0,
+            ),
+        ],
+        SwapVenue::UniswapV2 | SwapVenue::AerodromeV2 => vec![
+            (t("Mint(address,uint256,uint256)"), [0, 1], 1),
+            (t("Burn(address,uint256,uint256,address)"), [0, 1], -1),
+            (t("Fees(address,uint256,uint256)"), [0, 1], -1),
+        ],
+        SwapVenue::UniswapV4 => Vec::new(),
+    }
+}
+
+/// Signed token flows of the pool's other events in the tx:
+/// `(flow0, flow1, events counted)`.
+fn other_pool_flows(r: &EvmReceiptInfo, pool: Address, venue: SwapVenue) -> (I256, I256, usize) {
+    let table = pool_event_table(venue);
+    let word = |d: &[u8], i: usize| {
+        let b = d.get(i * 32..i * 32 + 32).expect("event data word");
+        I256::try_from(U256::from_be_slice(b)).unwrap()
+    };
+    let (mut f0, mut f1, mut n) = (I256::ZERO, I256::ZERO, 0usize);
+    for l in r.logs.iter().filter(|l| l.address == pool) {
+        let Some(t) = l.topics.first() else { continue };
+        let Some((_, w, sign)) = table.iter().find(|(x, _, _)| x == t) else {
+            continue;
+        };
+        n += 1;
+        if *sign == 0 {
+            continue;
+        }
+        let (a, b) = (word(&l.data, w[0]), word(&l.data, w[1]));
+        if *sign > 0 {
+            f0 = f0.checked_add(a).unwrap();
+            f1 = f1.checked_add(b).unwrap();
+        } else {
+            f0 = f0.checked_sub(a).unwrap();
+            f1 = f1.checked_sub(b).unwrap();
+        }
+    }
+    (f0, f1, n)
 }
 
 fn swap_groups(r: &EvmReceiptInfo) -> BTreeMap<(Address, B256), Vec<usize>> {
@@ -250,7 +309,6 @@ async fn all_rows() -> Vec<Row> {
                     meta.map_or_else(|| SwapVenue::for_topic(&topic)[0], |m| pool_venue(m.kind));
                 let (mut sum0, mut sum1) = (I256::ZERO, I256::ZERO);
                 let mut admitted = meta.is_some();
-                let mut counterparties: BTreeSet<Address> = BTreeSet::new();
                 let i256 = |x: U256| I256::try_from(x).unwrap();
                 for i in &idxs {
                     let log = &r.logs[*i];
@@ -274,8 +332,6 @@ async fn all_rows() -> Vec<Row> {
                             let DecodeOutcome::Decoded(s) = d else {
                                 panic!("v2-shaped swap must decode: {log:?}");
                             };
-                            counterparties.insert(s.to);
-                            counterparties.insert(s.sender);
                             (
                                 i256(s.amount0_in).checked_sub(i256(s.amount0_out)).unwrap(),
                                 i256(s.amount1_in).checked_sub(i256(s.amount1_out)).unwrap(),
@@ -286,6 +342,11 @@ async fn all_rows() -> Vec<Row> {
                     sum0 = sum0.checked_add(a0).unwrap();
                     sum1 = sum1.checked_add(a1).unwrap();
                 }
+                // v3-family: other pool events in the tx are accounted for
+                // explicitly (never by loosening the equality).
+                let (f0, f1, other_events) = other_pool_flows(r, pool, venue);
+                sum0 = sum0.checked_add(f0).unwrap();
+                sum1 = sum1.checked_add(f1).unwrap();
                 let net = pool_net(r, pool);
                 let (t0, t1) = meta
                     .and_then(|m| Some((m.token0?, m.token1?)))
@@ -294,17 +355,7 @@ async fn all_rows() -> Vec<Row> {
                 let n1 = net.get(&t1).copied().unwrap_or(I256::ZERO);
                 let known = t0 != Address::ZERO;
                 let strict_exact = known && n0 == sum0 && n1 == sum1;
-                let exact = if venue == SwapVenue::AerodromeV2 && known {
-                    let fees = fee_outflows(r, pool, &counterparties);
-                    let f0 = fees.get(&t0).copied().unwrap_or(I256::ZERO);
-                    let f1 = fees.get(&t1).copied().unwrap_or(I256::ZERO);
-                    // A fee leaves only on the input side of the swap.
-                    let sane = (f0 == I256::ZERO || sum0 > I256::ZERO)
-                        && (f1 == I256::ZERO || sum1 > I256::ZERO);
-                    sane && n0.checked_add(f0) == Some(sum0) && n1.checked_add(f1) == Some(sum1)
-                } else {
-                    strict_exact
-                };
+                let exact = strict_exact;
                 rows.push(Row {
                     fixture: l.name.clone(),
                     tx: r.tx_hash,
@@ -313,6 +364,7 @@ async fn all_rows() -> Vec<Row> {
                     factory: meta.and_then(|m| m.factory),
                     admitted,
                     swaps_in_group: idxs.len(),
+                    other_events,
                     amounts: [sum0, sum1],
                     net: [n0, n1],
                     strict_exact,
@@ -345,12 +397,12 @@ async fn base_samples_match_pool_deltas_and_promotion_needs_exact_evidence() {
     println!("evm_base_* fixtures: {}", fixtures.len());
     let rows = all_rows().await;
     println!(
-        "| # | fixture | tx | pool | venue | factory | admitted | swaps | event amount0 | pool net0 | event amount1 | pool net1 | strict | exact |"
+        "| # | fixture | tx | pool | venue | factory | admitted | swaps | other | event amount0 | pool net0 | event amount1 | pool net1 | strict | exact |"
     );
-    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     for (n, r) in rows.iter().enumerate() {
         println!(
-            "| {} | {} | `{:#x}` | `{:#x}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | `{:#x}` | `{:#x}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             n + 1,
             r.fixture,
             r.tx,
@@ -359,6 +411,7 @@ async fn base_samples_match_pool_deltas_and_promotion_needs_exact_evidence() {
             r.factory.map_or("-".to_string(), |f| format!("{f:#x}")),
             r.admitted,
             r.swaps_in_group,
+            r.other_events,
             r.amounts[0],
             r.net[0],
             r.amounts[1],
@@ -368,18 +421,27 @@ async fn base_samples_match_pool_deltas_and_promotion_needs_exact_evidence() {
         );
     }
     // Every admitted sample passes, whatever the flags say.
-    for r in rows.iter().filter(|r| r.admitted) {
-        assert!(
-            r.exact,
-            "{} tx {:#x} pool {:#x} ({}): event {:?} vs pool net {:?}",
-            r.fixture,
-            r.tx,
-            r.pool,
-            r.venue.label(),
-            r.amounts,
-            r.net
-        );
-    }
+    let bad: Vec<String> = rows
+        .iter()
+        .filter(|r| r.admitted && !r.exact)
+        .map(|r| {
+            format!(
+                "{} tx {:#x} pool {:#x} ({}): event {:?} vs pool net {:?}",
+                r.fixture,
+                r.tx,
+                r.pool,
+                r.venue.label(),
+                r.amounts,
+                r.net
+            )
+        })
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{} inexact admitted sample(s):\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
     // Promotion is per deployment (factory): n >= 1 admitted samples, all
     // exact (checked above) before `FixtureVerified`.
     for (venue, factory, verification, _) in base_pool_factories() {
@@ -387,8 +449,12 @@ async fn base_samples_match_pool_deltas_and_promotion_needs_exact_evidence() {
             .iter()
             .filter(|r| r.admitted && r.venue == venue && r.factory == Some(factory))
             .count();
+        let n_exact = rows
+            .iter()
+            .filter(|r| r.admitted && r.exact && r.venue == venue && r.factory == Some(factory))
+            .count();
         println!(
-            "{} {factory:#x}: {n} admitted sample(s), verification {}",
+            "{} {factory:#x}: {n} admitted sample(s), {n_exact} exact, verification {}",
             venue.label(),
             verification.label()
         );
