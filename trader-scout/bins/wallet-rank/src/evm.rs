@@ -42,6 +42,7 @@ pub(crate) fn run_evm(
         args.max_requests,
         concurrency,
         window,
+        !args.no_valuation,
         &args.net,
         &notice,
         |k| std::env::var(k).ok(),
@@ -75,6 +76,11 @@ pub(crate) fn run_evm(
         eprintln!("wallet-rank: rate limit: {l}");
     }
     let requests_made = run.requests_made;
+    let valuation = run.valuation.clone();
+    eprintln!(
+        "{}",
+        scout_app::open_valuation_line_evm("wallet-rank", valuation.as_ref())
+    );
     let secrets = run.secrets.clone();
     let scrub = move |t: &str| {
         let mut o = t.to_string();
@@ -95,6 +101,13 @@ pub(crate) fn run_evm(
     let pricing_input = pricing.input();
     let pricing_line = scout_app::pricing_line("wallet-rank", &pricing_input);
     let mut price_reasons: Vec<String> = Vec::new();
+    if valuation.as_ref().is_some_and(|v| v.budget_exhausted) {
+        price_reasons.push(format!(
+            "request budget exhausted during open-position valuation (max_requests={}): \
+             affected positions are unvalued (request_budget_exhausted)",
+            limit_text(args.max_requests)
+        ));
+    }
     if let Some(r) = &pricing.run
         && r.prefetch.pages_skipped_budget > 0
     {
@@ -146,7 +159,11 @@ pub(crate) fn run_evm(
             upstream_complete,
             window: *window,
             pricing: scout_app::pricing_meta(&pricing_input),
-            open_valuation: scout_app::open_valuation_meta(None, window.as_of),
+            open_valuation: scout_app::open_valuation_meta_evm(
+                valuation.as_ref(),
+                window.as_of,
+                stats.evm.as_ref().map_or("eth", |i| i.chain.native_label),
+            ),
             evm: stats.evm.as_ref(),
         };
         let summary = SummaryInput {

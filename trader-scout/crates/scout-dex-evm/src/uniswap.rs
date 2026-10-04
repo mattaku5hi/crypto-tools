@@ -70,6 +70,8 @@ pub struct V4Initialize {
     pub currency0: Address,
     pub currency1: Address,
     pub fee: u32,
+    /// `int24` tick spacing (needed to rebuild the v4 `PoolKey`).
+    pub tick_spacing: i32,
     pub hooks: Address,
     pub log_index: u64,
 }
@@ -240,7 +242,11 @@ pub fn decode_v4_initialize(log: &RawEvmLog) -> DecodeOutcome<V4Initialize> {
         return bad("v4 Initialize");
     };
     let d = log.data.as_ref();
-    let (Some(fee), Some(hooks)) = (word_u32(d, 0), word_address(d, 2)) else {
+    let (Some(fee), Some(tick_spacing), Some(hooks)) = (
+        word_u32(d, 0),
+        word_i256(d, 1).and_then(|t| i32::try_from(t).ok()),
+        word_address(d, 2),
+    ) else {
         return bad("v4 Initialize");
     };
     DecodeOutcome::Decoded(V4Initialize {
@@ -249,6 +255,7 @@ pub fn decode_v4_initialize(log: &RawEvmLog) -> DecodeOutcome<V4Initialize> {
         currency0: address_from_topic(c0),
         currency1: address_from_topic(c1),
         fee,
+        tick_spacing,
         hooks,
         log_index: log.log_index,
     })
@@ -476,6 +483,7 @@ mod tests {
             (i.pool_id, i.currency0, i.currency1, i.fee, i.hooks),
             (id, c0, c1, 10_000, hooks)
         );
+        assert_eq!(i.tick_spacing, 200);
     }
 
     #[test]

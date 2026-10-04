@@ -5,6 +5,8 @@
 //! decimal STRINGS (exact, integer arithmetic only); counts are JSON
 //! numbers; unknown is `null` with an explicit status, never `0`.
 
+use std::collections::BTreeMap;
+
 use scout_analytics::RatioStatus;
 use scout_app::SCHEMA_VERSION;
 use scout_app::{PriceCoverageDto, PricingMetaDto};
@@ -338,6 +340,9 @@ fn open_valuation_cells(l: &SolanaWalletLedgerReport) -> [String; 5] {
             "0.00000000".to_string(),
         ];
     }
+    if let Some(ev) = l.evm.as_ref().and_then(|e| e.open_valuation.as_ref()) {
+        return evm_open_valuation_cells(l, ev);
+    }
     let Some(v) = &l.open_valuation else {
         let r = na("valuation not run");
         return [r.clone(), r.clone(), r.clone(), r.clone(), r];
@@ -369,6 +374,96 @@ fn open_valuation_cells(l: &SolanaWalletLedgerReport) -> [String; 5] {
         )
     } else {
         money_exact_sol(Money::from_scaled_units(t.unrealized_known_scaled))
+    };
+    let value_usd = if t.usd_priced_positions == 0 {
+        na(USD_NOT_PRICED)
+    } else if t.usd_priced_positions < t.positions {
+        format!(
+            "N/A (known subset: {})",
+            money_str(Money::from_scaled_units(t.usd_value_scaled))
+        )
+    } else {
+        money_str(Money::from_scaled_units(t.usd_value_scaled))
+    };
+    let unrealized_usd = if t.usd_unrealized_known_positions == 0 {
+        na("no known USD unrealized position")
+    } else if t.usd_unrealized_unknown_positions > 0 || t.unvalued > 0 {
+        format!(
+            "N/A (known subset: {})",
+            money_str(Money::from_scaled_units(t.usd_unrealized_known_scaled))
+        )
+    } else {
+        money_str(Money::from_scaled_units(t.usd_unrealized_known_scaled))
+    };
+    [
+        format!("{}/{}", t.valued, t.positions),
+        realizable,
+        unrealized,
+        value_usd,
+        unrealized_usd,
+    ]
+}
+
+/// `1.5 ETH + 20.00 USDG` of raw per-unit amounts (never summed across units).
+fn units_text(c: &ChainDisplay, by_unit: &BTreeMap<QuoteUnit, i128>, scale_extra: u32) -> String {
+    by_unit
+        .iter()
+        .map(|(u, raw)| {
+            let d = quote_unit_decimals(*u).unwrap_or(18);
+            let sym = if *u == QuoteUnit::Wei {
+                c.native_symbol.to_string()
+            } else {
+                quote_unit_label(*u).to_uppercase()
+            };
+            format!("{} {sym}", format_scaled_decimal(*raw, d + scale_extra))
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+/// ADR-019 EVM amendment cells (same five columns as the Solana ones).
+fn evm_open_valuation_cells(
+    l: &SolanaWalletLedgerReport,
+    v: &scout_engine::EvmOpenValuationView,
+) -> [String; 5] {
+    let t = v.totals();
+    let mut real: BTreeMap<QuoteUnit, i128> = BTreeMap::new();
+    let mut unreal: BTreeMap<QuoteUnit, i128> = BTreeMap::new();
+    for p in v.positions.iter().filter_map(|p| p.valued()) {
+        *real.entry(p.quote_unit).or_insert(0) = real
+            .get(&p.quote_unit)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(i128::try_from(p.realizable_raw).unwrap_or(i128::MAX));
+        if let Some(m) = p.unrealized_pnl {
+            let e = unreal.entry(p.quote_unit).or_insert(0);
+            *e = e.saturating_add(m.scaled_units());
+        }
+    }
+    let realizable = if t.valued == 0 {
+        na(t.unvalued_by_reason
+            .iter()
+            .next()
+            .map_or("unvalued", |(k, _)| *k))
+    } else if t.unvalued > 0 {
+        format!(
+            "N/A (partial: {} of {} valued, {})",
+            t.valued,
+            t.positions,
+            units_text(&l.chain, &real, 0)
+        )
+    } else {
+        units_text(&l.chain, &real, 0)
+    };
+    let unrealized = if t.unrealized_known_positions == 0 {
+        na("no known-basis valued position")
+    } else if t.unrealized_unknown_positions > 0 || t.unvalued > 0 {
+        format!(
+            "N/A (known subset: {})",
+            units_text(&l.chain, &unreal, MONEY_SCALE)
+        )
+    } else {
+        units_text(&l.chain, &unreal, MONEY_SCALE)
     };
     let value_usd = if t.usd_priced_positions == 0 {
         na(USD_NOT_PRICED)
@@ -571,6 +666,34 @@ fn open_valuation_text(d: &scout_app::OpenPositionDto) -> String {
         return format!(
             " valuation=unvalued reason={}",
             d.unvalued_reason.unwrap_or("unknown")
+        );
+    }
+    if let Some(e) = &d.evm {
+        return format!(
+            " valuation={} venue={} method={} quote_unit={} realizable_raw={} price_impact_bps={} \
+             unrealized_pnl_raw={} value_usd={} state_block={}{}",
+            d.label.unwrap_or("-"),
+            d.venue.unwrap_or("-"),
+            e.quote_method.unwrap_or("-"),
+            e.quote_unit.clone().unwrap_or_else(|| "-".to_string()),
+            e.realizable_native_raw
+                .clone()
+                .or_else(|| e.realizable_quote_raw.clone())
+                .unwrap_or_else(|| "N/A".to_string()),
+            d.price_impact_bps
+                .map_or_else(|| "N/A".to_string(), |b| b.to_string()),
+            e.unrealized_pnl_raw.clone().unwrap_or_else(|| format!(
+                "N/A ({})",
+                e.unrealized_status.unwrap_or("unknown_basis")
+            )),
+            d.value_usd
+                .clone()
+                .or_else(|| d.usd_unpriced_reason.as_ref().map(|r| format!("N/A ({r})")))
+                .unwrap_or_else(|| "N/A".to_string()),
+            e.state_block
+                .map_or_else(|| "N/A".to_string(), |b| b.to_string()),
+            e.caveat
+                .map_or_else(String::new, |c| format!(" caveat={c}")),
         );
     }
     let fee = d.fee_bps.as_ref().map_or_else(String::new, |f| {
@@ -1258,6 +1381,9 @@ pub struct StatsDto {
     /// ADR-019 totals over the open positions (`null` when valuation did
     /// not run or there are no open positions); positions: `--detail full`.
     pub open_valuation: Option<scout_app::OpenValuationTotalsDto>,
+    /// ADR-019 EVM amendment totals by quote unit (EVM runs only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evm_open_valuation: Option<scout_app::EvmOpenValuationTotalsDto>,
     pub open_positions_with_unknown_basis: u64,
     pub unknown_basis_lots_created: u64,
     pub diagnostics: DiagnosticsDto,
@@ -1833,6 +1959,7 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
         has_unknown_basis_inventory: l.has_unknown_basis_inventory,
         has_left_censored_inventory: l.has_left_censored_inventory,
         open_valuation: scout_app::ledger_totals_dto(l),
+        evm_open_valuation: scout_app::ledger_evm_totals_dto(l),
         open_positions_with_unknown_basis: l.open_positions_with_unknown_basis,
         unknown_basis_lots_created: l.unknown_basis_lots_created,
         diagnostics: DiagnosticsDto {

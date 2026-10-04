@@ -100,6 +100,14 @@ fn pf_cell(o: &WalletRankObservation) -> String {
 fn exposure_cell(o: &WalletRankObservation) -> String {
     match &o.open_exposure {
         OpenExposure::None => "none".to_string(),
+        OpenExposure::Open { positions, .. } if o.open_exposure.evm_totals().is_some() => {
+            let t = o.open_exposure.evm_totals().unwrap_or_default();
+            format!(
+                "{}({}/{positions} priced by on-chain quote)",
+                o.open_exposure.label(),
+                t.valued
+            )
+        }
         OpenExposure::Open { positions, .. } => match o.open_exposure.totals() {
             Some(t) if t.valued > 0 => format!(
                 "{}({}/{positions} {} SOL)",
@@ -567,6 +575,9 @@ pub struct OpenExposureDto {
     pub details: Vec<scout_app::OpenPositionDto>,
     /// Valuation totals; `null` when valuation did not run.
     pub totals: Option<scout_app::OpenValuationTotalsDto>,
+    /// ADR-019 EVM amendment totals by quote unit (EVM runs only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evm_totals: Option<scout_app::EvmOpenValuationTotalsDto>,
 }
 
 #[derive(Debug, Serialize)]
@@ -995,6 +1006,10 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             positions_unknown_basis: unknown_basis,
             details,
             totals: o.open_exposure.totals().map(|t| scout_app::totals_dto(&t)),
+            evm_totals: o
+                .open_exposure
+                .evm_totals()
+                .map(|t| scout_app::evm_totals_dto(&t, l.chain.native_label)),
         },
         activity: ActivityDto {
             timestamped_trades: a.timestamped_trades,

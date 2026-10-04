@@ -69,6 +69,9 @@ pub struct OpenPositionDto {
     pub usd_unrealized_pnl: Option<String>,
     /// `known` or the reason it is unknown (valued positions only).
     pub usd_unrealized_status: Option<String>,
+    /// ADR-019 EVM amendment fields (EVM chains only).
+    #[serde(flatten)]
+    pub evm: Option<super::evm_open_valuation::EvmOpenPositionDto>,
 }
 
 /// Totals over a set of open positions.
@@ -161,6 +164,7 @@ fn position_dto(
         usd_unpriced_reason: None,
         usd_unrealized_pnl: None,
         usd_unrealized_status: None,
+        evm: None,
     };
     let Some(v) = v else { return d };
     d.basis_known_lamports = v
@@ -246,6 +250,26 @@ fn position_dto(
 /// Without a valuation every position is `unvalued { not_run }`.
 #[must_use]
 pub fn open_positions_dto(l: &SolanaWalletLedgerReport) -> Vec<OpenPositionDto> {
+    if let Some(ev) = &l.evm {
+        return l
+            .open_positions
+            .iter()
+            .map(|p| {
+                let mut d = position_dto(p, None, &l.chain);
+                let pos = ev.open_valuation.as_ref().and_then(|view| {
+                    view.positions.iter().find(|x| {
+                        let mut k = [0u8; 32];
+                        k[12..].copy_from_slice(x.token.as_slice());
+                        k == p.mint
+                    })
+                });
+                d.evm = pos.map(|x| {
+                    super::evm_open_valuation::apply_position(&mut d, x, l.chain.native_label)
+                });
+                d
+            })
+            .collect();
+    }
     l.open_positions
         .iter()
         .map(|p| {
@@ -287,6 +311,9 @@ pub struct OpenValuationMetaDto {
     pub budget_exhausted: bool,
     pub fetch_error: Option<String>,
     pub totals: Option<OpenValuationTotalsDto>,
+    /// ADR-019 EVM amendment run facts (EVM runs only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evm: Option<super::evm_open_valuation::EvmOpenValuationMetaDto>,
     /// How the figures are produced (invariant #10).
     pub policy: &'static str,
 }
@@ -310,6 +337,7 @@ pub fn open_valuation_meta(run: Option<&OpenValuationRun>, as_of: i64) -> OpenVa
         budget_exhausted: r.is_some_and(|r| r.budget_exhausted),
         fetch_error: r.and_then(|r| r.fetch_error.clone()),
         totals: r.map(|r| totals_dto(&r.totals)),
+        evm: None,
         policy: POLICY_TEXT,
     }
 }
@@ -335,6 +363,76 @@ pub fn open_valuation_line(bin: &str, run: Option<&OpenValuationRun>) -> String 
         r.totals.unvalued,
         r.account_calls,
         r.state_slot
+            .map_or_else(|| "n/a".to_string(), |s| s.to_string()),
+        if r.budget_exhausted {
+            " request_budget_exhausted=true"
+        } else {
+            ""
+        },
+        r.totals
+            .unvalued_by_reason
+            .iter()
+            .map(|(k, v)| format!(" {k}={v}"))
+            .collect::<String>()
+    )
+}
+
+const EVM_POLICY_TEXT: &str = "realizable value = exit quote of the whole open amount from the venue itself at the pinned state block (official QuoterV2 / V4Quoter eth_call, or exact v2 constant-product on getReserves / Aerodrome getAmountOut) into the pool's other asset, on the pool the wallet last traded the token on (not spot; exit gas not deducted); a revert is quote_reverted and an unpinned quoter is venue_quoter_unpinned, never zero; tokens with tax-shaped evidence carry transfer_tax_not_modelled; unrealized PnL = realizable - known remaining basis in the same unit (unknown or other-unit basis -> null); historical windows are not valued; ranking keys read realized figures only";
+
+/// `run_meta.open_valuation` of an EVM run (`state_slot` = the pinned block,
+/// `account_calls` = `eth_call` + `eth_getLogs` requests).
+#[must_use]
+pub fn open_valuation_meta_evm(
+    run: Option<&scout_sdk::engine::EvmOpenValuationRun>,
+    as_of: i64,
+    native_label: &str,
+) -> OpenValuationMetaDto {
+    let r = run.filter(|r| r.ran);
+    OpenValuationMetaDto {
+        enabled: r.is_some(),
+        version: scout_sdk::engine::EVM_OPEN_VALUATION_VERSION,
+        label: scout_sdk::engine::LABEL_REALIZABLE_ONCHAIN_QUOTE,
+        commitment: "pinned_block",
+        as_of_unix: as_of,
+        historical_window: r.is_some_and(|r| r.historical),
+        account_calls: r.map_or(0, |r| r.eth_calls.saturating_add(r.log_calls)),
+        state_slot: r.and_then(|r| r.state_block),
+        state_slot_min: r.and_then(|r| r.state_block),
+        wallets_with_open_positions: r.map_or(0, |r| r.wallets_with_open),
+        budget_exhausted: r.is_some_and(|r| r.budget_exhausted),
+        fetch_error: r.and_then(|r| r.fetch_error.clone()),
+        totals: None,
+        evm: r.map(|r| super::evm_open_valuation::evm_meta_dto(r, native_label)),
+        policy: EVM_POLICY_TEXT,
+    }
+}
+
+/// One stderr line summarising the EVM valuation step.
+#[must_use]
+pub fn open_valuation_line_evm(
+    bin: &str,
+    run: Option<&scout_sdk::engine::EvmOpenValuationRun>,
+) -> String {
+    let Some(r) = run.filter(|r| r.ran) else {
+        return format!(
+            "{bin}: open valuation: disabled (--no-valuation); open positions unvalued"
+        );
+    };
+    if r.historical {
+        return format!(
+            "{bin}: open valuation: historical window (until < as_of): {} open position(s) unvalued (historical_window), nothing read",
+            r.totals.positions
+        );
+    }
+    format!(
+        "{bin}: open valuation: positions={} valued={} unvalued={} eth_calls={} log_calls={} cache_hits={} state_block={}{}{}",
+        r.totals.positions,
+        r.totals.valued,
+        r.totals.unvalued,
+        r.eth_calls,
+        r.log_calls,
+        r.cache_hits,
+        r.state_block
             .map_or_else(|| "n/a".to_string(), |s| s.to_string()),
         if r.budget_exhausted {
             " request_budget_exhausted=true"

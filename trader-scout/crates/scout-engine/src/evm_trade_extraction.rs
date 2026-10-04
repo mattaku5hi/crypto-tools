@@ -175,6 +175,15 @@ pub struct EvmAttributedTrade {
     /// Venue of the best gated swap event that involved `token`.
     pub venue: SwapVenue,
     pub venue_verification: VenueVerification,
+    /// Contract that emitted the venue's swap event (pool / PoolManager /
+    /// launchpad manager).
+    pub venue_emitter: Address,
+    /// Uniswap v4 pool id (`None` for v2/v3 pools and launchpads).
+    pub venue_pool_id: Option<B256>,
+    /// The venue emitter's token flow differs from the wallet's own net
+    /// delta (fee-on-transfer / hook fee / multi-hop evidence). A label for
+    /// the exit valuation (`transfer_tax_not_modelled`), not an accounting input.
+    pub token_flow_shortfall: bool,
 }
 
 impl EvmAttributedTrade {
@@ -500,6 +509,22 @@ pub fn extract_evm_trade(
         TradeSide::Buy
     };
     let token_amount = token_delta.unsigned_abs();
+    // Evidence of a transfer tax: the emitter's own side of the token flow
+    // (sent out on a buy, received on a sell) is not the wallet's delta.
+    let shortfall = venue.launchpad.is_none() && {
+        let emitter_side = transfers
+            .iter()
+            .filter(|t| t.token == token)
+            .filter(|t| {
+                if side == TradeSide::Buy {
+                    t.from == venue.emitter
+                } else {
+                    t.to == venue.emitter
+                }
+            })
+            .try_fold(U256::ZERO, |a, t| a.checked_add(t.amount));
+        emitter_side.is_some_and(|e| e != token_amount)
+    };
     let mk = |quote: QuoteAsset, consideration: Consideration, native_leg: NativeLegStatus| {
         EvmAttributedTrade {
             chain: tx.chain.clone(),
@@ -517,6 +542,9 @@ pub fn extract_evm_trade(
             fee: fee_of(tx, &cfg.profile),
             venue: venue.venue,
             venue_verification: venue.verification,
+            venue_emitter: venue.emitter,
+            venue_pool_id: venue.pool_id,
+            token_flow_shortfall: shortfall,
         }
     };
     let native_status = if balance_diff.is_some() {

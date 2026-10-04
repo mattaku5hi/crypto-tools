@@ -19,6 +19,7 @@
 mod fourmeme;
 mod gate;
 mod pancake;
+mod quote;
 mod uniswap;
 mod v2_swap;
 
@@ -35,6 +36,12 @@ pub use gate::{
     VenueDeployment, VenueVerification, VerifiedSwap,
 };
 pub use pancake::{PANCAKE_V3_SWAP_TOPIC0, PancakeV3Swap, decode_pancake_v3_swap};
+pub use quote::{
+    PANCAKE_V2_BSC_FACTORY, PANCAKE_V2_FEE, QuoterFamily, UNISWAP_V2_FEE, V2Fee, V4PoolKey,
+    aerodrome_amount_out_calldata, decode_amount_out, decode_reserves, pinned_quoter,
+    price_impact_bps, selector, v2_amount_out, v2_fee_for_factory, v2_reserves_calldata,
+    v3_quote_calldata, v4_quote_calldata,
+};
 pub use uniswap::{
     V2_PAIR_CREATED_TOPIC0, V2PairCreated, V3_POOL_CREATED_TOPIC0, V3_SWAP_TOPIC0, V3PoolCreated,
     V3Swap, V4_INITIALIZE_TOPIC0, V4_SWAP_TOPIC0, V4Initialize, V4Swap, decode_v2_pair_created,

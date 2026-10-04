@@ -483,6 +483,9 @@ pub struct EvmStatsRun {
     pub rate_limits: Vec<String>,
     /// Logical RPC calls of the run by method (retries not counted).
     pub rpc_calls_by_method: std::collections::BTreeMap<String, u64>,
+    /// ADR-019 EVM amendment: the open-position valuation run (`None` with
+    /// `--no-valuation`).
+    pub valuation: Option<scout_sdk::engine::EvmOpenValuationRun>,
 }
 
 impl EvmStatsRun {
@@ -515,6 +518,7 @@ pub async fn collect_evm_stats(
     max_requests: Option<u64>,
     concurrency: usize,
     window: &AnalysisWindow,
+    valuation: bool,
     net: &EvmNetOptions,
     notice: &LimiterNotice,
     env: impl Fn(&str) -> Option<String>,
@@ -694,9 +698,26 @@ pub async fn collect_evm_stats(
         info.rate_limits = rate_limits.clone();
         info.listing_kind = explorer.kind().to_string();
     }
+    // ADR-019 EVM amendment: exit quotes of the open positions at the head.
+    let valuation = if valuation {
+        Some(
+            scout_sdk::engine::apply_evm_open_valuation(
+                &mut report.wallets,
+                &setup.rpc,
+                &setup.cfg,
+                window,
+                &scout_sdk::engine::EvmValuationOptions::default(),
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    let requests_made = setup.rpc.total_requests_made() + explorer.own_requests_made();
     Ok(EvmStatsRun {
         report,
         requests_made,
+        valuation,
         secrets,
         warnings: setup.warnings,
         rate_limits,

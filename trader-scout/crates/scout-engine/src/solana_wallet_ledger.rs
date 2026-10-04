@@ -119,9 +119,10 @@ const SECONDS_PER_DAY: i64 = 86_400;
 // private, chain-generalized `Builder` (see its module docs).
 #[path = "evm_wallet_ledger.rs"]
 mod evm_wallet_ledger;
+pub(crate) use evm_wallet_ledger::unit_of as evm_unit_of;
 pub use evm_wallet_ledger::{
-    EVM_WALLET_LEDGER_SCOPE, EVM_WALLET_LEDGER_VERSION, EvmLedgerExtras, EvmTradeRecord,
-    build_evm_wallet_ledger,
+    EVM_WALLET_LEDGER_SCOPE, EVM_WALLET_LEDGER_VERSION, EvmLastVenue, EvmLedgerExtras,
+    EvmOpenVenueInfo, EvmTradeRecord, build_evm_wallet_ledger,
 };
 
 /// Typed failure of the ledger build. Malformed *data* never lands here

@@ -481,6 +481,15 @@ impl EvmRpcClient {
         self
     }
 
+    /// A clone sharing every cache and the request budget, with a smaller
+    /// `eth_getLogs` split limit (bounded point lookups, e.g. a v4 `Initialize`).
+    #[must_use]
+    pub fn with_max_splits(&self, max_splits: u32) -> Self {
+        let mut c = self.clone();
+        c.cfg.max_splits = c.cfg.max_splits.min(max_splits);
+        c
+    }
+
     /// Logical JSON-RPC calls made so far by method (retries not counted).
     #[must_use]
     pub fn calls_by_method(&self) -> BTreeMap<String, u64> {

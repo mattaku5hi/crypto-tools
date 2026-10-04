@@ -361,12 +361,12 @@ fn leg_specs(rec: &EpisodeRecord) -> Vec<(QuoteUnit, Option<i64>)> {
 }
 
 /// Result of pricing one leg.
-enum Leg {
+pub(crate) enum Leg {
     Priced(Money),
     Unpriced(String),
 }
 
-fn price_leg(
+pub(crate) fn price_leg(
     source: &dyn PriceSource,
     chain: &ChainDisplay,
     unit: QuoteUnit,
@@ -460,6 +460,29 @@ impl SolanaWalletLedgerReport {
                     && asset != QuoteAsset::Usdc
                 {
                     out.entry(asset).or_default().insert(minute_start(t));
+                }
+            }
+        }
+        // ADR-019 EVM amendment: the as-of price of every valued exit quote
+        // and the acquisition minutes of the remaining lots of those positions.
+        if let Some(v) = self.evm.as_ref().and_then(|e| e.open_valuation.as_ref()) {
+            for asset in v.usd_assets(&self.chain) {
+                if asset != QuoteAsset::Usdc {
+                    out.entry(asset).or_default().insert(minute_start(v.as_of));
+                }
+            }
+            for p in v.positions.iter().filter(|p| p.valued().is_some()) {
+                let key = crate::chain_display::evm_key(p.token);
+                for info in self.open_venues.iter().filter(|i| i.mint == key) {
+                    for l in &info.lots {
+                        if l.basis_known
+                            && let (Some(asset), Some(t)) =
+                                (quote_asset_on(&self.chain, l.unit), l.acquired_price_ts)
+                            && asset != QuoteAsset::Usdc
+                        {
+                            out.entry(asset).or_default().insert(minute_start(t));
+                        }
+                    }
                 }
             }
         }
@@ -803,6 +826,11 @@ pub async fn apply_usd_pricing(
         let Some(l) = w.ledger.as_mut() else { continue };
         if let Some(v) = l.open_valuation.as_mut() {
             v.apply_usd_price(source);
+        }
+        if let Some(ev) = l.evm.as_mut()
+            && let Some(v) = ev.open_valuation.as_mut()
+        {
+            v.apply_usd_price(source, &l.chain, &l.open_venues);
         }
         match l.apply_usd_prices(source) {
             Ok(()) => {

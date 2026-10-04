@@ -114,3 +114,11 @@ history, plus any of Ankr/Chainstack/dRPC/GetBlock for raw `eth_getLogs`) and ru
 checklist in that file's "What to measure" section against each. No row may be promoted to
 `live_verified` without a dated, actual successful call recorded per ADR-006. Do not pick a single
 vendor from marketing claims alone — this is exactly the failure mode P0.1 exists to prevent.
+
+
+## EVM open-position valuation (ADR-019 EVM amendment, 2026-10-04)
+
+- [x] E-VAL.1 Realizable exit quote of open EVM positions at the as-of head (`crates/scout-engine/src/evm_open_valuation.rs`, `crates/scout-dex-evm/src/quote.rs`): v3 QuoterV2, v4 V4Quoter (+ Initialize PoolKey), v2 reserves (fee by pinned factory), Aerodrome v2 `getAmountOut`; USD via ADR-018; wallet-stats / wallet-rank output; offline tests with wiremock and two live-fixture wallet replays.
+- [ ] E-VAL.2 Pin the official quoters not yet in the research doc (Pancake v3 QuoterV2 BSC/Base, Slipstream QuoterV2 Base, Uniswap v3 QuoterV2 BSC, V4Quoter Base/BSC) from the official deployment pages, each with a dated live `eth_call` smoke (until then `venue_quoter_unpinned`).
+- [ ] E-VAL.3 Live smoke (opt-in, keyed RPC): one Robinhood and one Base wallet with an open position; compare the quoter result with a v2/v3 reserves check; measure `eth_getLogs` cost of the v4 `Initialize` lookup on Base (provider block-range caps; today bounded by `--max-requests` and 32 range splits per pool, else `pool_key_unknown`).
+- [ ] E-VAL.4 Tax-aware exit quote: model fee-on-transfer sells (BSC) instead of only labelling `transfer_tax_not_modelled`.

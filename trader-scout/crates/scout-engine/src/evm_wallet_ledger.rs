@@ -47,7 +47,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_primitives::{Address, B256, I256, U256};
 use scout_core::RawEvmTransaction;
-use scout_dex_evm::VenueVerification;
+use scout_dex_evm::{SwapVenue, VenueVerification};
 
 use super::{
     Builder, LedgerOptions, SolanaWalletLedgerError, SolanaWalletLedgerReport, UnknownReason,
@@ -84,10 +84,39 @@ pub struct EvmTradeRecord {
     /// Gas in wei paid by the wallet; `None` = not observed exactly.
     pub fee_wei: Option<u128>,
     pub venue: &'static str,
+    pub venue_kind: SwapVenue,
     pub venue_verification: &'static str,
+    /// Swap-event emitter of the trade (pool / PoolManager / launchpad manager).
+    pub pool: Address,
+    /// Uniswap v4 pool id.
+    pub pool_id: Option<B256>,
+    /// See `EvmAttributedTrade::token_flow_shortfall`.
+    pub token_flow_shortfall: bool,
     /// `not_involved`, `trace`, `explorer_internal`, `alchemy_internal`, `balance_diff`,
     /// `logs_and_value_only` (how the native leg was established).
     pub native_leg: &'static str,
+}
+
+/// Ledger-side input of the exit valuation of one open EVM position
+/// (ADR-019 EVM amendment): where the wallet last traded the token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvmOpenVenueInfo {
+    pub token: Address,
+    pub open_amount_raw: u128,
+    /// Venue of the wallet's latest booked trade of the token; `None` =
+    /// the position was never traded in a booked swap (transfers only).
+    pub last: Option<EvmLastVenue>,
+    /// Any booked trade of the token showed a transfer-tax shaped shortfall.
+    pub transfer_tax_seen: bool,
+}
+
+/// The latest booked venue of a token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvmLastVenue {
+    pub venue: SwapVenue,
+    pub pool: Address,
+    pub pool_id: Option<B256>,
+    pub block_number: u64,
 }
 
 /// EVM-only facts of one ledger (the report's `evm` field).
@@ -106,13 +135,17 @@ pub struct EvmLedgerExtras {
     pub ungated_swap_logs: u64,
     /// Transactions with a gated swap that were not booked, by reason.
     pub rejected_swap_txs: u64,
+    /// One entry per open position (ascending token), the valuation input.
+    pub open_venues: Vec<EvmOpenVenueInfo>,
+    /// ADR-019 EVM amendment: filled by `apply_evm_open_valuation`.
+    pub open_valuation: Option<crate::evm_open_valuation::EvmOpenValuationView>,
 }
 
 fn to_u128(x: U256, ctx: &'static str) -> Result<u128, SolanaWalletLedgerError> {
     u128::try_from(x).map_err(|_| SolanaWalletLedgerError::Overflow(ctx))
 }
 
-fn unit_of(cfg: &EvmExtractionConfig, quote: QuoteAsset) -> Option<QuoteUnit> {
+pub(crate) fn unit_of(cfg: &EvmExtractionConfig, quote: QuoteAsset) -> Option<QuoteUnit> {
     match quote {
         QuoteAsset::Native => Some(QuoteUnit::Wei),
         QuoteAsset::Token(a) => {
@@ -200,7 +233,11 @@ impl Builder {
             quote_amount: None,
             fee_wei,
             venue: t.venue.label(),
+            venue_kind: t.venue,
             venue_verification: verification.label(),
+            pool: t.venue_emitter,
+            pool_id: t.venue_pool_id,
+            token_flow_shortfall: t.token_flow_shortfall,
             native_leg: native_leg_label,
         };
 
@@ -393,6 +430,8 @@ pub fn build_evm_wallet_ledger(
         uncapitalized_gas_wei: 0,
         ungated_swap_logs: 0,
         rejected_swap_txs: 0,
+        open_venues: Vec::new(),
+        open_valuation: None,
     };
     let wrapped = cfg.profile.wrapped_native;
     let quote_tokens: BTreeSet<Address> = cfg.quote_tokens.iter().map(|q| q.address).collect();
@@ -497,6 +536,36 @@ pub fn build_evm_wallet_ledger(
     }
 
     let mut report = b.finish()?;
+    // ADR-019 EVM amendment inputs: the latest booked venue per open token.
+    let mut last: BTreeMap<Address, EvmLastVenue> = BTreeMap::new();
+    let mut tax: BTreeSet<Address> = BTreeSet::new();
+    for r in &extras.trades {
+        last.insert(
+            r.token,
+            EvmLastVenue {
+                venue: r.venue_kind,
+                pool: r.pool,
+                pool_id: r.pool_id,
+                block_number: r.block_number,
+            },
+        );
+        if r.token_flow_shortfall {
+            tax.insert(r.token);
+        }
+    }
+    extras.open_venues = report
+        .open_positions
+        .iter()
+        .map(|p| {
+            let token = crate::chain_display::evm_address_of_key(&p.mint);
+            EvmOpenVenueInfo {
+                token,
+                open_amount_raw: p.open_amount_raw,
+                last: last.get(&token).copied(),
+                transfer_tax_seen: tax.contains(&token),
+            }
+        })
+        .collect();
     report.ledger_version = EVM_WALLET_LEDGER_VERSION;
     report.evm = Some(extras);
     Ok(report)

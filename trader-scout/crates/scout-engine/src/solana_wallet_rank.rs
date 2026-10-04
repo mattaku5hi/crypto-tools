@@ -121,6 +121,7 @@ use scout_analytics::RatioStatus;
 use scout_core::{MONEY_SCALE, Money, SolanaPubkey};
 
 use crate::chain_display::ChainDisplay;
+use crate::evm_open_valuation::{EvmOpenValuationTotals, EvmOpenValuationView};
 use crate::solana_open_valuation::{OpenValuationTotals, OpenValuationView};
 use crate::solana_wallet_ledger::{
     LowerBound, OpenPosition, QuoteUnit, SolanaWalletLedgerReport, WinRateLowerBound,
@@ -417,6 +418,8 @@ pub enum OpenExposure {
         details: Vec<OpenPosition>,
         /// The realizable valuation of these positions; `None` = not run.
         valuation: Option<OpenValuationView>,
+        /// ADR-019 EVM amendment: the exit-quote valuation of an EVM wallet.
+        evm_valuation: Option<EvmOpenValuationView>,
     },
 }
 
@@ -427,19 +430,42 @@ impl OpenExposure {
     pub fn label(&self) -> &'static str {
         match self {
             Self::None => "none",
-            Self::Open { valuation, .. } => match valuation {
-                None => "unvalued",
-                Some(v) => {
-                    let t = v.totals();
-                    if t.positions > 0 && t.valued == t.positions {
-                        "valued"
-                    } else if t.valued == 0 {
-                        "unvalued"
-                    } else {
-                        "partially_valued"
+            Self::Open {
+                valuation,
+                evm_valuation,
+                ..
+            } => {
+                let (positions, valued) = match (valuation, evm_valuation) {
+                    (Some(v), _) => {
+                        let t = v.totals();
+                        (t.positions, t.valued)
                     }
+                    (None, Some(v)) => {
+                        let t = v.totals();
+                        (t.positions, t.valued)
+                    }
+                    (None, None) => return "unvalued",
+                };
+                if positions > 0 && valued == positions {
+                    "valued"
+                } else if valued == 0 {
+                    "unvalued"
+                } else {
+                    "partially_valued"
                 }
-            },
+            }
+        }
+    }
+
+    /// EVM exit-quote totals (`None` for Solana or without a valuation).
+    #[must_use]
+    pub fn evm_totals(&self) -> Option<EvmOpenValuationTotals> {
+        match self {
+            Self::Open {
+                evm_valuation: Some(v),
+                ..
+            } => Some(v.totals()),
+            _ => None,
         }
     }
 
@@ -705,6 +731,7 @@ fn observe(w: &SolanaWalletStats, quote: QuoteUnit) -> WalletRankObservation {
             positions_unknown_basis: l.open_positions_with_unknown_basis,
             details: l.open_positions.clone(),
             valuation: l.open_valuation.clone(),
+            evm_valuation: l.evm.as_ref().and_then(|e| e.open_valuation.clone()),
         }
     };
     obs
@@ -902,10 +929,14 @@ fn gate_reasons(policy: &RankPolicy, o: &WalletRankObservation) -> Vec<Exclusion
         out.push(ExclusionReason::OpenExposure);
     }
     if policy.require_valued_open && !l.open_positions.is_empty() {
-        let all_valued = l
-            .open_valuation
-            .as_ref()
-            .is_some_and(|v| v.all_valued() && v.positions.len() == l.open_positions.len());
+        let evm = l.evm.as_ref().and_then(|e| e.open_valuation.as_ref());
+        let all_valued = match evm {
+            Some(v) => v.all_valued() && v.positions.len() == l.open_positions.len(),
+            None => l
+                .open_valuation
+                .as_ref()
+                .is_some_and(|v| v.all_valued() && v.positions.len() == l.open_positions.len()),
+        };
         if !all_valued {
             out.push(ExclusionReason::OpenExposureUnvalued);
         }
