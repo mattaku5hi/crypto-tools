@@ -45,6 +45,52 @@ pub const FOURMEME_V2_PURCHASE_TOPIC0: B256 =
 pub const FOURMEME_V2_SALE_TOPIC0: B256 =
     b256!("0a5575b3648bae2210cee56bf33254cc1ddfbc7bf637c0af2ac18b14fb1bae19");
 
+/// `TokenCreate(address creator, address token, uint256 requestId, string name,
+/// string symbol, uint256 totalSupply, uint256 launchTime, uint256 launchFee)`,
+/// identical in both ABIs. A launch transaction moves the whole supply to the
+/// manager (`totalSupply`) before the first trade of the token.
+pub const FOURMEME_TOKEN_CREATE_TOPIC0: B256 =
+    b256!("396d5e902b675b032348d3d2e9517ee8f0c4a926603fbc075d3d282ff00cad20");
+
+/// The fields of a `TokenCreate` the evidence needs (head words only; the
+/// two strings are dynamic and not read).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FourMemeTokenCreate {
+    pub manager: Address,
+    pub creator: Address,
+    pub token: Address,
+    pub total_supply: U256,
+    pub launch_fee: U256,
+}
+
+/// Decode a `TokenCreate` (one topic; the head is 8 words, then the strings).
+#[must_use]
+pub fn decode_fourmeme_token_create(log: &RawEvmLog) -> DecodeOutcome<FourMemeTokenCreate> {
+    if log.topics.first() != Some(&FOURMEME_TOKEN_CREATE_TOPIC0) {
+        return DecodeOutcome::NotMine;
+    }
+    let name = "four.meme TokenCreate";
+    if log.topics.len() != 1 || log.data.len() < 8 * 32 {
+        return bad(name);
+    }
+    let d = log.data.as_ref();
+    let (Some(creator), Some(token), Some(total_supply), Some(launch_fee)) = (
+        word_address(d, 0),
+        word_address(d, 1),
+        word_u256(d, 5),
+        word_u256(d, 7),
+    ) else {
+        return bad(name);
+    };
+    DecodeOutcome::Decoded(FourMemeTokenCreate {
+        manager: log.address,
+        creator,
+        token,
+        total_supply,
+        launch_fee,
+    })
+}
+
 /// Trade direction from the ACCOUNT's view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LaunchpadSide {
@@ -304,6 +350,26 @@ mod tests {
                 "token", "account", "price", "amount", "cost", "fee", "offers", "funds"
             ]
         );
+        // TokenCreate: same signature in both ABIs, head layout read by the decoder.
+        for abi in [&v1, &v2] {
+            let (sig, inputs) = event_of(abi, "TokenCreate");
+            assert_eq!(keccak256(sig.as_bytes()), FOURMEME_TOKEN_CREATE_TOPIC0);
+            let names: Vec<&str> = abi
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["type"] == "event" && e["name"] == "TokenCreate")
+                .unwrap()["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(inputs.len(), 8);
+            assert_eq!(names[1], "token");
+            assert_eq!(names[5], "totalSupply");
+            assert_eq!(names[7], "launchFee");
+        }
         // LiquidityAdded(base, offers, quote, funds) is a known non-trade event.
         let (sig, _) = event_of(&v2, "LiquidityAdded");
         assert_eq!(

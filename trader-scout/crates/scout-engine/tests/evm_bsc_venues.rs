@@ -58,8 +58,11 @@
 //! `cost + fee` or `cost` (or 0 for a BEP20-quoted curve); anything else is
 //! inexact. Which of the two native forms is right, and that nothing is
 //! refunded, MUST BE CONFIRMED LIVE: no fixture holds manager balances and the
-//! BNB leg of a sale is an internal transfer. Until a live four.meme fixture
-//! exists the rows stay `IdlOnly`.
+//! BNB leg of a sale is an internal transfer. Launch transactions add one
+//! named class: a `TokenCreate` of the traded token in the same tx moves its
+//! whole `totalSupply` to the manager first, so the expected token net gains
+//! `+totalSupply` (and `launchFee` joins the native forms). A native side the
+//! ABI fields do not explain is `Other`: it fails nothing but blocks promotion.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -78,7 +81,8 @@ use scout_api::DecodeOutcome;
 use scout_dex_evm::{
     AnchorRole, FourMemeTrade, GateOutcome, LaunchpadSide, PANCAKE_V3_SWAP_TOPIC0, SwapVenue,
     SwapVenueGate, V2_SWAP_EVENT_SIGNATURE, V3_SWAP_TOPIC0, VENUE_DEPLOYMENTS, VenueVerification,
-    decode_fourmeme_trade, decode_pancake_v3_swap, decode_v2_style_swap, decode_v3_swap,
+    decode_fourmeme_token_create, decode_fourmeme_trade, decode_pancake_v3_swap,
+    decode_v2_style_swap, decode_v3_swap,
 };
 use scout_engine::{admit_recorded, pool_venue};
 use scout_evm::{BSC, decode_erc20_transfer};
@@ -335,6 +339,9 @@ struct Row {
     overpay: [I256; 2],
     /// Round-trip returns of the swap input (positive amounts, class 3).
     round_trip: [I256; 2],
+    /// Fee-on-transfer OUTPUT shortfall (positive: event out minus the
+    /// ERC-20 Transfer amount, class 4).
+    tax_short: [I256; 2],
     /// PancakeSwap v3 only: the protocol-fee words obey the observed
     /// invariants (`None` for other venues).
     protocol_fee_ok: Option<bool>,
@@ -476,12 +483,30 @@ fn pool_row(
         total
     };
     let (rt0, rt1) = (round_trip(t0), round_trip(t1));
-    let side_ok = |pre: I256, sum: I256, rt: I256| {
+    // Class 4: the pool paid `-sum` out of this token but the ERC-20 Transfer
+    // shows a smaller, NON-ZERO amount (a fee-on-transfer token emits the
+    // recipient's net amount; the pool code transferred `amountOut`). Output
+    // side only; a missing Transfer (pre == 0) or a larger one never qualifies.
+    let taxed = |pre: I256, sum: I256| sum.is_negative() && pre.is_negative() && pre > sum;
+    let side_ok_without_tax = |pre: I256, sum: I256, rt: I256| {
         pre == sum
             || (v3_family && sum.is_positive() && pre > sum)
             || (rt.is_positive() && pre.checked_add(rt).unwrap() == sum)
     };
+    let side_ok = |pre: I256, sum: I256, rt: I256| {
+        pre == sum
+            || (v3_family && sum.is_positive() && pre > sum)
+            || (rt.is_positive() && pre.checked_add(rt).unwrap() == sum)
+            || taxed(pre, sum)
+    };
     let exact = tokens.is_some() && side_ok(pre0, sum0, rt0) && side_ok(pre1, sum1, rt1);
+    let tax_used = |pre: I256, sum: I256, rt: I256| {
+        if pre != sum && !side_ok_without_tax(pre, sum, rt) && taxed(pre, sum) {
+            pre.checked_sub(sum).unwrap()
+        } else {
+            I256::ZERO
+        }
+    };
     let rt_used = |pre: I256, sum: I256, rt: I256| {
         if pre != sum && rt.is_positive() && pre.checked_add(rt).unwrap() == sum {
             rt
@@ -512,6 +537,7 @@ fn pool_row(
         post_event: [post0, post1],
         overpay: [over(pre0, sum0), over(pre1, sum1)],
         round_trip: [rt_used(pre0, sum0, rt0), rt_used(pre1, sum1, rt1)],
+        tax_short: [tax_used(pre0, sum0, rt0), tax_used(pre1, sum1, rt1)],
         protocol_fee_ok: pf_ok,
     }
 }
@@ -594,10 +620,21 @@ struct FmRow {
     manager_net: I256,
     token_exact: bool,
     native: NativeForm,
+    /// Supply moved to the manager by a `TokenCreate` of this token in the same tx.
+    launch_supply: I256,
+    launch_fee: U256,
 }
 
 impl FmRow {
-    fn exact(&self) -> bool {
+    /// The hard evidence: the token side (with the launch class) is exact.
+    fn token_side_exact(&self) -> bool {
+        self.token_exact
+    }
+
+    /// Promotion also needs the native side to be explained by the ABI
+    /// fields; `Other` is an UNKNOWN pattern: it never fails the test but
+    /// keeps the venue IdlOnly (reported, not loosened).
+    fn promotable(&self) -> bool {
         self.token_exact && self.native != NativeForm::Other
     }
 }
@@ -634,6 +671,19 @@ async fn fourmeme_rows() -> Vec<FmRow> {
                     cost = cost.checked_add(e.quote_amount).unwrap();
                     fee = fee.checked_add(e.fee).unwrap();
                 }
+                // Launch in the same tx: the whole supply lands on the manager
+                // (TokenCreate.totalSupply) before the first trade; the launch
+                // fee is part of tx.value.
+                let (mut launch_supply, mut launch_fee) = (I256::ZERO, U256::ZERO);
+                for log in r.logs.iter().filter(|l| l.address == manager) {
+                    if let DecodeOutcome::Decoded(c) = decode_fourmeme_token_create(log)
+                        && c.token == token
+                    {
+                        launch_supply = launch_supply.checked_add(i(c.total_supply)).unwrap();
+                        launch_fee = launch_fee.checked_add(c.launch_fee).unwrap();
+                    }
+                }
+                let expected = expected.checked_add(launch_supply).unwrap();
                 let manager_net = account_net(r, manager)
                     .get(&token)
                     .copied()
@@ -645,6 +695,7 @@ async fn fourmeme_rows() -> Vec<FmRow> {
                 let buys_only = evs.iter().all(|e| e.side == LaunchpadSide::Buy);
                 let native = match tx {
                     Some(t) if direct && account_is_signer && buys_only => {
+                        let (cost, fee) = (cost.saturating_add(launch_fee), fee);
                         if t.value == cost.saturating_add(fee) {
                             NativeForm::CostPlusFee
                         } else if t.value == cost {
@@ -669,6 +720,8 @@ async fn fourmeme_rows() -> Vec<FmRow> {
                     manager_net,
                     token_exact: expected == manager_net,
                     native,
+                    launch_supply,
+                    launch_fee,
                 });
             }
         }
@@ -684,14 +737,14 @@ async fn bsc_pool_samples_match_pool_deltas_and_promotion_needs_exact_evidence()
     println!("evm_bsc_* fixtures: {}", fixtures.len());
     let rows = all_rows().await;
     println!(
-        "| # | fixture | tx | pool | venue | factory | admitted | swaps | other | event amount0 | pool net0 | event amount1 | pool net1 | post-event0 | post-event1 | overpay0 | overpay1 | roundtrip0 | roundtrip1 | strict | exact |"
+        "| # | fixture | tx | pool | venue | factory | admitted | swaps | other | event amount0 | pool net0 | event amount1 | pool net1 | post-event0 | post-event1 | overpay0 | overpay1 | roundtrip0 | roundtrip1 | taxshort0 | taxshort1 | strict | exact |"
     );
     println!(
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     );
     for (n, r) in rows.iter().enumerate() {
         println!(
-            "| {} | {} | `{:#x}` | `{:#x}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | `{:#x}` | `{:#x}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             n + 1,
             r.fixture,
             r.tx,
@@ -711,6 +764,8 @@ async fn bsc_pool_samples_match_pool_deltas_and_promotion_needs_exact_evidence()
             r.overpay[1],
             r.round_trip[0],
             r.round_trip[1],
+            r.tax_short[0],
+            r.tax_short[1],
             r.strict,
             r.exact
         );
@@ -755,7 +810,7 @@ async fn bsc_pool_samples_match_pool_deltas_and_promotion_needs_exact_evidence()
     {
         let of = |r: &&Row| r.admitted && r.venue == venue && r.factory == Some(factory);
         println!(
-            "{} {factory:#x}: admitted {} strict {} exact {} (post-event pool flow in {} samples, input overpay in {}, round trip in {})",
+            "{} {factory:#x}: admitted {} strict {} exact {} (post-event pool flow in {} samples, input overpay in {}, round trip in {}, fee-on-transfer output in {})",
             venue.label(),
             rows.iter().filter(of).count(),
             rows.iter().filter(of).filter(|r| r.strict).count(),
@@ -771,6 +826,10 @@ async fn bsc_pool_samples_match_pool_deltas_and_promotion_needs_exact_evidence()
             rows.iter()
                 .filter(of)
                 .filter(|r| r.round_trip.iter().any(|x| !x.is_zero()))
+                .count(),
+            rows.iter()
+                .filter(of)
+                .filter(|r| r.tax_short.iter().any(|x| !x.is_zero()))
                 .count()
         );
     }
@@ -822,7 +881,7 @@ async fn fourmeme_samples_match_the_managers_token_flow_and_promotion_needs_exac
     println!("four.meme (tx, manager, token) samples: {}", rows.len());
     for (n, r) in rows.iter().enumerate() {
         println!(
-            "| {} | {} | `{:#x}` | {} `{:#x}` | token `{:#x}` | events {} | account=signer {} | expected manager net {} | manager net {} | token exact {} | native {:?} |",
+            "| {} | {} | `{:#x}` | {} `{:#x}` | token `{:#x}` | events {} | launch supply {} fee {} | account=signer {} | expected manager net {} | manager net {} | token exact {} | native {:?} |",
             n + 1,
             r.fixture,
             r.tx,
@@ -830,6 +889,8 @@ async fn fourmeme_samples_match_the_managers_token_flow_and_promotion_needs_exac
             r.manager,
             r.token,
             r.events,
+            r.launch_supply,
+            r.launch_fee,
             r.account_is_signer,
             r.expected_net,
             r.manager_net,
@@ -839,7 +900,7 @@ async fn fourmeme_samples_match_the_managers_token_flow_and_promotion_needs_exac
     }
     let bad: Vec<String> = rows
         .iter()
-        .filter(|r| !r.exact())
+        .filter(|r| !r.token_side_exact())
         .map(|r| {
             format!(
                 "{} tx {:#x} manager {:#x}: expected net {} vs {} (native {:?})",
@@ -855,10 +916,11 @@ async fn fourmeme_samples_match_the_managers_token_flow_and_promotion_needs_exac
     );
     let by_form = |f: NativeForm| rows.iter().filter(|r| r.native == f).count();
     println!(
-        "native forms: cost+fee {} cost {} zero-value {} n/a {}",
+        "native forms: cost+fee {} cost {} zero-value {} unexplained(other) {} n/a {}",
         by_form(NativeForm::CostPlusFee),
         by_form(NativeForm::CostOnly),
         by_form(NativeForm::ZeroValue),
+        by_form(NativeForm::Other),
         by_form(NativeForm::NotApplicable)
     );
     let signer_other = rows.iter().filter(|r| !r.account_is_signer).count();
@@ -872,6 +934,10 @@ async fn fourmeme_samples_match_the_managers_token_flow_and_promotion_needs_exac
             continue;
         }
         let n = rows.iter().filter(|r| r.manager == manager).count();
+        let unexplained = rows
+            .iter()
+            .filter(|r| r.manager == manager && !r.promotable())
+            .count();
         println!(
             "{} {manager:#x}: {n} sample(s), all exact, verification {}",
             venue.label(),
@@ -879,8 +945,15 @@ async fn fourmeme_samples_match_the_managers_token_flow_and_promotion_needs_exac
         );
         if verification == VenueVerification::FixtureVerified {
             assert!(
-                n >= 1,
-                "{} {manager:#x} is FixtureVerified without a four.meme sample",
+                n >= 1 && unexplained == 0,
+                "{} {manager:#x} is FixtureVerified without exact four.meme samples \
+                 ({n} samples, {unexplained} with an unexplained native side)",
+                venue.label()
+            );
+        } else if unexplained > 0 {
+            println!(
+                "NOT PROMOTABLE {} {manager:#x}: {unexplained} of {n} sample(s) have a native \
+                 side the ABI fields do not explain (see the table); stays IdlOnly",
                 venue.label()
             );
         } else if n >= 1 {

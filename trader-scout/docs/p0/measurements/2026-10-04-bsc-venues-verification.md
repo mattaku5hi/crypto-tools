@@ -48,6 +48,11 @@ exposed, each printed per sample and counted below:
 3. **Round trip.** A pool transfer of a token to an address that earlier in the tx sent that same token to the pool,
    between the pool's first and last own event, is a return of the swap input (bot `skim`-after-swap loop). It is
    subtracted only if the residual equals it exactly.
+4. **Fee-on-transfer output** (added after the live recapture). The pool paid out `amountOut` of a token whose
+   ERC-20 `Transfer` shows a smaller, NON-ZERO amount (the token emits the recipient's net amount; its tax has no
+   Transfer of its own). Accepted only on the output side, only when a Transfer exists (a missing one never qualifies)
+   and only when the Transfer is smaller; the shortfall is printed. The pool code does transfer `amountOut`
+   (v2 `_safeTransfer(to, amountOut)`), so the event is right and the log is short.
 The equality was never loosened beyond these; any other difference fails the test.
 
 four.meme: no pools; the manager emits. Per (tx, manager, token): `Σ TokenSale.amount − Σ TokenPurchase.amount` ==
@@ -56,25 +61,55 @@ yet confirmable offline): V1 `etherAmount`, V2 `cost`, plus `fee`; for a direct 
 `tx.from`, buys only) `tx.value` must be `cost + fee` or `cost` (or 0 for a BEP20-quoted curve). The sale's BNB leg is an
 internal transfer from the manager and needs an archive balance diff of the manager per transaction; a busy manager is
 touched by many txs per block so the sole-touch rule cannot isolate it: the BNB side of a sale stays unverified.
-**These native equations must be confirmed against a live four.meme capture.** The wallet-side rule stays ADR-020: the
+**The native equations needed a live capture; it showed the launch-buy surcharge above.** The wallet-side rule stays ADR-020: the
 event is evidence of a swap on `token` for `account`; the trade is booked only when `account == tx.from` and the
 wallet's own deltas are one token + one quote; amounts come from those deltas, never from the event. A router/bot
 `account` is `launchpad_account_not_wallet` (counted, not attributed).
 
-## Results (exploratory fixture, admitted (tx, pool) samples)
+## Live recapture 2026-10-04b (HEAD-200..HEAD-171, 624 swap logs, 300 txs, 171 emitters)
+Added `evm_bsc_swaps_all_2026-10-04b.json`; the table below is over BOTH fixtures (exploratory + live). The two failures
+of the first live run and their causes:
+
+1. **Pool equation, 1 inexact admitted sample: a fee-on-transfer token (class 4).** Tx `0xd97e9c4f...ed566`, Pancake v2
+   pair `0x3a4b1ff7...d4781d0e` (token0 `0x0fd1ebe9...32f2`): `Swap.amount0Out` = 26,392,017,734,329,494,472, but the
+   token's `Transfer(pair -> recipient)` is 24,597,360,528,395,088,848; the shortfall 1,794,657,205,934,405,624 (6.8%) is the
+   token's tax, which has no Transfer. Not a decoder error. The newly admitted Pancake v3 pools were NOT the cause:
+   40 pools, 130 samples, 130 strict (protocol-fee words, PoolDeployer/factory roles and the hash all fine; the hash
+   reproduces 40/40 recorded pools with live `factory()`/`getPool`).
+2. **four.meme, 2 of 4 inexact: token launch in the same transaction.** The tokens are created by the manager's own
+   transaction: `TokenCreate` (topic0 `0x396d5e90...`, same signature in both ABIs, asserted against the pinned JSON) is
+   emitted by the manager and the token's whole `totalSupply` (1e27 raw) is transferred to the manager BEFORE the first
+   buy, so the manager's net is `totalSupply - amount`, not `-amount`. With the named launch class
+   (expected net += `TokenCreate.totalSupply` for the same token and manager in the tx) all 4 samples are exact on the
+   token side (2 launches, 2 ordinary: one buy through a router `0x43dd...ae1bb` whose event account is still the signer,
+   one `TokenSale`). Where tokens really are: the manager holds the supply from creation; no separate vault was needed.
+3. **four.meme native side stays UNEXPLAINED (venue stays IdlOnly).** Both direct launch buys have `tx.value` above
+   `cost + fee`: tx `0x72c96fae...caaa2`: value 2,361,000,000,000 = 1.03 x cost (cost 2,292,233,009,705, fee 1%); tx
+   `0x06ab2e52...bf10`: value 1,780,000,000,000 = 1.11 x cost. The extra 2% / 10% of cost is in neither the event fields
+   nor `launchFee` (0). A time-decaying launch/anti-sniper fee is a guess; no ABI field says it. These samples are
+   classed `Other`: they do not fail the token-side test but block promotion (`NOT PROMOTABLE` is printed). Needs the
+   four.meme docs or more launch samples (value / cost across blocks after launch).
+4. **Why no `fourmeme:` line in the capture summary.** The summary was printed through `Secrets::redact`, which caps text
+   at 2,000 characters; with ~170 pool lines the tail (the `fourmeme:` line and the extraction counts) was cut. Fixed:
+   the summary uses `redact_full` (secrets removed, control characters blanked, no cap); errors/notices keep the cap
+   (unit test `the_summary_is_not_truncated_but_notices_are`). The four.meme events themselves were gated and counted
+   correctly (the 4 samples above have `account == tx.from`).
+
+## Results (both fixtures, admitted (tx, pool) samples)
 | Venue | Factory | pools | admitted | strict | exact | extra classes used | status |
 |---|---|---|---|---|---|---|---|
-| PancakeSwap v2 (v2-style) | `0xcA143Ce3...0c73` | 119 | 258 | 256 | 258 | position 2 samples, round trip 1 sample | FixtureVerified (CREATE2 hash `0x00fb7f63...9bd5` reproduces 119/119) |
-| Uniswap v3 | `0xdB1d1001...61F7` | 10 | 19 | 19 | 19 | none | FixtureVerified (canonical hash reproduces 10/10) |
-| Uniswap v2 | `0x8909Dc15...8eC6` | 1 | 1 | 1 | 1 | none | FixtureVerified, SMALL n=1 (canonical v2 hash reproduces 1/1) |
-| PancakeSwap v3 | `0x0BFbCF9f...1865` | 64 emitters, no metadata | 0 | | | | IdlOnly: not admitted until a live capture records `factory()`/`getPool` |
-| four.meme V1/V2 | `0xEC4549ca...`, `0x5c952063...` | | 0 | | | | IdlOnly: no event in the fixture |
+| PancakeSwap v2 (v2-style) | `0xcA143Ce3...0c73` | 222 | 420 | 417 | 420 | position 2, round trip 1, fee-on-transfer output 1 | FixtureVerified (hash `0x00fb7f63...9bd5` reproduces 222/222) |
+| Uniswap v3 | `0xdB1d1001...61F7` | 19 | 34 | 34 | 34 | none | FixtureVerified (canonical hash 19/19) |
+| Uniswap v2 | `0x8909Dc15...8eC6` | 2 | 2 | 2 | 2 | none | FixtureVerified, small n=2 (canonical v2 hash 2/2) |
+| PancakeSwap v3 | `0x0BFbCF9f...1865` | 40 (live metadata) | 130 | 130 | 130 | none | FixtureVerified (hash `0x6ce8eb47...f7e2` + PoolDeployer reproduces 40/40) |
+| four.meme V2 | `0x5c952063...762b` | 4 (tx, manager, token) | | token side 4/4 (launch class for 2) | | native side unexplained for 2 | IdlOnly (NOT PROMOTABLE) |
+| four.meme V1 | `0xEC4549ca...` | 0 | | | | | IdlOnly: no event |
 | Uniswap v4 PoolManager | `0x28e2ea09...` | | | | | | IdlOnly (no BSC v4 verification test) |
 
 Refused (32 recorded emitters, counted as coverage gaps): 15 without `factory()`; 17 with unpinned factories (five
 `0x73dc984d...` v3-topic pools and 12 other single-pool factories: forks, unidentified). They are exactly what the gate is for.
 
-### The two non-strict Pancake v2 samples (both bot "swap then skim" transactions, all Pancake v2 pairs)
+### The two non-strict Pancake v2 samples (both bot "swap then skim" transactions, all Pancake v2 pairs; exploratory fixture)
 - tx `0xcd69b6ef...330cdf`, pair `0x454dc6c5...f85e0e`: event input `896142998413977745197` of token0, pair net 0. The router
   sends token0 in, the pair swaps, then the pair sends the same token0 amount back to the router (log after the `Swap`,
   followed by a `Sync` that lowers the reserve by exactly that amount). Class 1.
@@ -95,10 +130,8 @@ on the token the pool received and never above that amount (157/157 swap logs; t
 samples). `factory()` was never read for these pools, so the row stays IdlOnly.
 
 ## Pending (needs the live capture)
-- Pancake v3: recorded `factory()` == `0x0BFb...` and `getPool` == emitter (the test asserts the hash reproduces every
-  recorded pool and unpins nothing silently); then flip the row if n >= 1 and all exact.
-- four.meme: token-side equation, the two native forms (`cost+fee` vs `cost`), BEP20-quoted curves, how many events name
-  a router as `account`.
+- four.meme: the native side of launch buys (value = 1.03 / 1.11 x cost, unexplained), BEP20-quoted curves, V1 samples,
+  sale-side BNB leg, more samples (n=4).
 - BSC quote assets: USDT/USDC are 18-decimal Binance-Peg tokens; from the busiest pools of the fixture the candidates are
   `0x55d398326f99059ff775485246999027b3197955` (44 pools) and `0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d` (5 pools),
   NOT verified against an official source and NOT pinned. Until pinned, a trade quoted in them is `multi_asset`

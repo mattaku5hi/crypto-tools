@@ -35,7 +35,7 @@
 //! Robinhood Uniswap v3 and v2 factories' pool families (evidence:
 //! `crates/scout-engine/tests/evm_uniswap_v2v3_robinhood.rs`,
 //! `docs/p0/measurements/2026-10-04-uniswap-v2v3-robinhood-verification.md`).
-//! Base's Uniswap v2/v3 factories, Aerodrome v2 factory and the three Slipstream factories are `FixtureVerified` by `crates/scout-engine/tests/evm_base_venues.rs` (fixture `evm_base_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-base-venues-verification.md`). BSC's PancakeSwap v2, Uniswap v3 and Uniswap v2 factories are `FixtureVerified` by `crates/scout-engine/tests/evm_bsc_venues.rs` (fixture `evm_bsc_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-bsc-venues-verification.md`); PancakeSwap v3 (its own `Swap` topic, CREATE2 deployer = PoolDeployer) and the four.meme TokenManagers (emitter-anchored launchpad events that name token and account) wait for a live capture. Everything else stays `IdlOnly`. `active_from_block` is `0` ("not
+//! Base's Uniswap v2/v3 factories, Aerodrome v2 factory and the three Slipstream factories are `FixtureVerified` by `crates/scout-engine/tests/evm_base_venues.rs` (fixture `evm_base_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-base-venues-verification.md`). BSC's PancakeSwap v2, Uniswap v3 and Uniswap v2 factories are `FixtureVerified` by `crates/scout-engine/tests/evm_bsc_venues.rs` (fixture `evm_bsc_swaps_all_2026-10-04.json`, `docs/p0/measurements/2026-10-04-bsc-venues-verification.md`); PancakeSwap v3 (its own `Swap` topic, CREATE2 deployer = PoolDeployer) became FixtureVerified with the live recapture `evm_bsc_swaps_all_2026-10-04b.json`; the four.meme TokenManagers (emitter-anchored launchpad events that name token and account) stay IdlOnly: the token side is exact but 2 of 4 launch-buy samples carry a native side the event fields do not explain. Everything else stays `IdlOnly`. `active_from_block` is `0` ("not
 //! pinned") until the deployment transaction is read from the chain (the
 //! public RPC has no historical state, so it cannot be derived offline).
 
@@ -244,8 +244,9 @@ pub const PANCAKE_V2_INIT_CODE_HASH: B256 =
 /// from the exploratory fixture, where it reproduces 64 of 64 swap emitters
 /// from `(PoolDeployer, token0, token1, fee)` (tokens and fee taken from the
 /// pool's own Transfers and tried over the four Pancake fee tiers: a CREATE2
-/// match is cryptographic). The live recapture re-checks it against recorded
-/// `factory()`/`getPool` rows; unpin it if any recorded pool fails.
+/// match is cryptographic). Confirmed live: it reproduces 40 of 40 pools of
+/// `evm_bsc_swaps_all_2026-10-04b.json` that report `factory()` = the pinned
+/// factory and a matching `getPool`.
 pub const PANCAKE_V3_INIT_CODE_HASH: B256 =
     b256!("6ce8eb472fa82df5469c6ab6d485f17c3ad13c8cd7af59b3d4a8026c5ce0f7e2");
 
@@ -398,9 +399,10 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
     ),
     // PancakeSwap v2 factory (developer.pancakeswap.finance/contracts/v2/addresses;
     // Router 0x10ED43C718714eb63d5aA57B78B54704E256024E). v2-style Swap.
-    // 258 admitted samples (119 pairs): 256 strictly equal to the pair's net
-    // flow, 2 bot "skim after swap" transactions exact only under the
-    // position / round-trip accounting of the test (documented, printed).
+    // 420 admitted samples (222 pairs, two fixtures): 417 strictly equal to the
+    // pair's net flow; 2 bot "skim after swap" transactions (position /
+    // round-trip classes) and 1 fee-on-transfer output (class 4) are exact
+    // only under the named, printed accounting classes of the test.
     with_init_code_hash(
         dep_fixture_verified(
             56,
@@ -414,9 +416,12 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
     // Factory 0x0BFb..., PoolDeployer 0x41ff... (CREATE2 deployer), SwapRouter
     // 0x1b81D678ffb9C0263b24A97847620C99d213eB14, Smart Router
     // 0x13f4EA83D0bd40E75C8222255bc855a974568Dd4.
+    // FixtureVerified by the live recapture `evm_bsc_swaps_all_2026-10-04b.json`
+    // (40 pools with live `factory()`/`getPool`; 130 samples, all strictly
+    // equal to the pool net flow).
     with_init_code_hash(
         with_pool_deployer(
-            dep(
+            dep_fixture_verified(
                 56,
                 SwapVenue::PancakeV3,
                 address!("0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865"),
@@ -924,14 +929,15 @@ mod tests {
     fn only_evidenced_deployments_are_fixture_verified() {
         for d in VENUE_DEPLOYMENTS {
             // Robinhood (all), Base except Uniswap v4 (no Base v4 fixture yet;
-            // evidence: evm_base_venues.rs) and the three BSC v2/v3 factories
-            // of evm_bsc_venues.rs (Pancake v3 and four.meme await a live
-            // capture; BSC Uniswap v4 has no verification test).
+            // evidence: evm_base_venues.rs) and the four BSC v2/v3 factories
+            // and Pancake v3 factories of evm_bsc_venues.rs (four.meme: token
+            // side exact but native side unexplained; BSC Uniswap v4 has no test).
             let bsc_verified = d.chain_id == 56
                 && [
                     address!("dB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"),
                     address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6"),
                     address!("cA143Ce32Fe78f1f7019d7d551a6402fC5350c73"),
+                    address!("0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865"),
                 ]
                 .contains(&d.anchor);
             let expected = if d.chain_id == 4663
@@ -1217,7 +1223,7 @@ mod tests {
         };
         assert_eq!(
             gate.admit_pool(SwapVenue::PancakeV3, pool, &meta),
-            Ok(VenueVerification::IdlOnly)
+            Ok(VenueVerification::FixtureVerified)
         );
         assert!(matches!(
             gate.classify(&swap),

@@ -248,7 +248,15 @@ enum Target {
 struct Secrets(Vec<String>);
 
 impl Secrets {
+    /// Secrets removed and control characters blanked; at most 2,000 chars
+    /// (error/notice text).
     fn redact(&self, text: &str) -> String {
+        self.redact_full(text).chars().take(2_000).collect()
+    }
+
+    /// Same without the length cap: the capture summary is long (one line per
+    /// pool) and its tail (`fourmeme:`, extraction counts) must not be cut.
+    fn redact_full(&self, text: &str) -> String {
         let mut out = text.to_string();
         for s in &self.0 {
             if s.len() >= 4 {
@@ -257,7 +265,6 @@ impl Secrets {
         }
         out.chars()
             .map(|c| if c.is_control() && c != '\n' { ' ' } else { c })
-            .take(2_000)
             .collect()
     }
 }
@@ -549,7 +556,7 @@ async fn run_scan(
     let (calls, dropped) = recorder.snapshot();
     let incomplete = !matches!(completion, Completion::Complete);
     let text = summarize(&scanned, profile, &target);
-    print!("{}", secrets.redact(&text));
+    print!("{}", secrets.redact_full(&text));
     write_fixture(
         args,
         profile,
@@ -1093,4 +1100,21 @@ fn write_fixture(
     std::fs::write(path, text).map_err(|e| format!("could not write {path}: {e}"))?;
     eprintln!("evm-capture: wrote {path}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_summary_is_not_truncated_but_notices_are() {
+        let s = Secrets(vec!["SECRETSECRET".to_string()]);
+        let long = format!("{}\nTAIL SECRETSECRET", "pool line\n".repeat(500));
+        let full = s.redact_full(&long);
+        assert!(
+            full.ends_with("TAIL <redacted>"),
+            "tail kept, secret removed"
+        );
+        assert_eq!(s.redact(&long).chars().count(), 2_000);
+    }
 }
