@@ -27,7 +27,7 @@ With Collect subtracted and Mint added the equation holds exactly. Only that one
 | Slipstream | `0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A` | 21 | 21 | 0 | FixtureVerified |
 | Slipstream | `0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef` | 14 | 14 | 0 | FixtureVerified |
 | Slipstream | `0xaDe65c38CD4849aDBA595a4323a8C7DdfE89716a` | 4 | 4 | 0 | FixtureVerified (small n) |
-| Uniswap v4 PoolManager | `0x498581ff...` | not covered | | | IdlOnly (no Base v4 verification test) |
+| Uniswap v4 PoolManager | `0x498581ff718922c3f8e6a244956af099b2652b2b` | 92 | 92 | 0 | FixtureVerified, see below (`evm_uniswap_v4_base.rs`) |
 
 Refused (coverage gaps, 4 pools): factory `0x02a84c1b...` (PancakeSwap v2 on Base), `0x4bd16d59...`,
 `0xc35dadb6...` (unpinned forks, possibly SushiSwap v3), and one emitter without `factory()`.
@@ -42,3 +42,10 @@ Refused (coverage gaps, 4 pools): factory `0x02a84c1b...` (PancakeSwap v2 on Bas
 
 ## Caveats
 Samples come from a 30-block window; Slipstream `0xade65c...` has n=4. Activation blocks stay unpinned (0).
+
+## Uniswap v4 (PoolManager `0x498581ff718922c3f8e6a244956af099b2652b2b`)
+Test: `crates/scout-engine/tests/evm_uniswap_v4_base.rs` (data-driven over `evm_base_*.json`; regenerate the per-sample table with `--nocapture`).
+Method as on Robinhood (`2026-10-04-uniswap-v4-robinhood-verification.md`): the `Swap` amounts are the swapper's `BalanceDelta`, so per ERC-20 token the PoolManager's net flow in the tx (Transfers to minus from it) equals `-sum(amount_i)` of the swaps on that currency.
+Result: 159 v4 `Swap` logs in the receipts; **n = 92 samples, 92 exact**. Currencies: 92 derived from PoolManager Transfers of the same tx (single-pool txs: each side matched exactly by one token, native side only on side 0, ERC-20 pairs sorted), 0 from `Initialize` (3 `Initialize` logs exist in the receipts, but no sampled tx has all its pools announced by one). 69 ERC-20/ERC-20 pools, 23 with a native-ETH side (invisible in logs: corroborated by `tx.value == -amount0` in 10 of 13 recorded payer txs, informational only). 2 samples are multi-swap txs on one pool; both directions occur (48 samples with a negative `amount0`).
+Excluded and printed (not samples): 7 txs with other PoolManager events (ModifyLiquidity `0xf208f491...`, ERC-6909 transfer `0x1b3d7edb...`), 18 multi-pool txs (intermediate currencies cancel in the net; no `Initialize` in the window to name them).
+Promotion: n >= 1 and all samples exact => `FixtureVerified` (flag in `gate.rs`, the test checks flag and evidence agree). `active_from_block` stays 0.

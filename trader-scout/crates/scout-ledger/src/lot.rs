@@ -27,6 +27,14 @@ pub enum QuoteUnit {
     /// Raw USDG base units (6 decimals, ADR-020 amendment). Valued at par
     /// in USD and labelled `usdg_par_assumed`; never equal to USDC/USDT.
     UsdgUnits,
+    /// Raw Binance-Peg BSC-USD (USDT) base units on BSC: **18** decimals,
+    /// a bridged/pegged asset (ADR-020 amendment 6). A distinct unit from the
+    /// 6-dp `UsdtUnits`: never mixed, never summed. USD via USDT-USD candles.
+    BinancePegUsdtUnits,
+    /// Raw Binance-Peg USD Coin base units on BSC: **18** decimals, bridged
+    /// (ADR-020 amendment 6). Distinct from the 6-dp `UsdcUnits` (Base,
+    /// Solana). Valued at par, labelled `usdc_par_assumed` + `binance_peg`.
+    BinancePegUsdcUnits,
 }
 
 /// Whether a lot's acquisition cost is known or must be treated as

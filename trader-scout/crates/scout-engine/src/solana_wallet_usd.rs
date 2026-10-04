@@ -147,6 +147,9 @@ pub struct UsdCoverage {
     pub unpriced_by_reason: BTreeMap<String, u64>,
     /// Priced legs valued at the USDC par assumption.
     pub usdc_par_legs: u64,
+    /// Priced legs of Binance-Peg (bridged) units: their by-label key carries
+    /// the `+binance_peg` suffix (the peg to the original asset is assumed).
+    pub binance_peg_legs: u64,
 }
 
 impl UsdCoverage {
@@ -155,6 +158,7 @@ impl UsdCoverage {
         self.priced = self.priced.saturating_add(other.priced);
         self.unpriced = self.unpriced.saturating_add(other.unpriced);
         self.usdc_par_legs = self.usdc_par_legs.saturating_add(other.usdc_par_legs);
+        self.binance_peg_legs = self.binance_peg_legs.saturating_add(other.binance_peg_legs);
         for (k, v) in &other.by_label {
             let e = self.by_label.entry(k.clone()).or_insert(0);
             *e = e.saturating_add(*v);
@@ -250,6 +254,11 @@ pub const fn quote_asset_of(unit: QuoteUnit) -> Option<QuoteAsset> {
         // enabled), USDG at par.
         QuoteUnit::Wei => Some(QuoteAsset::Eth),
         QuoteUnit::UsdgUnits => Some(QuoteAsset::Usdg),
+        // ADR-020 amendment 6: Binance-Peg stables are priced like the
+        // originals (USDT-USD candles / USDC par); the peg is flagged in the
+        // coverage (`binance_peg_legs`) and the label suffix.
+        QuoteUnit::BinancePegUsdtUnits => Some(QuoteAsset::Usdt),
+        QuoteUnit::BinancePegUsdcUnits => Some(QuoteAsset::Usdc),
         QuoteUnit::ReportCurrency => None,
     }
 }
@@ -389,7 +398,17 @@ fn price_leg(
     match convert_quote_to_usd(unit, amount, &price) {
         Ok(m) => {
             cov.priced += 1;
-            *cov.by_label.entry(obs.label.label()).or_insert(0) += 1;
+            let peg = matches!(
+                unit,
+                QuoteUnit::BinancePegUsdtUnits | QuoteUnit::BinancePegUsdcUnits
+            );
+            let label = if peg {
+                cov.binance_peg_legs += 1;
+                format!("{}+binance_peg", obs.label.label())
+            } else {
+                obs.label.label()
+            };
+            *cov.by_label.entry(label).or_insert(0) += 1;
             if obs.label == PriceLabel::UsdcParAssumed {
                 cov.usdc_par_legs += 1;
             }

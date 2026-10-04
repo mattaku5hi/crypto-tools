@@ -1240,7 +1240,14 @@ fn bsc_is_enabled_through_verified_venues_and_valued_in_bnb() {
     // Native BNB is valued through BNB-USD (not ETH-USD); other chains keep ETH.
     let bsc = scout_engine::ChainDisplay::evm(&BSC);
     assert_eq!(bsc.native_label, "bnb");
-    assert_eq!(bsc.quote_units(), &[scout_ledger::QuoteUnit::Wei]);
+    assert_eq!(
+        bsc.quote_units(),
+        &[
+            scout_ledger::QuoteUnit::Wei,
+            scout_ledger::QuoteUnit::BinancePegUsdtUnits,
+            scout_ledger::QuoteUnit::BinancePegUsdcUnits
+        ]
+    );
     assert_eq!(
         scout_engine::quote_asset_on(&bsc, scout_ledger::QuoteUnit::Wei),
         Some(scout_pricing::QuoteAsset::Bnb)
@@ -1250,6 +1257,11 @@ fn bsc_is_enabled_through_verified_venues_and_valued_in_bnb() {
         scout_engine::quote_asset_on(&base, scout_ledger::QuoteUnit::Wei),
         Some(scout_pricing::QuoteAsset::Eth)
     );
-    // No stable quote asset is pinned on BSC yet (USDT/USDC unverified).
-    assert!(BSC.quote_assets.is_empty());
+    // Binance-Peg USDT/USDC are pinned (18 dp, bridged; amendment 6).
+    assert_eq!(BSC.quote_assets.len(), 2);
+    assert!(
+        BSC.quote_assets
+            .iter()
+            .all(|q| q.decimals == 18 && q.origin == "binance_peg")
+    );
 }

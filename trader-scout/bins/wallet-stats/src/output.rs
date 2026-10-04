@@ -503,11 +503,14 @@ fn usd_coverage_cell(l: &SolanaWalletLedgerReport) -> String {
     let Some(pct) = c.priced_percent_2dp else {
         return "0/0 (no priced legs)".to_string();
     };
-    let par = if c.usdc_par_legs > 0 {
+    let mut par = if c.usdc_par_legs > 0 {
         format!(" usdc_par={}", c.usdc_par_legs)
     } else {
         String::new()
     };
+    if c.binance_peg_legs > 0 {
+        par.push_str(&format!(" binance_peg={}", c.binance_peg_legs));
+    }
     format!("{}/{} ({pct}%){par}", c.priced, c.legs)
 }
 
@@ -1105,6 +1108,11 @@ pub struct QuoteUnitCountsDto {
     /// EVM only (USDG); omitted when zero so Solana output is unchanged.
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub usdg: u64,
+    /// BSC only (Binance-Peg, 18 dp, ADR-020 amendment 6); omitted when zero.
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub usdt_peg: u64,
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub usdc_peg: u64,
 }
 
 fn is_zero_u64(v: &u64) -> bool {
@@ -1693,6 +1701,8 @@ fn stats_dto(w: &SolanaWalletStats, l: &SolanaWalletLedgerReport) -> StatsDto {
                 usdc: t.route_swaps_by_quote.usdc,
                 usdt: t.route_swaps_by_quote.usdt,
                 usdg: t.route_swaps_by_quote.usdg,
+                usdt_peg: t.route_swaps_by_quote.usdt_peg,
+                usdc_peg: t.route_swaps_by_quote.usdc_peg,
             },
             route_swaps_by_evidence: RouteEvidenceDto {
                 curve: t.route_swaps_by_evidence.curve,

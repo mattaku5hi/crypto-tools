@@ -18,8 +18,8 @@ mod events;
 mod raw;
 
 pub use chain::{
-    BASE, BASE_USDC, BSC, EvmChainProfile, QuoteAssetSpec, QuoteUsdPolicy, ROBINHOOD,
-    ROBINHOOD_USDG,
+    BASE, BASE_USDC, BSC, BSC_USDC, BSC_USDT, EvmChainProfile, QuoteAssetSpec, QuoteUsdPolicy,
+    ROBINHOOD, ROBINHOOD_USDG,
 };
 pub use events::*;
 pub use raw::{

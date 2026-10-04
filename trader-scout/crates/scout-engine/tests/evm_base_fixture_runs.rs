@@ -77,8 +77,8 @@ const W_BUY: &str = "0x81ef037c407f0a4076a5db10700d04659a127a2b";
 /// transfer.
 const W_SELL: &str = "0x3484978c2680823516c6f409ff736180ccf62dfc";
 const SELL_TX: &str = "0xde0004f147dd18c56d7f45975c2277132029973f9d774e8888752a76ab7e4e71";
-/// Uniswap v4 on Base is IdlOnly: buy + sell are booked but the wallet is
-/// Incomplete.
+/// Uniswap v4 on Base (FixtureVerified since ADR-020 amendment 6; it was
+/// IdlOnly = wallet Incomplete before): buy + sell are booked, wallet Ok.
 const W_V4: &str = "0x321b36daf6a6001e07415200149caf906f28f34b";
 
 struct Run {
@@ -155,7 +155,8 @@ async fn base_wallet_stats_over_the_fixture_usdc_and_eth_wallets() {
     .await;
     let info = r.report.evm.as_ref().unwrap();
     assert_eq!(info.chain.name, "base");
-    // Only the v4 wallet (IdlOnly on Base) is flagged.
+    // Every Base venue is FixtureVerified: no wallet is flagged for an
+    // IdlOnly deployment (the v4 wallet was the one flagged before).
     assert_eq!(r.report.wallets.len(), 4);
     assert_eq!(
         r.report
@@ -163,7 +164,7 @@ async fn base_wallet_stats_over_the_fixture_usdc_and_eth_wallets() {
             .iter()
             .filter(|w| !w.coverage_complete())
             .count(),
-        1
+        0
     );
     // Request accounting: per wallet 2 transfer calls (external+erc20 from,
     // to) = 8, plus the internal call(s) answered "unsupported": the first
@@ -256,11 +257,23 @@ async fn base_wallet_stats_over_the_fixture_usdc_and_eth_wallets() {
     assert_eq!(info.coverage_notes.len(), 1);
     assert!(info.coverage_notes[0].contains("failed-transaction"));
 
-    // --- Wallet 4: v4 is IdlOnly on Base => booked but flagged Incomplete.
+    // --- Wallet 4: v4 is FixtureVerified on Base => booked, not flagged.
     let w = &r.report.wallets[3];
-    assert_eq!(w.status, WalletScanStatus::Incomplete);
-    assert!(w.incomplete_reasons.iter().any(|x| x.contains("IdlOnly")));
-    assert_eq!(w.ledger.as_ref().unwrap().trades.idl_only_variant, 2);
+    assert_eq!(w.status, WalletScanStatus::Ok);
+    assert!(!w.incomplete_reasons.iter().any(|x| x.contains("IdlOnly")));
+    assert_eq!(w.ledger.as_ref().unwrap().trades.idl_only_variant, 0);
+    assert_eq!(
+        w.ledger
+            .as_ref()
+            .unwrap()
+            .evm
+            .as_ref()
+            .unwrap()
+            .trades
+            .len(),
+        2,
+        "the two v4 trades of the wallet (buy + sell) are still booked"
+    );
     println!(
         "base replay: wallets=4 alchemy_calls={} calls={:?} native_legs={:?}",
         r.alchemy_calls, r.calls, info.native_leg_counts
@@ -474,9 +487,12 @@ mod intersect {
             a.qualified_sellers,
             report.base.matches.len()
         );
-        // Recorded replay numbers (token A): 42 signers bought, 41 sold.
-        assert_eq!((a.qualified_buyers, a.qualified_sellers), (42, 41));
-        assert_eq!(report.base.matches.len(), 70);
+        // Recorded replay numbers (token A): 46 signers bought, 44 sold (42 / 41
+        // and 70 wallets while Base Uniswap v4 was IdlOnly: its 7 trades of
+        // token A now count, ADR-020 amendment 6).
+        assert_eq!((a.qualified_buyers, a.qualified_sellers), (46, 44));
+        assert_eq!(report.base.matches.len(), 74);
+        assert_eq!(a.idl_only_trades, 0);
         assert_eq!(a.ungated_swap_logs, 0, "all pools of the fixture admitted");
     }
 }

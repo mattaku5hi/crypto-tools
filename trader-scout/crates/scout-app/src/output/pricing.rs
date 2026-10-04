@@ -34,6 +34,14 @@ pub struct PriceCoverageDto {
     pub unpriced_by_reason: BTreeMap<String, u64>,
     /// Legs valued at the USDC par assumption (depeg-visible count).
     pub usdc_par_legs: u64,
+    /// Legs of Binance-Peg (bridged) BSC units; their `by_label` keys carry
+    /// the `+binance_peg` suffix. Omitted when zero.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub binance_peg_legs: u64,
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }
 
 fn percent_2dp(num: u64, den: u64) -> Option<String> {
@@ -63,6 +71,7 @@ impl PriceCoverageDto {
             by_label: c.by_label.clone(),
             unpriced_by_reason: c.unpriced_by_reason.clone(),
             usdc_par_legs: c.usdc_par_legs,
+            binance_peg_legs: c.binance_peg_legs,
         }
     }
 }

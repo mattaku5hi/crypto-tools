@@ -150,6 +150,8 @@ pub const fn quote_unit_decimals(unit: QuoteUnit) -> Option<u32> {
     match unit {
         QuoteUnit::Lamports => Some(9),
         QuoteUnit::UsdcUnits | QuoteUnit::UsdtUnits | QuoteUnit::UsdgUnits => Some(6),
+        // ADR-020 amendment 6: Binance-Peg stables on BSC have 18 decimals.
+        QuoteUnit::BinancePegUsdtUnits | QuoteUnit::BinancePegUsdcUnits => Some(18),
         // ADR-020 amendment: EVM native in wei (18 dp); WETH merged.
         QuoteUnit::Wei => Some(18),
         // ADR-018: the USD view is `Money` itself (scale `MONEY_SCALE`); its
@@ -167,6 +169,8 @@ pub const fn quote_unit_label(unit: QuoteUnit) -> &'static str {
         QuoteUnit::UsdtUnits => "usdt",
         QuoteUnit::Wei => "eth",
         QuoteUnit::UsdgUnits => "usdg",
+        QuoteUnit::BinancePegUsdtUnits => "usdt_peg",
+        QuoteUnit::BinancePegUsdcUnits => "usdc_peg",
         QuoteUnit::ReportCurrency => "usd",
     }
 }
@@ -498,6 +502,9 @@ pub struct QuoteUnitCounts {
     /// ADR-020: EVM native (wei) and USDG.
     pub wei: u64,
     pub usdg: u64,
+    /// ADR-020 amendment 6: Binance-Peg USDT/USDC on BSC (18 dp).
+    pub usdt_peg: u64,
+    pub usdc_peg: u64,
 }
 
 impl QuoteUnitCounts {
@@ -508,6 +515,8 @@ impl QuoteUnitCounts {
             QuoteUnit::UsdtUnits => self.usdt += 1,
             QuoteUnit::Wei => self.wei += 1,
             QuoteUnit::UsdgUnits => self.usdg += 1,
+            QuoteUnit::BinancePegUsdtUnits => self.usdt_peg += 1,
+            QuoteUnit::BinancePegUsdcUnits => self.usdc_peg += 1,
             QuoteUnit::ReportCurrency => {}
         }
     }
@@ -520,6 +529,8 @@ impl QuoteUnitCounts {
             QuoteUnit::UsdtUnits => self.usdt,
             QuoteUnit::Wei => self.wei,
             QuoteUnit::UsdgUnits => self.usdg,
+            QuoteUnit::BinancePegUsdtUnits => self.usdt_peg,
+            QuoteUnit::BinancePegUsdcUnits => self.usdc_peg,
             QuoteUnit::ReportCurrency => 0,
         }
     }
@@ -2956,7 +2967,9 @@ impl Builder {
                             QuoteUnit::Lamports
                             | QuoteUnit::ReportCurrency
                             | QuoteUnit::Wei
-                            | QuoteUnit::UsdgUnits => {}
+                            | QuoteUnit::UsdgUnits
+                            | QuoteUnit::BinancePegUsdtUnits
+                            | QuoteUnit::BinancePegUsdcUnits => {}
                         }
                     }
                     let signed = i128::from(token_amount);

@@ -108,17 +108,17 @@ async fn get_logs(rpc: &MockServer) -> usize {
 async fn base_token_scan_follows_the_10_block_cap_without_public_routing() {
     let s = rpc().await;
     let o = run(&s, &[]).await;
-    // Exit 3 = partial: 7 Uniswap v4 trades of token A are IdlOnly on Base
-    // (never qualify, reported as a lower bound).
-    assert_eq!(o.code, 3, "{}", o.stderr);
+    // Base Uniswap v4 is FixtureVerified (evm_uniswap_v4_base.rs): the 7 v4
+    // trades of token A that were IdlOnly (exit 3) now qualify, exit 0.
+    assert_eq!(o.code, 0, "{}", o.stderr);
     assert!(
-        o.stderr.contains("IdlOnly venue deployment"),
+        !o.stderr.contains("IdlOnly venue deployment"),
         "{}",
         o.stderr
     );
     assert!(!o.stdout.contains(SECRET) && !o.stderr.contains(SECRET));
-    // Engine replay numbers: 70 wallets bought or sold a token (K = 1).
-    assert_eq!(o.stdout.lines().count(), 70, "{}", o.stdout);
+    // Engine replay numbers: 74 wallets (70 before Base v4 was verified) bought or sold a token (K = 1).
+    assert_eq!(o.stdout.lines().count(), 74, "{}", o.stdout);
     assert!(o.stderr.contains("caps eth_getLogs at 10"), "{}", o.stderr);
     assert!(o.stderr.contains("capped at 10 block(s)"), "{}", o.stderr);
     assert!(

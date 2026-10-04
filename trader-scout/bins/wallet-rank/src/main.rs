@@ -112,7 +112,7 @@ struct Args {
 
     /// Quote unit of the ranking metrics and the closed-episode gate
     /// (ADR-013): the chain's native unit (`sol` = lamports, default; `eth` = wei on
-    /// EVM chains, where the default `sol` also means native), EVM `usdg`, `usdc` or `usdt` (6-dp raw
+    /// EVM chains, where the default `sol` also means native), EVM `usdg`, `usdc` or `usdt` (6-dp raw; on BSC `usdt`/`usdc` are the 18-dp Binance-Peg units
     /// units) -- never mixed or converted -- or `usd` (ADR-018): every
     /// leg valued in USD with Coinbase Exchange 1m candles (USDC at par,
     /// labelled), so SOL- and USDC-quoted wallets compare in one column;
@@ -333,6 +333,13 @@ fn evm_policy(mut p: RankPolicy, chain: &scout_core::ChainKey) -> Result<RankPol
         QuoteUnit::Lamports | QuoteUnit::Wei => QuoteUnit::Wei,
         QuoteUnit::ReportCurrency => QuoteUnit::ReportCurrency,
         stable @ (QuoteUnit::UsdgUnits | QuoteUnit::UsdcUnits) if units.contains(&stable) => stable,
+        // BSC: `--quote usdt|usdc` means the 18-dp Binance-Peg unit of the chain.
+        QuoteUnit::UsdtUnits if units.contains(&QuoteUnit::BinancePegUsdtUnits) => {
+            QuoteUnit::BinancePegUsdtUnits
+        }
+        QuoteUnit::UsdcUnits if units.contains(&QuoteUnit::BinancePegUsdcUnits) => {
+            QuoteUnit::BinancePegUsdcUnits
+        }
         other => {
             return Err(format!(
                 "--quote {} is not a quote unit of an EVM chain (on this chain use eth, {} or usd)",

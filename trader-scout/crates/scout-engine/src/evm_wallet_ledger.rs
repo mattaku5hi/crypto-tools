@@ -19,7 +19,8 @@
 //!   quote asset), in canonical `(block, tx_index)` order, duplicates once.
 //! * Units: native (ETH, WETH merged) -> `Wei` (18 dp, exact);
 //!   USDG -> `UsdgUnits` (6 dp, valued at par in USD, never summed with
-//!   anything). A quote token without a unit is `Unknown { UnsupportedQuoteAsset }`.
+//!   anything); Base USDC -> `UsdcUnits` (6 dp); BSC Binance-Peg USDT/USDC ->
+//!   `BinancePegUsdtUnits`/`BinancePegUsdcUnits` (18 dp, distinct units). A quote token without a unit is `Unknown { UnsupportedQuoteAsset }`.
 //! * Gas: the signer pays it ONCE. It is capitalized into the basis of a
 //!   native-quoted buy (basis = consideration + fee) and deducted from the
 //!   proceeds of a native-quoted sell (net proceeds = gross - fee). For a
@@ -63,7 +64,7 @@ use scout_ledger::QuoteUnit;
 
 pub const EVM_WALLET_LEDGER_VERSION: &str = "evm-wallet-ledger/1 (ADR-020 step 2: owner-keyed net-flow trades of the signer, wei + USDG (Robinhood) / USDC (Base) quote units, gas capitalized once for native-quoted trades, Unknown native legs, ERC-721 position NFTs are not flows, shared FIFO/episode core with the Solana ledger)";
 
-pub const EVM_WALLET_LEDGER_SCOPE: &str = "quote units: native ETH (wei, WETH merged; 18 dp), USDG on Robinhood / USDC on Base (6 dp raw, par in USD); no FX, per-unit PnL never summed; trade = tx signer, a verified venue swap event (Uniswap v4 PoolManager FixtureVerified on Robinhood) moving the token, exactly one traded token and one quote asset with opposite signs in the signer's own net flows; gas = fee payer only";
+pub const EVM_WALLET_LEDGER_SCOPE: &str = "quote units: native ETH/BNB (wei, WETH/WBNB merged; 18 dp), USDG on Robinhood / USDC on Base (6 dp raw, par in USD), Binance-Peg USDT/USDC on BSC (bridged/pegged, 18 dp raw, own units `usdt_peg`/`usdc_peg`, USDT via USDT-USD candles, USDC par, peg assumption flagged `binance_peg`); no FX, per-unit PnL never summed; trade = tx signer, a verified venue swap event (FixtureVerified deployments, e.g. Uniswap v4 PoolManager on Robinhood and Base) moving the token, exactly one traded token and one quote asset with opposite signs in the signer's own net flows; gas = fee payer only";
 
 /// One booked EVM trade (audit trail; the EVM analogue of `RouteSwapRecord`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,15 +115,20 @@ fn to_u128(x: U256, ctx: &'static str) -> Result<u128, SolanaWalletLedgerError> 
 fn unit_of(cfg: &EvmExtractionConfig, quote: QuoteAsset) -> Option<QuoteUnit> {
     match quote {
         QuoteAsset::Native => Some(QuoteUnit::Wei),
-        QuoteAsset::Token(a) => cfg
-            .quote_tokens
-            .iter()
-            .find(|q| q.address == a)
-            .and_then(|q| match q.symbol.as_str() {
-                "USDG" => Some(QuoteUnit::UsdgUnits),
-                "USDC" => Some(QuoteUnit::UsdcUnits),
-                _ => None,
-            }),
+        QuoteAsset::Token(a) => {
+            cfg.quote_tokens
+                .iter()
+                .find(|q| q.address == a)
+                .and_then(|q| match (cfg.profile.chain_id, q.symbol.as_str()) {
+                    // Units are per (chain, asset): BSC's 18-dp Binance-Peg
+                    // stables are NOT the 6-dp `UsdcUnits`/`UsdtUnits`.
+                    (56, "USDT") => Some(QuoteUnit::BinancePegUsdtUnits),
+                    (56, "USDC") => Some(QuoteUnit::BinancePegUsdcUnits),
+                    (_, "USDG") => Some(QuoteUnit::UsdgUnits),
+                    (8453, "USDC") => Some(QuoteUnit::UsdcUnits),
+                    _ => None,
+                })
+        }
     }
 }
 

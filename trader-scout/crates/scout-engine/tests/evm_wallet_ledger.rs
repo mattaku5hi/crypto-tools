@@ -421,8 +421,7 @@ fn window_left_censors_a_sale_of_inventory_bought_before_it() {
 
 #[test]
 fn base_without_l1_fee_makes_the_basis_unknown_not_partial() {
-    // Base is IdlOnly everywhere (no verified venue), so use a quote-free
-    // check on the fee rule directly: a Base buy with a receipt lacking l1Fee.
+    // Quote-free check on the fee rule directly: a Base buy with a receipt lacking l1Fee.
     let base_cfg = {
         let mut c =
             EvmExtractionConfig::new(BASE, scout_dex_evm::SwapVenueGate::new(BASE.chain_id));
@@ -448,8 +447,8 @@ fn base_without_l1_fee_makes_the_basis_unknown_not_partial() {
     let r = build_evm_wallet_ledger(&base_cfg, W, &[tx], LedgerOptions::default()).unwrap();
     assert_eq!(r.trades.fee_not_observed, 1);
     assert_eq!(
-        r.trades.idl_only_variant, 1,
-        "Base v4 is not fixture-verified"
+        r.trades.idl_only_variant, 0,
+        "Base v4 is fixture-verified (evm_uniswap_v4_base.rs)"
     );
     assert!(
         r.episodes[0]

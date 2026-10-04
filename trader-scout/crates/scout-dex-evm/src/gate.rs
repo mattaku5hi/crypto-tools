@@ -297,8 +297,9 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         ),
         UNISWAP_V2_CANONICAL_INIT_CODE_HASH,
     ),
-    // Base (8453)
-    dep(
+    // Base (8453). Uniswap v4: 92 of 92 attributable fixture samples match the
+    // PoolManager's ERC-20 net deltas exactly (`evm_uniswap_v4_base.rs`).
+    dep_fixture_verified(
         8453,
         SwapVenue::UniswapV4,
         address!("498581ff718922c3f8e6a244956af099b2652b2b"),
@@ -928,8 +929,8 @@ mod tests {
     #[test]
     fn only_evidenced_deployments_are_fixture_verified() {
         for d in VENUE_DEPLOYMENTS {
-            // Robinhood (all), Base except Uniswap v4 (no Base v4 fixture yet;
-            // evidence: evm_base_venues.rs) and the four BSC v2/v3 factories
+            // Robinhood (all), Base (all; v4: evm_uniswap_v4_base.rs, the rest:
+            // evm_base_venues.rs) and the four BSC v2/v3 factories
             // and Pancake v3 factories of evm_bsc_venues.rs (four.meme: token
             // side exact but native side unexplained; BSC Uniswap v4 has no test).
             let bsc_verified = d.chain_id == 56
@@ -940,10 +941,7 @@ mod tests {
                     address!("0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865"),
                 ]
                 .contains(&d.anchor);
-            let expected = if d.chain_id == 4663
-                || (d.chain_id == 8453 && d.venue != SwapVenue::UniswapV4)
-                || bsc_verified
-            {
+            let expected = if d.chain_id == 4663 || d.chain_id == 8453 || bsc_verified {
                 VenueVerification::FixtureVerified
             } else {
                 VenueVerification::IdlOnly

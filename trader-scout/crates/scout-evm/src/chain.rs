@@ -24,6 +24,9 @@ pub struct QuoteAssetSpec {
     /// with the live `decimals()` and refuses to run on a mismatch.
     pub decimals: u8,
     pub usd: QuoteUsdPolicy,
+    /// `"issuer_native"` or `"binance_peg"` (a bridged/pegged token whose
+    /// peg is an assumption made visible in the price coverage).
+    pub origin: &'static str,
 }
 
 /// Static profile of one supported EVM chain.
@@ -53,6 +56,7 @@ pub const ROBINHOOD_USDG: QuoteAssetSpec = QuoteAssetSpec {
     address: address!("5fc5360d0400a0fd4f2af552add042d716f1d168"),
     decimals: 6,
     usd: QuoteUsdPolicy::ParAssumed,
+    origin: "issuer_native",
 };
 
 /// Base stable quote: native USDC issued by Circle
@@ -63,6 +67,30 @@ pub const BASE_USDC: QuoteAssetSpec = QuoteAssetSpec {
     address: address!("833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
     decimals: 6,
     usd: QuoteUsdPolicy::ParAssumed,
+    origin: "issuer_native",
+};
+
+/// BSC stable quote: Binance-Peg BSC-USD (USDT). Sources: bscscan token page
+/// "Binance-Peg BSC-USD (BSC-USD)" (label "binance-pegged") and the BNB
+/// Community Support article "Binance-Peg token list". A bridged/pegged
+/// asset with 18 decimals (checked live by the run preflight).
+pub const BSC_USDT: QuoteAssetSpec = QuoteAssetSpec {
+    symbol: "USDT",
+    address: address!("55d398326f99059fF775485246999027B3197955"),
+    decimals: 18,
+    usd: QuoteUsdPolicy::ParAssumed,
+    origin: "binance_peg",
+};
+
+/// BSC stable quote: Binance-Peg USD Coin (USDC). Sources: bscscan token page
+/// "Binance-Peg USD Coin (USDC)" (label "binance-pegged") and the BNB
+/// Community Support "Binance-Peg token list" article. 18 decimals.
+pub const BSC_USDC: QuoteAssetSpec = QuoteAssetSpec {
+    symbol: "USDC",
+    address: address!("8AC76a51cc950d9822D68b83fE1ad97B32Cd580d"),
+    decimals: 18,
+    usd: QuoteUsdPolicy::ParAssumed,
+    origin: "binance_peg",
 };
 
 pub const ROBINHOOD: EvmChainProfile = EvmChainProfile {
@@ -96,15 +124,9 @@ pub const BSC: EvmChainProfile = EvmChainProfile {
     native_symbol: "BNB",
     wrapped_native: address!("bb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"),
     l1_fee_separate: false,
-    // TODO(ADR-020 amendment 5): USDT/USDC on BSC are 18-decimal Binance-Peg
-    // tokens and are NOT pinned until their addresses are verified against an
-    // official source. Candidates from the 2026-10-04 exploratory fixture's
-    // busiest pools (NOT verified, do not pin from this comment):
-    // 0x55d398326f99059ff775485246999027b3197955 (44 pools, "BSC-USD"/USDT
-    // shape) and 0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d (5 pools, USDC
-    // shape). Until pinned, a trade quoted in them is `multi_asset` (counted,
-    // never booked): native BNB (WBNB merged) is the only quote.
-    quote_assets: &[],
+    // Binance-Peg USDT/USDC (18 dp, bridged: ADR-020 amendment 6). WBNB is
+    // the merged `wrapped_native`.
+    quote_assets: &[BSC_USDT, BSC_USDC],
 };
 
 impl EvmChainProfile {
@@ -165,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn robinhood_pins_usdg_base_pins_usdc_and_bsc_pins_nothing_yet() {
+    fn robinhood_pins_usdg_base_pins_usdc_and_bsc_pins_binance_peg_stables() {
         assert_eq!(ROBINHOOD.quote_assets.len(), 1);
         let usdg = ROBINHOOD.quote_asset(&ROBINHOOD_USDG.address).unwrap();
         assert_eq!((usdg.symbol, usdg.decimals), ("USDG", 6));
@@ -175,6 +197,10 @@ mod tests {
         let usdc = BASE.quote_asset(&BASE_USDC.address).unwrap();
         assert_eq!((usdc.symbol, usdc.decimals), ("USDC", 6));
         assert!(BASE.quote_asset(&BASE.wrapped_native).is_none());
-        assert!(BSC.quote_assets.is_empty());
+        assert_eq!(BSC.quote_assets, &[BSC_USDT, BSC_USDC]);
+        for q in BSC.quote_assets {
+            assert_eq!((q.decimals, q.origin), (18, "binance_peg"));
+        }
+        assert_eq!(BASE_USDC.origin, "issuer_native");
     }
 }

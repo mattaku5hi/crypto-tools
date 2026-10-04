@@ -472,6 +472,11 @@ pub struct RouteCountsDto {
     pub route_swaps_sol: u64,
     pub route_swaps_usdc: u64,
     pub route_swaps_usdt: u64,
+    /// BSC Binance-Peg stables (ADR-020 amendment 6); omitted when zero.
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub route_swaps_usdt_peg: u64,
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub route_swaps_usdc_peg: u64,
     /// ADR-015: route swaps by swap-leg evidence source (non-exclusive).
     pub route_swaps_evidence_curve: u64,
     pub route_swaps_evidence_pump_amm: u64,
@@ -894,6 +899,8 @@ fn metrics_dto(o: &WalletRankObservation) -> Option<MetricsDto> {
             route_swaps_sol: t.route_swaps_by_quote.sol + t.route_swaps_by_quote.wei,
             route_swaps_usdc: t.route_swaps_by_quote.usdc,
             route_swaps_usdt: t.route_swaps_by_quote.usdt,
+            route_swaps_usdt_peg: t.route_swaps_by_quote.usdt_peg,
+            route_swaps_usdc_peg: t.route_swaps_by_quote.usdc_peg,
             route_swaps_evidence_curve: t.route_swaps_by_evidence.curve,
             route_swaps_evidence_pump_amm: t.route_swaps_by_evidence.pump_amm,
             route_swaps_evidence_jupiter: t.route_swaps_by_evidence.jupiter,
@@ -1314,6 +1321,10 @@ fn patch_evm_run_meta(
             "full available history (no time window)"
         },
     });
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 #[cfg(test)]

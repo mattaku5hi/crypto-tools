@@ -132,10 +132,15 @@ samples). `factory()` was never read for these pools, so the row stays IdlOnly.
 ## Pending (needs the live capture)
 - four.meme: the native side of launch buys (value = 1.03 / 1.11 x cost, unexplained), BEP20-quoted curves, V1 samples,
   sale-side BNB leg, more samples (n=4).
-- BSC quote assets: USDT/USDC are 18-decimal Binance-Peg tokens; from the busiest pools of the fixture the candidates are
-  `0x55d398326f99059ff775485246999027b3197955` (44 pools) and `0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d` (5 pools),
-  NOT verified against an official source and NOT pinned. Until pinned, a trade quoted in them is `multi_asset`
-  (counted, never booked): only native BNB (WBNB merged) is a quote.
+- BSC quote assets (pinned, ADR-020 amendment 6): Binance-Peg BSC-USD (USDT) `0x55d398326f99059fF775485246999027B3197955`
+  and Binance-Peg USD Coin (USDC) `0x8AC76a51cc950d9822D68b83fE1ad97B32Cd580d`. Sources: bscscan token pages
+  "Binance-Peg BSC-USD (BSC-USD)" and "Binance-Peg USD Coin (USDC)" (label "binance-pegged") and the BNB Community Support
+  article "Binance-Peg token list". These are bridged/pegged assets (`origin = binance_peg`), 18 decimals, checked live by
+  the run preflight (`decimals()`, mismatch = refusal). Own units `usdt_peg`/`usdc_peg` (18 dp, never the 6-dp
+  `usdt`/`usdc`); USD: USDT via Coinbase `USDT-USD`, USDC par (`usdc_par_assumed`), `binance_peg_legs` + `+binance_peg`
+  label suffix in the coverage. The earlier "`multi_asset`" behaviour for trades quoted in them is gone. The two
+  fixture-derived candidates (44 and 5 pools) are the same addresses. Test: `evm_bsc_quote_assets.rs` (synthetic,
+  hand-computed). Residual risk: a depeg of the bridged tokens is invisible (par/USDT-USD is assumed for both).
 - Activation blocks stay unpinned (0).
 
 ## Caveats
