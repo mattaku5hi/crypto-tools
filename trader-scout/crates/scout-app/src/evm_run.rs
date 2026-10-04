@@ -10,8 +10,9 @@ use std::sync::Arc;
 use alloy_primitives::Address;
 use scout_core::{ChainFamily, ChainKey, NetworkId};
 use scout_providers::{
-    BlockscoutApiKey, BlockscoutEvmConfig, BlockscoutEvmSource, EvmHistoryScanner, EvmRpcClient,
-    EvmSourceError, NativeLegPolicy, NativeLegResolver, ScanLimits,
+    AlchemyConfig, AlchemyTransfersSource, BlockscoutApiKey, BlockscoutEvmConfig,
+    BlockscoutEvmSource, EvmHistoryScanner, EvmRpcClient, EvmSourceError, NativeLegPolicy,
+    NativeLegResolver, ScanLimits, WalletIndexer,
 };
 use scout_rpc::{HalvingHook, RateLimiter, RateLimiterStats, RpcClient, RpcEndpoint};
 use scout_sdk::engine::{
@@ -237,7 +238,8 @@ pub type LimiterNotice = Arc<dyn Fn(String) + Send + Sync>;
 
 /// Build the endpoint, preflight the chain and check the quote decimals.
 ///
-/// `allow_unverified`: Base/BSC have no verified venue/quote set yet; without
+/// `allow_unverified`: BSC has no verified venue/quote set yet (Base is
+/// enabled since ADR-020 amendment 4: USDC pinned, venues FixtureVerified); without
 /// the explicit flag the run is refused (exit 4, "not verified yet").
 ///
 /// # Errors
@@ -509,18 +511,15 @@ pub async fn collect_evm_stats(
     notice: &LimiterNotice,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<EvmStatsRun, EvmStatsError> {
-    let Some(bs_key) = env(crate::evm_source::BLOCKSCOUT_KEY_ENV).filter(|k| !k.trim().is_empty())
-    else {
-        return Err(EvmStatsError::Config(format!(
-            "{tool}: {} EVM wallet(s) parsed; no wallet history source configured: \
-             configuration required, set {} (a wallet's transactions cannot be listed over \
-             plain RPC; a window scan via eth_getLogs would need about blocks/span requests - \
-             864,000 blocks per day on a 0.1 s chain, 86,400 requests at a 10-block provider \
-             cap - so it is never attempted. Nothing was scanned)",
-            wallets.len(),
-            crate::evm_source::BLOCKSCOUT_KEY_ENV
-        )));
-    };
+    let bs_key = env(crate::evm_source::BLOCKSCOUT_KEY_ENV).filter(|k| !k.trim().is_empty());
+    let rpc_var =
+        crate::evm_source::rpc_env_name(chain_name(chain)).unwrap_or("SCOUT_<CHAIN>_RPC_URL");
+    let keyed_rpc = env(rpc_var).is_some_and(|v| !v.trim().is_empty());
+    if bs_key.is_none() && !keyed_rpc {
+        // No indexer can exist (Alchemy transfers need a keyed RPC): refuse
+        // before any network request.
+        return Err(no_indexer_error(tool, wallets.len(), rpc_var));
+    }
     let setup = setup_evm(
         chain,
         allow_unverified,
@@ -534,12 +533,17 @@ pub async fn collect_evm_stats(
     .await
     .map_err(|e| match e {
         EvmSetupError::Usage(m) => EvmStatsError::Usage(format!("{tool}: {m}")),
-        EvmSetupError::Config(m) => {
-            EvmStatsError::Config(format!("{tool}: {}", m.replace(&bs_key, "<redacted>")))
-        }
+        EvmSetupError::Config(m) => EvmStatsError::Config(format!(
+            "{tool}: {}",
+            bs_key
+                .as_deref()
+                .map_or(m.clone(), |k| m.replace(k, "<redacted>"))
+        )),
     })?;
     let mut secrets = setup.secrets();
-    secrets.push(bs_key.clone());
+    if let Some(k) = &bs_key {
+        secrets.push(k.clone());
+    }
     let scrub = |t: &str| {
         let mut o = t.to_string();
         for s in &secrets {
@@ -549,35 +553,88 @@ pub async fn collect_evm_stats(
         }
         o
     };
-    let mut bs_cfg =
-        BlockscoutEvmConfig::new(setup.profile.chain_id, BlockscoutApiKey::new(&bs_key));
-    if let Some(u) = env(BLOCKSCOUT_URL_OVERRIDE_ENV).filter(|u| !u.is_empty()) {
-        bs_cfg.base_url = u;
-    }
-    bs_cfg.max_total_requests = max_requests;
-    // The explorer is metered separately; a flat request rate, 5/s unless
-    // the user lowered/raised --rpc-rps.
+    // Indexer selection (ADR-020 amendment 4): Blockscout where it serves the
+    // chain (Robinhood, with a key), else Alchemy transfers if the keyed RPC
+    // answers `alchemy_getAssetTransfers`, else Blockscout when a key is set
+    // (the chain may be covered by the plan), else exit 4.
+    let mut bs_limiter: Option<Arc<RateLimiter>> = None;
     let bs_label = "explorer (blockscout)".to_string();
-    let bs_rps = u64::from(net.rpc_rps.unwrap_or(5).max(1));
-    let bs_notice = Arc::clone(notice);
-    let bs_label2 = bs_label.clone();
-    let bs_limiter = Arc::new(RateLimiter::new(bs_rps, bs_rps).with_halving_hook(Arc::new(
-        move |old, new| {
-            bs_notice(format!(
-                "{bs_label2}: 429/rate limit answer; client rate halved {}/s -> {}/s for the \
-                 rest of the run",
-                fmt_rate(old),
-                fmt_rate(new)
-            ));
-        },
-    )));
-    bs_cfg.rate_limiter = Some(Arc::clone(&bs_limiter));
-    let explorer = BlockscoutEvmSource::new(bs_cfg).map_err(|e| {
-        EvmStatsError::Config(format!(
-            "{tool}: explorer unavailable: {}",
-            scrub(&e.to_string())
-        ))
-    })?;
+    let mut indexer_note: Option<String> = None;
+    let mut chosen: Option<WalletIndexer> = None;
+    if setup.profile.name == "robinhood"
+        && let Some(k) = &bs_key
+    {
+        let (src, lim) = build_blockscout(
+            &setup,
+            k,
+            max_requests,
+            net,
+            notice,
+            &bs_label,
+            env(BLOCKSCOUT_URL_OVERRIDE_ENV),
+        )
+        .map_err(|e| {
+            EvmStatsError::Config(format!("{tool}: explorer unavailable: {}", scrub(&e)))
+        })?;
+        chosen = Some(WalletIndexer::Blockscout(src));
+        bs_limiter = Some(lim);
+    }
+    if chosen.is_none() && setup.url.from_env {
+        let alchemy = AlchemyTransfersSource::new(setup.rpc.clone(), AlchemyConfig::default());
+        match alchemy.probe().await {
+            Ok(true) => {
+                notice(format!(
+                    "{tool}: wallet history indexer: alchemy_getAssetTransfers on the keyed {} \
+                     RPC (internal transfers are detected per chain on the first listing)",
+                    setup.profile.name
+                ));
+                chosen = Some(alchemy.into());
+            }
+            Ok(false) => {
+                indexer_note = Some(format!(
+                    "the keyed RPC does not answer alchemy_getAssetTransfers for {}",
+                    setup.profile.name
+                ));
+            }
+            Err(e) if e.is_budget_exhausted() => {
+                return Err(EvmStatsError::Budget(format!(
+                    "{tool}: request budget exhausted before the wallet indexer probe \
+                     completed (IncompleteCoverage)"
+                )));
+            }
+            Err(e) => {
+                return Err(EvmStatsError::Config(format!(
+                    "{tool}: wallet indexer probe failed: {}",
+                    scrub(&e.to_string())
+                )));
+            }
+        }
+    }
+    if chosen.is_none()
+        && let Some(k) = &bs_key
+    {
+        let (src, lim) = build_blockscout(
+            &setup,
+            k,
+            max_requests,
+            net,
+            notice,
+            &bs_label,
+            env(BLOCKSCOUT_URL_OVERRIDE_ENV),
+        )
+        .map_err(|e| {
+            EvmStatsError::Config(format!("{tool}: explorer unavailable: {}", scrub(&e)))
+        })?;
+        chosen = Some(WalletIndexer::Blockscout(src));
+        bs_limiter = Some(lim);
+    }
+    let Some(explorer) = chosen else {
+        let mut e = no_indexer_error(tool, wallets.len(), rpc_var);
+        if let (EvmStatsError::Config(m), Some(n)) = (&mut e, indexer_note) {
+            m.push_str(&format!(" [{n}]"));
+        }
+        return Err(e);
+    };
     let scanner = EvmHistoryScanner::new(
         setup.rpc.clone(),
         setup.chain.clone(),
@@ -599,7 +656,7 @@ pub async fn collect_evm_stats(
         CancellationToken::new(),
     )
     .await;
-    let requests_made = setup.rpc.total_requests_made() + explorer.total_requests_made();
+    let requests_made = setup.rpc.total_requests_made() + explorer.own_requests_made();
     let mut report = match result {
         Ok(r) => r,
         Err(err) => {
@@ -620,11 +677,14 @@ pub async fn collect_evm_stats(
         }
     };
     let mut rate_limits = setup.rate_limit_report();
-    rate_limits.push(rate_limit_line(&bs_label, &bs_limiter.stats()));
+    if let Some(l) = &bs_limiter {
+        rate_limits.push(rate_limit_line(&bs_label, &l.stats()));
+    }
     if let Some(info) = report.evm.as_mut() {
         info.quote_assets = setup.info.quote_assets.clone();
         info.state_source = setup.state_source.clone();
         info.rate_limits = rate_limits.clone();
+        info.listing_kind = explorer.kind().to_string();
     }
     Ok(EvmStatsRun {
         report,
@@ -634,6 +694,60 @@ pub async fn collect_evm_stats(
         rate_limits,
         rpc_calls_by_method: setup.rpc.calls_by_method(),
     })
+}
+
+fn chain_name(chain: &ChainKey) -> &'static str {
+    match chain.network_id {
+        NetworkId::EvmChainId(id) => EvmChainProfile::by_chain_id(id).map_or("", |p| p.name),
+        _ => "",
+    }
+}
+
+fn no_indexer_error(tool: &str, wallets: usize, rpc_var: &str) -> EvmStatsError {
+    EvmStatsError::Config(format!(
+        "{tool}: {wallets} EVM wallet(s) parsed; no wallet history source configured: \
+         configuration required, set {} (Blockscout, where it serves the chain) or use a keyed \
+         Alchemy endpoint in {rpc_var} (alchemy_getAssetTransfers; Base, BSC, Robinhood). A \
+         wallet's transactions cannot be listed over plain RPC; a window scan via eth_getLogs \
+         would need about blocks/span requests (864,000 blocks per day on a 0.1 s chain), so it \
+         is never attempted. Nothing was scanned",
+        crate::evm_source::BLOCKSCOUT_KEY_ENV
+    ))
+}
+
+/// The Blockscout source of a run with its own limiter (metered separately
+/// from the RPC; a flat request rate, 5/s unless `--rpc-rps` says otherwise).
+fn build_blockscout(
+    setup: &EvmSetup,
+    key: &str,
+    max_requests: Option<u64>,
+    net: &EvmNetOptions,
+    notice: &LimiterNotice,
+    label: &str,
+    base_url_override: Option<String>,
+) -> Result<(BlockscoutEvmSource, Arc<RateLimiter>), String> {
+    let mut bs_cfg = BlockscoutEvmConfig::new(setup.profile.chain_id, BlockscoutApiKey::new(key));
+    if let Some(u) = base_url_override.filter(|u| !u.is_empty()) {
+        bs_cfg.base_url = u;
+    }
+    bs_cfg.max_total_requests = max_requests;
+    let bs_rps = u64::from(net.rpc_rps.unwrap_or(5).max(1));
+    let bs_notice = Arc::clone(notice);
+    let bs_label2 = label.to_string();
+    let limiter = Arc::new(RateLimiter::new(bs_rps, bs_rps).with_halving_hook(Arc::new(
+        move |old, new| {
+            bs_notice(format!(
+                "{bs_label2}: 429/rate limit answer; client rate halved {}/s -> {}/s for the \
+                 rest of the run",
+                fmt_rate(old),
+                fmt_rate(new)
+            ));
+        },
+    )));
+    bs_cfg.rate_limiter = Some(Arc::clone(&limiter));
+    BlockscoutEvmSource::new(bs_cfg)
+        .map(|s| (s, limiter))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

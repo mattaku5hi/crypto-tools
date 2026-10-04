@@ -527,6 +527,13 @@ impl EvmRpcClient {
         Ok(result)
     }
 
+    /// One counted JSON-RPC call of a provider-specific method (Alchemy
+    /// `alchemy_getAssetTransfers`): same budget, limiter and call counters
+    /// as every other call. A `null` result comes back as `Value::Null`.
+    pub async fn call_raw(&self, method: &str, params: Value) -> Result<Value, EvmSourceError> {
+        self.call_json(method, params).await
+    }
+
     pub async fn chain_id(&self) -> Result<u64, EvmSourceError> {
         let v = self.call_json("eth_chainId", json!([])).await?;
         quantity_u64(&v, "eth_chainId")

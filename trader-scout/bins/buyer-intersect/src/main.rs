@@ -210,8 +210,7 @@ struct Args {
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=16))]
     slices: Option<u32>,
 
-    /// EVM only: run a chain whose venue set is not verified yet (Base,
-    /// BSC); without it such a run exits 4. Every trade is then IdlOnly:
+    /// EVM only: run a chain whose venue set is not verified yet (BSC); without it such a run exits 4. Every trade is then IdlOnly:
     /// no wallet qualifies and the run is partial.
     #[arg(long)]
     allow_unverified_chain: bool,

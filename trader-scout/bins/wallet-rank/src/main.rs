@@ -185,7 +185,7 @@ struct Args {
     no_valuation: bool,
 
     /// EVM only: run a chain whose venue/quote set is not verified yet
-    /// (Base, BSC); without it such a run exits 4.
+    /// (BSC); without it such a run exits 4.
     #[arg(long)]
     allow_unverified_chain: bool,
 
@@ -319,16 +319,27 @@ fn policy_from(args: &Args) -> Result<RankPolicy, String> {
 }
 
 /// The run's ranking unit on an EVM chain: native (`sol` default or `eth`)
-/// -> wei, `usdg`, `usd`; Solana-only units are a usage error there.
-fn evm_policy(mut p: RankPolicy) -> Result<RankPolicy, String> {
+/// -> wei, the chain's pinned stable (`usdg` on Robinhood, `usdc` on Base),
+/// `usd`; Solana-only units and the other chain's stable are a usage error.
+fn evm_policy(mut p: RankPolicy, chain: &scout_core::ChainKey) -> Result<RankPolicy, String> {
+    let units = match chain.network_id {
+        scout_core::NetworkId::EvmChainId(id) => {
+            scout_engine::ChainDisplay::evm_by_chain_id(id).map(|d| d.quote_units())
+        }
+        _ => None,
+    }
+    .unwrap_or(&[QuoteUnit::Wei]);
     p.quote = match p.quote {
         QuoteUnit::Lamports | QuoteUnit::Wei => QuoteUnit::Wei,
-        QuoteUnit::UsdgUnits => QuoteUnit::UsdgUnits,
         QuoteUnit::ReportCurrency => QuoteUnit::ReportCurrency,
+        stable @ (QuoteUnit::UsdgUnits | QuoteUnit::UsdcUnits) if units.contains(&stable) => stable,
         other => {
             return Err(format!(
-                "--quote {} is not a quote unit of an EVM chain (use eth, usdg or usd)",
-                scout_engine::quote_unit_label(other)
+                "--quote {} is not a quote unit of an EVM chain (on this chain use eth, {} or usd)",
+                scout_engine::quote_unit_label(other),
+                units
+                    .get(1)
+                    .map_or("usd", |u| scout_engine::quote_unit_label(*u))
             ));
         }
     };
@@ -416,7 +427,7 @@ fn main() -> ExitCode {
         }
     };
     if let scout_app::RunFamily::Evm(chain) = &family {
-        let policy = match evm_policy(policy) {
+        let policy = match evm_policy(policy, chain) {
             Ok(p) => p,
             Err(message) => {
                 eprintln!("wallet-rank: {message}");
@@ -1003,4 +1014,47 @@ fn read_stdin_to_string() -> Result<String, String> {
     lock.read_to_string(&mut buf)
         .map_err(|e| format!("could not read stdin: {e}"))?;
     Ok(buf)
+}
+
+#[cfg(test)]
+mod evm_policy_tests {
+    #![allow(clippy::unwrap_used)]
+    use scout_core::{ChainFamily, ChainKey, GenesisIdentity, NetworkId};
+
+    use super::*;
+
+    fn chain(id: u64) -> ChainKey {
+        ChainKey {
+            family: ChainFamily::Evm,
+            network_id: NetworkId::EvmChainId(id),
+            genesis_identity: GenesisIdentity::Unverified,
+        }
+    }
+
+    fn quote(q: QuoteUnit, id: u64) -> Result<QuoteUnit, String> {
+        let p = RankPolicy {
+            quote: q,
+            ..RankPolicy::default()
+        };
+        evm_policy(p, &chain(id)).map(|p| p.quote)
+    }
+
+    #[test]
+    fn each_chain_accepts_native_usd_and_its_own_stable_only() {
+        // Base 8453: usdc; Robinhood 4663: usdg.
+        assert_eq!(quote(QuoteUnit::UsdcUnits, 8453), Ok(QuoteUnit::UsdcUnits));
+        assert!(quote(QuoteUnit::UsdgUnits, 8453).is_err());
+        assert_eq!(quote(QuoteUnit::UsdgUnits, 4663), Ok(QuoteUnit::UsdgUnits));
+        let e = quote(QuoteUnit::UsdcUnits, 4663).unwrap_err();
+        assert!(e.contains("use eth, usdg or usd"), "{e}");
+        for id in [8453, 4663] {
+            assert_eq!(quote(QuoteUnit::Lamports, id), Ok(QuoteUnit::Wei));
+            assert_eq!(quote(QuoteUnit::Wei, id), Ok(QuoteUnit::Wei));
+            assert_eq!(
+                quote(QuoteUnit::ReportCurrency, id),
+                Ok(QuoteUnit::ReportCurrency)
+            );
+            assert!(quote(QuoteUnit::UsdtUnits, id).is_err());
+        }
+    }
 }

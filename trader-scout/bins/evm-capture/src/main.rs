@@ -745,7 +745,7 @@ async fn scan(
                 cfg.base_url = base;
             }
             cfg.max_total_requests = args.max_requests;
-            let source = BlockscoutEvmSource::new(cfg)?;
+            let source: scout_providers::WalletIndexer = BlockscoutEvmSource::new(cfg)?.into();
             let out = scanner.scan_wallet(&source, *wallet, from, to).await?;
             scanned.transactions = out.transactions;
             scanned.txlist_complete = Some(out.txlist_complete);

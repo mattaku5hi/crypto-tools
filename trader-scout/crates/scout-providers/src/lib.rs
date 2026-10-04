@@ -14,6 +14,7 @@
 )]
 
 mod accounts;
+mod evm_alchemy;
 mod evm_blockscout;
 mod evm_cost;
 mod evm_native;
@@ -27,11 +28,17 @@ mod helius;
 mod unconfigured;
 
 pub use accounts::{AccountRead, AccountsRead, GET_MULTIPLE_ACCOUNTS_MAX, MAX_ACCOUNT_DATA_BYTES};
+pub use evm_alchemy::{
+    ALCHEMY_COVERAGE_NOTE, ALCHEMY_LISTING_KIND, AlchemyCategory, AlchemyConfig, AlchemyListing,
+    AlchemyTransfer, AlchemyTransfersSource,
+};
 pub use evm_blockscout::{
     BlockscoutApiKey, BlockscoutEvmConfig, BlockscoutEvmSource, BlockscoutInternal,
     BlockscoutTokenTransfer, BlockscoutTx, Closest, Listing,
 };
-pub use evm_cost::{DEFAULT_METHOD_CU, approx_method_cu};
+pub use evm_cost::{
+    ALCHEMY_TRANSFERS_CU, ALCHEMY_TRANSFERS_METHOD, DEFAULT_METHOD_CU, approx_method_cu,
+};
 pub use evm_native::{
     Capability, NativeLegCapabilities, NativeLegOutcome, NativeLegPolicy, NativeLegResolver,
     NativeLegRun, TraceParseError, Unobserved, parse_call_tree,
@@ -41,8 +48,9 @@ pub use evm_rpc::{
     PoolOnchainMetadata, capped_span_from_error, is_range_or_cap_error, suggested_range,
 };
 pub use evm_scan::{
-    EvmHistoryScanner, InternalIndex, ReceiptMode, ScanLimits, SwapScanOutput, TokenScanOutput,
-    WalletCostPlan, WalletListing, WalletScanOutput,
+    EvmHistoryScanner, IndexedSigned, IndexedTransfer, IndexedWallet, InternalIndex, ReceiptMode,
+    ScanLimits, SwapScanOutput, TokenScanOutput, WalletCostPlan, WalletIndexer, WalletListing,
+    WalletScanOutput,
 };
 pub use evm_wire::{EvmReceiptInfo, EvmTxInfo};
 pub use fixture::{Fixture, FixtureProvenance, FixtureProvider};

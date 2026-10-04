@@ -2104,7 +2104,7 @@ fn patch_evm_run_meta(
         "chain": info.chain.name,
         "chain_id": info.chain.chain_id,
         "extraction_version": info.extraction_version,
-        "recognized": "swap events of FixtureVerified venue deployments only (see venues); the trade is the transaction signer's own owner-keyed net flow: exactly one traded token and one quote asset (native/wrapped-native merged, USDG) with opposite signs",
+        "recognized": "swap events of FixtureVerified venue deployments only (see venues); the trade is the transaction signer's own owner-keyed net flow: exactly one traded token and one quote asset (native/wrapped-native merged, the chain's pinned stable: USDG on Robinhood, USDC on Base) with opposite signs",
         "not_decoded": "every venue not listed as FixtureVerified (swap-shaped logs there are counted as coverage gaps), smart-wallet/AA ownership, wallets that do not sign the transaction",
         "venues": info.venues.iter().map(|x| json!({
             "venue": x.venue, "anchor": x.anchor, "role": x.role,
@@ -2127,6 +2127,8 @@ fn patch_evm_run_meta(
     v["scan"] = json!({
         "provider": "evm_rpc",
         "history_source": info.history_source,
+        "listing_kind": info.listing_kind,
+        "coverage_notes": info.coverage_notes,
         "logs_source": info.logs_source,
         "state_source": info.state_source,
         "rate_limits": info.rate_limits,

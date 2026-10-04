@@ -55,6 +55,16 @@ pub const ROBINHOOD_USDG: QuoteAssetSpec = QuoteAssetSpec {
     usd: QuoteUsdPolicy::ParAssumed,
 };
 
+/// Base stable quote: native USDC issued by Circle
+/// (developers.circle.com/stablecoins/usdc-contract-addresses, checked
+/// 2026-10-04). `decimals()` (6) is verified live by the run preflight.
+pub const BASE_USDC: QuoteAssetSpec = QuoteAssetSpec {
+    symbol: "USDC",
+    address: address!("833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
+    decimals: 6,
+    usd: QuoteUsdPolicy::ParAssumed,
+};
+
 pub const ROBINHOOD: EvmChainProfile = EvmChainProfile {
     name: "robinhood",
     chain_id: 4663,
@@ -73,11 +83,10 @@ pub const BASE: EvmChainProfile = EvmChainProfile {
     native_symbol: "ETH",
     wrapped_native: address!("4200000000000000000000000000000000000006"),
     l1_fee_separate: true,
-    // TODO(ADR-020 step 3): USDC/USDbC addresses are not in the research doc
-    // and not verified on-chain yet; take them from the first `evm_base_*`
-    // capture's quote flows and check `decimals()` before pinning. WETH is the
-    // pinned `wrapped_native` (canonical OP-stack WETH9).
-    quote_assets: &[],
+    // WETH is the pinned `wrapped_native` (canonical OP-stack WETH9, merged
+    // with native ETH); USDC is Circle's official token. USDbC (bridged) is
+    // deliberately not a quote asset.
+    quote_assets: &[BASE_USDC],
 };
 
 pub const BSC: EvmChainProfile = EvmChainProfile {
@@ -149,12 +158,16 @@ mod tests {
     }
 
     #[test]
-    fn robinhood_pins_usdg_and_other_chains_pin_nothing_yet() {
+    fn robinhood_pins_usdg_base_pins_usdc_and_bsc_pins_nothing_yet() {
         assert_eq!(ROBINHOOD.quote_assets.len(), 1);
         let usdg = ROBINHOOD.quote_asset(&ROBINHOOD_USDG.address).unwrap();
         assert_eq!((usdg.symbol, usdg.decimals), ("USDG", 6));
         // Native-wrapped is merged, never a quote token entry.
         assert!(ROBINHOOD.quote_asset(&ROBINHOOD.wrapped_native).is_none());
-        assert!(BASE.quote_assets.is_empty() && BSC.quote_assets.is_empty());
+        assert_eq!(BASE.quote_assets, &[BASE_USDC]);
+        let usdc = BASE.quote_asset(&BASE_USDC.address).unwrap();
+        assert_eq!((usdc.symbol, usdc.decimals), ("USDC", 6));
+        assert!(BASE.quote_asset(&BASE.wrapped_native).is_none());
+        assert!(BSC.quote_assets.is_empty());
     }
 }

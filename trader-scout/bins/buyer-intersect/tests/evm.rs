@@ -272,7 +272,7 @@ async fn refusals_have_the_documented_exit_codes() {
         0,
         "nothing scanned"
     );
-    let o = run(env_of(&s), &[], format!("base:{AIDEN}\nbase:{EMPTY}\n")).await;
+    let o = run(env_of(&s), &[], format!("bsc:{AIDEN}\nbsc:{EMPTY}\n")).await;
     assert_eq!(o.code, 4);
     assert!(o.stderr.contains("not verified yet"), "{}", o.stderr);
     // No RPC variable: Robinhood falls back to the public RPC (warning), but
@@ -280,9 +280,13 @@ async fn refusals_have_the_documented_exit_codes() {
     let o = run(
         vec![],
         &["--allow-unverified-chain"],
-        format!("base:{AIDEN}\nbase:{EMPTY}\n"),
+        format!("bsc:{AIDEN}\nbsc:{EMPTY}\n"),
     )
     .await;
     assert_eq!(o.code, 4);
-    assert!(o.stderr.contains("SCOUT_BASE_RPC_URL"));
+    assert!(o.stderr.contains("SCOUT_BSC_RPC_URL"));
+    // Base needs no flag any more: only its RPC variable.
+    let o = run(vec![], &[], format!("base:{AIDEN}\nbase:{EMPTY}\n")).await;
+    assert_eq!(o.code, 4);
+    assert!(o.stderr.contains("SCOUT_BASE_RPC_URL"), "{}", o.stderr);
 }

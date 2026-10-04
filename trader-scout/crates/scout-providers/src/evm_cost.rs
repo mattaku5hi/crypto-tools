@@ -9,6 +9,11 @@
 //! `--rpc-rps` limiter for them. Unknown methods cost
 //! [`DEFAULT_METHOD_CU`].
 
+/// Alchemy Enhanced API method listing transfers by address.
+pub const ALCHEMY_TRANSFERS_METHOD: &str = "alchemy_getAssetTransfers";
+/// Approximate weight of one `alchemy_getAssetTransfers` page.
+pub const ALCHEMY_TRANSFERS_CU: u64 = 150;
+
 /// Weight of a method that is not in the table.
 pub const DEFAULT_METHOD_CU: u64 = 50;
 
@@ -24,6 +29,8 @@ pub fn approx_method_cu(method: &str) -> u64 {
         "eth_call" => 26,
         "eth_getLogs" => 75,
         "eth_getBlockReceipts" => 500,
+        // Enhanced API, one page of up to 1,000 transfers (approximate).
+        ALCHEMY_TRANSFERS_METHOD => ALCHEMY_TRANSFERS_CU,
         "trace_transaction" => 90,
         "debug_traceTransaction" => 309,
         _ => DEFAULT_METHOD_CU,
@@ -41,5 +48,6 @@ mod tests {
         }
         assert!(approx_method_cu("eth_getBlockReceipts") > approx_method_cu("eth_getLogs"));
         assert_eq!(approx_method_cu("nope"), DEFAULT_METHOD_CU);
+        assert_eq!(approx_method_cu(ALCHEMY_TRANSFERS_METHOD), 150);
     }
 }

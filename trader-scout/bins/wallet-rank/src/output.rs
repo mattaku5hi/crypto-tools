@@ -1259,7 +1259,7 @@ fn patch_evm_run_meta(
 ) {
     use serde_json::json;
     v["protocol_scope"] = json!(
-        "swap events of FixtureVerified venue deployments only (see scope.venues); the trade is the transaction signer's own owner-keyed net flow: one traded token and one quote asset (native/wrapped-native merged, USDG) with opposite signs"
+        "swap events of FixtureVerified venue deployments only (see scope.venues); the trade is the transaction signer's own owner-keyed net flow: one traded token and one quote asset (native/wrapped-native merged, the chain's pinned stable: USDG on Robinhood, USDC on Base) with opposite signs"
     );
     v["not_decoded"] = json!(
         "every venue not listed as FixtureVerified, smart-wallet/AA ownership, wallets that do not sign the transaction"
@@ -1300,6 +1300,8 @@ fn patch_evm_run_meta(
     v["scan"] = json!({
         "provider": "evm_rpc",
         "history_source": info.history_source,
+        "listing_kind": info.listing_kind,
+        "coverage_notes": info.coverage_notes,
         "logs_source": info.logs_source,
         "state_source": info.state_source,
         "rate_limits": info.rate_limits,

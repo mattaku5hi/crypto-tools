@@ -49,6 +49,11 @@ pub enum NativeSource {
     /// Internal transfers from an explorer listing that reported complete
     /// processing (`internal_transfers` holds the data).
     Explorer,
+    /// Internal transfers from Alchemy `alchemy_getAssetTransfers`
+    /// (`category = internal`, Base only as of 2026-10-04), complete only when
+    /// the category is supported and pagination finished (ADR-020
+    /// amendment 4). Same data shape as `Explorer`.
+    AlchemyInternal,
     /// Archive balance difference of the wallet around the block
     /// (`native_balance_diff` holds the data).
     BalanceDiff,
@@ -60,6 +65,7 @@ impl NativeSource {
         match self {
             Self::Trace => "trace",
             Self::Explorer => "explorer_internal",
+            Self::AlchemyInternal => "alchemy_internal",
             Self::BalanceDiff => "balance_diff",
         }
     }

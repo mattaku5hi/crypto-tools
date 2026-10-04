@@ -117,7 +117,7 @@ pub enum NativeLegStatus {
 
 impl NativeLegStatus {
     /// Stable label for reports (`not_involved`, `trace`,
-    /// `explorer_internal`, `balance_diff`, `logs_and_value_only`).
+    /// `explorer_internal`, `alchemy_internal`, `balance_diff`, `logs_and_value_only`).
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {

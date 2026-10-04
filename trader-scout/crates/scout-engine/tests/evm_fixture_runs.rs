@@ -120,13 +120,13 @@ mod stats {
     use scout_providers::evm_replay::ExplorerReplay;
     use scout_providers::{
         BlockscoutApiKey, BlockscoutEvmConfig, BlockscoutEvmSource, NativeLegPolicy,
-        NativeLegResolver,
+        NativeLegResolver, WalletIndexer,
     };
     use tokio_util::sync::CancellationToken;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer};
 
-    pub async fn explorer(server_fixture: &serde_json::Value) -> (MockServer, BlockscoutEvmSource) {
+    pub async fn explorer(server_fixture: &serde_json::Value) -> (MockServer, WalletIndexer) {
         let s = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ExplorerReplay::from_fixture(server_fixture))
@@ -135,7 +135,7 @@ mod stats {
         let mut cfg = BlockscoutEvmConfig::new(4663, BlockscoutApiKey::new("test-key"));
         cfg.base_url = s.uri();
         cfg.base_delay_ms = 1;
-        (s, BlockscoutEvmSource::new(cfg).unwrap())
+        (s, BlockscoutEvmSource::new(cfg).unwrap().into())
     }
 
     #[tokio::test]

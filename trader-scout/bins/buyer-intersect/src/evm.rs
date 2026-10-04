@@ -103,6 +103,7 @@ pub(crate) fn run_evm(
     }
     let mut info = setup.info.clone();
     info.history_source = "eth_getLogs token scan (RPC) + receipts".to_string();
+    info.listing_kind = "token_logs".to_string();
     // Native legs are not needed for sides; say so in the scope.
     info.trace = "not used (sides need no native leg)".to_string();
     info.archive_state = "not used (sides need no native leg)".to_string();
@@ -260,7 +261,7 @@ fn jsonl_lines(
             "chain": i.chain.name,
             "chain_id": i.chain.chain_id,
             "extraction_version": i.extraction_version,
-            "recognized": "a wallet qualifies for a token with a booked trade of the selected side: the transaction signer, a swap event of a FixtureVerified venue deployment moving the token, the signer's own net flows = one traded token and one quote asset (native/wrapped-native merged, USDG) with opposite signs; side = sign of the wallet's own token delta",
+            "recognized": "a wallet qualifies for a token with a booked trade of the selected side: the transaction signer, a swap event of a FixtureVerified venue deployment moving the token, the signer's own net flows = one traded token and one quote asset (native/wrapped-native merged, the chain's pinned stable: USDG on Robinhood, USDC on Base) with opposite signs; side = sign of the wallet's own token delta",
             "not_decoded": "venues not listed as FixtureVerified (their swap-shaped logs are counted as coverage gaps), smart-wallet/AA ownership, trades whose token was delivered to a non-signer",
             "venues": i.venues.iter().map(|x| json!({
                 "venue": x.venue, "anchor": x.anchor, "role": x.role,

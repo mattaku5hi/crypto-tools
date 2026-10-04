@@ -67,12 +67,12 @@ pub struct CoinbaseConfig {
 }
 
 impl CoinbaseConfig {
-    /// EVM runs (ADR-020 amendment): ETH-USD candles, USDG at par.
+    /// EVM runs (ADR-020 amendment): ETH-USD candles, USDG/USDC at par.
     #[must_use]
     pub fn evm() -> Self {
         Self {
             policy_products: vec!["ETH-USD"],
-            par_assumption: "usdg_par_assumed: USDG valued at exactly 1 USD (no keyless historical USDG/USD source verified)",
+            par_assumption: "usdg_par_assumed / usdc_par_assumed: USDG (Robinhood) and USDC (Base) valued at exactly 1 USD (no keyless historical stable/USD source verified)",
             ..Self::default()
         }
     }

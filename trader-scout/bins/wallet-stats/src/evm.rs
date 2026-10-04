@@ -195,7 +195,7 @@ fn print_evm_diagnostics(
 ) {
     if let Some(i) = &report.evm {
         eprintln!(
-            "wallet-stats: protocol scope ({} chain id {}, {}-quoted ledger, wei + USDG):",
+            "wallet-stats: protocol scope ({} chain id {}, {}-quoted ledger, wei + the chain's pinned stable):",
             i.chain.name,
             i.chain.chain_id.unwrap_or(0),
             i.chain.native_symbol
@@ -216,7 +216,13 @@ fn print_evm_diagnostics(
             i.chain.native_symbol,
             quotes.join(", ")
         );
-        eprintln!("  history: {}", i.history_source);
+        eprintln!(
+            "  history: {} (listing_kind={})",
+            i.history_source, i.listing_kind
+        );
+        for n in &i.coverage_notes {
+            eprintln!("  coverage note: {n}");
+        }
         eprintln!(
             "  routing: eth_getLogs -> {}; receipts/state -> {}",
             i.logs_source, i.state_source

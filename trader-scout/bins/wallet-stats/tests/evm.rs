@@ -311,16 +311,20 @@ async fn refusals_have_the_documented_exit_codes() {
     let o = run(env, args(&[]), input()).await;
     assert_eq!(o.code, 4);
     assert!(o.stderr.contains("SCOUT_BLOCKSCOUT_API_KEY"));
-    // Base: not verified yet -> exit 4 unless explicitly enabled.
-    let o = run(env_of(&m), args(&[]), format!("base:{W1}\n")).await;
+    // BSC: not verified yet -> exit 4 unless explicitly enabled.
+    let o = run(env_of(&m), args(&[]), format!("bsc:{W1}\n")).await;
     assert_eq!(o.code, 4);
     assert!(o.stderr.contains("not verified yet"), "{}", o.stderr);
     let o = run(
         env_of(&m),
         args(&["--allow-unverified-chain"]),
-        format!("base:{W1}\n"),
+        format!("bsc:{W1}\n"),
     )
     .await;
+    assert_eq!(o.code, 4);
+    assert!(o.stderr.contains("SCOUT_BSC_RPC_URL"), "{}", o.stderr);
+    // Base is enabled: without its RPC variable only that is missing.
+    let o = run(env_of(&m), args(&[]), format!("base:{W1}\n")).await;
     assert_eq!(o.code, 4);
     assert!(o.stderr.contains("SCOUT_BASE_RPC_URL"), "{}", o.stderr);
     no_secret(&o);

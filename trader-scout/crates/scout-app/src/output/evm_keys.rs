@@ -8,7 +8,7 @@
 //! "lamports". Pure and deterministic: a segment-wise rename of object keys
 //! (`realized_net_pnl_sol` -> `realized_net_pnl_eth`, `lamports` -> `wei`)
 //! plus the `route_swaps_by_quote` object, which on EVM lists the native and
-//! USDG counts only. Values are never touched except unit labels.
+//! USDG/USDC counts only (zero USDC dropped). Values are never touched except unit labels.
 
 use serde_json::Value;
 
@@ -40,7 +40,11 @@ pub fn evm_spelling(v: &mut Value, native_label: &str) {
                 if k == "route_swaps_by_quote"
                     && let Value::Object(counts) = &mut child
                 {
-                    counts.remove("usdc");
+                    // USDC is a real quote unit on Base: dropped only when
+                    // unused (Robinhood), like the Solana-only USDT.
+                    if counts.get("usdc").and_then(Value::as_u64) == Some(0) {
+                        counts.remove("usdc");
+                    }
                     counts.remove("usdt");
                 }
                 if k == "route_swaps_usdc" || k == "route_swaps_usdt" {
@@ -95,6 +99,10 @@ mod tests {
         );
         assert_eq!(v["quote_units"][0]["unit"], "eth");
         assert_eq!(v["quote_units"][1]["unit"], "usdg");
+        // A used USDC count (Base) is kept.
+        let mut b = json!({"route_swaps_by_quote": {"sol": 1, "usdc": 3, "usdt": 0}});
+        evm_spelling(&mut b, "eth");
+        assert_eq!(b["route_swaps_by_quote"], json!({"eth": 1, "usdc": 3}));
         // Values other than unit labels are never rewritten.
         assert_eq!(v["wallet"]["address"], "0xsol");
         assert_eq!(v["mint"], "solana_is_untouched");

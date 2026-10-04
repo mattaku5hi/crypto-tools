@@ -41,6 +41,7 @@ const SOLANA_UNITS: [QuoteUnit; 3] = [
     QuoteUnit::UsdtUnits,
 ];
 const EVM_UNITS: [QuoteUnit; 2] = [QuoteUnit::Wei, QuoteUnit::UsdgUnits];
+const BASE_UNITS: [QuoteUnit; 2] = [QuoteUnit::Wei, QuoteUnit::UsdcUnits];
 
 impl ChainDisplay {
     /// Display of an EVM chain profile.
@@ -60,6 +61,12 @@ impl ChainDisplay {
         }
     }
 
+    /// Display of the EVM chain with `chain_id`, `None` outside the profiles.
+    #[must_use]
+    pub fn evm_by_chain_id(chain_id: u64) -> Option<Self> {
+        EvmChainProfile::by_chain_id(chain_id).map(|p| Self::evm(&p))
+    }
+
     #[must_use]
     pub fn is_evm(&self) -> bool {
         self.family == ChainFamily::Evm
@@ -69,7 +76,12 @@ impl ChainDisplay {
     #[must_use]
     pub fn quote_units(&self) -> &'static [QuoteUnit] {
         if self.is_evm() {
-            &EVM_UNITS
+            // Base quotes in USDC (Circle), Robinhood in USDG.
+            if self.name == "base" {
+                &BASE_UNITS
+            } else {
+                &EVM_UNITS
+            }
         } else {
             &SOLANA_UNITS
         }
@@ -163,6 +175,8 @@ mod tests {
         );
         assert_eq!(d.native_unit, QuoteUnit::Wei);
         assert_eq!(d.quote_units(), &[QuoteUnit::Wei, QuoteUnit::UsdgUnits]);
+        let base = ChainDisplay::evm(&scout_evm::BASE);
+        assert_eq!(base.quote_units(), &[QuoteUnit::Wei, QuoteUnit::UsdcUnits]);
         let sol = SOLANA_DISPLAY;
         assert_eq!(
             sol.address(&[1u8; 32]),

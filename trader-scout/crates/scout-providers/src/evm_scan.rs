@@ -13,6 +13,10 @@ use alloy_primitives::{Address, B256, U256};
 use scout_core::{ChainKey, InternalTransfer, NativeSource, RawEvmTransaction};
 use scout_evm::TRANSFER_TOPIC0;
 
+use crate::evm_alchemy::{
+    ALCHEMY_COVERAGE_NOTE, ALCHEMY_LISTING_KIND, AlchemyCategory, AlchemyListing, AlchemyTransfer,
+    AlchemyTransfersSource,
+};
 use crate::evm_blockscout::{BlockscoutEvmSource, BlockscoutInternal, Listing};
 use crate::evm_rpc::{EvmRpcClient, EvmSourceError, LogFilter};
 use crate::evm_wire::{EvmReceiptInfo, malformed};
@@ -70,6 +74,7 @@ pub struct SwapScanOutput {
 #[derive(Debug, Clone, Default)]
 pub struct InternalIndex {
     by_tx: HashMap<B256, Vec<InternalTransfer>>,
+    source: Option<NativeSource>,
 }
 
 impl InternalIndex {
@@ -93,7 +98,35 @@ impl InternalIndex {
                 value: r.value,
             });
         }
-        Some(Self { by_tx })
+        Some(Self {
+            by_tx,
+            source: Some(NativeSource::Explorer),
+        })
+    }
+
+    /// Build from a COMPLETE Alchemy `internal` listing (category supported
+    /// and pagination finished). `None` when the chain does not support the
+    /// category or the listing is incomplete.
+    #[must_use]
+    pub fn from_alchemy(listing: &AlchemyListing) -> Option<Self> {
+        let rows = listing
+            .internal
+            .as_ref()
+            .filter(|_| listing.internal_complete)?;
+        let mut by_tx: HashMap<B256, Vec<InternalTransfer>> = HashMap::new();
+        for r in rows.iter().filter(|r| !r.value.is_zero() && r.to.is_some()) {
+            if let Some(to) = r.to {
+                by_tx.entry(r.hash).or_default().push(InternalTransfer {
+                    from: r.from,
+                    to,
+                    value: r.value,
+                });
+            }
+        }
+        Some(Self {
+            by_tx,
+            source: Some(NativeSource::AlchemyInternal),
+        })
     }
 
     fn for_tx(&self, hash: &B256) -> Vec<InternalTransfer> {
@@ -126,6 +159,197 @@ pub struct WalletScanOutput {
     /// `false`: internal transfers were not (completely) available; every
     /// transaction then carries `internal_transfers = None`.
     pub internal_complete: bool,
+    /// Which indexer listed the wallet (`blockscout`, `alchemy_transfers`).
+    pub listing_kind: &'static str,
+    /// Known blind spot of that indexer, `None` when there is none.
+    pub coverage_note: Option<&'static str>,
+}
+
+/// Normalized phase-1 result of a wallet listing indexer.
+#[derive(Debug, Clone)]
+pub struct IndexedWallet {
+    pub kind: &'static str,
+    /// Transactions with a known signer = the wallet (full tx fields).
+    pub signed: Vec<IndexedSigned>,
+    /// Token transfers to/from the wallet (any signer).
+    pub transfers: Vec<IndexedTransfer>,
+    /// Complete internal transfers, `None` when not (completely) available.
+    pub internal: Option<InternalIndex>,
+    pub signed_complete: bool,
+    pub transfers_complete: bool,
+    pub internal_complete: bool,
+    /// `true`: `signed` names EVERY transaction the wallet signed in the
+    /// range (Blockscout `txlist`); `false`: a token transfer from the wallet
+    /// may belong to a transaction the wallet signed that `signed` lacks.
+    pub signer_known: bool,
+    pub coverage_note: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexedSigned {
+    pub hash: B256,
+    pub block_number: u64,
+    pub time_stamp: Option<u64>,
+    pub from: Address,
+    pub to: Option<Address>,
+    pub value: U256,
+    pub gas_price: Option<U256>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexedTransfer {
+    pub hash: B256,
+    pub block_number: u64,
+    pub time_stamp: Option<u64>,
+    pub from: Address,
+}
+
+/// The wallet-history indexer of a run (ADR-020 amendment 4).
+#[derive(Debug, Clone)]
+pub enum WalletIndexer {
+    Blockscout(BlockscoutEvmSource),
+    /// Boxed: the source carries an RPC client clone.
+    AlchemyTransfers(Box<AlchemyTransfersSource>),
+}
+
+impl From<BlockscoutEvmSource> for WalletIndexer {
+    fn from(s: BlockscoutEvmSource) -> Self {
+        Self::Blockscout(s)
+    }
+}
+
+impl From<AlchemyTransfersSource> for WalletIndexer {
+    fn from(s: AlchemyTransfersSource) -> Self {
+        Self::AlchemyTransfers(Box::new(s))
+    }
+}
+
+impl WalletIndexer {
+    /// `blockscout` / `alchemy_transfers` (the report's `listing_kind`).
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Blockscout(_) => "blockscout",
+            Self::AlchemyTransfers(_) => ALCHEMY_LISTING_KIND,
+        }
+    }
+
+    /// The indexer's known blind spot for reports, if any.
+    #[must_use]
+    pub fn coverage_note(&self) -> Option<&'static str> {
+        match self {
+            Self::Blockscout(_) => None,
+            Self::AlchemyTransfers(_) => Some(ALCHEMY_COVERAGE_NOTE),
+        }
+    }
+
+    /// Indexer-side HTTP attempts not already counted by the shared RPC
+    /// client (Blockscout is a separate HTTP service; Alchemy rides the RPC).
+    #[must_use]
+    pub fn own_requests_made(&self) -> u64 {
+        match self {
+            Self::Blockscout(b) => b.total_requests_made(),
+            Self::AlchemyTransfers(_) => 0,
+        }
+    }
+
+    async fn list(
+        &self,
+        wallet: Address,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<IndexedWallet, EvmSourceError> {
+        match self {
+            Self::Blockscout(src) => {
+                let txlist = src.txlist(wallet, from_block, to_block).await?;
+                let tokentx = src
+                    .token_transfers(wallet, None, from_block, to_block)
+                    .await?;
+                let internal = src.internal_transfers(wallet, from_block, to_block).await?;
+                Ok(IndexedWallet {
+                    kind: self.kind(),
+                    signed: txlist
+                        .rows
+                        .iter()
+                        .map(|t| IndexedSigned {
+                            hash: t.hash,
+                            block_number: t.block_number,
+                            time_stamp: Some(t.time_stamp),
+                            from: t.from,
+                            to: t.to,
+                            value: t.value,
+                            gas_price: Some(t.gas_price),
+                        })
+                        .collect(),
+                    transfers: tokentx
+                        .rows
+                        .iter()
+                        .map(|t| IndexedTransfer {
+                            hash: t.hash,
+                            block_number: t.block_number,
+                            time_stamp: Some(t.time_stamp),
+                            from: t.from,
+                        })
+                        .collect(),
+                    internal: InternalIndex::from_complete_listing(&internal),
+                    signed_complete: txlist.complete,
+                    transfers_complete: tokentx.complete,
+                    internal_complete: internal.complete,
+                    signer_known: true,
+                    coverage_note: None,
+                })
+            }
+            Self::AlchemyTransfers(src) => {
+                let l = src.list(wallet, from_block, to_block).await?;
+                let internal = InternalIndex::from_alchemy(&l);
+                let mut signed = Vec::new();
+                let mut transfers = Vec::new();
+                for t in &l.transfers {
+                    transfers_or_signed(t, wallet, &mut signed, &mut transfers);
+                }
+                Ok(IndexedWallet {
+                    kind: self.kind(),
+                    signed,
+                    transfers,
+                    internal,
+                    signed_complete: l.transfers_complete,
+                    transfers_complete: l.transfers_complete,
+                    internal_complete: l.internal_complete,
+                    signer_known: false,
+                    coverage_note: Some(ALCHEMY_COVERAGE_NOTE),
+                })
+            }
+        }
+    }
+}
+
+/// An `external` row sent by the wallet is a transaction it signed (top-level
+/// value transfers have `from == tx.from`); every other row only names the
+/// transaction (`erc20` rows keep their sender for the sell-candidate test).
+fn transfers_or_signed(
+    t: &AlchemyTransfer,
+    wallet: Address,
+    signed: &mut Vec<IndexedSigned>,
+    transfers: &mut Vec<IndexedTransfer>,
+) {
+    match t.category {
+        AlchemyCategory::External if t.from == wallet => signed.push(IndexedSigned {
+            hash: t.hash,
+            block_number: t.block_number,
+            time_stamp: t.time_stamp,
+            from: t.from,
+            to: t.to,
+            value: t.value,
+            gas_price: None,
+        }),
+        AlchemyCategory::External | AlchemyCategory::Erc20 => transfers.push(IndexedTransfer {
+            hash: t.hash,
+            block_number: t.block_number,
+            time_stamp: t.time_stamp,
+            from: t.from,
+        }),
+        AlchemyCategory::Internal => {}
+    }
 }
 
 /// Assembles raw transactions for one verified chain.
@@ -294,7 +518,7 @@ impl EvmHistoryScanner {
     /// [`Self::assemble_listing`]. See those for the request costs.
     pub async fn scan_wallet(
         &self,
-        source: &BlockscoutEvmSource,
+        source: &WalletIndexer,
         wallet: Address,
         from_block: u64,
         to_block: u64,
@@ -305,37 +529,34 @@ impl EvmHistoryScanner {
         self.assemble_listing(listing).await
     }
 
-    /// Phase 1 (explorer requests only): over the block range `[from, to]`
+    /// Phase 1 (indexer requests only): over the block range `[from, to]`
     ///
-    /// - `txlist`: the wallet's own signed transactions (failed included);
-    ///   these rows carry from/to/value/gas price/block, so NO
-    ///   `eth_getTransactionByHash` is made for them;
-    /// - `tokentx`: every ERC-20 transfer to/from the wallet, which also
-    ///   names transactions the wallet did NOT sign (needed for inventory
-    ///   continuity); their sender/recipient come from the receipt;
-    /// - `txlistinternal`: native internal transfers, used only when the
-    ///   explorer reports complete processing.
+    /// - Blockscout: `txlist` (the wallet's own signed transactions, failed
+    ///   included; these rows carry from/to/value/gas price/block, so NO
+    ///   `eth_getTransactionByHash` is made for them), `tokentx` (every ERC-20
+    ///   transfer to/from the wallet, which also names transactions the wallet
+    ///   did NOT sign) and `txlistinternal` (only when the explorer reports
+    ///   complete processing);
+    /// - Alchemy transfers: `external` + `erc20` (+ `internal` where the chain
+    ///   supports it) from/to the wallet. The signer of a transaction is known
+    ///   only from an `external` row sent by the wallet; a hash with token
+    ///   transfers FROM the wallet and no such row may still be signed by it
+    ///   (a token sell with zero ETH value), which the receipt decides at the
+    ///   cost of one `eth_getTransactionByHash` (counted in the plan).
     ///
-    /// Hashes are deduplicated and the explorer's block timestamps seed the
+    /// Hashes are deduplicated and the indexer's block timestamps seed the
     /// block-time cache. Nothing is fetched over RPC yet, so the cost of
     /// phase 2 can be planned ([`WalletListing::plan`]) and refused first.
     pub async fn list_wallet(
         &self,
-        source: &BlockscoutEvmSource,
+        source: &WalletIndexer,
         wallet: Address,
         from_block: u64,
         to_block: u64,
     ) -> Result<WalletListing, EvmSourceError> {
-        let txlist = source.txlist(wallet, from_block, to_block).await?;
-        let tokentx = source
-            .token_transfers(wallet, None, from_block, to_block)
-            .await?;
-        let internal = source
-            .internal_transfers(wallet, from_block, to_block)
-            .await?;
-        let index = InternalIndex::from_complete_listing(&internal);
+        let indexed = source.list(wallet, from_block, to_block).await?;
         let mut described: HashMap<B256, Described> = HashMap::new();
-        for t in txlist.rows.iter().filter(|t| t.from == wallet) {
+        for t in indexed.signed.iter().filter(|t| t.from == wallet) {
             described.insert(
                 t.hash,
                 Described {
@@ -351,38 +572,56 @@ impl EvmHistoryScanner {
         }
         let own: HashSet<B256> = described.keys().copied().collect();
         let mut prefer_block: HashSet<B256> = HashSet::new();
-        for t in &tokentx.rows {
+        let mut signer_lookups: HashSet<B256> = HashSet::new();
+        for t in &indexed.transfers {
             described.entry(t.hash).or_insert(Described {
                 block_number: t.block_number,
                 kind: DescKind::TokenOnly,
             });
-            // A signed transaction in which the wallet SENDS a token may be
-            // a sell: its block's receipts are fetched whole (once) so the
-            // native-leg sole-touch check needs no second request.
-            if t.from == wallet && own.contains(&t.hash) {
+            if t.from != wallet {
+                continue;
+            }
+            if own.contains(&t.hash) {
+                // A signed transaction in which the wallet SENDS a token may
+                // be a sell: its block's receipts are fetched whole (once) so
+                // the native-leg sole-touch check needs no second request.
                 prefer_block.insert(t.hash);
+            } else if !indexed.signer_known {
+                // Maybe signed by the wallet (receipt decides): same block
+                // policy, plus a possible transaction lookup for `value`.
+                prefer_block.insert(t.hash);
+                signer_lookups.insert(t.hash);
             }
         }
         let mut hashes: Vec<B256> = described.keys().copied().collect();
         hashes.sort();
         let token_only = hashes.len().saturating_sub(own.len());
         self.rpc.seed_block_timestamps(
-            txlist
-                .rows
+            indexed
+                .signed
                 .iter()
                 .map(|t| (t.block_number, t.time_stamp))
-                .chain(tokentx.rows.iter().map(|t| (t.block_number, t.time_stamp))),
+                .chain(
+                    indexed
+                        .transfers
+                        .iter()
+                        .map(|t| (t.block_number, t.time_stamp)),
+                )
+                .filter_map(|(b, ts)| ts.map(|ts| (b, ts))),
         );
         Ok(WalletListing {
             wallet,
             hashes,
             described,
             prefer_block,
-            index,
-            txlist_complete: txlist.complete,
-            tokentx_complete: tokentx.complete,
-            internal_complete: internal.complete,
+            index: indexed.internal,
+            txlist_complete: indexed.signed_complete,
+            tokentx_complete: indexed.transfers_complete,
+            internal_complete: indexed.internal_complete,
             token_only,
+            signer_lookups: signer_lookups.len(),
+            listing_kind: indexed.kind,
+            coverage_note: indexed.coverage_note,
         })
     }
 
@@ -413,6 +652,8 @@ impl EvmHistoryScanner {
             listed_transactions: listing.hashes.len(),
             token_only_transactions: listing.token_only,
             internal_complete: listing.index.is_some(),
+            listing_kind: listing.listing_kind,
+            coverage_note: listing.coverage_note,
         })
     }
 
@@ -480,7 +721,7 @@ impl EvmHistoryScanner {
                             value: *value,
                             block_number: *block_number,
                             index: None,
-                            gas_price: Some(*gas_price),
+                            gas_price: *gas_price,
                         },
                     );
                 }
@@ -633,7 +874,7 @@ impl EvmHistoryScanner {
                 l1_fee: r.l1_fee,
                 logs: r.logs,
                 internal_transfers: internals.map(|i| i.for_tx(h)),
-                native_source: internals.map(|_| NativeSource::Explorer),
+                native_source: internals.and_then(|i| i.source),
                 native_balance_diff: None,
             });
         }
@@ -661,7 +902,7 @@ enum DescKind {
         from: Address,
         to: Option<Address>,
         value: U256,
-        gas_price: U256,
+        gas_price: Option<U256>,
     },
     /// Named by `tokentx` only (the wallet did not sign it).
     TokenOnly,
@@ -687,6 +928,12 @@ pub struct WalletListing {
     pub internal_complete: bool,
     /// Transactions only `tokentx` named (the wallet did not sign them).
     pub token_only: usize,
+    /// Token-only hashes with a transfer FROM the wallet whose signer the
+    /// indexer could not tell (Alchemy): each may need one
+    /// `eth_getTransactionByHash`. Always 0 for Blockscout.
+    pub signer_lookups: usize,
+    pub listing_kind: &'static str,
+    pub coverage_note: Option<&'static str>,
 }
 
 impl WalletListing {
@@ -725,6 +972,7 @@ impl WalletListing {
             tx_receipt_calls,
             block_receipt_calls,
             candidate_sells: u64::try_from(self.prefer_block.len()).unwrap_or(u64::MAX),
+            tx_lookups: u64::try_from(self.signer_lookups).unwrap_or(u64::MAX),
         }
     }
 }
@@ -738,6 +986,9 @@ pub struct WalletCostPlan {
     /// Signed transactions in which the wallet sent a token: each MAY be a
     /// native-quoted sell needing two archive `eth_getBalance` calls.
     pub candidate_sells: u64,
+    /// Upper bound of `eth_getTransactionByHash` for hashes whose signer the
+    /// indexer could not name (the wallet signed them: need `tx.value`).
+    pub tx_lookups: u64,
 }
 
 impl WalletCostPlan {
@@ -754,6 +1005,7 @@ impl WalletCostPlan {
     #[must_use]
     pub fn max_requests(&self) -> u64 {
         self.base_requests()
+            .saturating_add(self.tx_lookups)
             .saturating_add(self.candidate_sells.saturating_mul(2))
     }
 
@@ -763,6 +1015,7 @@ impl WalletCostPlan {
         BTreeMap::from([
             ("eth_getTransactionReceipt", self.tx_receipt_calls),
             ("eth_getBlockReceipts", self.block_receipt_calls),
+            ("eth_getTransactionByHash(<=)", self.tx_lookups),
             ("eth_getBalance(<=)", self.candidate_sells.saturating_mul(2)),
         ])
     }
@@ -1023,7 +1276,7 @@ mod tests {
                 .await;
             let mut cfg = BlockscoutEvmConfig::new(4663, BlockscoutApiKey::new("k"));
             cfg.base_url = bs.uri();
-            let src = BlockscoutEvmSource::new(cfg).unwrap();
+            let src: WalletIndexer = BlockscoutEvmSource::new(cfg).unwrap().into();
             let out = sc
                 .scan_wallet(&src, WALLET.parse().unwrap(), 0, 100)
                 .await
@@ -1089,7 +1342,7 @@ mod tests {
             .await;
         let mut cfg = BlockscoutEvmConfig::new(4663, BlockscoutApiKey::new("k"));
         cfg.base_url = bs.uri();
-        let src = BlockscoutEvmSource::new(cfg).unwrap();
+        let src: WalletIndexer = BlockscoutEvmSource::new(cfg).unwrap().into();
         // a 864,000-block window: the scan must not care
         let out = sc
             .scan_wallet(&src, WALLET.parse().unwrap(), 1_000, 865_000)
@@ -1148,7 +1401,7 @@ mod tests {
             .await;
         let mut cfg = BlockscoutEvmConfig::new(4663, BlockscoutApiKey::new("k"));
         cfg.base_url = bs.uri();
-        let src = BlockscoutEvmSource::new(cfg).unwrap();
+        let src: WalletIndexer = BlockscoutEvmSource::new(cfg).unwrap().into();
         let listing = sc
             .list_wallet(&src, WALLET.parse().unwrap(), 0, 100)
             .await
@@ -1214,7 +1467,7 @@ mod tests {
         cfg.base_url = bs.uri();
         cfg.page_size = 1;
         cfg.max_pages = 2;
-        let src = BlockscoutEvmSource::new(cfg).unwrap();
+        let src: WalletIndexer = BlockscoutEvmSource::new(cfg).unwrap().into();
         let out = sc
             .scan_wallet(&src, WALLET.parse().unwrap(), 0, 100)
             .await

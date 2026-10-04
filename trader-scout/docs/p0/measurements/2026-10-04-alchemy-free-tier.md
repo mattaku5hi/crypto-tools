@@ -20,3 +20,15 @@ Consequences for ADR-020:
   BSC ≈ 4.5 s, Robinhood ≈ 1 s of chain time per request) — feasible for short windows; long BSC
   windows need Pay As You Go or a different log source (the keyless Robinhood public RPC allows
   10,000-result queries without a tight range cap).
+
+## Addendum: `alchemy_getAssetTransfers` (Enhanced API), measured by the owner 2026-10-04
+
+| Capability | Robinhood | Base | BSC |
+|---|---|---|---|
+| categories `external`, `erc20` (`fromAddress`/`toAddress`, `pageKey`, `order`, `fromBlock`/`toBlock`, `withMetadata` block timestamps) | works | works | works |
+| category `internal` | -32602 "The 'internal' category is not supported for this network" | works | -32602 (same) |
+| Blockscout PRO, owner's key | works | HTTP 402 (paid plan) | not supported |
+
+Used as the wallet-listing indexer where Blockscout is not available (ADR-020 amendment 4). Not verified: whether reverted
+top-level calls (failed swap / approve with zero value) are listed; whether `internal` rows exclude reverted frames.
+Base USDC (Circle official): `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, `decimals()` checked by each run's preflight.

@@ -69,8 +69,15 @@ fn buyer_intersect_valid_input_no_provider_is_exit_4() {
     let input = "base:0x1111111111111111111111111111111111111111\n\
                  base:0x2222222222222222222222222222222222222222\n";
     let (code, _stdout, stderr) = run_with_stdin(bin, &["--input", "-"], input);
-    // Base is not verified yet (ADR-020 step 2): refused with exit 4 before
-    // any request, never a fabricated empty success.
+    // Base is enabled (ADR-020 amendment 4) but has no RPC configured here:
+    // refused with exit 4 before any request.
+    assert_eq!(code, 4, "stderr: {stderr}");
+    assert!(stderr.contains("SCOUT_BASE_RPC_URL"), "{stderr}");
+    // BSC venues/quotes are not verified yet: refused with exit 4, never a
+    // fabricated empty success.
+    let input = "bsc:0x1111111111111111111111111111111111111111\n\
+                 bsc:0x2222222222222222222222222222222222222222\n";
+    let (code, _stdout, stderr) = run_with_stdin(bin, &["--input", "-"], input);
     assert_eq!(code, 4, "stderr: {stderr}");
     assert!(stderr.contains("not verified yet"), "{stderr}");
 }

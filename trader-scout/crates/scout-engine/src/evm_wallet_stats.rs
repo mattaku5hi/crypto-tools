@@ -22,7 +22,7 @@ use alloy_primitives::Address;
 use scout_api::ProviderError;
 use scout_core::RawEvmTransaction;
 use scout_dex_evm::VENUE_DEPLOYMENTS;
-use scout_providers::{BlockscoutEvmSource, EvmHistoryScanner, EvmSourceError, NativeLegResolver};
+use scout_providers::{EvmHistoryScanner, EvmSourceError, NativeLegResolver, WalletIndexer};
 use tokio_util::sync::CancellationToken;
 
 use crate::analysis_window::AnalysisWindow;
@@ -77,6 +77,11 @@ pub struct EvmRunInfo {
     pub quote_assets: Vec<EvmQuoteInfo>,
     /// How the wallet's history was listed and assembled.
     pub history_source: String,
+    /// Which indexer listed the wallets (`blockscout`, `alchemy_transfers`,
+    /// `token_logs` for buyer-intersect).
+    pub listing_kind: String,
+    /// Known blind spots of the listing indexer (never silent completeness).
+    pub coverage_notes: Vec<String>,
     /// Endpoint class serving `eth_getLogs` (never a URL): `keyed rpc`,
     /// `public rpc`, a separate logs endpoint, or `not used`.
     pub logs_source: String,
@@ -132,6 +137,8 @@ impl EvmRunInfo {
             venues,
             quote_assets,
             history_source: history_source.into(),
+            listing_kind: "not reported".to_string(),
+            coverage_notes: Vec::new(),
             logs_source: "not reported".to_string(),
             state_source: "not reported".to_string(),
             rate_limits: Vec::new(),
@@ -167,7 +174,8 @@ impl EvmRunInfo {
 /// Everything a stats run reads.
 pub struct EvmStatsSources<'a> {
     pub scanner: &'a EvmHistoryScanner,
-    pub explorer: &'a BlockscoutEvmSource,
+    /// The wallet-history indexer (Blockscout or Alchemy transfers).
+    pub explorer: &'a WalletIndexer,
     /// `None` = native legs are not resolved (logs and `tx.value` only).
     pub resolver: Option<&'a NativeLegResolver>,
     /// The run's `--max-requests` (RPC side). With a limit, a wallet whose
@@ -281,9 +289,24 @@ pub async fn run_evm_wallet_stats(
 
     let mut info = EvmRunInfo::from_config(
         cfg,
-        "indexer listings (txlist + tokentx + txlistinternal, wallet-centric, block-range \
-         restricted) + RPC receipts",
+        match sources.explorer {
+            WalletIndexer::Blockscout(_) => {
+                "indexer listings (blockscout txlist + tokentx + txlistinternal, wallet-centric, \
+                 block-range restricted) + RPC receipts"
+            }
+            WalletIndexer::AlchemyTransfers(_) => {
+                "indexer listings (alchemy_getAssetTransfers external + erc20 + internal where \
+                 supported, from/to the wallet, block-range restricted) + RPC receipts"
+            }
+        },
     );
+    info.listing_kind = sources.explorer.kind().to_string();
+    info.coverage_notes = sources
+        .explorer
+        .coverage_note()
+        .map(str::to_string)
+        .into_iter()
+        .collect();
     info.logs_source =
         "not used (wallet scans use indexer listings, never window getLogs)".to_string();
     info.block_range = blocks;
@@ -519,14 +542,14 @@ async fn scan_evm_wallet(
     let mut reasons = Vec::new();
     if !out.txlist_complete {
         reasons.push(
-            "explorer txlist hit its page cap: part of the wallet's transactions in the window \
+            "indexer listing of signed transactions hit its page cap: part of the wallet's transactions in the window \
              was not seen (figures are a subset; opening inventory may be unknown)"
                 .to_string(),
         );
     }
     if !out.tokentx_complete {
         reasons.push(
-            "explorer tokentx hit its page cap: part of the wallet's token transfers in the \
+            "indexer listing of token transfers hit its page cap: part of the wallet's token transfers in the \
              window was not seen (figures are a subset; inventory continuity is not proven)"
                 .to_string(),
         );

@@ -202,7 +202,7 @@ struct Args {
     no_valuation: bool,
 
     /// EVM only: run a chain whose venue/quote set is not verified yet
-    /// (Base, BSC). Without it such a run exits 4. Every trade there is
+    /// (BSC). Without it such a run exits 4. Every trade there is
     /// IdlOnly, so the run is partial.
     #[arg(long)]
     allow_unverified_chain: bool,

@@ -61,9 +61,9 @@ use crate::evm_trade_extraction::{
 use scout_dex_solana::{TradeSide, VariantVerification};
 use scout_ledger::QuoteUnit;
 
-pub const EVM_WALLET_LEDGER_VERSION: &str = "evm-wallet-ledger/1 (ADR-020 step 2: owner-keyed net-flow trades of the signer, wei + USDG quote units, gas capitalized once for native-quoted trades, Unknown native legs, ERC-721 position NFTs are not flows, shared FIFO/episode core with the Solana ledger)";
+pub const EVM_WALLET_LEDGER_VERSION: &str = "evm-wallet-ledger/1 (ADR-020 step 2: owner-keyed net-flow trades of the signer, wei + USDG (Robinhood) / USDC (Base) quote units, gas capitalized once for native-quoted trades, Unknown native legs, ERC-721 position NFTs are not flows, shared FIFO/episode core with the Solana ledger)";
 
-pub const EVM_WALLET_LEDGER_SCOPE: &str = "quote units: native ETH (wei, WETH merged; 18 dp), USDG (6 dp raw, par in USD); no FX, per-unit PnL never summed; trade = tx signer, a verified venue swap event (Uniswap v4 PoolManager FixtureVerified on Robinhood) moving the token, exactly one traded token and one quote asset with opposite signs in the signer's own net flows; gas = fee payer only";
+pub const EVM_WALLET_LEDGER_SCOPE: &str = "quote units: native ETH (wei, WETH merged; 18 dp), USDG on Robinhood / USDC on Base (6 dp raw, par in USD); no FX, per-unit PnL never summed; trade = tx signer, a verified venue swap event (Uniswap v4 PoolManager FixtureVerified on Robinhood) moving the token, exactly one traded token and one quote asset with opposite signs in the signer's own net flows; gas = fee payer only";
 
 /// One booked EVM trade (audit trail; the EVM analogue of `RouteSwapRecord`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,7 +84,7 @@ pub struct EvmTradeRecord {
     pub fee_wei: Option<u128>,
     pub venue: &'static str,
     pub venue_verification: &'static str,
-    /// `not_involved`, `trace`, `explorer_internal`, `balance_diff`,
+    /// `not_involved`, `trace`, `explorer_internal`, `alchemy_internal`, `balance_diff`,
     /// `logs_and_value_only` (how the native leg was established).
     pub native_leg: &'static str,
 }
@@ -118,7 +118,11 @@ fn unit_of(cfg: &EvmExtractionConfig, quote: QuoteAsset) -> Option<QuoteUnit> {
             .quote_tokens
             .iter()
             .find(|q| q.address == a)
-            .and_then(|q| (q.symbol == "USDG").then_some(QuoteUnit::UsdgUnits)),
+            .and_then(|q| match q.symbol.as_str() {
+                "USDG" => Some(QuoteUnit::UsdgUnits),
+                "USDC" => Some(QuoteUnit::UsdcUnits),
+                _ => None,
+            }),
     }
 }
 
