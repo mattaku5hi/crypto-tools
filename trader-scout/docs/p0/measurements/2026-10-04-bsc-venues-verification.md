@@ -160,3 +160,16 @@ evm-capture --chain bsc --rpc-url-env SCOUT_BSC_RPC_URL --swaps all \
 window where four.meme is busy; a range cap of 10 blocks (Alchemy free tier) is handled by the span probe, set
 `SCOUT_BSC_LOGS_RPC_URL` to an endpoint without the cap for long windows. Then run
 `cargo test -p scout-engine --test evm_bsc_venues -- --nocapture` and look for `PROMOTABLE` lines.
+
+## four.meme native surcharge — refund hypothesis tested live (orchestrator, 2026-10-04)
+
+Archive balance difference (Alchemy BSC) for the two direct launch buys, W touched by no other tx
+in the block: tx `0x72c96fae…` value 2,361,000,000,000 wei, `cost+fee` 2,315,155,339,802, W paid
+(balance diff − gas) 2,360,999,999,996 (refund 4 wei); tx `0x06ab2e52…` value 1,780,000,000,000,
+`cost+fee` 1,619,639,639,636, paid 1,779,999,999,996 (refund 4 wei). **No refund**: the wallet really
+pays ~2–10 % above `cost+fee` in these launch-window buys (a surcharge not represented in the event).
+Consequence: the wallet-side consideration (ADR-013/020: wallet's own deltas, exact via balance-diff)
+already books the true cost incl. the surcharge; for venue *evidence* the quote side follows the
+ADR-015/017 standard ("never better for the wallet than the event" — here the wallet pays more), and
+the token side is exact 4/4 → four.meme V2 promotable as evidence (n = 4, small; re-check on more
+samples). four.meme V1 has no samples (stays IdlOnly).
