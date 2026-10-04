@@ -189,13 +189,17 @@ pub fn check_log_scan_feasible(
 }
 
 /// Per-method cost table of a limiter.
-type CostFn = fn(&str) -> u64;
+pub type CostFn = fn(&str) -> u64;
 
-fn make_limiter(
+/// The token-bucket limiter (and optional per-method cost table) the CLIs
+/// build for one endpoint from `--rpc-rps` / `--rpc-cu-per-sec`; `public`
+/// caps a keyless endpoint at [`PUBLIC_RPC_RPS`]. Halvings are reported
+/// through `on_halve` (URL-free text). Shared with `evm-capture`.
+pub fn make_limiter(
     net: &EvmNetOptions,
     public: bool,
     label: &str,
-    on_halve: &Arc<dyn Fn(String) + Send + Sync>,
+    on_halve: &LimiterNotice,
 ) -> (Arc<RateLimiter>, Option<CostFn>) {
     let hook_label = label.to_string();
     let notify = Arc::clone(on_halve);

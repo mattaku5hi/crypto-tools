@@ -15,6 +15,15 @@
 //!   the emitter. A pool nobody admitted stays a coverage gap
 //!   ([`GateOutcome::UngatedEmitter`]).
 //!
+//! Aerodrome (Base) pools are CREATE2 minimal-proxy clones, so no init-code
+//! hash applies: v2 pools are admitted by `factory()` plus the factory's
+//! `getPool(token0, token1, stable)` record, Slipstream CL pools by one of
+//! the three pinned factory generations plus `getPool(token0, token1,
+//! tickSpacing)`. Their swap topics are shared with Uniswap (Slipstream =
+//! v3's; Aerodrome v2 = its own Solidly-style topic, see
+//! [`crate::AERODROME_V2_SWAP_TOPIC0`]), so the pool's admitted venue, not
+//! the topic, says which family it is.
+//!
 //! Every deployment starts at [`VenueVerification::IdlOnly`]: addresses come
 //! from vendor docs (research doc §2), ABI shape is decoded, but no live
 //! golden fixture exists yet. Flip to `FixtureVerified` only together with a
@@ -40,7 +49,10 @@ use crate::uniswap::{
     V3_SWAP_TOPIC0, V4_SWAP_TOPIC0, decode_v3_swap, decode_v4_swap, v2_pair_address_create2,
     v3_pool_address_create2,
 };
-use crate::v2_swap::{V2_SWAP_EVENT_SIGNATURE, decode_v2_style_swap};
+use crate::v2_swap::{
+    AERODROME_V2_SWAP_TOPIC0, V2_SWAP_EVENT_SIGNATURE, decode_aerodrome_v2_swap,
+    decode_v2_style_swap,
+};
 
 /// Evidence level of a venue deployment (invariant #16).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -66,6 +78,13 @@ pub enum SwapVenue {
     UniswapV2,
     UniswapV3,
     UniswapV4,
+    /// Aerodrome (Velodrome-style) v2 pools: volatile/stable, CREATE2 clones
+    /// admitted through the factory's `getPool(token0, token1, stable)`.
+    AerodromeV2,
+    /// Aerodrome Slipstream CL pools (Uniswap-v3-shaped `Swap`), CREATE2
+    /// clones admitted through `getPool(token0, token1, tickSpacing)`; several
+    /// factory generations are live.
+    AerodromeSlipstream,
 }
 
 impl SwapVenue {
@@ -75,7 +94,40 @@ impl SwapVenue {
             Self::UniswapV2 => "uniswap_v2_style",
             Self::UniswapV3 => "uniswap_v3",
             Self::UniswapV4 => "uniswap_v4",
+            Self::AerodromeV2 => "aerodrome_v2",
+            Self::AerodromeSlipstream => "aerodrome_slipstream",
         }
+    }
+
+    /// Venues that can emit the swap event of `topic0` (several pool families
+    /// share a topic): the address gate decides which one a pool belongs to.
+    #[must_use]
+    pub fn for_topic(topic0: &B256) -> &'static [SwapVenue] {
+        if *topic0 == V4_SWAP_TOPIC0 {
+            &[SwapVenue::UniswapV4]
+        } else if *topic0 == V3_SWAP_TOPIC0 {
+            &[SwapVenue::UniswapV3, SwapVenue::AerodromeSlipstream]
+        } else if *topic0 == V2_SWAP_EVENT_SIGNATURE {
+            &[SwapVenue::UniswapV2, SwapVenue::AerodromeV2]
+        } else if *topic0 == AERODROME_V2_SWAP_TOPIC0 {
+            &[SwapVenue::AerodromeV2]
+        } else {
+            &[]
+        }
+    }
+
+    /// `true` when both venues can emit the same swap topic (a pool of either
+    /// is told apart by its factory).
+    #[must_use]
+    pub fn shares_topic_with(self, other: SwapVenue) -> bool {
+        self == other
+            || matches!(
+                (self, other),
+                (Self::UniswapV3, Self::AerodromeSlipstream)
+                    | (Self::AerodromeSlipstream, Self::UniswapV3)
+                    | (Self::UniswapV2, Self::AerodromeV2)
+                    | (Self::AerodromeV2, Self::UniswapV2)
+            )
     }
 }
 
@@ -193,11 +245,20 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         address!("498581ff718922c3f8e6a244956af099b2652b2b"),
         AnchorRole::SwapEmitter,
     ),
-    dep(
-        8453,
-        SwapVenue::UniswapV3,
-        address!("33128a8fC17869897dcE68Ed026d694621f6FDfD"),
-        AnchorRole::PoolFactory,
+    // Uniswap v3 factory on Base (developers.uniswap.org v3-base-deployments,
+    // research doc 2.2). The canonical init-code hash is a CANDIDATE: it
+    // binds admission to CREATE2 (cross-checked with the factory's record
+    // when fetched). `evm_base_venues.rs` asserts it reproduces every
+    // recorded pool of this factory; if it does not, drop the hash (the
+    // factory record then decides) before flipping to `dep_fixture_verified`.
+    with_init_code_hash(
+        dep(
+            8453,
+            SwapVenue::UniswapV3,
+            address!("33128a8fC17869897dcE68Ed026d694621f6FDfD"),
+            AnchorRole::PoolFactory,
+        ),
+        UNISWAP_V3_CANONICAL_INIT_CODE_HASH,
     ),
     // Uniswap v2 factory on Base (developers.uniswap.org v2 deployments,
     // fetched 2026-10-04; Router02 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24).
@@ -205,6 +266,42 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         8453,
         SwapVenue::UniswapV2,
         address!("8909Dc15e40173Ff4699343b6eB8132c65e18eC6"),
+        AnchorRole::PoolFactory,
+    ),
+    // Aerodrome v2 (Velodrome-style) PoolFactory on Base (research doc 2.2,
+    // github.com/aerodrome-finance/contracts README, DOC). Pools are CREATE2
+    // minimal-proxy clones, admitted through the factory's
+    // `getPool(token0, token1, stable)` record (no init-code hash). IdlOnly
+    // until `evm_base_*` fixtures pass `evm_base_venues.rs`; then flip this
+    // row to `dep_fixture_verified`.
+    dep(
+        8453,
+        SwapVenue::AerodromeV2,
+        address!("420DD381b31aEf6683db6B902084cB0FFECe40Da"),
+        AnchorRole::PoolFactory,
+    ),
+    // Aerodrome Slipstream CL PoolFactory generations on Base (research doc
+    // 2.2, github.com/aerodrome-finance/slipstream README, DOC): initial,
+    // "Gauge Caps", "Gauges V3". Admitted through the factory's
+    // `getPool(token0, token1, tickSpacing)` record. IdlOnly until verified
+    // (flip each row to `dep_fixture_verified` once a fixture of THAT
+    // generation passes).
+    dep(
+        8453,
+        SwapVenue::AerodromeSlipstream,
+        address!("5e7BB104d84c7CB9B682AaC2F3d509f5F406809A"),
+        AnchorRole::PoolFactory,
+    ),
+    dep(
+        8453,
+        SwapVenue::AerodromeSlipstream,
+        address!("aDe65c38CD4849aDBA595a4323a8C7DdfE89716a"),
+        AnchorRole::PoolFactory,
+    ),
+    dep(
+        8453,
+        SwapVenue::AerodromeSlipstream,
+        address!("f8f2eB4940CFE7d13603DDDD87f123820Fc061Ef"),
         AnchorRole::PoolFactory,
     ),
     // BSC (56)
@@ -278,7 +375,12 @@ pub struct PoolMetadata {
     pub token1: Option<Address>,
     /// `emitter.fee()` (v3).
     pub fee: Option<u32>,
-    /// `factory.getPool(token0, token1, fee)` / `getPair(token0, token1)`.
+    /// `emitter.stable()` (Aerodrome v2).
+    pub stable: Option<bool>,
+    /// `emitter.tickSpacing()` (Slipstream).
+    pub tick_spacing: Option<i32>,
+    /// `factory.getPool(token0, token1, fee|stable|tickSpacing)` /
+    /// `getPair(token0, token1)`.
     pub registered_pool: Option<Address>,
 }
 
@@ -381,6 +483,21 @@ impl SwapVenueGate {
             .is_some_and(|d| d.init_code_hash.is_none())
     }
 
+    /// The pinned pool family of `factory` on this chain among the venues
+    /// that share `venue`'s swap topic (e.g. a Slipstream factory for a
+    /// Uniswap-v3-topic emitter); `None` = not a pinned factory of that
+    /// family. Lets lookups read the right identity (`stable()`/`tickSpacing()`).
+    #[must_use]
+    pub fn factory_venue(&self, venue: SwapVenue, factory: Address) -> Option<SwapVenue> {
+        self.deployments()
+            .find(|d| {
+                d.role == AnchorRole::PoolFactory
+                    && d.anchor == factory
+                    && d.venue.shares_topic_with(venue)
+            })
+            .map(|d| d.venue)
+    }
+
     /// Swap-shaped v2/v3 emitters of `logs` that could still be admitted:
     /// not admitted, not refused yet, and the chain pins a factory for the
     /// venue. Sorted, deduplicated.
@@ -391,15 +508,16 @@ impl SwapVenueGate {
     ) -> Vec<(SwapVenue, Address)> {
         let mut out = std::collections::BTreeSet::new();
         for log in logs {
-            let venue = match log.topics.first() {
-                Some(t) if *t == V3_SWAP_TOPIC0 => SwapVenue::UniswapV3,
-                Some(t) if *t == V2_SWAP_EVENT_SIGNATURE => SwapVenue::UniswapV2,
-                _ => continue,
+            let candidates = log.topics.first().map_or(&[][..], SwapVenue::for_topic);
+            // v4 is the PoolManager (no pool lookup); other topics are not swaps.
+            let Some(venue) = candidates
+                .iter()
+                .copied()
+                .find(|v| *v != SwapVenue::UniswapV4 && self.has_factory(*v))
+            else {
+                continue;
             };
-            if !self.has_factory(venue)
-                || self.pools.contains_key(&log.address)
-                || self.rejected.contains_key(&log.address)
-            {
+            if self.pools.contains_key(&log.address) || self.rejected.contains_key(&log.address) {
                 continue;
             }
             out.insert((venue, log.address));
@@ -457,14 +575,21 @@ impl SwapVenueGate {
         if t0 >= t1 {
             return Err(PoolRejection::IncompleteIdentity);
         }
-        if let Some(hash) = d.init_code_hash {
+        // Aerodrome pools are minimal-proxy clones: no init-code hash, the
+        // factory's record decides.
+        let hash = d
+            .init_code_hash
+            .filter(|_| matches!(venue, SwapVenue::UniswapV2 | SwapVenue::UniswapV3));
+        if let Some(hash) = hash {
             let computed = match venue {
                 SwapVenue::UniswapV3 => {
                     let fee = meta.fee.ok_or(PoolRejection::IncompleteIdentity)?;
                     v3_pool_address_create2(factory, t0, t1, fee, hash)
                 }
                 SwapVenue::UniswapV2 => v2_pair_address_create2(factory, t0, t1, hash),
-                SwapVenue::UniswapV4 => return Err(PoolRejection::UnpinnedFactory(factory)),
+                SwapVenue::UniswapV4 | SwapVenue::AerodromeV2 | SwapVenue::AerodromeSlipstream => {
+                    return Err(PoolRejection::UnpinnedFactory(factory));
+                }
             };
             if computed != emitter {
                 return Err(PoolRejection::Create2Mismatch { computed });
@@ -475,7 +600,13 @@ impl SwapVenueGate {
                 return Err(PoolRejection::RecordMismatch { record });
             }
         } else {
-            if venue == SwapVenue::UniswapV3 && meta.fee.is_none() {
+            let identity_ok = match venue {
+                SwapVenue::UniswapV3 => meta.fee.is_some(),
+                SwapVenue::AerodromeV2 => meta.stable.is_some(),
+                SwapVenue::AerodromeSlipstream => meta.tick_spacing.is_some(),
+                SwapVenue::UniswapV2 | SwapVenue::UniswapV4 => true,
+            };
+            if !identity_ok {
                 return Err(PoolRejection::IncompleteIdentity);
             }
             if meta.registered_pool != Some(emitter) {
@@ -515,27 +646,31 @@ impl SwapVenueGate {
         let Some(topic0) = log.topics.first() else {
             return GateOutcome::NotSwap;
         };
-        let venue = if *topic0 == V4_SWAP_TOPIC0 {
-            SwapVenue::UniswapV4
-        } else if *topic0 == V3_SWAP_TOPIC0 {
-            SwapVenue::UniswapV3
-        } else if *topic0 == V2_SWAP_EVENT_SIGNATURE {
-            SwapVenue::UniswapV2
-        } else {
+        let candidates = SwapVenue::for_topic(topic0);
+        let Some(first) = candidates.first().copied() else {
             return GateOutcome::NotSwap;
         };
-        let gated = match venue {
-            SwapVenue::UniswapV4 => self
-                .deployments()
-                .find(|d| {
-                    d.venue == venue && d.role == AnchorRole::SwapEmitter && d.anchor == log.address
-                })
-                .map(|d| (d.verification, d.active_from_block)),
-            _ => self
+        let (venue, gated) = if first == SwapVenue::UniswapV4 {
+            (
+                first,
+                self.deployments()
+                    .find(|d| {
+                        d.venue == first
+                            && d.role == AnchorRole::SwapEmitter
+                            && d.anchor == log.address
+                    })
+                    .map(|d| (d.verification, d.active_from_block)),
+            )
+        } else {
+            // The pool's own admitted venue (several families share a topic).
+            match self
                 .pools
                 .get(&log.address)
-                .filter(|(v, _, _)| *v == venue)
-                .map(|(_, ver, from)| (*ver, *from)),
+                .filter(|(v, _, _)| candidates.contains(v))
+            {
+                Some((v, ver, from)) => (*v, Some((*ver, *from))),
+                None => (first, None),
+            }
         };
         let Some((verification, active_from)) = gated else {
             return GateOutcome::UngatedEmitter {
@@ -555,12 +690,17 @@ impl SwapVenueGate {
                 DecodeOutcome::Malformed(m) => return GateOutcome::Malformed(m),
                 DecodeOutcome::NotMine => return GateOutcome::NotSwap,
             },
-            SwapVenue::UniswapV3 => match decode_v3_swap(log) {
+            SwapVenue::UniswapV3 | SwapVenue::AerodromeSlipstream => match decode_v3_swap(log) {
                 DecodeOutcome::Decoded(s) => (None, s.log_index),
                 DecodeOutcome::Malformed(m) => return GateOutcome::Malformed(m),
                 DecodeOutcome::NotMine => return GateOutcome::NotSwap,
             },
             SwapVenue::UniswapV2 => match decode_v2_style_swap(log) {
+                DecodeOutcome::Decoded(s) => (None, s.log_index),
+                DecodeOutcome::Malformed(m) => return GateOutcome::Malformed(m),
+                DecodeOutcome::NotMine => return GateOutcome::NotSwap,
+            },
+            SwapVenue::AerodromeV2 => match decode_aerodrome_v2_swap(log) {
                 DecodeOutcome::Decoded(s) => (None, s.log_index),
                 DecodeOutcome::Malformed(m) => return GateOutcome::Malformed(m),
                 DecodeOutcome::NotMine => return GateOutcome::NotSwap,
@@ -694,6 +834,8 @@ mod tests {
             token0: Some(T0),
             token1: Some(T1),
             fee: Some(fee),
+            stable: None,
+            tick_spacing: None,
             registered_pool: None,
         }
     }
@@ -824,6 +966,8 @@ mod tests {
             token0: Some(T0),
             token1: Some(T1),
             fee: None,
+            stable: None,
+            tick_spacing: None,
             registered_pool: None,
         };
         let mut gate = gate0.clone();
@@ -870,6 +1014,202 @@ mod tests {
             gate.classify(&v2),
             GateOutcome::UngatedEmitter { .. }
         ));
+    }
+
+    const AERO_FACTORY: Address = address!("420DD381b31aEf6683db6B902084cB0FFECe40Da");
+    const SLIP_FACTORIES: [Address; 3] = [
+        address!("5e7BB104d84c7CB9B682AaC2F3d509f5F406809A"),
+        address!("aDe65c38CD4849aDBA595a4323a8C7DdfE89716a"),
+        address!("f8f2eB4940CFE7d13603DDDD87f123820Fc061Ef"),
+    ];
+
+    fn aero_swap_at(pool: Address) -> RawEvmLog {
+        log(
+            pool,
+            vec![
+                AERODROME_V2_SWAP_TOPIC0,
+                Address::ZERO.into_word(),
+                Address::ZERO.into_word(),
+            ],
+            vec![0u8; 128],
+        )
+    }
+
+    #[test]
+    fn aerodrome_v2_pool_is_admitted_by_factory_record_only() {
+        let pool = Address::repeat_byte(0xa1);
+        let mut gate = SwapVenueGate::new(8453);
+        let swap = aero_swap_at(pool);
+        assert!(matches!(
+            gate.classify(&swap),
+            GateOutcome::UngatedEmitter {
+                venue: SwapVenue::AerodromeV2,
+                ..
+            }
+        ));
+        assert_eq!(
+            gate.pending_pool_emitters([&swap]),
+            vec![(SwapVenue::AerodromeV2, pool)]
+        );
+        assert!(gate.needs_registry_record(SwapVenue::AerodromeV2, AERO_FACTORY));
+        let meta = PoolMetadata {
+            factory: Some(AERO_FACTORY),
+            token0: Some(T0),
+            token1: Some(T1),
+            stable: Some(true),
+            registered_pool: Some(pool),
+            ..PoolMetadata::default()
+        };
+        // Missing stable(), missing/foreign record: refused.
+        assert_eq!(
+            gate.admit_pool(
+                SwapVenue::AerodromeV2,
+                pool,
+                &PoolMetadata {
+                    stable: None,
+                    ..meta
+                }
+            ),
+            Err(PoolRejection::IncompleteIdentity)
+        );
+        assert!(matches!(
+            gate.admit_pool(
+                SwapVenue::AerodromeV2,
+                pool,
+                &PoolMetadata {
+                    registered_pool: None,
+                    ..meta
+                }
+            ),
+            Err(PoolRejection::NotRegisteredByFactory { record: None })
+        ));
+        // A Uniswap v2 factory pinned for another chain is not Aerodrome's.
+        assert_eq!(
+            gate.admit_pool(
+                SwapVenue::AerodromeV2,
+                pool,
+                &PoolMetadata {
+                    factory: Some(Address::repeat_byte(7)),
+                    ..meta
+                }
+            ),
+            Err(PoolRejection::UnpinnedFactory(Address::repeat_byte(7)))
+        );
+        assert_eq!(
+            gate.admit_pool(SwapVenue::AerodromeV2, pool, &meta),
+            Ok(VenueVerification::IdlOnly)
+        );
+        assert!(matches!(
+            gate.classify(&swap),
+            GateOutcome::Verified(v) if v.venue == SwapVenue::AerodromeV2
+        ));
+        // The Uniswap v2 topic from the same admitted pool is accepted too.
+        let uni_topic = log(
+            pool,
+            vec![
+                V2_SWAP_EVENT_SIGNATURE,
+                Address::ZERO.into_word(),
+                Address::ZERO.into_word(),
+            ],
+            vec![0u8; 128],
+        );
+        assert!(matches!(
+            gate.classify(&uni_topic),
+            GateOutcome::Verified(v) if v.venue == SwapVenue::AerodromeV2
+        ));
+        // Another chain does not know the pool.
+        assert!(matches!(
+            SwapVenueGate::new(56).classify(&swap),
+            GateOutcome::UngatedEmitter { .. }
+        ));
+    }
+
+    #[test]
+    fn slipstream_pools_of_every_factory_generation_are_admitted() {
+        let mut gate = SwapVenueGate::new(8453);
+        for (i, f) in SLIP_FACTORIES.iter().enumerate() {
+            let pool = Address::repeat_byte(0xb0 + u8::try_from(i).unwrap());
+            let swap = v3_swap_at(pool);
+            // v3 topic: Base also pins a Uniswap v3 factory, so the pending
+            // pair is asked as v3 and resolved by factory.
+            assert_eq!(gate.pending_pool_emitters([&swap]).len(), 1);
+            assert_eq!(
+                gate.factory_venue(SwapVenue::UniswapV3, *f),
+                Some(SwapVenue::AerodromeSlipstream)
+            );
+            let meta = PoolMetadata {
+                factory: Some(*f),
+                token0: Some(T0),
+                token1: Some(T1),
+                tick_spacing: Some(100),
+                registered_pool: Some(pool),
+                ..PoolMetadata::default()
+            };
+            assert_eq!(
+                gate.admit_pool(
+                    SwapVenue::AerodromeSlipstream,
+                    pool,
+                    &PoolMetadata {
+                        tick_spacing: None,
+                        ..meta
+                    }
+                ),
+                Err(PoolRejection::IncompleteIdentity)
+            );
+            assert_eq!(
+                gate.admit_pool(SwapVenue::AerodromeSlipstream, pool, &meta),
+                Ok(VenueVerification::IdlOnly)
+            );
+            assert!(matches!(
+                gate.classify(&swap),
+                GateOutcome::Verified(v) if v.venue == SwapVenue::AerodromeSlipstream
+            ));
+        }
+        // The Uniswap v3 factory is not a Slipstream factory.
+        let uni = address!("33128a8fC17869897dcE68Ed026d694621f6FDfD");
+        assert_eq!(
+            gate.factory_venue(SwapVenue::UniswapV3, uni),
+            Some(SwapVenue::UniswapV3)
+        );
+        assert_eq!(
+            gate.admit_pool(
+                SwapVenue::AerodromeSlipstream,
+                Address::repeat_byte(0xcc),
+                &PoolMetadata {
+                    factory: Some(uni),
+                    token0: Some(T0),
+                    token1: Some(T1),
+                    tick_spacing: Some(1),
+                    ..PoolMetadata::default()
+                }
+            ),
+            Err(PoolRejection::UnpinnedFactory(uni))
+        );
+    }
+
+    #[test]
+    fn base_aerodrome_rows_are_idl_only_and_the_set_is_pinned() {
+        let on_base = |v: SwapVenue| -> Vec<Address> {
+            VENUE_DEPLOYMENTS
+                .iter()
+                .filter(|d| d.chain_id == 8453 && d.venue == v)
+                .map(|d| d.anchor)
+                .collect()
+        };
+        assert_eq!(on_base(SwapVenue::AerodromeV2), vec![AERO_FACTORY]);
+        assert_eq!(
+            on_base(SwapVenue::AerodromeSlipstream),
+            SLIP_FACTORIES.to_vec()
+        );
+        for d in VENUE_DEPLOYMENTS.iter().filter(|d| d.chain_id == 8453) {
+            assert_eq!(d.verification, VenueVerification::IdlOnly, "{d:?}");
+            if matches!(
+                d.venue,
+                SwapVenue::AerodromeV2 | SwapVenue::AerodromeSlipstream
+            ) {
+                assert_eq!(d.init_code_hash, None, "{d:?}");
+            }
+        }
     }
 
     #[test]

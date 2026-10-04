@@ -11,6 +11,7 @@ description = "Dev/P0 tool: capture raw EVM JSON-RPC exchanges for a token or wa
 workspace = true
 
 [dependencies]
+scout-app.workspace = true
 scout-core.workspace = true
 scout-dex-evm.workspace = true
 scout-engine.workspace = true

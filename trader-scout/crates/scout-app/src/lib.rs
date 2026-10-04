@@ -24,9 +24,10 @@ pub use config::{
     ScanConfig, ScoutConfig, StorageConfig,
 };
 pub use evm_run::{
-    BLOCKSCOUT_URL_OVERRIDE_ENV, DEFAULT_LOG_SCAN_REQUEST_LIMIT, EvmSetup, EvmSetupError,
+    BLOCKSCOUT_URL_OVERRIDE_ENV, CostFn, DEFAULT_LOG_SCAN_REQUEST_LIMIT, EvmSetup, EvmSetupError,
     EvmStatsError, EvmStatsRun, LimiterNotice, PUBLIC_RPC_OVERRIDE_ENV, RunFamily,
-    check_log_scan_feasible, collect_evm_stats, rate_limit_line, run_family, setup_evm,
+    check_log_scan_feasible, collect_evm_stats, make_limiter, rate_limit_line, run_family,
+    setup_evm,
 };
 pub use evm_source::{
     BLOCKSCOUT_KEY_ENV, EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS,

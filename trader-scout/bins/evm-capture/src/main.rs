@@ -27,6 +27,19 @@
 //! are in `calls` too). The summary prints per-emitter counts, the factory
 //! each pool reports and the gate's admission verdict.
 //!
+//! Network politeness is the CLIs' (`scout_app::make_limiter`): a shared
+//! token-bucket limiter in front of every HTTP attempt (`--rpc-rps`, default
+//! 10/s keyed and 5/s for the known keyless endpoints, or `--rpc-cu-per-sec`
+//! for compute-unit providers such as Alchemy, about 300), AIMD halving on a
+//! 429 without `Retry-After`, up to 8 attempts per request with exponential
+//! backoff / `Retry-After`, and the optional `SCOUT_<CHAIN>_LOGS_RPC_URL`
+//! endpoint for `eth_getLogs` only (receipts and `eth_call` stay on the main
+//! RPC). A 429 backs off and continues; only an exhausted `--max-requests`
+//! budget or a provider that keeps refusing after every attempt (or asks for
+//! a wait over 60 s) stops the capture, which is then written as
+//! `incomplete` (exit 3). A `rate limit:` line per endpoint is printed at the
+//! end on stderr.
+//!
 //! A chain identity preflight (`eth_chainId` + block-0 hash) runs first; a
 //! mismatch aborts with exit 4 and nothing is scanned.
 //!
@@ -52,14 +65,19 @@ use std::sync::Arc;
 use alloy_primitives::{Address, B256};
 use clap::{Parser, ValueEnum};
 use futures::stream::{self, StreamExt};
+use scout_app::{
+    EvmNetOptions, LimiterNotice, ROBINHOOD_PUBLIC_RPC, logs_rpc_env_name, make_limiter,
+    rate_limit_line,
+};
 use scout_core::RawEvmTransaction;
 use scout_dex_evm::{
-    AnchorRole, GateOutcome, SwapVenue, SwapVenueGate, V2_PAIR_CREATED_TOPIC0,
-    V2_SWAP_EVENT_SIGNATURE, V3_POOL_CREATED_TOPIC0, V3_SWAP_TOPIC0, V4_INITIALIZE_TOPIC0,
-    V4_SWAP_TOPIC0, VENUE_DEPLOYMENTS,
+    AERODROME_V2_SWAP_TOPIC0, AnchorRole, GateOutcome, SwapVenue, SwapVenueGate,
+    V2_PAIR_CREATED_TOPIC0, V2_SWAP_EVENT_SIGNATURE, V3_POOL_CREATED_TOPIC0, V3_SWAP_TOPIC0,
+    V4_INITIALIZE_TOPIC0, V4_SWAP_TOPIC0, VENUE_DEPLOYMENTS,
 };
 use scout_engine::{
     EvmExtractionConfig, EvmTxOutcome, admit_recorded, extract_evm_trades, parse_rfc3339_utc,
+    pool_kind, pool_venue,
 };
 use scout_evm::{EvmChainProfile, TRANSFER_TOPIC0, WETH_DEPOSIT_TOPIC0, WETH_WITHDRAWAL_TOPIC0};
 use scout_providers::{
@@ -67,12 +85,14 @@ use scout_providers::{
     EvmRpcClient, EvmSourceError, LogFilter, PoolKind, PoolOnchainMetadata, ReceiptMode,
     ScanLimits,
 };
-use scout_rpc::{RpcClient, RpcEndpoint};
+use scout_rpc::{RateLimiter, RpcClient, RpcEndpoint};
 use serde_json::{Value, json};
 
 const BLOCKSCOUT_URL_OVERRIDE_ENV: &str = "SCOUT_EVM_CAPTURE_BLOCKSCOUT_URL";
 const TIMEOUT_MS: u64 = 30_000;
-const MAX_ATTEMPTS: u32 = 3;
+/// Attempts per request: a 429 backs off (exponential, `Retry-After`) and
+/// retries this many times before the call fails (bounded, invariant #13).
+const MAX_ATTEMPTS: u32 = 8;
 const MAX_FIXTURE_CALLS: usize = 200_000;
 const MAX_FIXTURE_BYTES: usize = 256 * 1024 * 1024;
 
@@ -106,7 +126,10 @@ enum SwapsArg {
     UniswapV2,
     UniswapV3,
     UniswapV4,
-    /// v2 + v3 (any emitter) and v4 (PoolManager).
+    /// Aerodrome v2 (Solidly-style `Swap` topic, any emitter). Slipstream
+    /// shares the Uniswap v3 topic and is captured by `uniswap-v3`/`all`.
+    AerodromeV2,
+    /// v2 + v3 + Aerodrome v2 (any emitter) and v4 (PoolManager).
     All,
 }
 
@@ -116,6 +139,7 @@ impl SwapsArg {
             SwapsArg::UniswapV2 => "uniswap-v2",
             SwapsArg::UniswapV3 => "uniswap-v3",
             SwapsArg::UniswapV4 => "uniswap-v4",
+            SwapsArg::AerodromeV2 => "aerodrome-v2",
             SwapsArg::All => "all",
         }
     }
@@ -183,6 +207,9 @@ struct Args {
     /// Total HTTP request budget (retries included).
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
+
+    #[command(flatten)]
+    net: EvmNetOptions,
 
     /// Concurrent in-flight RPC requests (1..=64).
     #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..=64))]
@@ -283,6 +310,13 @@ fn main() -> ExitCode {
         return ExitCode::from(4);
     }
     let mut secrets = Secrets(url_secrets(&url));
+    let logs_url = logs_rpc_env_name(args.chain.profile().name)
+        .and_then(|var| std::env::var(var).ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    if let Some(l) = &logs_url {
+        secrets.0.extend(url_secrets(l));
+    }
     let bs_key = if matches!(target, Target::Wallet(_)) {
         match std::env::var(&args.blockscout_key_env) {
             Ok(k) if !k.is_empty() => {
@@ -307,7 +341,17 @@ fn main() -> ExitCode {
             return ExitCode::from(4);
         }
     };
-    match rt.block_on(run(&args, target, window, &url, bs_key, &secrets)) {
+    match rt.block_on(run(
+        &args,
+        target,
+        window,
+        Endpoints {
+            main: &url,
+            logs: logs_url.as_deref(),
+        },
+        bs_key,
+        &secrets,
+    )) {
         Ok(Completion::Complete) => ExitCode::SUCCESS,
         Ok(Completion::Incomplete(why)) => {
             eprintln!("evm-capture: INCOMPLETE: {}", secrets.redact(&why));
@@ -359,20 +403,69 @@ enum Completion {
     Incomplete(String),
 }
 
+/// The RPC URLs of the run (secrets; never printed).
+struct Endpoints<'a> {
+    main: &'a str,
+    logs: Option<&'a str>,
+}
+
+/// Known keyless endpoints: capped at the public rate like the CLIs' own
+/// keyless fallback.
+fn is_public_rpc(url: &str) -> bool {
+    [
+        ROBINHOOD_PUBLIC_RPC,
+        "https://mainnet.base.org",
+        "https://base-rpc.publicnode.com",
+        "https://bsc-rpc.publicnode.com",
+        "https://bsc-dataseed.bnbchain.org",
+    ]
+    .iter()
+    .any(|p| url.trim_end_matches('/') == *p)
+}
+
+/// One endpoint's client with the CLIs' limiter in front of it.
+fn limited_client(
+    url: &str,
+    max_requests: Option<u64>,
+    net: &EvmNetOptions,
+    label: &str,
+    notice: &LimiterNotice,
+    limiters: &mut Vec<(String, Arc<RateLimiter>)>,
+) -> Result<RpcClient, String> {
+    let (limiter, cost) = make_limiter(net, is_public_rpc(url), label, notice);
+    limiters.push((label.to_string(), Arc::clone(&limiter)));
+    Ok(
+        RpcClient::new(RpcEndpoint::new(url), TIMEOUT_MS, MAX_ATTEMPTS)
+            .map_err(|e| e.to_string())?
+            .with_max_total_requests(max_requests)
+            .with_rate_limiter(limiter, cost),
+    )
+}
+
 async fn run(
     args: &Args,
     target: Target,
     window: Window,
-    url: &str,
+    endpoints: Endpoints<'_>,
     bs_key: Option<String>,
     secrets: &Secrets,
 ) -> Result<Completion, String> {
     let profile = args.chain.profile();
-    let rpc = RpcClient::new(RpcEndpoint::new(url), TIMEOUT_MS, MAX_ATTEMPTS)
-        .map_err(|e| e.to_string())?
-        .with_max_total_requests(args.max_requests);
+    let redacted: LimiterNotice = {
+        let s = Secrets(secrets.0.clone());
+        Arc::new(move |m: String| eprintln!("evm-capture: {}", s.redact(&m)))
+    };
+    let mut limiters: Vec<(String, Arc<RateLimiter>)> = Vec::new();
+    let rpc = limited_client(
+        endpoints.main,
+        args.max_requests,
+        &args.net,
+        "rpc",
+        &redacted,
+        &mut limiters,
+    )?;
     let recorder = Arc::new(CallRecorder::new(MAX_FIXTURE_CALLS, MAX_FIXTURE_BYTES));
-    let evm = EvmRpcClient::with_config(
+    let mut evm = EvmRpcClient::with_config(
         rpc,
         profile,
         scout_providers::EvmRpcConfig {
@@ -381,32 +474,71 @@ async fn run(
         },
     )
     .with_recorder(recorder.clone());
+    if let Some(logs) = endpoints.logs {
+        let logs_rpc = limited_client(
+            logs,
+            args.max_requests,
+            &args.net,
+            "logs rpc",
+            &redacted,
+            &mut limiters,
+        )?;
+        evm = evm.with_logs_endpoint(logs_rpc);
+    }
+    let result = run_scan(
+        args, target, window, &evm, bs_key, secrets, &recorder, &profile,
+    )
+    .await;
+    for (label, l) in &limiters {
+        eprintln!(
+            "evm-capture: rate limit: {}",
+            secrets.redact(&rate_limit_line(label, &l.stats()))
+        );
+    }
+    result
+}
 
-    let outcome = scan(args, &target, &window, &evm, bs_key, &recorder, &profile).await;
+#[allow(clippy::too_many_arguments)]
+async fn run_scan(
+    args: &Args,
+    target: Target,
+    window: Window,
+    evm: &EvmRpcClient,
+    bs_key: Option<String>,
+    secrets: &Secrets,
+    recorder: &Arc<CallRecorder>,
+    profile: &EvmChainProfile,
+) -> Result<Completion, String> {
+    let outcome = scan(args, &target, &window, evm, bs_key, recorder, profile).await;
     eprintln!(
         "evm-capture: rpc_requests_made={}",
         evm.total_requests_made()
     );
     let (scanned, completion) = match outcome {
         Ok(v) => v,
-        Err(e) if e.is_budget_exhausted() => {
+        Err(e) if e.is_budget_exhausted() || e.is_rate_limited() => {
             let (calls, dropped) = recorder.snapshot();
             write_fixture(
-                args, &profile, &target, &window, calls, dropped, true, None, secrets,
+                args, profile, &target, &window, calls, dropped, true, None, secrets,
             )?;
-            return Ok(Completion::Incomplete(
-                "request budget exhausted before the scan finished".to_string(),
-            ));
+            return Ok(Completion::Incomplete(if e.is_rate_limited() {
+                format!(
+                    "the provider kept rate limiting (429) after {MAX_ATTEMPTS} attempts or \
+                     asked for a wait over the cap: {e}"
+                )
+            } else {
+                "request budget exhausted before the scan finished".to_string()
+            }));
         }
         Err(e) => return Err(e.to_string()),
     };
     let (calls, dropped) = recorder.snapshot();
     let incomplete = !matches!(completion, Completion::Complete);
-    let text = summarize(&scanned, &profile, &target);
+    let text = summarize(&scanned, profile, &target);
     print!("{}", secrets.redact(&text));
     write_fixture(
         args,
-        &profile,
+        profile,
         &target,
         &window,
         calls,
@@ -451,6 +583,9 @@ fn swap_filters(swaps: SwapsArg, chain_id: u64) -> Result<Vec<LogFilter>, EvmSou
     if matches!(swaps, SwapsArg::UniswapV3 | SwapsArg::All) {
         topics.push(V3_SWAP_TOPIC0);
     }
+    if matches!(swaps, SwapsArg::AerodromeV2 | SwapsArg::All) {
+        topics.push(AERODROME_V2_SWAP_TOPIC0);
+    }
     let mut out = Vec::new();
     if !topics.is_empty() {
         out.push(LogFilter {
@@ -488,6 +623,9 @@ fn pool_emitters(txs: &[RawEvmTransaction]) -> Vec<(Address, PoolKind)> {
         match l.topics.first() {
             Some(t) if *t == V3_SWAP_TOPIC0 => out.insert((l.address, PoolKind::V3)),
             Some(t) if *t == V2_SWAP_EVENT_SIGNATURE => out.insert((l.address, PoolKind::V2)),
+            Some(t) if *t == AERODROME_V2_SWAP_TOPIC0 => {
+                out.insert((l.address, PoolKind::AerodromeV2))
+            }
             _ => false,
         };
     }
@@ -557,19 +695,34 @@ async fn scan(
             let head = evm.block_number().await?;
             let tag = format!("{head:#x}");
             let concurrency = usize::try_from(args.concurrency).unwrap_or(8).max(1);
+            // Topics are shared between pool families (Slipstream emits the
+            // Uniswap v3 topic): the pinned factory of each emitter picks the
+            // identity reads (`stable()` / `tickSpacing()`) and the factory
+            // `getPool` signature.
+            let gate = SwapVenueGate::new(profile.chain_id);
             let mut rows = stream::iter(emitters.into_iter().take(args.max_pools))
                 .map(|(emitter, kind)| {
                     let tag = tag.clone();
-                    async move { evm.pool_metadata(emitter, kind, &tag).await }
+                    let gate = &gate;
+                    async move {
+                        let venue = pool_venue(kind);
+                        evm.pool_metadata_resolving(emitter, kind, &tag, &|f| {
+                            gate.factory_venue(venue, f).and_then(pool_kind)
+                        })
+                        .await
+                    }
                 })
                 .buffered(concurrency);
             while let Some(row) = rows.next().await {
                 match row {
                     Ok(m) => scanned.pool_metadata.push(m),
-                    Err(e) if e.is_budget_exhausted() => {
-                        completion = Completion::Incomplete(
-                            "request budget exhausted while reading pool metadata".to_string(),
-                        );
+                    Err(e) if e.is_budget_exhausted() || e.is_rate_limited() => {
+                        completion = Completion::Incomplete(if e.is_rate_limited() {
+                            "the provider kept rate limiting while reading pool metadata"
+                                .to_string()
+                        } else {
+                            "request budget exhausted while reading pool metadata".to_string()
+                        });
                         break;
                     }
                     Err(e) => return Err(e),
@@ -614,6 +767,7 @@ fn topic_label(t: &B256) -> Option<&'static str> {
         (WETH_DEPOSIT_TOPIC0, "weth_deposit"),
         (WETH_WITHDRAWAL_TOPIC0, "weth_withdrawal"),
         (V2_SWAP_EVENT_SIGNATURE, "v2_swap"),
+        (AERODROME_V2_SWAP_TOPIC0, "aerodrome_v2_swap"),
         (V3_SWAP_TOPIC0, "v3_swap"),
         (V4_SWAP_TOPIC0, "v4_swap"),
         (V4_INITIALIZE_TOPIC0, "v4_initialize"),
@@ -701,7 +855,9 @@ fn summarize(s: &Scanned, profile: &EvmChainProfile, target: &Target) -> String 
         );
         let mut swaps_by_emitter: BTreeMap<Address, u64> = BTreeMap::new();
         for l in s.transactions.iter().flat_map(|t| &t.logs) {
-            if matches!(l.topics.first(), Some(t) if *t == V3_SWAP_TOPIC0 || *t == V2_SWAP_EVENT_SIGNATURE)
+            if matches!(l.topics.first(), Some(t) if *t == V3_SWAP_TOPIC0
+                || *t == V2_SWAP_EVENT_SIGNATURE
+                || *t == AERODROME_V2_SWAP_TOPIC0)
             {
                 *swaps_by_emitter.entry(l.address).or_insert(0) += 1;
             }
@@ -715,7 +871,8 @@ fn summarize(s: &Scanned, profile: &EvmChainProfile, target: &Target) -> String 
             };
             let _ = writeln!(
                 out,
-                "  pool {:?} {:#x} swaps={} factory={} token0={} token1={} fee={} registered={} {}",
+                "  pool {:?} {:#x} swaps={} factory={} token0={} token1={} fee={} stable={} \
+                 tick_spacing={} registered={} {}",
                 m.kind,
                 m.emitter,
                 swaps_by_emitter.get(&m.emitter).copied().unwrap_or(0),
@@ -723,6 +880,8 @@ fn summarize(s: &Scanned, profile: &EvmChainProfile, target: &Target) -> String 
                 show(m.token0),
                 show(m.token1),
                 m.fee.map_or("n/a".to_string(), |f| f.to_string()),
+                m.stable.map_or("n/a".to_string(), |v| v.to_string()),
+                m.tick_spacing.map_or("n/a".to_string(), |v| v.to_string()),
                 show(m.registered_pool),
                 verdict
             );
@@ -774,12 +933,14 @@ fn pool_metadata_json(s: &Scanned) -> Value {
             .map(|m| {
                 json!({
                     "emitter": format!("{:#x}", m.emitter),
-                    "kind": match m.kind { PoolKind::V2 => "v2", PoolKind::V3 => "v3" },
+                    "kind": m.kind.label(),
                     "block": s.pool_metadata_block,
                     "factory": a(m.factory),
                     "token0": a(m.token0),
                     "token1": a(m.token1),
                     "fee": m.fee,
+                    "stable": m.stable,
+                    "tick_spacing": m.tick_spacing,
                     "registered_pool": a(m.registered_pool),
                 })
             })

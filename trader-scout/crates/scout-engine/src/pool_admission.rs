@@ -42,6 +42,8 @@ pub fn pool_kind(venue: SwapVenue) -> Option<PoolKind> {
     match venue {
         SwapVenue::UniswapV2 => Some(PoolKind::V2),
         SwapVenue::UniswapV3 => Some(PoolKind::V3),
+        SwapVenue::AerodromeV2 => Some(PoolKind::AerodromeV2),
+        SwapVenue::AerodromeSlipstream => Some(PoolKind::Slipstream),
         SwapVenue::UniswapV4 => None,
     }
 }
@@ -51,6 +53,8 @@ pub fn pool_venue(kind: PoolKind) -> SwapVenue {
     match kind {
         PoolKind::V2 => SwapVenue::UniswapV2,
         PoolKind::V3 => SwapVenue::UniswapV3,
+        PoolKind::AerodromeV2 => SwapVenue::AerodromeV2,
+        PoolKind::Slipstream => SwapVenue::AerodromeSlipstream,
     }
 }
 
@@ -62,6 +66,8 @@ pub fn gate_metadata(m: &PoolOnchainMetadata) -> PoolMetadata {
         token0: m.token0,
         token1: m.token1,
         fee: m.fee,
+        stable: m.stable,
+        tick_spacing: m.tick_spacing,
         registered_pool: m.registered_pool,
     }
 }
@@ -108,7 +114,17 @@ pub async fn learn_pools(
             continue;
         };
         report.lookups += 1;
-        let mut meta = rpc.pool_identity(emitter, kind, LIVE_BLOCK).await?;
+        // The topic can be shared by several pool families: the pinned
+        // factory says which one this emitter is (and so which identity
+        // calls and registry signature apply).
+        let mut meta = {
+            let gate_ro: &SwapVenueGate = gate;
+            rpc.pool_identity_resolving(emitter, kind, LIVE_BLOCK, &|f| {
+                gate_ro.factory_venue(venue, f).and_then(pool_kind)
+            })
+            .await?
+        };
+        let venue = pool_venue(meta.kind);
         if let Some(factory) = meta.factory
             && gate.needs_registry_record(venue, factory)
         {
@@ -288,6 +304,71 @@ mod tests {
         let again = learn_pools(&mut gate, &client, &txs, 10).await.unwrap();
         assert_eq!(again, PoolAdmissionReport::default());
         assert_eq!(s.received_requests().await.unwrap().len(), n);
+    }
+
+    /// Base families: the pinned factory decides which identity calls and
+    /// which `getPool` signature apply to a topic shared by several families.
+    struct BaseNode {
+        slip_pool: Address,
+        slip_factory: Address,
+        aero_pool: Address,
+        aero_factory: Address,
+    }
+    impl Respond for BaseNode {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            let reply = |r: String| {
+                ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":1,"result":r}))
+            };
+            let to: Address = body["params"][0]["to"].as_str().unwrap().parse().unwrap();
+            let data = body["params"][0]["data"].as_str().unwrap();
+            let sel = &data[..10];
+            match (to, sel) {
+                (t, "0xc45a0155") if t == self.slip_pool => reply(word(self.slip_factory)),
+                (t, "0xc45a0155") if t == self.aero_pool => reply(word(self.aero_factory)),
+                (_, "0x0dfe1681") => reply(word(T0)),
+                (_, "0xd21220a7") => reply(word(T1)),
+                (t, "0xd0c93a7c") if t == self.slip_pool => reply(format!("0x{:064x}", 200)),
+                (t, "0x22be3de1") if t == self.aero_pool => reply(format!("0x{:064x}", 0)),
+                (t, "0x28af8d0b") if t == self.slip_factory => reply(word(self.slip_pool)),
+                (t, "0x79bc57d5") if t == self.aero_factory => reply(word(self.aero_pool)),
+                other => panic!("unexpected call {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn base_slipstream_and_aerodrome_pools_are_resolved_by_their_factory() {
+        let slip_pool = Address::repeat_byte(0xb1);
+        let aero_pool = Address::repeat_byte(0xa1);
+        let slip_factory = address!("f8f2eB4940CFE7d13603DDDD87f123820Fc061Ef");
+        let aero_factory = address!("420DD381b31aEf6683db6B902084cB0FFECe40Da");
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(BaseNode {
+                slip_pool,
+                slip_factory,
+                aero_pool,
+                aero_factory,
+            })
+            .mount(&s)
+            .await;
+        let client = rpc(&s, scout_evm::BASE, None).await;
+        let txs = vec![tx_with(vec![
+            // Slipstream shares the v3 topic; Aerodrome v2 emits its own.
+            swap(slip_pool, V3_SWAP_TOPIC0, 160),
+            swap(aero_pool, scout_dex_evm::AERODROME_V2_SWAP_TOPIC0, 128),
+        ])];
+        let mut gate = SwapVenueGate::new(8453);
+        let r = learn_pools(&mut gate, &client, &txs, 10).await.unwrap();
+        assert_eq!((r.lookups, r.admitted, r.refused.len()), (2, 2, 0), "{r:?}");
+        // IdlOnly deployments: admitted at their own (unverified) level.
+        for l in &txs[0].logs {
+            assert!(matches!(
+                gate.classify(l),
+                scout_dex_evm::GateOutcome::Verified(v) if v.verification == VenueVerification::IdlOnly
+            ));
+        }
     }
 
     #[tokio::test]

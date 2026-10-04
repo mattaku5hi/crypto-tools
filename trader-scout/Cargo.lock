@@ -1488,6 +1488,7 @@ dependencies = [
  "alloy-primitives",
  "clap",
  "futures",
+ "scout-app",
  "scout-core",
  "scout-dex-evm",
  "scout-engine",

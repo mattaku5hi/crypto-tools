@@ -58,6 +58,14 @@ pub enum EvmSourceError {
 }
 
 impl EvmSourceError {
+    /// `true` when the provider kept answering 429 past the client's retry
+    /// attempts (or asked to wait longer than the cap): incomplete coverage,
+    /// not a malformed answer.
+    #[must_use]
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, Self::Provider(ProviderError::RateLimited { .. }))
+    }
+
     /// `true` when the shared request budget is spent (incomplete coverage,
     /// not an infrastructure failure).
     #[must_use]
@@ -230,11 +238,46 @@ pub const SEL_GET_POOL: [u8; 4] = [0x16, 0x98, 0xee, 0x82];
 /// `getPair(address,address)` (Uniswap v2 factory).
 pub const SEL_GET_PAIR: [u8; 4] = [0xe6, 0xa4, 0x39, 0x05];
 
+/// `stable()` (Aerodrome/Velodrome v2 pools).
+pub const SEL_STABLE: [u8; 4] = [0x22, 0xbe, 0x3d, 0xe1];
+/// `tickSpacing()` (Slipstream CL pools).
+pub const SEL_TICK_SPACING: [u8; 4] = [0xd0, 0xc9, 0x3a, 0x7c];
+/// `getPool(address,address,bool)` (Aerodrome v2 PoolFactory).
+pub const SEL_GET_POOL_STABLE: [u8; 4] = [0x79, 0xbc, 0x57, 0xd5];
+/// `getPool(address,address,int24)` (Slipstream CLFactory).
+pub const SEL_GET_POOL_TICK: [u8; 4] = [0x28, 0xaf, 0x8d, 0x0b];
+
 /// Which pool ABI a swap emitter is expected to have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PoolKind {
     V2,
     V3,
+    /// Aerodrome/Velodrome v2 pool: `stable()`, factory `getPool(a, b, bool)`.
+    AerodromeV2,
+    /// Aerodrome Slipstream CL pool: `tickSpacing()`, factory
+    /// `getPool(a, b, int24)`.
+    Slipstream,
+}
+
+impl PoolKind {
+    /// Fixture label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::V2 => "v2",
+            Self::V3 => "v3",
+            Self::AerodromeV2 => "aerodrome_v2",
+            Self::Slipstream => "slipstream",
+        }
+    }
+
+    /// Inverse of [`Self::label`].
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        [Self::V2, Self::V3, Self::AerodromeV2, Self::Slipstream]
+            .into_iter()
+            .find(|k| k.label() == label)
+    }
 }
 
 /// What a v2/v3 swap emitter reports about itself and what its claimed
@@ -250,8 +293,13 @@ pub struct PoolOnchainMetadata {
     pub token1: Option<Address>,
     /// v3 only.
     pub fee: Option<u32>,
-    /// `factory.getPool(token0, token1, fee)` / `getPair(token0, token1)`;
-    /// `None` = not asked, reverted, or the zero address.
+    /// `stable()` (Aerodrome v2 only).
+    pub stable: Option<bool>,
+    /// `tickSpacing()` (Slipstream only).
+    pub tick_spacing: Option<i32>,
+    /// `factory.getPool(token0, token1, fee|stable|tickSpacing)` /
+    /// `getPair(token0, token1)`; `None` = not asked, reverted, or the zero
+    /// address.
     pub registered_pool: Option<Address>,
 }
 
@@ -272,6 +320,26 @@ fn word_u32(bytes: &[u8]) -> Option<u32> {
         return None;
     }
     u32::try_from(U256::from_be_slice(bytes)).ok()
+}
+
+fn word_bool(bytes: &[u8]) -> Option<bool> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    match U256::from_be_slice(bytes) {
+        v if v == U256::ZERO => Some(false),
+        v if v == U256::from(1u8) => Some(true),
+        _ => None,
+    }
+}
+
+/// A small positive `int24` word (tick spacing).
+fn word_tick_spacing(bytes: &[u8]) -> Option<i32> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    let v = i32::try_from(U256::from_be_slice(bytes)).ok()?;
+    (v > 0 && v < (1 << 23)).then_some(v)
 }
 
 fn call_data(selector: [u8; 4], words: &[[u8; 32]]) -> String {
@@ -684,19 +752,37 @@ impl EvmRpcClient {
     }
 
     /// What `emitter` reports about itself (`factory()`, `token0()`,
-    /// `token1()`, and `fee()` for v3) at `block`. Cached per client family:
-    /// a pool's identity is immutable. 3 or 4 requests per uncached pool.
+    /// `token1()`, plus `fee()` for v3, `stable()` for Aerodrome v2,
+    /// `tickSpacing()` for Slipstream) at `block`. Cached per client family:
+    /// a pool's identity is immutable. 4 or 5 requests per uncached pool.
     pub async fn pool_identity(
         &self,
         emitter: Address,
         kind: PoolKind,
         block: &str,
     ) -> Result<PoolOnchainMetadata, EvmSourceError> {
+        self.pool_identity_resolving(emitter, kind, block, &|_| None)
+            .await
+    }
+
+    /// Like [`Self::pool_identity`], for emitters whose event topic is shared
+    /// by several pool families (Slipstream emits the Uniswap v3 topic;
+    /// Aerodrome v2 may emit the Uniswap v2 one): `factory()` is read first
+    /// and `family_of(factory)` may pick the real [`PoolKind`] (`None` keeps
+    /// `topic_kind`); the identity reads of that kind follow. Cached under
+    /// `(emitter, topic_kind)`.
+    pub async fn pool_identity_resolving(
+        &self,
+        emitter: Address,
+        topic_kind: PoolKind,
+        block: &str,
+        family_of: &(dyn Fn(Address) -> Option<PoolKind> + Sync),
+    ) -> Result<PoolOnchainMetadata, EvmSourceError> {
         if let Some(hit) = self
             .pool_cache
             .lock()
             .ok()
-            .and_then(|c| c.get(&(emitter, kind)).cloned())
+            .and_then(|c| c.get(&(emitter, topic_kind)).cloned())
         {
             return Ok(hit);
         }
@@ -705,25 +791,34 @@ impl EvmRpcClient {
                 .await
                 .map(Option::unwrap_or_default)
         };
-        let (factory, token0, token1) =
-            futures::try_join!(ask(SEL_FACTORY), ask(SEL_TOKEN0), ask(SEL_TOKEN1))?;
-        let fee = match kind {
-            PoolKind::V3 => word_u32(&ask(SEL_FEE).await?),
-            PoolKind::V2 => None,
-        };
+        let factory = ask(SEL_FACTORY).await?;
+        let factory_addr = word_address(&factory);
+        let kind = factory_addr.and_then(family_of).unwrap_or(topic_kind);
+        let (token0, token1) = futures::try_join!(ask(SEL_TOKEN0), ask(SEL_TOKEN1))?;
+        let (mut fee, mut stable, mut tick_spacing) = (None, None, None);
+        match kind {
+            PoolKind::V3 => fee = word_u32(&ask(SEL_FEE).await?),
+            PoolKind::V2 => {}
+            PoolKind::AerodromeV2 => stable = word_bool(&ask(SEL_STABLE).await?),
+            PoolKind::Slipstream => {
+                tick_spacing = word_tick_spacing(&ask(SEL_TICK_SPACING).await?);
+            }
+        }
         let meta = PoolOnchainMetadata {
             emitter,
             kind,
-            factory: word_address(&factory),
+            factory: factory_addr,
             token0: word_address(&token0),
             token1: word_address(&token1),
             fee,
+            stable,
+            tick_spacing,
             registered_pool: None,
         };
         if let Ok(mut c) = self.pool_cache.lock()
             && c.len() < MAX_CACHED_POOLS
         {
-            c.insert((emitter, kind), meta.clone());
+            c.insert((emitter, topic_kind), meta.clone());
         }
         Ok(meta)
     }
@@ -740,17 +835,47 @@ impl EvmRpcClient {
         let (Some(factory), Some(t0), Some(t1)) = (meta.factory, meta.token0, meta.token1) else {
             return Ok(None);
         };
-        let data = match (meta.kind, meta.fee) {
-            (PoolKind::V3, Some(fee)) => call_data(
-                SEL_GET_POOL,
-                &[
-                    address_word(t0),
-                    address_word(t1),
-                    U256::from(fee).to_be_bytes::<32>(),
-                ],
-            ),
-            (PoolKind::V3, None) => return Ok(None),
-            (PoolKind::V2, _) => call_data(SEL_GET_PAIR, &[address_word(t0), address_word(t1)]),
+        let data = match meta.kind {
+            PoolKind::V3 => {
+                let Some(fee) = meta.fee else {
+                    return Ok(None);
+                };
+                call_data(
+                    SEL_GET_POOL,
+                    &[
+                        address_word(t0),
+                        address_word(t1),
+                        U256::from(fee).to_be_bytes::<32>(),
+                    ],
+                )
+            }
+            PoolKind::V2 => call_data(SEL_GET_PAIR, &[address_word(t0), address_word(t1)]),
+            PoolKind::AerodromeV2 => {
+                let Some(stable) = meta.stable else {
+                    return Ok(None);
+                };
+                call_data(
+                    SEL_GET_POOL_STABLE,
+                    &[
+                        address_word(t0),
+                        address_word(t1),
+                        U256::from(u8::from(stable)).to_be_bytes::<32>(),
+                    ],
+                )
+            }
+            PoolKind::Slipstream => {
+                let Some(ts) = meta.tick_spacing.and_then(|t| u32::try_from(t).ok()) else {
+                    return Ok(None);
+                };
+                call_data(
+                    SEL_GET_POOL_TICK,
+                    &[
+                        address_word(t0),
+                        address_word(t1),
+                        U256::from(ts).to_be_bytes::<32>(),
+                    ],
+                )
+            }
         };
         Ok(self
             .eth_call(factory, &data, block)
@@ -765,7 +890,21 @@ impl EvmRpcClient {
         kind: PoolKind,
         block: &str,
     ) -> Result<PoolOnchainMetadata, EvmSourceError> {
-        let mut meta = self.pool_identity(emitter, kind, block).await?;
+        self.pool_metadata_resolving(emitter, kind, block, &|_| None)
+            .await
+    }
+
+    /// [`Self::pool_identity_resolving`] plus [`Self::registered_pool`].
+    pub async fn pool_metadata_resolving(
+        &self,
+        emitter: Address,
+        topic_kind: PoolKind,
+        block: &str,
+        family_of: &(dyn Fn(Address) -> Option<PoolKind> + Sync),
+    ) -> Result<PoolOnchainMetadata, EvmSourceError> {
+        let mut meta = self
+            .pool_identity_resolving(emitter, topic_kind, block, family_of)
+            .await?;
         meta.registered_pool = self.registered_pool(&meta, block).await?;
         Ok(meta)
     }

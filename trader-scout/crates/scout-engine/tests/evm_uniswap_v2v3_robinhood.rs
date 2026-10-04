@@ -134,6 +134,8 @@ async fn load(path: &PathBuf) -> Loaded {
                     token0: opt_addr(&r["token0"]),
                     token1: opt_addr(&r["token1"]),
                     fee: r["fee"].as_u64().map(|f| u32::try_from(f).unwrap()),
+                    stable: None,
+                    tick_spacing: None,
                     registered_pool: opt_addr(&r["registered_pool"]),
                 })
                 .collect()
@@ -228,6 +230,8 @@ fn admit_fixture(l: &Loaded) -> (SwapVenueGate, BTreeMap<Address, &'static str>)
                     token0: Some(t0),
                     token1: Some(t1),
                     fee: Some(fee),
+                    stable: None,
+                    tick_spacing: None,
                     registered_pool: None,
                 };
                 if gate.admit_pool(SwapVenue::UniswapV3, pool, &meta).is_ok() {
@@ -266,6 +270,9 @@ async fn all_rows() -> (Vec<Row>, Vec<(String, usize)>) {
                                 panic!("v3 swap must decode");
                             };
                             (s.amount0, s.amount1)
+                        }
+                        PoolKind::AerodromeV2 | PoolKind::Slipstream => {
+                            unreachable!("Robinhood swap_emitters only yields v2/v3")
                         }
                         PoolKind::V2 => {
                             let DecodeOutcome::Decoded(s) = decode_v2_style_swap(log) else {

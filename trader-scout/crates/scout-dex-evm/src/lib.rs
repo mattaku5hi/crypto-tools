@@ -31,4 +31,7 @@ pub use uniswap::{
     decode_v3_pool_created, decode_v3_swap, decode_v4_initialize, decode_v4_swap,
     v2_pair_address_create2, v3_pool_address_create2,
 };
-pub use v2_swap::{DecodedSwap, V2_SWAP_EVENT_SIGNATURE, V2SwapDecoder, decode_v2_style_swap};
+pub use v2_swap::{
+    AERODROME_V2_SWAP_TOPIC0, DecodedSwap, V2_SWAP_EVENT_SIGNATURE, V2SwapDecoder,
+    decode_aerodrome_v2_swap, decode_v2_style_swap,
+};

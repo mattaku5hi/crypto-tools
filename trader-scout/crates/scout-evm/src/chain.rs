@@ -73,7 +73,10 @@ pub const BASE: EvmChainProfile = EvmChainProfile {
     native_symbol: "ETH",
     wrapped_native: address!("4200000000000000000000000000000000000006"),
     l1_fee_separate: true,
-    // TODO(ADR-020 step 3): USDC/USDbC addresses are not verified on-chain yet.
+    // TODO(ADR-020 step 3): USDC/USDbC addresses are not in the research doc
+    // and not verified on-chain yet; take them from the first `evm_base_*`
+    // capture's quote flows and check `decimals()` before pinning. WETH is the
+    // pinned `wrapped_native` (canonical OP-stack WETH9).
     quote_assets: &[],
 };
 

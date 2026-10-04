@@ -30,6 +30,21 @@ use scout_core::RawEvmLog;
 pub const V2_SWAP_EVENT_SIGNATURE: B256 =
     alloy_primitives::b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
 
+/// Aerodrome/Velodrome (Solidly-style) v2 pool `Swap` topic0:
+/// `keccak256("Swap(address,address,uint256,uint256,uint256,uint256)")`,
+/// i.e. `Swap(address indexed sender, address indexed to, uint256 amount0In,
+/// uint256 amount1In, uint256 amount0Out, uint256 amount1Out)`. This differs
+/// from [`V2_SWAP_EVENT_SIGNATURE`] (the Uniswap v2 event has `to` LAST), so
+/// the research doc's "same topic0" note is wrong for this signature; the
+/// decoder accepts both topics and the live capture settles which one the
+/// pools emit. The data layout (four `uint256` in the order in0/in1/out0/
+/// out1) and the two indexed addresses (sender, to) are the same as
+/// Uniswap v2's: UNCONFIRMED against `aerodrome-finance/contracts` `Pool.sol`
+/// (no network when this was written); the pool-delta verification test is
+/// the proof.
+pub const AERODROME_V2_SWAP_TOPIC0: B256 =
+    alloy_primitives::b256!("b3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b");
+
 /// A decoded v2-style swap: raw amounts in/out for each token side, and
 /// the address that received the output (the `to` field of the event —
 /// a candidate signal for owner attribution, never auto-promoted to
@@ -85,8 +100,20 @@ impl TxDecoder<RawEvmLog, DecodedSwap> for V2SwapDecoder {
 /// пропускается молча").
 #[must_use]
 pub fn decode_v2_style_swap(log: &RawEvmLog) -> DecodeOutcome<DecodedSwap> {
+    decode_v2_layout(log, &[V2_SWAP_EVENT_SIGNATURE])
+}
+
+/// Decode a log of an Aerodrome v2 pool: either its own
+/// [`AERODROME_V2_SWAP_TOPIC0`] or the Uniswap v2 topic, with the v2 data
+/// layout (see the topic constant's note).
+#[must_use]
+pub fn decode_aerodrome_v2_swap(log: &RawEvmLog) -> DecodeOutcome<DecodedSwap> {
+    decode_v2_layout(log, &[AERODROME_V2_SWAP_TOPIC0, V2_SWAP_EVENT_SIGNATURE])
+}
+
+fn decode_v2_layout(log: &RawEvmLog, topics: &[B256]) -> DecodeOutcome<DecodedSwap> {
     let signature = log.topics.first().copied();
-    if signature != Some(V2_SWAP_EVENT_SIGNATURE) {
+    if !signature.is_some_and(|t| topics.contains(&t)) {
         return DecodeOutcome::NotMine;
     }
     if log.topics.len() != 3 {
@@ -207,6 +234,34 @@ mod tests {
         assert_eq!(decoded.sender, Address::from([0x11; 20]));
         assert_eq!(decoded.to, Address::from([0x22; 20]));
         assert_eq!(decoded.block_number, 12_345);
+    }
+
+    #[test]
+    fn aerodrome_topic_is_the_solidly_signature_and_decodes() {
+        assert_eq!(
+            AERODROME_V2_SWAP_TOPIC0,
+            alloy_primitives::keccak256("Swap(address,address,uint256,uint256,uint256,uint256)")
+        );
+        assert_eq!(
+            V2_SWAP_EVENT_SIGNATURE,
+            alloy_primitives::keccak256("Swap(address,uint256,uint256,uint256,uint256,address)")
+        );
+        let mut log = synthetic_v2_swap_log(5, 0, 0, 7);
+        // Uniswap v2 decoder does not claim the Solidly topic.
+        log.topics[0] = AERODROME_V2_SWAP_TOPIC0;
+        assert_eq!(decode_v2_style_swap(&log), DecodeOutcome::NotMine);
+        let d = decode_aerodrome_v2_swap(&log).decoded().unwrap();
+        assert_eq!(
+            (d.amount0_in, d.amount1_out),
+            (U256::from(5u8), U256::from(7u8))
+        );
+        // Either topic is accepted for an Aerodrome pool.
+        log.topics[0] = V2_SWAP_EVENT_SIGNATURE;
+        assert!(decode_aerodrome_v2_swap(&log).decoded().is_some());
+        // Broken structure under the Solidly topic is Malformed.
+        log.topics[0] = AERODROME_V2_SWAP_TOPIC0;
+        log.topics.pop();
+        assert!(decode_aerodrome_v2_swap(&log).is_malformed());
     }
 
     #[test]

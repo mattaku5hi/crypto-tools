@@ -34,7 +34,10 @@ async fn run(env: Vec<(&'static str, String)>, args: Vec<String>) -> Out {
         cmd.args(args)
             .env_remove("EVM_TEST_RPC")
             .env_remove("SCOUT_BLOCKSCOUT_API_KEY")
-            .env_remove("SCOUT_EVM_CAPTURE_BLOCKSCOUT_URL");
+            .env_remove("SCOUT_EVM_CAPTURE_BLOCKSCOUT_URL")
+            .env_remove("SCOUT_ROBINHOOD_LOGS_RPC_URL")
+            .env_remove("SCOUT_BASE_LOGS_RPC_URL")
+            .env_remove("SCOUT_BSC_LOGS_RPC_URL");
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -588,4 +591,357 @@ async fn swaps_all_adds_the_pool_manager_scan_and_max_pools_bounds_lookups() {
         .collect();
     assert_eq!(logs.len(), 2);
     assert!(logs.iter().any(|l| l["params"][0]["address"] == PM));
+}
+
+/// Answers `status` (with an optional `Retry-After`) to the first `n`
+/// requests, then delegates to the chain.
+struct Flaky {
+    left: std::sync::atomic::AtomicUsize,
+    status: u16,
+    retry_after: Option<&'static str>,
+    inner: Chain,
+}
+
+impl Respond for Flaky {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        use std::sync::atomic::Ordering;
+        if self
+            .left
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            let t = ResponseTemplate::new(self.status);
+            return match self.retry_after {
+                Some(v) => t.insert_header("Retry-After", v),
+                None => t,
+            };
+        }
+        self.inner.respond(req)
+    }
+}
+
+fn token_args(extra: &[&str]) -> Vec<String> {
+    let mut a = vec!["--token", TOKEN, "--from-block", "0", "--to-block", "16"];
+    a.extend_from_slice(extra);
+    base_args(&a)
+}
+
+#[tokio::test]
+async fn a_429_backs_off_halves_the_rate_and_the_capture_continues() {
+    let s = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(Flaky {
+            left: std::sync::atomic::AtomicUsize::new(2),
+            status: 429,
+            retry_after: None,
+            inner: Chain { chain_id: "0x1237" },
+        })
+        .mount(&s)
+        .await;
+    let out = run(rpc_env(&s), token_args(&[])).await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        out.stdout.contains("transactions=1 logs=2"),
+        "{}",
+        out.stdout
+    );
+    assert!(out.stderr.contains("client rate halved"), "{}", out.stderr);
+    let line = out
+        .stderr
+        .lines()
+        .find(|l| l.contains("rate limit: rpc:"))
+        .unwrap_or_else(|| panic!("no rate limit line: {}", out.stderr));
+    assert!(!line.contains("(0 halving(s)"), "{line}");
+    assert!(!out.stderr.contains(SECRET) && !out.stdout.contains(SECRET));
+}
+
+#[tokio::test]
+async fn a_429_that_asks_for_too_long_a_wait_stops_incomplete_not_failed() {
+    // Every request (the preflight included) is a 429 asking for an hour.
+    let s2 = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(Flaky {
+            left: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            status: 429,
+            retry_after: Some("3600"),
+            inner: Chain { chain_id: "0x1237" },
+        })
+        .mount(&s2)
+        .await;
+    let out_path = tmp("ratelimited.json");
+    let out = run(rpc_env(&s2), token_args(&["--out", &out_path])).await;
+    assert_eq!(out.code, 3, "{}", out.stderr);
+    assert!(out.stderr.contains("INCOMPLETE") && out.stderr.contains("429"));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(v["incomplete"], true);
+    assert!(out.stderr.contains("rate limit: rpc:"), "{}", out.stderr);
+}
+
+#[tokio::test]
+async fn the_limiter_paces_every_attempt_and_is_reported() {
+    let s = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(Chain { chain_id: "0x1237" })
+        .mount(&s)
+        .await;
+    let started = std::time::Instant::now();
+    let out = run(rpc_env(&s), token_args(&["--rpc-rps", "4"])).await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let requests = s.received_requests().await.unwrap().len();
+    assert!(requests > 4, "scenario must exceed the burst: {requests}");
+    let line = out
+        .stderr
+        .lines()
+        .find(|l| l.contains("rate limit: rpc:"))
+        .unwrap_or_else(|| panic!("{}", out.stderr));
+    assert!(
+        line.contains("rate 4.000/s -> 4.000/s (0 halving(s)"),
+        "{line}"
+    );
+    assert!(
+        line.contains(&format!("{requests} request(s) paced")),
+        "{line} vs {requests}"
+    );
+    assert!(!line.contains(" 0 ms spent"), "{line}");
+    // 4 burst tokens, then 4/s: the rest took real time.
+    let min_ms = u128::try_from(requests - 4).unwrap() * 250; // 1000 ms / 4 per s
+    assert!(started.elapsed().as_millis() + 250 >= min_ms);
+}
+
+#[tokio::test]
+async fn cu_budget_conflicts_with_rps_and_logs_route_to_the_logs_endpoint() {
+    let both = run(
+        vec![],
+        token_args(&["--rpc-rps", "5", "--rpc-cu-per-sec", "300"]),
+    )
+    .await;
+    assert_eq!(both.code, 2, "{}", both.stderr);
+
+    let main = MockServer::start().await;
+    let logs = MockServer::start().await;
+    for srv in [&main, &logs] {
+        Mock::given(method("POST"))
+            .respond_with(Chain { chain_id: "0x1237" })
+            .mount(srv)
+            .await;
+    }
+    const LOGS_SECRET: &str = "LOGSSECRETKEY999";
+    let mut env = rpc_env(&main);
+    env.push((
+        "SCOUT_ROBINHOOD_LOGS_RPC_URL",
+        format!("{}/v2/{LOGS_SECRET}", logs.uri()),
+    ));
+    let out = run(env, token_args(&["--rpc-cu-per-sec", "300"])).await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let methods = |reqs: Vec<Request>| -> Vec<String> {
+        reqs.iter()
+            .map(|r| {
+                serde_json::from_slice::<Value>(&r.body).unwrap()["method"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    let on_logs = methods(logs.received_requests().await.unwrap());
+    let on_main = methods(main.received_requests().await.unwrap());
+    assert!(!on_logs.is_empty() && on_logs.iter().all(|m| m == "eth_getLogs"));
+    assert!(!on_main.iter().any(|m| m == "eth_getLogs"));
+    assert!(on_main.iter().any(|m| m == "eth_getBlockReceipts"));
+    assert!(out.stderr.contains("rate limit: rpc:"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("rate limit: logs rpc:"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("300.000/s"), "{}", out.stderr);
+    for text in [&out.stdout, &out.stderr] {
+        assert!(
+            !text.contains(LOGS_SECRET) && !text.contains(SECRET),
+            "{text}"
+        );
+    }
+}
+
+// ---- Base venues (Aerodrome v2 / Slipstream) ------------------------------
+
+const BASE_GENESIS: &str = "0xf712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd";
+const AERO_SWAP: &str = "0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b";
+const AERO_FACTORY: &str = "0x420dd381b31aef6683db6b902084cb0ffece40da";
+const SLIP_FACTORY: &str = "0x5e7bb104d84c7cb9b682aac2f3d509f5f406809a";
+const AERO_POOL: &str = "0x00000000000000000000000000000000000000a1";
+const SLIP_POOL: &str = "0x00000000000000000000000000000000000000b1";
+
+struct BaseVenues;
+
+impl BaseVenues {
+    fn logs() -> Vec<Value> {
+        vec![
+            json!({"address": SLIP_POOL, "topics":[V3_SWAP, topic_addr(PM), topic_addr(WALLET)],
+                "data": format!("0x{}", "00".repeat(160)), "blockNumber":"0x7",
+                "transactionIndex":"0x1","logIndex":"0x0"}),
+            json!({"address": AERO_POOL, "topics":[AERO_SWAP, topic_addr(PM), topic_addr(WALLET)],
+                "data": format!("0x{}", "00".repeat(128)), "blockNumber":"0x7",
+                "transactionIndex":"0x1","logIndex":"0x1"}),
+        ]
+    }
+}
+
+impl Respond for BaseVenues {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let h = format!("0x{}", "a1".repeat(32));
+        let result = match body["method"].as_str().unwrap() {
+            "eth_chainId" => json!("0x2105"),
+            "eth_blockNumber" => json!("0x10"),
+            "eth_getBlockByNumber" if body["params"][0] == "0x0" => {
+                json!({"hash": BASE_GENESIS, "timestamp": "0x0"})
+            }
+            "eth_getBlockByNumber" => json!({"timestamp": "0x3e8"}),
+            "eth_getLogs" => {
+                if body["params"][0].get("address").is_some() {
+                    json!([])
+                } else {
+                    json!(Self::logs())
+                }
+            }
+            "eth_getBlockReceipts" => json!([{"transactionHash": h, "blockNumber":"0x7",
+                "transactionIndex":"0x1","status":"0x1","gasUsed":"0x64",
+                "effectiveGasPrice":"0x2","l1Fee":"0x5","logs": Self::logs()}]),
+            "eth_getTransactionByHash" => json!({"hash": h, "from": WALLET, "to": PM,
+                "value":"0x0", "blockNumber":"0x7","transactionIndex":"0x1"}),
+            "eth_call" => {
+                let to = body["params"][0]["to"]
+                    .as_str()
+                    .unwrap()
+                    .to_ascii_lowercase();
+                let data = body["params"][0]["data"].as_str().unwrap().to_string();
+                let addr_word = |a: &str| format!("0x{:0>64}", a.trim_start_matches("0x"));
+                let (factory, pool) = if to == AERO_POOL {
+                    (AERO_FACTORY, AERO_POOL)
+                } else if to == SLIP_POOL {
+                    (SLIP_FACTORY, SLIP_POOL)
+                } else if to == AERO_FACTORY || to == SLIP_FACTORY {
+                    // factory record: getPool(bool) / getPool(int24)
+                    let pool = if to == AERO_FACTORY {
+                        AERO_POOL
+                    } else {
+                        SLIP_POOL
+                    };
+                    match &data[..10] {
+                        "0x79bc57d5" if to == AERO_FACTORY => {
+                            assert!(
+                                data.ends_with(&format!("{:064x}", 1)),
+                                "stable=true: {data}"
+                            );
+                            return ResponseTemplate::new(200).set_body_json(
+                                json!({"jsonrpc":"2.0","id":1,"result":addr_word(pool)}),
+                            );
+                        }
+                        "0x28af8d0b" if to == SLIP_FACTORY => {
+                            assert!(data.ends_with(&format!("{:064x}", 100)), "spacing: {data}");
+                            return ResponseTemplate::new(200).set_body_json(
+                                json!({"jsonrpc":"2.0","id":1,"result":addr_word(pool)}),
+                            );
+                        }
+                        other => panic!("unexpected factory selector {other} at {to}"),
+                    }
+                } else {
+                    panic!("unexpected eth_call target {to}");
+                };
+                let _ = pool;
+                match &data[..10] {
+                    "0xc45a0155" => json!(addr_word(factory)),
+                    "0x0dfe1681" => json!(addr_word(T0)),
+                    "0xd21220a7" => json!(addr_word(T1)),
+                    "0x22be3de1" if to == AERO_POOL => json!(word(1)),
+                    "0xd0c93a7c" if to == SLIP_POOL => json!(word(100)),
+                    // a Slipstream pool has no `fee()` of its own here
+                    "0xddca3f43" => {
+                        return ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0",
+                            "id":1,"error":{"code":3,"message":"execution reverted"}}));
+                    }
+                    other => panic!("unexpected pool selector {other} at {to}"),
+                }
+            }
+            other => panic!("unexpected {other}"),
+        };
+        ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":1,"result":result}))
+    }
+}
+
+#[tokio::test]
+async fn base_capture_reads_aerodrome_stable_and_slipstream_tick_spacing() {
+    let s = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(BaseVenues)
+        .mount(&s)
+        .await;
+    let out_path = tmp("base_venues.json");
+    let args: Vec<String> = [
+        "--chain",
+        "base",
+        "--rpc-url-env",
+        "EVM_TEST_RPC",
+        "--swaps",
+        "all",
+        "--from-block",
+        "0",
+        "--to-block",
+        "16",
+        "--out",
+        &out_path,
+    ]
+    .iter()
+    .map(|a| (*a).to_string())
+    .collect();
+    let out = run(rpc_env(&s), args).await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        out.stdout.contains("chain=base chain_id=8453"),
+        "{}",
+        out.stdout
+    );
+    // Both pools are admitted by their pinned factories' own records.
+    assert!(
+        out.stdout.contains("admitted=2 refused=0"),
+        "{}",
+        out.stdout
+    );
+    assert!(out.stdout.contains("stable=true"), "{}", out.stdout);
+    assert!(out.stdout.contains("tick_spacing=100"), "{}", out.stdout);
+    assert!(
+        out.stdout
+            .contains(&format!("aerodrome_v2_swap {AERO_POOL} count=1 gate=gated")),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout
+            .contains(&format!("v3_swap {SLIP_POOL} count=1 gate=gated")),
+        "{}",
+        out.stdout
+    );
+    // `all` asks v2 + v3 + Aerodrome topics in ONE address-less filter.
+    let reqs = s.received_requests().await.unwrap();
+    let first_logs = reqs
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .find(|b| b["method"] == "eth_getLogs" && b["params"][0].get("address").is_none())
+        .unwrap();
+    let topics = first_logs["params"][0]["topics"][0].as_array().unwrap();
+    assert!(topics.iter().any(|t| t == AERO_SWAP) && topics.iter().any(|t| t == V3_SWAP));
+
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+    let rows = v["pool_metadata"].as_array().unwrap();
+    let aero = rows.iter().find(|r| r["emitter"] == AERO_POOL).unwrap();
+    assert_eq!(aero["kind"], "aerodrome_v2");
+    assert_eq!(aero["stable"], true);
+    assert_eq!(aero["factory"], AERO_FACTORY);
+    assert_eq!(aero["registered_pool"], AERO_POOL);
+    let slip = rows.iter().find(|r| r["emitter"] == SLIP_POOL).unwrap();
+    assert_eq!(slip["kind"], "slipstream");
+    assert_eq!(slip["tick_spacing"], 100);
+    assert!(slip["fee"].is_null());
+    assert_eq!(slip["registered_pool"], SLIP_POOL);
 }
