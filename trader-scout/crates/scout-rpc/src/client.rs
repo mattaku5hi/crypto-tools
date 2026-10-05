@@ -59,12 +59,27 @@ fn unit_cost(_method: &str) -> u64 {
 /// returned to the caller instead.
 pub const DEFAULT_MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
+/// Extra attempts a call may spend on 429 answers beyond the generic
+/// `max_attempts` (which only counts non-429 transient failures): a rate
+/// limit is waited out with exponential backoff (capped at
+/// [`RATE_LIMIT_MAX_BACKOFF`]) while the limiter halves its rate, instead of
+/// turning into a terminal error after a few attempts. All attempts still
+/// count against `--max-requests`.
+pub const RATE_LIMIT_EXTRA_RETRIES: u32 = 6;
+/// Cap of one backoff step between attempts after a 429.
+pub const RATE_LIMIT_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Default)]
 struct RequestBudget {
     /// `None` = unlimited.
     limit: Option<u64>,
     /// HTTP attempts started (including retries), shared across calls.
     used: AtomicU64,
+    /// Retries scheduled after a 429 (own budget, see
+    /// [`RATE_LIMIT_EXTRA_RETRIES`]), shared across calls and clones.
+    rate_limit_retries: AtomicU64,
+    /// Calls that ended `RateLimited` after spending that budget.
+    rate_limit_failures: AtomicU64,
 }
 
 impl RequestBudget {
@@ -211,7 +226,7 @@ impl RpcClient {
     pub fn with_max_total_requests(mut self, limit: Option<u64>) -> Self {
         self.budget = Arc::new(RequestBudget {
             limit,
-            used: AtomicU64::new(0),
+            ..RequestBudget::default()
         });
         self
     }
@@ -220,6 +235,16 @@ impl RpcClient {
     #[must_use]
     pub fn total_requests_made(&self) -> u64 {
         self.budget.used.load(Ordering::Acquire)
+    }
+
+    /// `(retries after a 429, calls that failed rate limited after spending
+    /// the rate-limit retry budget)` so far (shared counters).
+    #[must_use]
+    pub fn rate_limit_counts(&self) -> (u64, u64) {
+        (
+            self.budget.rate_limit_retries.load(Ordering::Acquire),
+            self.budget.rate_limit_failures.load(Ordering::Acquire),
+        )
     }
 
     /// The request budget limit (`None` = unlimited).
@@ -292,13 +317,24 @@ impl RpcClient {
     {
         let body = JsonRpcRequest::new(method, &params);
         let mut last_err: Option<ProviderError> = None;
+        // Generic transient failures (5xx/network) spend `max_attempts`;
+        // 429 answers spend their own `max_attempts + EXTRA` budget.
+        let mut generic: u32 = 0;
+        let mut limited: u32 = 0;
+        let mut attempt: u32 = 0;
+        let rl_policy = RetryPolicy {
+            max_delay_ms: u64::try_from(RATE_LIMIT_MAX_BACKOFF.as_millis()).unwrap_or(u64::MAX),
+            ..self.retry.clone()
+        };
 
-        for attempt in 0..self.retry.max_attempts {
+        loop {
             if attempt > 0 {
                 if self.budget.is_exhausted() {
                     return Err(self.budget_error());
                 }
-                let mut delay = self.retry.delay_for_attempt(attempt, jitter);
+                let was_limited = matches!(last_err, Some(ProviderError::RateLimited { .. }));
+                let policy = if was_limited { &rl_policy } else { &self.retry };
+                let mut delay = policy.delay_for_attempt(attempt, jitter);
                 if let Some(ProviderError::RateLimited {
                     retry_after: Some(ra),
                 }) = &last_err
@@ -307,6 +343,7 @@ impl RpcClient {
                 }
                 sleeper.sleep(delay).await;
             }
+            attempt = attempt.saturating_add(1);
 
             match self.try_once::<_, R>(&body, method).await {
                 Ok(value) => return Ok(value),
@@ -327,17 +364,35 @@ impl RpcClient {
                     {
                         return Err(err);
                     }
+                    let exhausted = if matches!(err, ProviderError::RateLimited { .. }) {
+                        limited = limited.saturating_add(1);
+                        limited
+                            >= self
+                                .retry
+                                .max_attempts
+                                .saturating_add(RATE_LIMIT_EXTRA_RETRIES)
+                    } else {
+                        generic = generic.saturating_add(1);
+                        generic >= self.retry.max_attempts
+                    };
+                    if exhausted {
+                        if matches!(err, ProviderError::RateLimited { .. }) {
+                            self.budget
+                                .rate_limit_failures
+                                .fetch_add(1, Ordering::AcqRel);
+                        }
+                        return Err(err);
+                    }
+                    if matches!(err, ProviderError::RateLimited { .. }) {
+                        self.budget
+                            .rate_limit_retries
+                            .fetch_add(1, Ordering::AcqRel);
+                    }
                     last_err = Some(err);
                 }
                 Err(Classified::Terminal(err)) => return Err(err),
             }
         }
-
-        Err(
-            last_err.unwrap_or(ProviderError::Other(Box::new(std::io::Error::other(
-                "retry loop exited with no attempts made",
-            )))),
-        )
     }
 
     async fn try_once<P, R>(
@@ -1051,6 +1106,87 @@ mod tests {
         assert_eq!((st.halvings, st.rate_milli), (1, 500_000));
         // every attempt is counted against the budget
         assert_eq!(client.total_requests_made(), 3);
+    }
+
+    #[tokio::test]
+    async fn repeated_429s_get_their_own_retry_budget_then_succeed() {
+        // 8 x 429 with max_attempts 3: the generic budget alone would fail
+        // at the 3rd; the rate-limit budget (3 + 6 = 9 attempts) rides it out.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(8)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ok_resp())
+            .mount(&server)
+            .await;
+        let limiter = Arc::new(RateLimiter::new(1_000, 10));
+        let client = client_for(&server, 3)
+            .await
+            .with_max_total_requests(Some(20))
+            .with_rate_limiter(limiter, None);
+        let sleeper = FakeSleeper(std::sync::Mutex::new(Vec::new()));
+        let r: String = client
+            .call_with("m", json!([]), &NoJitter, &sleeper)
+            .await
+            .unwrap();
+        assert_eq!(r, "ok");
+        assert_eq!(client.total_requests_made(), 9);
+        assert_eq!(client.rate_limit_counts(), (8, 0));
+        let slept = sleeper.slept();
+        assert_eq!(slept.len(), 8);
+        // exponential, capped at 30 s
+        assert_eq!(slept[0], Duration::from_millis(500));
+        assert!(slept.iter().all(|d| *d <= RATE_LIMIT_MAX_BACKOFF));
+        assert_eq!(slept[7], RATE_LIMIT_MAX_BACKOFF);
+    }
+
+    #[tokio::test]
+    async fn endless_429s_fail_after_the_rate_limit_budget_and_count_exactly() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        let client = client_for(&server, 2)
+            .await
+            .with_max_total_requests(Some(100));
+        let sleeper = FakeSleeper(std::sync::Mutex::new(Vec::new()));
+        let err = client
+            .call_with::<_, String>("m", json!([]), &NoJitter, &sleeper)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ProviderError::RateLimited { retry_after: None }
+        ));
+        // max_attempts (2) + 6 extra = 8 attempts, 7 retries, 1 failed call
+        assert_eq!(client.total_requests_made(), 8);
+        assert_eq!(client.rate_limit_counts(), (7, 1));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_retries_never_exceed_the_request_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        let client = client_for(&server, 3)
+            .await
+            .with_max_total_requests(Some(4));
+        let sleeper = FakeSleeper(std::sync::Mutex::new(Vec::new()));
+        let err = client
+            .call_with::<_, String>("m", json!([]), &NoJitter, &sleeper)
+            .await
+            .unwrap_err();
+        let ProviderError::Other(inner) = err else {
+            panic!("expected budget error");
+        };
+        assert!(inner.downcast_ref::<RequestBudgetExhausted>().is_some());
+        assert_eq!(client.total_requests_made(), 4);
     }
 
     #[tokio::test]

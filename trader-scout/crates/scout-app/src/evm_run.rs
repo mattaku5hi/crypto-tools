@@ -23,8 +23,8 @@ use scout_sdk::evm::EvmChainProfile;
 use tokio_util::sync::CancellationToken;
 
 use crate::evm_source::{
-    EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS, ROBINHOOD_PUBLIC_RPC,
-    evm_rpc_url_from_env, logs_rpc_env_name,
+    ALCHEMY_DEFAULT_CU_PER_SEC, EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS,
+    ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env, logs_rpc_env_name,
 };
 
 /// Which chain family an input set belongs to.
@@ -118,10 +118,21 @@ impl EvmSetup {
     /// One stderr line per endpoint: initial/final rate, halvings, waits.
     #[must_use]
     pub fn rate_limit_report(&self) -> Vec<String> {
-        self.limiters
+        let mut lines: Vec<String> = self
+            .limiters
             .iter()
             .map(|(label, l)| rate_limit_line(label, &l.stats()))
-            .collect()
+            .collect();
+        let (retries, failed) = self.rpc.rate_limit_counts();
+        if retries > 0 || failed > 0 {
+            lines.push(format!(
+                "429 handling: {retries} retr(ies) after 429 (up to {} extra attempts per call, \
+                 backoff capped at 30 s, all counted in --max-requests), {failed} call(s) \
+                 failed rate limited after that budget",
+                scout_rpc::RATE_LIMIT_EXTRA_RETRIES
+            ));
+        }
+        lines
     }
 }
 
@@ -205,6 +216,7 @@ pub type CostFn = fn(&str) -> u64;
 pub fn make_limiter(
     net: &EvmNetOptions,
     public: bool,
+    alchemy: bool,
     label: &str,
     on_halve: &LimiterNotice,
 ) -> (Arc<RateLimiter>, Option<CostFn>) {
@@ -218,7 +230,17 @@ pub fn make_limiter(
             fmt_rate(new)
         ));
     });
-    if let Some(cu) = net.rpc_cu_per_sec {
+    let mut cu_opt = net.rpc_cu_per_sec;
+    if cu_opt.is_none() && net.rpc_rps.is_none() && alchemy && !public {
+        // Alchemy meters compute units per second, not requests: a flat
+        // requests/s limiter is the wrong default there.
+        on_halve(format!(
+            "limiter: alchemy detected \u{2192} cu-per-sec {ALCHEMY_DEFAULT_CU_PER_SEC} \
+             (override with --rpc-rps/--rpc-cu-per-sec)"
+        ));
+        cu_opt = Some(ALCHEMY_DEFAULT_CU_PER_SEC);
+    }
+    if let Some(cu) = cu_opt {
         let cu = u64::from(cu.max(1));
         return (
             Arc::new(RateLimiter::new(cu, cu).with_halving_hook(hook)),
@@ -284,7 +306,8 @@ pub async fn setup_evm(
     } else {
         "keyed rpc".to_string()
     };
-    let (main_limiter, main_cost) = make_limiter(net, main_public, &main_label, notice);
+    let (main_limiter, main_cost) =
+        make_limiter(net, main_public, url.is_alchemy(), &main_label, notice);
     let rpc = RpcClient::new(RpcEndpoint::new(url.expose_for_transport()), 30_000, 3)
         .map_err(|e| EvmSetupError::Config(url.redact(&e.to_string())))?
         .with_max_total_requests(max_requests)
@@ -385,7 +408,7 @@ pub async fn setup_evm(
         None
     };
     if let Some((lu, public, label)) = logs_target {
-        let (l, cost) = make_limiter(net, public, &label, notice);
+        let (l, cost) = make_limiter(net, public, lu.is_alchemy(), &label, notice);
         let logs_rpc = RpcClient::new(RpcEndpoint::new(lu.expose_for_transport()), 30_000, 3)
             .map_err(|e| EvmSetupError::Config(url.redact(&lu.redact(&e.to_string()))))?
             .with_rate_limiter(Arc::clone(&l), cost);
@@ -1014,7 +1037,7 @@ mod tests {
     fn default_rates_keyed_10_public_5_and_public_is_capped() {
         let n = silent();
         let rate = |net: EvmNetOptions, public: bool| {
-            make_limiter(&net, public, "x", &n)
+            make_limiter(&net, public, false, "x", &n)
                 .0
                 .stats()
                 .initial_rate_milli
@@ -1035,9 +1058,57 @@ mod tests {
             rpc_rps: None,
             rpc_cu_per_sec: Some(300),
         };
-        let (l, cost) = make_limiter(&cu, false, "x", &n);
+        let (l, cost) = make_limiter(&cu, false, false, "x", &n);
         assert_eq!(l.stats().initial_rate_milli, 300_000);
         assert!(cost.is_some_and(|c| c("eth_getBlockReceipts") > c("eth_getLogs")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn alchemy_host_defaults_to_cu_mode_and_other_hosts_to_rps() {
+        let notes = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let n2 = Arc::clone(&notes);
+        let notice: LimiterNotice = Arc::new(move |m| n2.lock().unwrap().push(m));
+        let none = EvmNetOptions::default();
+        // Alchemy, nothing passed: CU mode at 250 CU/s, announced on stderr.
+        let (l, cost) = make_limiter(&none, false, true, "keyed rpc", &notice);
+        assert_eq!(l.stats().initial_rate_milli, 250_000);
+        let cost = cost.expect("cu table");
+        assert_eq!(cost("eth_getBlockReceipts"), 500);
+        let seen = notes.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![
+                "limiter: alchemy detected \u{2192} cu-per-sec 250 (override with \
+                 --rpc-rps/--rpc-cu-per-sec)"
+                    .to_string()
+            ]
+        );
+        // A 500-CU call is admitted (waits for the bucket, never stuck).
+        let t0 = tokio::time::Instant::now();
+        l.acquire(cost("eth_getBlockReceipts")).await.unwrap();
+        l.acquire(cost("eth_getBlockReceipts")).await.unwrap();
+        let el = tokio::time::Instant::now() - t0;
+        assert!(el >= std::time::Duration::from_secs(1), "{el:?}");
+        // Non-Alchemy keyed host: flat 10 req/s, no table, no notice.
+        let (l, cost) = make_limiter(&none, false, false, "keyed rpc", &notice);
+        assert_eq!(l.stats().initial_rate_milli, 10_000);
+        assert!(cost.is_none());
+        // Explicit flags win on Alchemy.
+        let rps = EvmNetOptions {
+            rpc_rps: Some(7),
+            rpc_cu_per_sec: None,
+        };
+        let (l, cost) = make_limiter(&rps, false, true, "keyed rpc", &notice);
+        assert_eq!(l.stats().initial_rate_milli, 7_000);
+        assert!(cost.is_none());
+        let cu = EvmNetOptions {
+            rpc_rps: None,
+            rpc_cu_per_sec: Some(100),
+        };
+        let (l, _) = make_limiter(&cu, false, true, "keyed rpc", &notice);
+        assert_eq!(l.stats().initial_rate_milli, 100_000);
+        // Only the first call announced the default.
+        assert_eq!(notes.lock().unwrap().len(), 1);
     }
 
     #[test]

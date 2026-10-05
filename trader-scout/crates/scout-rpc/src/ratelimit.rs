@@ -25,7 +25,6 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-const MICRO: u128 = 1_000_000;
 /// Lowest rate the limiter backs off to: 0.1 units per second.
 pub const MIN_RATE_MILLI: u64 = 100;
 /// Default bound of simultaneously waiting callers.
@@ -67,7 +66,8 @@ pub type HalvingHook = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
 #[derive(Debug)]
 struct State {
-    tokens_micro: u128,
+    /// Signed: a request costing more than the bucket goes into debt.
+    tokens_micro: i128,
     last: Instant,
     rate_milli: u64,
     last_halved: Option<Instant>,
@@ -79,7 +79,7 @@ pub struct RateLimiter {
     turn: tokio::sync::Mutex<()>,
     waiters: AtomicUsize,
     max_waiters: usize,
-    burst_micro: u128,
+    burst_micro: i128,
     initial_rate_milli: u64,
     halvings: AtomicU64,
     acquired: AtomicU64,
@@ -114,7 +114,7 @@ impl RateLimiter {
     #[must_use]
     pub fn new(units_per_sec: u64, burst_units: u64) -> Self {
         let rate_milli = units_per_sec.max(1).saturating_mul(1_000);
-        let burst_micro = u128::from(burst_units.max(1)) * MICRO;
+        let burst_micro = i128::from(burst_units.max(1)) * 1_000_000;
         Self {
             state: Mutex::new(State {
                 tokens_micro: burst_micro,
@@ -164,13 +164,15 @@ impl RateLimiter {
         let now = Instant::now();
         let elapsed_us = now.saturating_duration_since(s.last).as_micros();
         s.last = now;
-        let add = div(elapsed_us * u128::from(s.rate_milli), 1_000);
+        let add =
+            i128::try_from(div(elapsed_us * u128::from(s.rate_milli), 1_000)).unwrap_or(i128::MAX);
         s.tokens_micro = s.tokens_micro.saturating_add(add).min(self.burst_micro);
     }
 
     /// Wait until `cost_units` tokens are available and take them. A cost
-    /// above the bucket size is clamped to it (so a heavy method is slow,
-    /// never stuck).
+    /// above the bucket size waits for a FULL bucket and then takes the whole
+    /// cost, leaving the bucket in debt that later callers pay off by waiting
+    /// (a heavy method is slow, never stuck, and the sustained rate holds).
     ///
     /// # Errors
     /// [`RateLimiterSaturated`] when the waiter bound is exceeded.
@@ -182,7 +184,8 @@ impl RateLimiter {
             });
         }
         let _waiting = WaiterGuard(&self.waiters);
-        let cost = (u128::from(cost_units.max(1)) * MICRO).min(self.burst_micro);
+        let cost = i128::from(cost_units.max(1)) * 1_000_000;
+        let need_tokens = cost.min(self.burst_micro);
         // FIFO: one caller at a time sleeps for its tokens.
         let _turn = self.turn.lock().await;
         loop {
@@ -192,11 +195,11 @@ impl RateLimiter {
                     break;
                 };
                 self.refill(&mut s);
-                if s.tokens_micro >= cost {
-                    s.tokens_micro -= cost;
+                if s.tokens_micro >= need_tokens {
+                    s.tokens_micro = s.tokens_micro.saturating_sub(cost);
                     None
                 } else {
-                    let need = cost - s.tokens_micro;
+                    let need = u128::try_from(need_tokens - s.tokens_micro).unwrap_or(0);
                     let us = div(
                         need * 1_000 + u128::from(s.rate_milli) - 1,
                         u128::from(s.rate_milli),
@@ -271,14 +274,33 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn weights_cost_proportionally_and_oversize_is_clamped() {
+    async fn weights_cost_proportionally_and_oversize_goes_into_debt() {
         let l = RateLimiter::new(100, 100);
         let t0 = Instant::now();
         l.acquire(100).await.unwrap(); // drains the bucket
         l.acquire(50).await.unwrap(); // 0.5 s
-        l.acquire(10_000).await.unwrap(); // clamped to 100 -> 1 s
+        l.acquire(10_000).await.unwrap(); // waits for a full bucket (1 s), then debt
         let el = Instant::now() - t0;
         assert!(el >= Duration::from_millis(1_500) && el < Duration::from_millis(1_600));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_costing_more_than_the_bucket_is_admitted_after_a_wait() {
+        // 250 units/s, bucket 250: a 500-unit call waits for a full bucket
+        // (1 s after a drain) and is then admitted; its 250-unit debt delays
+        // the next caller.
+        let l = RateLimiter::new(250, 250);
+        l.acquire(250).await.unwrap(); // drain
+        let t0 = Instant::now();
+        l.acquire(500).await.unwrap();
+        let first = Instant::now() - t0;
+        assert!(first >= Duration::from_millis(1_000) && first < Duration::from_millis(1_100));
+        // debt: 500 - 250 = 250 below zero -> 2 s until the bucket is full
+        // again, i.e. the sustained rate (500 units per 2 s) is respected.
+        l.acquire(250).await.unwrap();
+        let total = Instant::now() - t0;
+        assert!(total >= Duration::from_millis(3_000), "{total:?}");
+        assert!(total < Duration::from_millis(3_200), "{total:?}");
     }
 
     #[tokio::test(start_paused = true)]

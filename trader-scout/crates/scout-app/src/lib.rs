@@ -31,8 +31,9 @@ pub use evm_run::{
     setup_evm,
 };
 pub use evm_source::{
-    BLOCKSCOUT_KEY_ENV, EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS,
-    ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env, logs_rpc_env_name, rpc_env_name,
+    ALCHEMY_DEFAULT_CU_PER_SEC, BLOCKSCOUT_KEY_ENV, EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS,
+    PUBLIC_RPC_RPS, ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env, is_alchemy_url, logs_rpc_env_name,
+    rpc_env_name,
 };
 pub use input::{
     IdentityKind, IdentityRecord, InputError, InputFormat, ParsedInput, UpstreamInfo,

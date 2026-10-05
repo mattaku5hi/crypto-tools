@@ -37,11 +37,30 @@ pub const KEYED_RPC_RPS: u32 = 10;
 /// Default (and ceiling) request rate of a PUBLIC keyless endpoint.
 pub const PUBLIC_RPC_RPS: u32 = 5;
 
+/// Default compute-unit rate of an Alchemy endpoint when neither
+/// `--rpc-rps` nor `--rpc-cu-per-sec` is given (the free tier allows about
+/// 300 CU/s; 250 leaves headroom).
+pub const ALCHEMY_DEFAULT_CU_PER_SEC: u32 = 250;
+
+/// `true` when the URL's host is an Alchemy endpoint (`*.g.alchemy.com`).
+/// Looks at the host only, never at the key.
+#[must_use]
+pub fn is_alchemy_url(url: &str) -> bool {
+    let Some(rest) = url.split_once("://").map(|x| x.1) else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    let host = host.split(':').next().unwrap_or("").to_ascii_lowercase();
+    host.ends_with(".g.alchemy.com")
+}
+
 /// Network politeness options shared by the three CLIs (`#[command(flatten)]`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
 pub struct EvmNetOptions {
     /// EVM only: client-side request rate of keyed RPC endpoints, requests
-    /// per second (default 10; the keyless public endpoint is capped at 5
+    /// per second (default 10, except Alchemy hosts which default to
+    /// --rpc-cu-per-sec 250; the keyless public endpoint is capped at 5
     /// whatever this says; the explorer defaults to 5). Applies to every HTTP
     /// attempt, retries included, and is shared by all concurrent tasks. A
     /// 429 without Retry-After halves the rate for the rest of the run.
@@ -94,6 +113,12 @@ impl EvmRpcUrl {
             url: url.into(),
             from_env,
         }
+    }
+
+    /// The host is an Alchemy endpoint (`*.g.alchemy.com`).
+    #[must_use]
+    pub fn is_alchemy(&self) -> bool {
+        is_alchemy_url(&self.url)
     }
 
     /// The URL for the transport ONLY (never for output).
@@ -171,9 +196,25 @@ mod tests {
     #[test]
     fn url_never_prints_and_redaction_scrubs_path_keys() {
         let u = EvmRpcUrl::new("https://rh.g.alchemy.com/v2/SECRETKEY123456", true);
+        assert!(u.is_alchemy());
         assert!(!format!("{u:?} {u}").contains("SECRETKEY"));
         let r = u.redact("error sending request https://rh.g.alchemy.com/v2/SECRETKEY123456: boom, key SECRETKEY123456");
         assert!(!r.contains("SECRETKEY") && r.contains("boom"));
+    }
+
+    #[test]
+    fn alchemy_host_detection_looks_at_the_host_only() {
+        assert!(is_alchemy_url(
+            "https://robinhood-mainnet.g.alchemy.com/v2/k"
+        ));
+        assert!(is_alchemy_url(
+            "HTTPS://Base-Mainnet.G.Alchemy.com:443/v2/k"
+        ));
+        assert!(!is_alchemy_url("https://rpc.mainnet.chain.robinhood.com"));
+        assert!(!is_alchemy_url("https://evil.example/x.g.alchemy.com/v2/k"));
+        assert!(!is_alchemy_url("https://g.alchemy.com.evil.example/v2/k"));
+        assert!(!is_alchemy_url("http://127.0.0.1:1234/v2/k"));
+        assert!(!is_alchemy_url("nonsense"));
     }
 
     #[test]

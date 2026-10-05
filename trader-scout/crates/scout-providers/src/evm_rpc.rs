@@ -655,6 +655,13 @@ impl EvmRpcClient {
         self.rpc.total_requests_made()
     }
 
+    /// `(retries after a 429, calls that failed rate limited after the
+    /// rate-limit retry budget)`, shared by the main and logs endpoints.
+    #[must_use]
+    pub fn rate_limit_counts(&self) -> (u64, u64) {
+        self.rpc.rate_limit_counts()
+    }
+
     /// One call; a JSON `null` result (legit for unknown tx/block) comes
     /// back as `Value::Null` instead of the transport's "empty envelope".
     async fn call_json(&self, method: &str, params: Value) -> Result<Value, EvmSourceError> {

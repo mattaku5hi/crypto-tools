@@ -472,7 +472,13 @@ fn limited_client(
     notice: &LimiterNotice,
     limiters: &mut Vec<(String, Arc<RateLimiter>)>,
 ) -> Result<RpcClient, String> {
-    let (limiter, cost) = make_limiter(net, is_public_rpc(url), label, notice);
+    let (limiter, cost) = make_limiter(
+        net,
+        is_public_rpc(url),
+        scout_app::is_alchemy_url(url),
+        label,
+        notice,
+    );
     limiters.push((label.to_string(), Arc::clone(&limiter)));
     Ok(
         RpcClient::new(RpcEndpoint::new(url), TIMEOUT_MS, MAX_ATTEMPTS)
@@ -533,6 +539,13 @@ async fn run(
         eprintln!(
             "evm-capture: rate limit: {}",
             secrets.redact(&rate_limit_line(label, &l.stats()))
+        );
+    }
+    let (retries, failed) = evm.rate_limit_counts();
+    if retries > 0 || failed > 0 {
+        eprintln!(
+            "evm-capture: 429 handling: {retries} retr(ies) after 429, {failed} call(s) failed \
+             rate limited after the rate-limit retry budget"
         );
     }
     result

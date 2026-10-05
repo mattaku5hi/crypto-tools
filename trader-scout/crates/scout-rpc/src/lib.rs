@@ -27,8 +27,8 @@ pub use backoff::{
     CounterJitter, JitterSource, NoJitter, RetryPolicy, SleepFuture, Sleeper, TokioSleeper,
 };
 pub use client::{
-    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_RETRY_AFTER, RequestBudgetExhausted, ResponseTooLarge,
-    RpcClient,
+    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_RETRY_AFTER, RATE_LIMIT_EXTRA_RETRIES,
+    RATE_LIMIT_MAX_BACKOFF, RequestBudgetExhausted, ResponseTooLarge, RpcClient,
 };
 pub use endpoint::RpcEndpoint;
 pub use jsonrpc::{JsonRpcEnvelopeError, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
