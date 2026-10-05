@@ -297,6 +297,81 @@ impl PoolKind {
     }
 }
 
+/// `token()` (Pons V2 curves).
+pub const SEL_TOKEN: [u8; 4] = [0xfc, 0x0c, 0x54, 0x6a];
+/// `pairToken()` (Pons V2 curves; the zero address = native ETH).
+pub const SEL_PAIR_TOKEN: [u8; 4] = [0x3d, 0xe3, 0x5b, 0x79];
+/// `getLaunchedToken(address)` (Pons V2 launch factory; returns the
+/// `LaunchedToken` struct whose first two words are `token` and `curve`).
+pub const SEL_GET_LAUNCHED_TOKEN: [u8; 4] = [0x3c, 0xf2, 0x8b, 0x5a];
+/// `TOKEN()` (Bags curves).
+pub const SEL_TOKEN_UPPER: [u8; 4] = [0x82, 0xbf, 0xef, 0xc8];
+/// `WETH()` (Bags curves).
+pub const SEL_WETH: [u8; 4] = [0xad, 0x5c, 0x46, 0x48];
+/// `curveForToken(address)` (BagsFactory).
+pub const SEL_CURVE_FOR_TOKEN: [u8; 4] = [0x85, 0x80, 0x75, 0x6c];
+
+/// Which launchpad curve ABI an emitter is expected to have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CurveKind {
+    /// Pons V2: `factory()`, `token()`, `pairToken()`; the factory confirms
+    /// with `getLaunchedToken(token)`.
+    PonsV2,
+    /// Bags: `TOKEN()`, `WETH()`; the factory confirms with
+    /// `curveForToken(token)` (the curve has no `factory()` getter).
+    Bags,
+}
+
+impl CurveKind {
+    /// Fixture label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PonsV2 => "pons_v2",
+            Self::Bags => "bags",
+        }
+    }
+
+    /// Inverse of [`Self::label`].
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        [Self::PonsV2, Self::Bags]
+            .into_iter()
+            .find(|k| k.label() == label)
+    }
+}
+
+/// What a launchpad curve reports about itself and what its factory says
+/// about it. Every field is `None` when the call reverted, had no code, or
+/// returned a malformed word (provider data is external input, invariant #17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurveOnchainMetadata {
+    pub emitter: Address,
+    pub kind: CurveKind,
+    /// Pons V2: `curve.factory()` (nonzero). Bags: the pinned factory the
+    /// confirmation was asked from (set only when the curve answered `TOKEN()`).
+    pub factory: Option<Address>,
+    /// `token()` / `TOKEN()`.
+    pub token: Option<Address>,
+    /// Pons V2 `pairToken()` (`Some(ZERO)` = native ETH); Bags `WETH()`.
+    pub quote: Option<Address>,
+    /// Pons V2 `getLaunchedToken(token).curve` (only when its `token` word is
+    /// `token`) / Bags `curveForToken(token)`; `None` = not asked, reverted,
+    /// zero, or inconsistent.
+    pub registered_curve: Option<Address>,
+}
+
+/// A 32-byte address word where the zero address is a value (`pairToken()`).
+fn word_address_or_zero(bytes: &[u8]) -> Option<Address> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    let (head, tail) = bytes.split_at(12);
+    head.iter()
+        .all(|b| *b == 0)
+        .then(|| Address::from_slice(tail))
+}
+
 /// What a v2/v3 swap emitter reports about itself and what its claimed
 /// factory says about it. Every field is `None` when the call reverted, had
 /// no code, or returned a non-address/non-uint word: the emitter is then not
@@ -411,8 +486,13 @@ pub fn is_range_or_cap_error(err: &ProviderError) -> bool {
             let t = e.to_string().to_ascii_lowercase();
             // Base "max range 2000", Robinhood "-32000 logs matched by query
             // exceeds limit of 10000", BSC "limit exceeded", publicnode
-            // "query exceeds max results", "response too large".
+            // "query exceeds max results", "response too large", Robinhood
+            // public RPC without an address filter (-32602): "query spans N
+            // blocks ... only 30000 are allowed ... add an address filter".
             [
+                "spans",
+                "are allowed",
+                "address filter",
                 "range",
                 "limit",
                 "exceed",
@@ -441,15 +521,27 @@ pub fn suggested_range(text: &str) -> Option<(u64, u64)> {
 }
 
 /// The block span a range-cap error announces: the suggested range's length
-/// (`should work: [0x10, 0x19]`), else the number in `up to a N block range`.
+/// (`should work: [0x10, 0x19]`), else the number in `up to a N block range`,
+/// else the number in `only N are allowed` (Robinhood public RPC, topic-only
+/// query: `-32602 query spans M blocks ... only 30000 are allowed ... add an
+/// address filter`).
 #[must_use]
 pub fn capped_span_from_error(text: &str) -> Option<u64> {
     if let Some((a, b)) = suggested_range(text) {
         return b.checked_sub(a).map(|d| d.saturating_add(1));
     }
-    let tail = text.split_once("up to a ")?.1;
-    let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
+    let number_after = |marker: &str| -> Option<u64> {
+        let tail = text.split_once(marker)?.1;
+        let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    if let Some(n) = number_after("up to a ") {
+        return Some(n);
+    }
+    if text.contains("are allowed") {
+        return number_after("only ");
+    }
+    None
 }
 
 /// Result of [`EvmRpcClient::eth_call_detailed`].
@@ -704,6 +796,19 @@ impl EvmRpcClient {
                         span_cap = Some(sb - sa + 1);
                         stack.push((a + (sb - sa + 1), b));
                         stack.push((a, a + (sb - sa)));
+                        continue;
+                    }
+                    // A provider that names its maximum span (Robinhood public
+                    // RPC: `only 30000 are allowed` for a topic-only query)
+                    // fixes it for the rest of the scan; a window already
+                    // within the announced span halves.
+                    if let Some(cap) = capped_span_from_error(&e.to_string())
+                        && cap > 0
+                        && cap < b - a + 1
+                    {
+                        span_cap = Some(span_cap.map_or(cap, |c| c.min(cap)));
+                        stack.push((a + cap, b));
+                        stack.push((a, a + cap - 1));
                         continue;
                     }
                     let mid = a + ((b - a) >> 1);
@@ -1004,6 +1109,85 @@ impl EvmRpcClient {
             .await?;
         meta.registered_pool = self.registered_pool(&meta, block).await?;
         Ok(meta)
+    }
+
+    /// What the launchpad curve `emitter` reports (`factory()`/`token()`/
+    /// `pairToken()` for Pons V2, `TOKEN()`/`WETH()` for Bags) and what its
+    /// factory records for that token, at `block`. `pinned_factories` are the
+    /// chain's pinned factories of this curve family: the confirmation call
+    /// is made only to one of them (Pons V2: the curve's own `factory()` must
+    /// be among them; Bags: the first one is asked). 3 or 4 requests.
+    ///
+    /// # Errors
+    /// Run-terminal failures only (budget, rate limit, transport); a revert is
+    /// a `None` field.
+    pub async fn curve_metadata(
+        &self,
+        emitter: Address,
+        kind: CurveKind,
+        pinned_factories: &[Address],
+        block: &str,
+    ) -> Result<CurveOnchainMetadata, EvmSourceError> {
+        let ask = |to: Address, sel: [u8; 4], args: &[[u8; 32]]| {
+            let data = call_data(sel, args);
+            async move {
+                self.eth_call(to, &data, block)
+                    .await
+                    .map(Option::unwrap_or_default)
+            }
+        };
+        let own = |sel: [u8; 4]| ask(emitter, sel, &[]);
+        let (factory, token, quote, token_word) = match kind {
+            CurveKind::PonsV2 => {
+                let (f, t, q) =
+                    futures::try_join!(own(SEL_FACTORY), own(SEL_TOKEN), own(SEL_PAIR_TOKEN))?;
+                (
+                    word_address(&f),
+                    word_address(&t),
+                    word_address_or_zero(&q),
+                    t,
+                )
+            }
+            CurveKind::Bags => {
+                let (t, q) = futures::try_join!(own(SEL_TOKEN_UPPER), own(SEL_WETH))?;
+                let token = word_address(&t);
+                (
+                    token.and(pinned_factories.first().copied()),
+                    token,
+                    word_address(&q),
+                    t,
+                )
+            }
+        };
+        let mut registered_curve = None;
+        if let (Some(factory), Some(token)) = (factory, token)
+            && pinned_factories.contains(&factory)
+        {
+            let token_arg = address_word(token);
+            registered_curve = match kind {
+                CurveKind::PonsV2 => {
+                    let answer = ask(factory, SEL_GET_LAUNCHED_TOKEN, &[token_arg]).await?;
+                    // Static struct: `token` and `curve` are its first two words.
+                    match (answer.get(..32), answer.get(32..64)) {
+                        (Some(w0), Some(w1)) if answer.len() % 32 == 0 && w0 == token_word => {
+                            word_address(w1)
+                        }
+                        _ => None,
+                    }
+                }
+                CurveKind::Bags => {
+                    word_address(&ask(factory, SEL_CURVE_FOR_TOKEN, &[token_arg]).await?)
+                }
+            };
+        }
+        Ok(CurveOnchainMetadata {
+            emitter,
+            kind,
+            factory,
+            token,
+            quote,
+            registered_curve,
+        })
     }
 
     /// All receipts of a block (`eth_getBlockReceipts`).
@@ -1356,6 +1540,44 @@ mod tests {
         }
     }
 
+    /// Robinhood public RPC, topic-only query: -32602 with the announced
+    /// maximum span; the scan cuts to it (30,000 blocks) instead of halving
+    /// blindly, and a window within the span still halves on other cap errors.
+    #[tokio::test]
+    async fn robinhood_topic_only_span_cap_is_followed_in_30000_block_windows() {
+        const MSG: &str = "query spans 59001 blocks, only 30000 are allowed when no address filter is set; add an address filter";
+        struct R;
+        impl wiremock::Respond for R {
+            fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                let f = &body["params"][0];
+                let hex = |k: &str| u64::from_str_radix(&f[k].as_str().unwrap()[2..], 16).unwrap();
+                let (a, b) = (hex("fromBlock"), hex("toBlock"));
+                if f.get("address").is_none() && b - a + 1 > 30_000 {
+                    return err(-32602, MSG);
+                }
+                ok(json!([log_json(a, 0)]))
+            }
+        }
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(R).mount(&s).await;
+        let c = client(&s, ROBINHOOD, None);
+        let filter = LogFilter {
+            addresses: vec![],
+            topics: [Some(vec![B256::repeat_byte(7)]), None, None, None],
+        };
+        let out = c.get_logs(&filter, 1_000, 60_000).await.unwrap();
+        // 59,001 blocks: one rejected attempt, then 30,000 + 29,001.
+        assert_eq!((out.splits, out.requests), (1, 2), "{out:?}");
+        assert_eq!(
+            out.logs.iter().map(|l| l.block_number).collect::<Vec<_>>(),
+            vec![1_000, 31_000]
+        );
+        assert!(is_range_or_cap_error(&ProviderError::Other(MSG.into())));
+        assert_eq!(capped_span_from_error(MSG), Some(30_000));
+        assert_eq!(capped_span_from_error("limit exceeded"), None);
+    }
+
     #[test]
     fn suggested_range_is_parsed_from_the_alchemy_message() {
         let m = "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range. Based on your parameters, this block range should work: [0x64, 0x6d]";
@@ -1620,9 +1842,142 @@ mod tests {
             ("fee()", SEL_FEE),
             ("getPool(address,address,uint24)", SEL_GET_POOL),
             ("getPair(address,address)", SEL_GET_PAIR),
+            ("token()", SEL_TOKEN),
+            ("pairToken()", SEL_PAIR_TOKEN),
+            ("getLaunchedToken(address)", SEL_GET_LAUNCHED_TOKEN),
+            ("TOKEN()", SEL_TOKEN_UPPER),
+            ("WETH()", SEL_WETH),
+            ("curveForToken(address)", SEL_CURVE_FOR_TOKEN),
         ] {
             assert_eq!(alloy_primitives::keccak256(sig)[..4], sel, "{sig}");
         }
+    }
+
+    /// Pons V2 / Bags curve answers by `(to, selector)`.
+    struct FakeCurves {
+        pons_factory: Address,
+        bags_factory: Address,
+        /// Pons curve `0xc1` is registered by its factory; `0xc2` is not.
+        token: Address,
+    }
+    impl wiremock::Respond for FakeCurves {
+        fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            let to: Address = body["params"][0]["to"].as_str().unwrap().parse().unwrap();
+            let data = body["params"][0]["data"].as_str().unwrap();
+            let sel = &data[2..10];
+            let is = |s: [u8; 4]| sel == hex_of(&s);
+            let revert = || err(3, "execution reverted");
+            if to == self.pons_factory && is(SEL_GET_LAUNCHED_TOKEN) {
+                // LaunchedToken head: token, curve, then filler words.
+                let curve = Address::repeat_byte(0xc1);
+                let mut out = format!(
+                    "0x{}{}",
+                    hex_of(&address_word(self.token)),
+                    hex_of(&address_word(curve))
+                );
+                out.push_str(&"00".repeat(32 * 13));
+                return ok(json!(out));
+            }
+            if to == self.bags_factory && is(SEL_CURVE_FOR_TOKEN) {
+                return ok(json!(word(Address::repeat_byte(0xb1))));
+            }
+            match to.as_slice()[19] {
+                0xc1 | 0xc2 if is(SEL_FACTORY) => ok(json!(word(self.pons_factory))),
+                0xc1 | 0xc2 if is(SEL_TOKEN) => ok(json!(word(self.token))),
+                0xc1 | 0xc2 if is(SEL_PAIR_TOKEN) => ok(json!(word(Address::ZERO))),
+                0xb1 if is(SEL_TOKEN_UPPER) => ok(json!(word(self.token))),
+                0xb1 if is(SEL_WETH) => ok(json!(word(Address::repeat_byte(0x99)))),
+                _ => revert(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn curve_metadata_reads_identity_and_the_factorys_confirmation() {
+        let s = MockServer::start().await;
+        let fakes = FakeCurves {
+            pons_factory: Address::repeat_byte(0xf1),
+            bags_factory: Address::repeat_byte(0xf2),
+            token: Address::repeat_byte(0x70),
+        };
+        let (pf, bf, token) = (fakes.pons_factory, fakes.bags_factory, fakes.token);
+        Mock::given(method("POST"))
+            .respond_with(fakes)
+            .mount(&s)
+            .await;
+        let c = client(&s, ROBINHOOD, None);
+        // Pons: native quote (zero pairToken is a value), registered by the factory.
+        let m = c
+            .curve_metadata(
+                Address::repeat_byte(0xc1),
+                CurveKind::PonsV2,
+                &[pf],
+                "latest",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (m.factory, m.token, m.quote, m.registered_curve),
+            (
+                Some(pf),
+                Some(token),
+                Some(Address::ZERO),
+                Some(Address::repeat_byte(0xc1))
+            )
+        );
+        // A different curve of the same token: the factory records the first one.
+        let m = c
+            .curve_metadata(
+                Address::repeat_byte(0xc2),
+                CurveKind::PonsV2,
+                &[pf],
+                "latest",
+            )
+            .await
+            .unwrap();
+        assert_eq!(m.registered_curve, Some(Address::repeat_byte(0xc1)));
+        // Factory not pinned: no confirmation call is made to it.
+        let before = c.calls_by_method().get("eth_call").copied().unwrap_or(0);
+        let m = c
+            .curve_metadata(
+                Address::repeat_byte(0xc1),
+                CurveKind::PonsV2,
+                &[bf],
+                "latest",
+            )
+            .await
+            .unwrap();
+        assert_eq!((m.factory, m.registered_curve), (Some(pf), None));
+        assert_eq!(
+            c.calls_by_method().get("eth_call").copied().unwrap_or(0) - before,
+            3
+        );
+        // Bags: the pinned factory is asked, quote = WETH().
+        let m = c
+            .curve_metadata(Address::repeat_byte(0xb1), CurveKind::Bags, &[bf], "latest")
+            .await
+            .unwrap();
+        assert_eq!(
+            (m.factory, m.token, m.quote, m.registered_curve),
+            (
+                Some(bf),
+                Some(token),
+                Some(Address::repeat_byte(0x99)),
+                Some(Address::repeat_byte(0xb1))
+            )
+        );
+        // Not a curve at all: everything None, no factory claimed.
+        let m = c
+            .curve_metadata(Address::repeat_byte(0xdd), CurveKind::Bags, &[bf], "latest")
+            .await
+            .unwrap();
+        assert_eq!(
+            (m.factory, m.token, m.quote, m.registered_curve),
+            (None, None, None, None)
+        );
+        assert_eq!(CurveKind::from_label("pons_v2"), Some(CurveKind::PonsV2));
+        assert_eq!(CurveKind::from_label("bags"), Some(CurveKind::Bags));
     }
 
     fn word(a: Address) -> String {

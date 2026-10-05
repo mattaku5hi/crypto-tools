@@ -74,8 +74,9 @@ pub use evm_wallet_stats::{
     run_evm_wallet_stats,
 };
 pub use pool_admission::{
-    DEFAULT_MAX_POOL_LOOKUPS, PoolAdmissionReport, admit_recorded, gate_metadata, learn_pools,
-    pool_kind, pool_venue,
+    DEFAULT_MAX_POOL_LOOKUPS, PoolAdmissionReport, admit_recorded, admit_recorded_curves,
+    curve_kind, curve_venue, gate_curve_metadata, gate_metadata, learn_pools,
+    pinned_curve_factories, pool_kind, pool_venue,
 };
 pub use scout_dex_solana::{PumpTradeVariant, TradeSide, VariantVerification};
 pub use solana_buy_qualification::{

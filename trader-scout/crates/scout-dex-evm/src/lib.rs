@@ -16,6 +16,7 @@
     )
 )]
 
+mod curves;
 mod fourmeme;
 mod gate;
 mod pancake;
@@ -23,6 +24,12 @@ mod quote;
 mod uniswap;
 mod v2_swap;
 
+pub use curves::{
+    BAGS_TOKENS_BOUGHT_TOPIC0, BAGS_TOKENS_SOLD_TOPIC0, CurveFamily, CurveTrade,
+    PONS_V2_CURVE_BUY_REFUNDED_TOPIC0, PONS_V2_CURVE_BUY_TOPIC0, PONS_V2_CURVE_COMPLETED_TOPIC0,
+    PONS_V2_CURVE_SELL_TOPIC0, PonsBuyRefunded, PonsCurveCompleted, curve_topic_kind,
+    decode_curve_trade, decode_pons_buy_refunded, decode_pons_curve_completed,
+};
 pub use fourmeme::{
     FOURMEME_TOKEN_CREATE_TOPIC0, FOURMEME_V1_PURCHASE_TOPIC0, FOURMEME_V1_SALE_TOPIC0,
     FOURMEME_V2_PURCHASE_TOPIC0, FOURMEME_V2_SALE_TOPIC0, FourMemeTokenCreate, FourMemeTrade,
@@ -30,10 +37,10 @@ pub use fourmeme::{
     fourmeme_topic_kind,
 };
 pub use gate::{
-    AnchorRole, GateOutcome, LaunchpadEvidence, PANCAKE_V2_INIT_CODE_HASH,
-    PANCAKE_V3_INIT_CODE_HASH, PoolMetadata, PoolRejection, SwapVenue, SwapVenueGate,
-    UNISWAP_V2_CANONICAL_INIT_CODE_HASH, UNISWAP_V3_CANONICAL_INIT_CODE_HASH, VENUE_DEPLOYMENTS,
-    VenueDeployment, VenueVerification, VerifiedSwap,
+    AnchorRole, CurveIdentity, CurveMetadata, GateOutcome, LaunchpadEvidence,
+    PANCAKE_V2_INIT_CODE_HASH, PANCAKE_V3_INIT_CODE_HASH, PoolMetadata, PoolRejection, SwapVenue,
+    SwapVenueGate, UNISWAP_V2_CANONICAL_INIT_CODE_HASH, UNISWAP_V3_CANONICAL_INIT_CODE_HASH,
+    VENUE_DEPLOYMENTS, VenueDeployment, VenueVerification, VerifiedSwap,
 };
 pub use pancake::{PANCAKE_V3_SWAP_TOPIC0, PancakeV3Swap, decode_pancake_v3_swap};
 pub use quote::{

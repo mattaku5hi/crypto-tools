@@ -216,6 +216,10 @@ pub enum NoTradeReason {
     /// `account` is not the wallet: a router/bot contract traded, the wallet
     /// is not attributed (invariant #2). Counted, never booked.
     LaunchpadAccountNotWallet,
+    /// A gated launchpad CURVE event (Pons V2 / Bags) names the wallet as
+    /// buyer/seller but another `recipient` receives the output: a
+    /// swap-with-receiver, counted and never booked (invariant #2).
+    LaunchpadRecipientNotWallet,
     /// Broken log structure (invariant #18).
     MalformedLog(String),
     /// Delta arithmetic overflowed.
@@ -487,13 +491,20 @@ pub fn extract_evm_trade(
     let involved = swaps
         .iter()
         .filter(|s| match s.launchpad {
-            Some(lp) => lp.token == token && lp.account == w,
+            Some(lp) => lp.token == token && lp.account == w && lp.recipient.is_none_or(|r| r == w),
             None => transfers
                 .iter()
                 .any(|t| t.token == token && (t.from == s.emitter || t.to == s.emitter)),
         })
         .max_by_key(|s| s.verification);
     let Some(venue) = involved else {
+        if swaps.iter().any(|s| {
+            s.launchpad.is_some_and(|lp| {
+                lp.token == token && lp.account == w && lp.recipient.is_some_and(|r| r != w)
+            })
+        }) {
+            return no(NoTradeReason::LaunchpadRecipientNotWallet, ungated);
+        }
         if swaps.iter().any(|s| {
             s.launchpad
                 .is_some_and(|lp| lp.token == token && lp.account != w)
@@ -618,6 +629,7 @@ fn reason_label(r: &NoTradeReason) -> &'static str {
         NoTradeReason::NoQuoteLeg => "no_quote_leg",
         NoTradeReason::NoVerifiedSwapEvent => "no_verified_swap_event",
         NoTradeReason::LaunchpadAccountNotWallet => "launchpad_account_not_wallet",
+        NoTradeReason::LaunchpadRecipientNotWallet => "launchpad_recipient_not_wallet",
         NoTradeReason::MalformedLog(_) => "malformed_log",
         NoTradeReason::Overflow => "overflow",
     }
@@ -1200,5 +1212,99 @@ mod tests {
             tr.consideration,
             Consideration::Unknown(UnknownConsideration::NativeLegNotObserved)
         );
+    }
+
+    // --- Robinhood launchpad curves (Pons V2): the CURVE emits; it is
+    // admitted by the factory's record and names account + recipient.
+    const PONS_FACTORY: Address = address!("7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e");
+    const CURVE: Address = address!("00000000000000000000000000000000000000e1");
+
+    fn curve_cfg() -> EvmExtractionConfig {
+        let mut gate = SwapVenueGate::new(ROBINHOOD.chain_id);
+        gate.admit_curve(
+            SwapVenue::PonsV2Curve,
+            CURVE,
+            &scout_dex_evm::CurveMetadata {
+                factory: Some(PONS_FACTORY),
+                token: Some(TOKEN),
+                quote: Some(Address::ZERO),
+                registered_curve: Some(CURVE),
+            },
+        )
+        .unwrap();
+        EvmExtractionConfig::new(ROBINHOOD, gate)
+    }
+
+    /// `CurveBuy`/`CurveSell` of `account` paying out to `recipient`.
+    fn pons_event(buy: bool, account: Address, recipient: Address) -> RawEvmLog {
+        let topic = if buy {
+            scout_dex_evm::PONS_V2_CURVE_BUY_TOPIC0
+        } else {
+            scout_dex_evm::PONS_V2_CURVE_SELL_TOPIC0
+        };
+        lg(
+            CURVE,
+            vec![topic, account.into_word(), recipient.into_word()],
+            vec![0u8; 128],
+        )
+    }
+
+    #[test]
+    fn pons_curve_buy_for_the_signer_is_booked_from_the_wallets_own_deltas() {
+        let t = tx(vec![
+            transfer(TOKEN, CURVE, W, 1_000),
+            pons_event(true, W, W),
+        ]);
+        let mut t = t;
+        t.value = U256::from(7u8);
+        let e = extract_evm_trade(&t, &curve_cfg(), None, None);
+        let tr = trade(&e);
+        assert_eq!(
+            (
+                tr.side,
+                tr.token,
+                tr.token_amount,
+                tr.venue,
+                tr.venue_emitter
+            ),
+            (
+                TradeSide::Buy,
+                TOKEN,
+                U256::from(1_000u16),
+                SwapVenue::PonsV2Curve,
+                CURVE
+            )
+        );
+        assert_eq!(tr.consideration, Consideration::Exact(U256::from(7u8)));
+        // IdlOnly until a fixture passes evm_robinhood_launchpads.rs.
+        assert_eq!(tr.venue_verification, VenueVerification::IdlOnly);
+        assert_eq!(e.gated_swap_logs, 1);
+        // A curve that nobody admitted is not evidence (invariant #16).
+        let e = extract_evm_trade(&t, &cfg(), None, None);
+        assert_eq!(reason(&e), &NoTradeReason::NoVerifiedSwapEvent);
+        assert_eq!(e.ungated_swap_logs, 1);
+    }
+
+    #[test]
+    fn pons_curve_events_for_another_account_or_receiver_are_not_attributed() {
+        // A router is the buyer and forwards the tokens to the signer.
+        let router = Address::repeat_byte(0x99);
+        let t = tx(vec![
+            transfer(TOKEN, CURVE, router, 1_000),
+            transfer(TOKEN, router, W, 1_000),
+            pons_event(true, router, router),
+        ]);
+        let e = extract_evm_trade(&t, &curve_cfg(), None, None);
+        assert_eq!(reason(&e), &NoTradeReason::LaunchpadAccountNotWallet);
+        // The signer sells but the proceeds go to another recipient.
+        let t = tx(vec![
+            transfer(TOKEN, W, CURVE, 1_000),
+            pons_event(false, W, router),
+        ]);
+        let e = extract_evm_trade(&t, &curve_cfg(), None, None);
+        assert_eq!(reason(&e), &NoTradeReason::LaunchpadRecipientNotWallet);
+        assert_eq!(e.gated_swap_logs, 1);
+        let (_, sum) = extract_evm_trades(&[t], &curve_cfg(), None, None);
+        assert_eq!(sum.no_trade.get("launchpad_recipient_not_wallet"), Some(&1));
     }
 }

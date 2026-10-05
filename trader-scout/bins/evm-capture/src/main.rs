@@ -4,7 +4,7 @@
 //! logs of a token (`--token`, token-centric via `eth_getLogs`), the
 //! signer transactions of a wallet (`--wallet`, Blockscout `txlist` +
 //! `txlistinternal`), or the venue `Swap` events themselves (`--swaps
-//! uniswap-v2|uniswap-v3|uniswap-v4|aerodrome-v2|pancake-v3|fourmeme|all`, see below), over a block range or a
+//! uniswap-v2|uniswap-v3|uniswap-v4|aerodrome-v2|pancake-v3|fourmeme|pons|bags|all`, see below), over a block range or a
 //! `--since/--until` window, and
 //! writes the raw JSON-RPC exchanges (method, params, result) as a redacted
 //! fixture for golden tests. It prints a summary: transactions, logs,
@@ -28,6 +28,15 @@
 //! block and written to the fixture as `pool_metadata` (the calls themselves
 //! are in `calls` too). The summary prints per-emitter counts, the factory
 //! each pool reports and the gate's admission verdict.
+//!
+//! Launchpad curves (Robinhood Chain; `pons` = Pons V2 `CurveBuy`/`CurveSell`,
+//! `bags` = `TokensBought`/`TokensSold`; `all` includes both on Robinhood):
+//! topic-only `eth_getLogs` (any emitter; the public RPC caps topic-only
+//! queries at 30,000 blocks, which the range splitting follows). For every
+//! distinct curve emitter in the kept transactions (at most `--max-pools`)
+//! the curve's `factory()`/`token()`/`pairToken()` (Pons V2) or `TOKEN()`/
+//! `WETH()` (Bags) and the pinned factory's confirmation (`getLaunchedToken`
+//! / `curveForToken`) are read and written to the fixture as `curve_metadata`.
 //!
 //! Network politeness is the CLIs' (`scout_app::make_limiter`): a shared
 //! token-bucket limiter in front of every HTTP attempt (`--rpc-rps`, default
@@ -73,21 +82,23 @@ use scout_app::{
 };
 use scout_core::RawEvmTransaction;
 use scout_dex_evm::{
-    AERODROME_V2_SWAP_TOPIC0, AnchorRole, FOURMEME_V1_PURCHASE_TOPIC0, FOURMEME_V1_SALE_TOPIC0,
-    FOURMEME_V2_PURCHASE_TOPIC0, FOURMEME_V2_SALE_TOPIC0, GateOutcome, PANCAKE_V3_SWAP_TOPIC0,
-    SwapVenue, SwapVenueGate, V2_PAIR_CREATED_TOPIC0, V2_SWAP_EVENT_SIGNATURE,
-    V3_POOL_CREATED_TOPIC0, V3_SWAP_TOPIC0, V4_INITIALIZE_TOPIC0, V4_SWAP_TOPIC0,
-    VENUE_DEPLOYMENTS,
+    AERODROME_V2_SWAP_TOPIC0, AnchorRole, BAGS_TOKENS_BOUGHT_TOPIC0, BAGS_TOKENS_SOLD_TOPIC0,
+    FOURMEME_V1_PURCHASE_TOPIC0, FOURMEME_V1_SALE_TOPIC0, FOURMEME_V2_PURCHASE_TOPIC0,
+    FOURMEME_V2_SALE_TOPIC0, GateOutcome, PANCAKE_V3_SWAP_TOPIC0,
+    PONS_V2_CURVE_BUY_REFUNDED_TOPIC0, PONS_V2_CURVE_BUY_TOPIC0, PONS_V2_CURVE_COMPLETED_TOPIC0,
+    PONS_V2_CURVE_SELL_TOPIC0, SwapVenue, SwapVenueGate, V2_PAIR_CREATED_TOPIC0,
+    V2_SWAP_EVENT_SIGNATURE, V3_POOL_CREATED_TOPIC0, V3_SWAP_TOPIC0, V4_INITIALIZE_TOPIC0,
+    V4_SWAP_TOPIC0, VENUE_DEPLOYMENTS,
 };
 use scout_engine::{
-    EvmExtractionConfig, EvmTxOutcome, admit_recorded, extract_evm_trades, parse_rfc3339_utc,
-    pool_kind, pool_venue,
+    EvmExtractionConfig, EvmTxOutcome, admit_recorded, admit_recorded_curves, curve_venue,
+    extract_evm_trades, parse_rfc3339_utc, pinned_curve_factories, pool_kind, pool_venue,
 };
 use scout_evm::{EvmChainProfile, TRANSFER_TOPIC0, WETH_DEPOSIT_TOPIC0, WETH_WITHDRAWAL_TOPIC0};
 use scout_providers::{
-    BlockscoutApiKey, BlockscoutEvmConfig, BlockscoutEvmSource, CallRecorder, EvmHistoryScanner,
-    EvmRpcClient, EvmSourceError, LogFilter, PoolKind, PoolOnchainMetadata, ReceiptMode,
-    ScanLimits,
+    BlockscoutApiKey, BlockscoutEvmConfig, BlockscoutEvmSource, CallRecorder, CurveKind,
+    CurveOnchainMetadata, EvmHistoryScanner, EvmRpcClient, EvmSourceError, LogFilter, PoolKind,
+    PoolOnchainMetadata, ReceiptMode, ScanLimits,
 };
 use scout_rpc::{RateLimiter, RpcClient, RpcEndpoint};
 use serde_json::{Value, json};
@@ -140,6 +151,12 @@ enum SwapsArg {
     /// pinned manager addresses; BSC only).
     #[value(name = "fourmeme")]
     FourMeme,
+    /// Pons V2 bonding-curve `CurveBuy`/`CurveSell` (topic-only, any emitter;
+    /// Robinhood only).
+    Pons,
+    /// Bags bonding-curve `TokensBought`/`TokensSold` (topic-only, any
+    /// emitter; Robinhood only).
+    Bags,
     /// v2 + v3 + Aerodrome v2 + Pancake v3 (any emitter), v4 (PoolManager)
     /// and the four.meme managers where the chain pins them.
     All,
@@ -154,6 +171,8 @@ impl SwapsArg {
             SwapsArg::AerodromeV2 => "aerodrome-v2",
             SwapsArg::PancakeV3 => "pancake-v3",
             SwapsArg::FourMeme => "fourmeme",
+            SwapsArg::Pons => "pons",
+            SwapsArg::Bags => "bags",
             SwapsArg::All => "all",
         }
     }
@@ -583,6 +602,9 @@ struct Scanned {
     swap: Option<SwapScanFacts>,
     /// Swap mode: what the v2/v3 emitters report (fixture `pool_metadata`).
     pool_metadata: Vec<PoolOnchainMetadata>,
+    /// Swap mode (Robinhood launchpads): what the curve emitters report and
+    /// what the pinned factory confirms (fixture `curve_metadata`).
+    curve_metadata: Vec<CurveOnchainMetadata>,
     /// Block tag the metadata calls used (the head block, hex).
     pool_metadata_block: Option<String>,
 }
@@ -592,6 +614,8 @@ struct SwapScanFacts {
     txs_before_cap: usize,
     /// v2/v3 emitters not looked up because of `--max-pools`.
     pools_skipped: usize,
+    /// Launchpad curves not looked up because of `--max-pools`.
+    curves_skipped: usize,
 }
 
 /// `eth_getLogs` filters of a swap scan: v2/v3 share one address-less filter
@@ -609,6 +633,35 @@ fn swap_filters(swaps: SwapsArg, chain_id: u64) -> Result<Vec<LogFilter>, EvmSou
     }
     if matches!(swaps, SwapsArg::PancakeV3 | SwapsArg::All) {
         topics.push(PANCAKE_V3_SWAP_TOPIC0);
+    }
+    // Launchpad curves: topic-only like the pool swaps; `all` includes the
+    // families the chain pins (Robinhood), asking for one elsewhere is an error.
+    for (wanted, venue, family, curve_topics) in [
+        (
+            SwapsArg::Pons,
+            SwapVenue::PonsV2Curve,
+            "Pons V2 factory",
+            [PONS_V2_CURVE_BUY_TOPIC0, PONS_V2_CURVE_SELL_TOPIC0],
+        ),
+        (
+            SwapsArg::Bags,
+            SwapVenue::BagsCurve,
+            "BagsFactory",
+            [BAGS_TOKENS_BOUGHT_TOPIC0, BAGS_TOKENS_SOLD_TOPIC0],
+        ),
+    ] {
+        if !matches!(swaps, SwapsArg::All) && swaps != wanted {
+            continue;
+        }
+        if pinned_curve_factories(chain_id, venue).is_empty() {
+            if swaps == wanted {
+                return Err(EvmSourceError::NotFound {
+                    what: format!("a pinned {family} for chain {chain_id}"),
+                });
+            }
+            continue;
+        }
+        topics.extend(curve_topics);
     }
     let mut out = Vec::new();
     if !topics.is_empty() {
@@ -691,6 +744,23 @@ fn pool_emitters(txs: &[RawEvmTransaction]) -> Vec<(Address, PoolKind)> {
     out.into_iter().collect()
 }
 
+/// Distinct launchpad-curve emitters of `txs` (sorted).
+fn curve_emitters(txs: &[RawEvmTransaction]) -> Vec<(Address, CurveKind)> {
+    let mut out = std::collections::BTreeSet::new();
+    for l in txs.iter().flat_map(|t| &t.logs) {
+        match l.topics.first() {
+            Some(t) if *t == PONS_V2_CURVE_BUY_TOPIC0 || *t == PONS_V2_CURVE_SELL_TOPIC0 => {
+                out.insert((l.address, CurveKind::PonsV2))
+            }
+            Some(t) if *t == BAGS_TOKENS_BOUGHT_TOPIC0 || *t == BAGS_TOKENS_SOLD_TOPIC0 => {
+                out.insert((l.address, CurveKind::Bags))
+            }
+            _ => false,
+        };
+    }
+    out.into_iter().collect()
+}
+
 async fn scan(
     args: &Args,
     target: &Target,
@@ -727,6 +797,7 @@ async fn scan(
         internal_complete: None,
         swap: None,
         pool_metadata: Vec::new(),
+        curve_metadata: Vec::new(),
         pool_metadata_block: None,
     };
     let Some((from, to)) = blocks else {
@@ -788,11 +859,38 @@ async fn scan(
                 }
             }
             drop(rows);
+            let curves = curve_emitters(&scanned.transactions);
+            let curves_skipped = curves.len().saturating_sub(args.max_pools);
+            if matches!(completion, Completion::Complete) {
+                let mut rows = stream::iter(curves.into_iter().take(args.max_pools))
+                    .map(|(emitter, kind)| {
+                        let tag = tag.clone();
+                        let factories = pinned_curve_factories(profile.chain_id, curve_venue(kind));
+                        async move { evm.curve_metadata(emitter, kind, &factories, &tag).await }
+                    })
+                    .buffered(concurrency);
+                while let Some(row) = rows.next().await {
+                    match row {
+                        Ok(m) => scanned.curve_metadata.push(m),
+                        Err(e) if e.is_budget_exhausted() || e.is_rate_limited() => {
+                            completion = Completion::Incomplete(if e.is_rate_limited() {
+                                "the provider kept rate limiting while reading curve metadata"
+                                    .to_string()
+                            } else {
+                                "request budget exhausted while reading curve metadata".to_string()
+                            });
+                            break;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
             scanned.pool_metadata_block = Some(tag);
             scanned.swap = Some(SwapScanFacts {
                 swap_logs: out.swap_logs,
                 txs_before_cap: out.txs_before_cap,
                 pools_skipped: skipped,
+                curves_skipped,
             });
         }
         Target::Wallet(wallet) => {
@@ -833,6 +931,15 @@ fn topic_label(t: &B256) -> Option<&'static str> {
         (FOURMEME_V1_SALE_TOPIC0, "fourmeme_v1_sale"),
         (FOURMEME_V2_PURCHASE_TOPIC0, "fourmeme_v2_purchase"),
         (FOURMEME_V2_SALE_TOPIC0, "fourmeme_v2_sale"),
+        (PONS_V2_CURVE_BUY_TOPIC0, "pons_v2_curve_buy"),
+        (PONS_V2_CURVE_SELL_TOPIC0, "pons_v2_curve_sell"),
+        (
+            PONS_V2_CURVE_BUY_REFUNDED_TOPIC0,
+            "pons_v2_curve_buy_refunded",
+        ),
+        (PONS_V2_CURVE_COMPLETED_TOPIC0, "pons_v2_curve_completed"),
+        (BAGS_TOKENS_BOUGHT_TOPIC0, "bags_tokens_bought"),
+        (BAGS_TOKENS_SOLD_TOPIC0, "bags_tokens_sold"),
         (V4_SWAP_TOPIC0, "v4_swap"),
         (V4_INITIALIZE_TOPIC0, "v4_initialize"),
         (V3_POOL_CREATED_TOPIC0, "v3_pool_created"),
@@ -873,6 +980,7 @@ fn summarize(s: &Scanned, profile: &EvmChainProfile, target: &Target) -> String 
     // Pools the emitters' own metadata admits (swap mode; empty otherwise).
     let mut gate = SwapVenueGate::new(profile.chain_id);
     let admission = admit_recorded(&mut gate, &s.pool_metadata);
+    let curve_admission = admit_recorded_curves(&mut gate, &s.curve_metadata);
     let mut counts: BTreeMap<(&'static str, Address), (u64, &'static str)> = BTreeMap::new();
     for l in s.transactions.iter().flat_map(|t| &t.logs) {
         let Some(label) = l.topics.first().and_then(topic_label) else {
@@ -927,6 +1035,34 @@ fn summarize(s: &Scanned, profile: &EvmChainProfile, target: &Target) -> String 
                 *swaps_by_emitter.entry(l.address).or_insert(0) += 1;
             }
         }
+        if !s.curve_metadata.is_empty() || f.curves_skipped > 0 {
+            let _ = writeln!(
+                out,
+                "curve_metadata: emitters_read={} skipped_over_max_pools={} admitted={} refused={}",
+                s.curve_metadata.len(),
+                f.curves_skipped,
+                curve_admission.admitted,
+                curve_admission.refused.len()
+            );
+            for m in &s.curve_metadata {
+                let show = |a: Option<Address>| a.map_or("none".to_string(), |a| format!("{a:#x}"));
+                let verdict = match curve_admission.refused.get(&m.emitter) {
+                    Some(why) => format!("refused({why})"),
+                    None => "admitted".to_string(),
+                };
+                let _ = writeln!(
+                    out,
+                    "  curve {} {:#x} factory={} token={} quote={} registered={} {}",
+                    m.kind.label(),
+                    m.emitter,
+                    show(m.factory),
+                    show(m.token),
+                    show(m.quote),
+                    show(m.registered_curve),
+                    verdict
+                );
+            }
+        }
         let mut by_factory: BTreeMap<String, u64> = BTreeMap::new();
         for m in &s.pool_metadata {
             let show = |a: Option<Address>| a.map_or("none".to_string(), |a| format!("{a:#x}"));
@@ -963,9 +1099,10 @@ fn summarize(s: &Scanned, profile: &EvmChainProfile, target: &Target) -> String 
     if counts.is_empty() {
         let _ = writeln!(out, "  (none)");
     }
-    // four.meme: how many gated launchpad events name the signer as account
-    // (the rest are router/bot cases the extraction does not attribute).
-    let (mut fm_total, mut fm_signer) = (0u64, 0u64);
+    // Launchpads (four.meme, Pons V2, Bags): how many gated events name the
+    // signer as account (the rest are router/bot cases the extraction does not
+    // attribute) and how many curve events pay another recipient.
+    let (mut fm_total, mut fm_signer, mut fm_receiver) = (0u64, 0u64, 0u64);
     for tx in &s.transactions {
         for l in &tx.logs {
             if let GateOutcome::Verified(v) = gate.classify(l)
@@ -973,13 +1110,15 @@ fn summarize(s: &Scanned, profile: &EvmChainProfile, target: &Target) -> String 
             {
                 fm_total += 1;
                 fm_signer += u64::from(lp.account == tx.from);
+                fm_receiver += u64::from(lp.recipient.is_some_and(|r| r != lp.account));
             }
         }
     }
     if fm_total > 0 {
         let _ = writeln!(
             out,
-            "fourmeme: gated_events={fm_total} account_is_tx_from={fm_signer} account_other={}",
+            "launchpad: gated_events={fm_total} account_is_tx_from={fm_signer} account_other={} \
+             recipient_other_than_account={fm_receiver}",
             fm_total - fm_signer
         );
     }
@@ -1008,6 +1147,26 @@ fn summarize(s: &Scanned, profile: &EvmChainProfile, target: &Target) -> String 
         let _ = writeln!(out, "  sample_trade_txs={}", sample.join(","));
     }
     out
+}
+
+fn curve_metadata_json(s: &Scanned) -> Value {
+    let a = |x: Option<Address>| x.map_or(Value::Null, |a| json!(format!("{a:#x}")));
+    Value::Array(
+        s.curve_metadata
+            .iter()
+            .map(|m| {
+                json!({
+                    "emitter": format!("{:#x}", m.emitter),
+                    "kind": m.kind.label(),
+                    "block": s.pool_metadata_block,
+                    "factory": a(m.factory),
+                    "token": a(m.token),
+                    "quote": a(m.quote),
+                    "registered_curve": a(m.registered_curve),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn pool_metadata_json(s: &Scanned) -> Value {
@@ -1088,6 +1247,7 @@ fn write_fixture(
         "calls_dropped_over_cap": dropped,
         "calls": calls,
         "pool_metadata": scanned.map(pool_metadata_json).unwrap_or(json!([])),
+        "curve_metadata": scanned.map(curve_metadata_json).unwrap_or(json!([])),
     });
     let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     if secrets

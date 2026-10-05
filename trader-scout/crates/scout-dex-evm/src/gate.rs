@@ -45,6 +45,11 @@ use alloy_primitives::{Address, B256, address, b256};
 use scout_api::DecodeOutcome;
 use scout_core::RawEvmLog;
 
+use crate::curves::{
+    BAGS_TOKENS_BOUGHT_TOPIC0, BAGS_TOKENS_SOLD_TOPIC0, PONS_V2_CURVE_BUY_TOPIC0,
+    PONS_V2_CURVE_SELL_TOPIC0,
+};
+use crate::curves::{CurveFamily, decode_curve_trade};
 use crate::fourmeme::{
     FOURMEME_V1_PURCHASE_TOPIC0, FOURMEME_V1_SALE_TOPIC0, FOURMEME_V2_PURCHASE_TOPIC0,
     FOURMEME_V2_SALE_TOPIC0, FourMemeVersion, LaunchpadSide, decode_fourmeme_trade,
@@ -99,6 +104,15 @@ pub enum SwapVenue {
     FourMemeV1,
     /// four.meme TokenManager2 V2 (bonding curve), V2 layout.
     FourMemeV2,
+    /// Pons V2 per-token bonding curves (Robinhood Chain): the CURVE emits
+    /// `CurveBuy`/`CurveSell`; admitted by [`SwapVenueGate::admit_curve`]
+    /// (`factory()` pinned AND the factory's `getLaunchedToken(token)` names
+    /// the emitter).
+    PonsV2Curve,
+    /// Bags per-token bonding curves (Robinhood Chain): `TokensBought`/
+    /// `TokensSold`; admitted when `BagsFactory.curveForToken(curve.TOKEN())`
+    /// is the emitter.
+    BagsCurve,
 }
 
 impl SwapVenue {
@@ -113,6 +127,8 @@ impl SwapVenue {
             Self::PancakeV3 => "pancake_v3",
             Self::FourMemeV1 => "fourmeme_v1",
             Self::FourMemeV2 => "fourmeme_v2",
+            Self::PonsV2Curve => "pons_v2_curve",
+            Self::BagsCurve => "bags_curve",
         }
     }
 
@@ -142,9 +158,20 @@ impl SwapVenue {
             &[SwapVenue::FourMemeV1]
         } else if *topic0 == FOURMEME_V2_PURCHASE_TOPIC0 || *topic0 == FOURMEME_V2_SALE_TOPIC0 {
             &[SwapVenue::FourMemeV2]
+        } else if *topic0 == PONS_V2_CURVE_BUY_TOPIC0 || *topic0 == PONS_V2_CURVE_SELL_TOPIC0 {
+            &[SwapVenue::PonsV2Curve]
+        } else if *topic0 == BAGS_TOKENS_BOUGHT_TOPIC0 || *topic0 == BAGS_TOKENS_SOLD_TOPIC0 {
+            &[SwapVenue::BagsCurve]
         } else {
             &[]
         }
+    }
+
+    /// `true` for per-token curve venues (the curve emits; admitted by
+    /// [`SwapVenueGate::admit_curve`], not as a pool).
+    #[must_use]
+    pub const fn is_curve(self) -> bool {
+        matches!(self, Self::PonsV2Curve | Self::BagsCurve)
     }
 
     /// `true` when both venues can emit the same swap topic (a pool of either
@@ -167,7 +194,8 @@ impl SwapVenue {
 pub enum AnchorRole {
     /// The anchor itself emits `Swap` (v4 PoolManager).
     SwapEmitter,
-    /// The anchor is a factory; pools are learned from its creation logs.
+    /// The anchor is a factory; pools are learned from its creation logs
+    /// (curve venues: the factory that confirms a curve).
     PoolFactory,
 }
 
@@ -449,6 +477,23 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         address!("5c952063c7fc8610FFDB798152D69F0B9550762b"),
         AnchorRole::SwapEmitter,
     ),
+    // Robinhood launchpads (ADR-020 amendment 8). Per-token curves are
+    // admitted through their factory's own record; IdlOnly until a committed
+    // `evm_robinhood_*` fixture passes `evm_robinhood_launchpads.rs`.
+    // Pons V2 factory (official ponsdotdev/pons-labs @ 44a3db91).
+    dep(
+        4663,
+        SwapVenue::PonsV2Curve,
+        address!("7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e"),
+        AnchorRole::PoolFactory,
+    ),
+    // BagsFactory (docs.bags.fm/robinhood/contracts; bagsfm/bags-idl @ e55767f7).
+    dep(
+        4663,
+        SwapVenue::BagsCurve,
+        address!("e8Cc4431adF8b5A847C113EF0c6af9043219Cb37"),
+        AnchorRole::PoolFactory,
+    ),
 ];
 
 /// A swap event that passed the address gate.
@@ -462,8 +507,8 @@ pub struct VerifiedSwap {
     pub pool_id: Option<B256>,
     pub verification: VenueVerification,
     pub log_index: u64,
-    /// Launchpad (four.meme) events name the token and the trading account
-    /// themselves; `None` for pool swaps.
+    /// Launchpad events name the trading account (four.meme: token too; curves:
+    /// the token is the admitted curve's); `None` for pool swaps.
     pub launchpad: Option<LaunchpadEvidence>,
 }
 
@@ -474,6 +519,36 @@ pub struct LaunchpadEvidence {
     /// Trader named by the event; the extraction books it only for the signer.
     pub account: Address,
     pub side: LaunchpadSide,
+    /// Curve events only: who receives the output. A recipient other than
+    /// `account` is a swap-with-receiver: never attributed (invariant #2).
+    pub recipient: Option<Address>,
+}
+
+/// What a per-token launchpad curve reports on chain (Pons V2 / Bags),
+/// read through bounded `eth_call`s. Admission input for
+/// [`SwapVenueGate::admit_curve`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CurveMetadata {
+    /// Pons V2: `curve.factory()`. Bags (the curve has no such getter): the
+    /// pinned BagsFactory the confirmation was asked from.
+    pub factory: Option<Address>,
+    /// Pons V2 `token()` / Bags `TOKEN()`.
+    pub token: Option<Address>,
+    /// Quote asset: Pons V2 `pairToken()` (`Some(ZERO)` = native ETH), Bags
+    /// `WETH()`; `None` = not read. Recorded for evidence, not an admission input.
+    pub quote: Option<Address>,
+    /// The factory's own record for `token`'s curve: Pons V2
+    /// `getLaunchedToken(token).curve` (only if the struct's `token` word is
+    /// `token`), Bags `curveForToken(token)`; `None` = not asked, reverted,
+    /// zero address or inconsistent.
+    pub registered_curve: Option<Address>,
+}
+
+/// What an admitted curve is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurveIdentity {
+    pub token: Address,
+    pub quote: Option<Address>,
 }
 
 /// Result of gating one log.
@@ -567,6 +642,8 @@ pub struct SwapVenueGate {
     chain_id: u64,
     /// Admitted pools: pool address -> (venue, verification, active_from).
     pools: BTreeMap<Address, (SwapVenue, VenueVerification, u64)>,
+    /// Admitted launchpad curves (also in `pools`): curve -> its token.
+    curves: BTreeMap<Address, CurveIdentity>,
     /// Emitters already checked and refused (never re-asked within a run).
     rejected: BTreeMap<Address, PoolRejection>,
 }
@@ -577,6 +654,7 @@ impl SwapVenueGate {
         Self {
             chain_id,
             pools: BTreeMap::new(),
+            curves: BTreeMap::new(),
             rejected: BTreeMap::new(),
         }
     }
@@ -680,6 +758,70 @@ impl SwapVenueGate {
         }
     }
 
+    /// Admit (or refuse, remembering why) the launchpad curve `emitter` from
+    /// its reported `meta` (Pons V2 / Bags, see [`CurveMetadata`]): (i) the
+    /// factory is a pinned factory of this chain and venue, (ii) the curve
+    /// reports its token, AND (iii) the factory's own record for that token
+    /// is this emitter. Nothing else admits a curve.
+    ///
+    /// # Errors
+    /// The [`PoolRejection`] (also remembered: the emitter is not re-asked).
+    pub fn admit_curve(
+        &mut self,
+        venue: SwapVenue,
+        emitter: Address,
+        meta: &CurveMetadata,
+    ) -> Result<VenueVerification, PoolRejection> {
+        match self.check_curve(venue, meta, emitter) {
+            Ok((verification, active_from, token)) => {
+                self.rejected.remove(&emitter);
+                self.pools
+                    .insert(emitter, (venue, verification, active_from));
+                self.curves.insert(
+                    emitter,
+                    CurveIdentity {
+                        token,
+                        quote: meta.quote,
+                    },
+                );
+                Ok(verification)
+            }
+            Err(r) => {
+                self.rejected.insert(emitter, r.clone());
+                Err(r)
+            }
+        }
+    }
+
+    fn check_curve(
+        &self,
+        venue: SwapVenue,
+        meta: &CurveMetadata,
+        emitter: Address,
+    ) -> Result<(VenueVerification, u64, Address), PoolRejection> {
+        if !venue.is_curve() {
+            return Err(PoolRejection::NoFactory);
+        }
+        let factory = meta.factory.ok_or(PoolRejection::NoFactory)?;
+        let d = self
+            .deployments()
+            .find(|d| d.venue == venue && d.role == AnchorRole::PoolFactory && d.anchor == factory)
+            .ok_or(PoolRejection::UnpinnedFactory(factory))?;
+        let token = meta.token.ok_or(PoolRejection::IncompleteIdentity)?;
+        if meta.registered_curve != Some(emitter) {
+            return Err(PoolRejection::NotRegisteredByFactory {
+                record: meta.registered_curve,
+            });
+        }
+        Ok((d.verification, d.active_from_block, token))
+    }
+
+    /// What an admitted curve reports (its token and quote asset).
+    #[must_use]
+    pub fn curve_identity(&self, curve: Address) -> Option<CurveIdentity> {
+        self.curves.get(&curve).copied()
+    }
+
     /// Remember that the metadata of `emitter` could not be read (budget,
     /// cap): it stays ungated and is not re-asked in this run.
     pub fn refuse_pool(&mut self, emitter: Address, why: impl Into<String>) {
@@ -725,7 +867,9 @@ impl SwapVenueGate {
                 | SwapVenue::AerodromeV2
                 | SwapVenue::AerodromeSlipstream
                 | SwapVenue::FourMemeV1
-                | SwapVenue::FourMemeV2 => {
+                | SwapVenue::FourMemeV2
+                | SwapVenue::PonsV2Curve
+                | SwapVenue::BagsCurve => {
                     return Err(PoolRejection::UnpinnedFactory(factory));
                 }
             };
@@ -745,7 +889,9 @@ impl SwapVenueGate {
                 SwapVenue::UniswapV2
                 | SwapVenue::UniswapV4
                 | SwapVenue::FourMemeV1
-                | SwapVenue::FourMemeV2 => true,
+                | SwapVenue::FourMemeV2
+                | SwapVenue::PonsV2Curve
+                | SwapVenue::BagsCurve => true,
             };
             if !identity_ok {
                 return Err(PoolRejection::IncompleteIdentity);
@@ -851,6 +997,36 @@ impl SwapVenueGate {
                         token: t.token,
                         account: t.account,
                         side: t.side,
+                        recipient: None,
+                    });
+                    (None, t.log_index)
+                }
+                DecodeOutcome::Malformed(m) => return GateOutcome::Malformed(m),
+                DecodeOutcome::NotMine => return GateOutcome::NotSwap,
+            },
+            SwapVenue::PonsV2Curve | SwapVenue::BagsCurve => match decode_curve_trade(log) {
+                DecodeOutcome::Decoded(t) => {
+                    let expected = if venue == SwapVenue::PonsV2Curve {
+                        CurveFamily::PonsV2
+                    } else {
+                        CurveFamily::Bags
+                    };
+                    if t.family != expected {
+                        return GateOutcome::NotSwap;
+                    }
+                    // The curve's token is what the factory-confirmed admission
+                    // recorded; an address without it is not an admitted curve.
+                    let Some(identity) = self.curves.get(&log.address) else {
+                        return GateOutcome::UngatedEmitter {
+                            venue,
+                            emitter: log.address,
+                        };
+                    };
+                    launchpad = Some(LaunchpadEvidence {
+                        token: identity.token,
+                        account: t.account,
+                        side: t.side,
+                        recipient: Some(t.recipient),
                     });
                     (None, t.log_index)
                 }
@@ -945,7 +1121,11 @@ mod tests {
                     address!("5c952063c7fc8610FFDB798152D69F0B9550762b"),
                 ]
                 .contains(&d.anchor);
-            let expected = if d.chain_id == 4663 || d.chain_id == 8453 || bsc_verified {
+            // Robinhood launchpad curves (Pons V2, Bags) are IdlOnly until a
+            // committed fixture passes `evm_robinhood_launchpads.rs`.
+            let expected = if d.venue.is_curve() {
+                VenueVerification::IdlOnly
+            } else if d.chain_id == 4663 || d.chain_id == 8453 || bsc_verified {
                 VenueVerification::FixtureVerified
             } else {
                 VenueVerification::IdlOnly
@@ -1363,7 +1543,8 @@ mod tests {
                         Some(LaunchpadEvidence {
                             token: Address::repeat_byte(0x70),
                             account: acct,
-                            side
+                            side,
+                            recipient: None,
                         })
                     );
                 }
@@ -1391,6 +1572,165 @@ mod tests {
         // Broken shape at a gated manager surfaces.
         let broken = fourmeme_log(FOURMEME_V2, FOURMEME_V2_SALE_TOPIC0, 5, acct);
         assert!(matches!(gate.classify(&broken), GateOutcome::Malformed(_)));
+    }
+
+    const PONS_FACTORY: Address = address!("7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e");
+    const BAGS_FACTORY: Address = address!("e8Cc4431adF8b5A847C113EF0c6af9043219Cb37");
+
+    fn curve_log(
+        curve: Address,
+        topic: B256,
+        who: Address,
+        to: Address,
+        words: usize,
+    ) -> RawEvmLog {
+        log(
+            curve,
+            vec![topic, who.into_word(), to.into_word()],
+            vec![0u8; words * 32],
+        )
+    }
+
+    #[test]
+    fn launchpad_curves_are_admitted_only_through_the_factorys_own_record() {
+        use crate::curves::{BAGS_TOKENS_BOUGHT_TOPIC0, PONS_V2_CURVE_BUY_TOPIC0};
+        let (curve, token) = (Address::repeat_byte(0xc1), Address::repeat_byte(0x70));
+        let acct = Address::repeat_byte(0x71);
+        let mut gate = SwapVenueGate::new(RH);
+        let l = curve_log(curve, PONS_V2_CURVE_BUY_TOPIC0, acct, acct, 4);
+        // Before admission: swap-shaped, pending, never evidence.
+        assert!(matches!(
+            gate.classify(&l),
+            GateOutcome::UngatedEmitter {
+                venue: SwapVenue::PonsV2Curve,
+                ..
+            }
+        ));
+        assert_eq!(
+            gate.pending_pool_emitters([&l]),
+            vec![(SwapVenue::PonsV2Curve, curve)]
+        );
+        let good = CurveMetadata {
+            factory: Some(PONS_FACTORY),
+            token: Some(token),
+            quote: Some(Address::ZERO),
+            registered_curve: Some(curve),
+        };
+        // Refusals: no factory, unpinned factory, no token, factory record is another curve / absent.
+        let refuse = |meta: CurveMetadata| {
+            let mut g = SwapVenueGate::new(RH);
+            g.admit_curve(SwapVenue::PonsV2Curve, curve, &meta)
+                .unwrap_err()
+        };
+        assert_eq!(
+            refuse(CurveMetadata {
+                factory: None,
+                ..good
+            }),
+            PoolRejection::NoFactory
+        );
+        assert_eq!(
+            refuse(CurveMetadata {
+                factory: Some(Address::repeat_byte(5)),
+                ..good
+            }),
+            PoolRejection::UnpinnedFactory(Address::repeat_byte(5))
+        );
+        // The Bags factory is not a Pons V2 factory.
+        assert_eq!(
+            refuse(CurveMetadata {
+                factory: Some(BAGS_FACTORY),
+                ..good
+            }),
+            PoolRejection::UnpinnedFactory(BAGS_FACTORY)
+        );
+        assert_eq!(
+            refuse(CurveMetadata {
+                token: None,
+                ..good
+            }),
+            PoolRejection::IncompleteIdentity
+        );
+        assert_eq!(
+            refuse(CurveMetadata {
+                registered_curve: Some(Address::repeat_byte(6)),
+                ..good
+            }),
+            PoolRejection::NotRegisteredByFactory {
+                record: Some(Address::repeat_byte(6))
+            }
+        );
+        assert_eq!(
+            refuse(CurveMetadata {
+                registered_curve: None,
+                ..good
+            }),
+            PoolRejection::NotRegisteredByFactory { record: None }
+        );
+        // A curve on another chain is refused (the factory is pinned per chain).
+        assert!(
+            SwapVenueGate::new(8453)
+                .admit_curve(SwapVenue::PonsV2Curve, curve, &good)
+                .is_err()
+        );
+        // Admission: IdlOnly (no fixture), the event names token (the curve's), account and recipient.
+        assert_eq!(
+            gate.admit_curve(SwapVenue::PonsV2Curve, curve, &good),
+            Ok(VenueVerification::IdlOnly)
+        );
+        assert_eq!(gate.curve_identity(curve).map(|c| c.token), Some(token));
+        let to = Address::repeat_byte(0x72);
+        match gate.classify(&curve_log(curve, PONS_V2_CURVE_BUY_TOPIC0, acct, to, 4)) {
+            GateOutcome::Verified(v) => {
+                assert_eq!(
+                    (v.venue, v.emitter, v.verification),
+                    (SwapVenue::PonsV2Curve, curve, VenueVerification::IdlOnly)
+                );
+                assert_eq!(
+                    v.launchpad,
+                    Some(LaunchpadEvidence {
+                        token,
+                        account: acct,
+                        side: LaunchpadSide::Buy,
+                        recipient: Some(to),
+                    })
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(gate.pending_pool_emitters([&l]).is_empty());
+        // A Bags event at an admitted PONS curve is another family's: ungated.
+        assert!(matches!(
+            gate.classify(&curve_log(curve, BAGS_TOKENS_BOUGHT_TOPIC0, acct, acct, 10)),
+            GateOutcome::UngatedEmitter { .. }
+        ));
+        // A broken shape at an admitted curve surfaces.
+        assert!(matches!(
+            gate.classify(&curve_log(curve, PONS_V2_CURVE_BUY_TOPIC0, acct, acct, 3)),
+            GateOutcome::Malformed(_)
+        ));
+        // Bags: its own factory.
+        let (bcurve, btoken) = (Address::repeat_byte(0xb1), Address::repeat_byte(0xb2));
+        let bmeta = CurveMetadata {
+            factory: Some(BAGS_FACTORY),
+            token: Some(btoken),
+            quote: None,
+            registered_curve: Some(bcurve),
+        };
+        assert!(
+            gate.admit_curve(SwapVenue::PonsV2Curve, bcurve, &bmeta)
+                .is_err()
+        );
+        assert_eq!(
+            gate.admit_curve(SwapVenue::BagsCurve, bcurve, &bmeta),
+            Ok(VenueVerification::IdlOnly)
+        );
+        assert!(matches!(
+            gate.classify(&curve_log(bcurve, BAGS_TOKENS_BOUGHT_TOPIC0, acct, acct, 10)),
+            GateOutcome::Verified(v) if v.launchpad.map(|l| l.token) == Some(btoken)
+        ));
+        // A later successful admission clears the earlier refusal.
+        assert!(gate.rejections().all(|(a, _)| *a != bcurve));
     }
 
     #[test]

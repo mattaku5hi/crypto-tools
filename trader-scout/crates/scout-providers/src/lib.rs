@@ -44,9 +44,9 @@ pub use evm_native::{
     NativeLegRun, TraceParseError, Unobserved, parse_call_tree,
 };
 pub use evm_rpc::{
-    CallRecorder, EthCallOutcome, EvmRpcClient, EvmRpcConfig, EvmSourceError, LogFilter,
-    LogsResult, PoolKind, PoolOnchainMetadata, capped_span_from_error, is_range_or_cap_error,
-    suggested_range,
+    CallRecorder, CurveKind, CurveOnchainMetadata, EthCallOutcome, EvmRpcClient, EvmRpcConfig,
+    EvmSourceError, LogFilter, LogsResult, PoolKind, PoolOnchainMetadata, capped_span_from_error,
+    is_range_or_cap_error, suggested_range,
 };
 pub use evm_scan::{
     EvmHistoryScanner, IndexedSigned, IndexedTransfer, IndexedWallet, InternalIndex, ReceiptMode,

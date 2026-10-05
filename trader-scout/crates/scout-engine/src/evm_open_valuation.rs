@@ -959,7 +959,10 @@ impl Valuer<'_> {
         use EvmUnvaluedReason as R;
         let venue = last.venue;
         match venue {
-            SwapVenue::FourMemeV1 | SwapVenue::FourMemeV2 => Err(R::VenueNotSupported),
+            SwapVenue::FourMemeV1
+            | SwapVenue::FourMemeV2
+            | SwapVenue::PonsV2Curve
+            | SwapVenue::BagsCurve => Err(R::VenueNotSupported),
             SwapVenue::UniswapV4 => {
                 let pool_id = last.pool_id.ok_or(R::PoolKeyUnknown)?;
                 let (quoter, source) = self.quoter(QuoterFamily::UniswapV4)?;
@@ -1103,7 +1106,10 @@ impl Valuer<'_> {
             call(me, sim, last.pool, v3_liquidity_calldata())
         };
         match last.venue {
-            SwapVenue::FourMemeV1 | SwapVenue::FourMemeV2 => 0,
+            SwapVenue::FourMemeV1
+            | SwapVenue::FourMemeV2
+            | SwapVenue::PonsV2Curve
+            | SwapVenue::BagsCurve => 0,
             SwapVenue::UniswapV4 => {
                 let Some(pool_id) = last.pool_id else {
                     return 0;

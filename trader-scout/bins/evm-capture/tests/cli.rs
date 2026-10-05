@@ -1099,7 +1099,7 @@ async fn bsc_fourmeme_scan_filters_by_manager_and_topics_and_reports_account_vs_
     );
     assert!(
         out.stdout
-            .contains("fourmeme: gated_events=1 account_is_tx_from=1 account_other=0"),
+            .contains("launchpad: gated_events=1 account_is_tx_from=1 account_other=0"),
         "{}",
         out.stdout
     );
@@ -1223,4 +1223,181 @@ async fn swaps_all_on_bsc_includes_pancake_and_fourmeme_and_fourmeme_needs_a_pin
         "{}",
         out.stderr
     );
+}
+
+const PONS_FACTORY: &str = "0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e";
+const PONS_CURVE: &str = "0x00000000000000000000000000000000000000e1";
+const PONS_BUY: &str = "0xec36bf571f136799e8dc0b0b8bea4b04d8bd3d43de838aab0d5fc21d4cbfc455";
+const PONS_SELL: &str = "0x8113d738abdcb6b38357e9d53a54a7157861a09031b453651f0fe7fe151f59df";
+const BAGS_BOUGHT: &str = "0x6d9c6fad0db13f6f7fca7124777996deaeb1949d0750a4874c18611ff5d436b9";
+
+fn pons_buy_event(buyer: &str, recipient: &str) -> Value {
+    json!({"address": PONS_CURVE, "topics":[PONS_BUY, topic_addr(buyer), topic_addr(recipient)],
+        "data": format!("0x{}", "00".repeat(128)),
+        "blockNumber":"0x7","transactionIndex":"0x1","logIndex":"0x1"})
+}
+
+/// Robinhood block 7, tx 0xa1.. (from WALLET, value 5): a token Transfer from
+/// the Pons V2 curve to WALLET and the curve's `CurveBuy` for WALLET.
+/// Topic-only `eth_getLogs` above 30,000 blocks is refused like the public RPC.
+struct PonsChain;
+
+impl Respond for PonsChain {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let h = format!("0x{}", "a1".repeat(32));
+        let addr_word = |a: &str| format!("0x{:0>64}", a.trim_start_matches("0x"));
+        let result = match body["method"].as_str().unwrap() {
+            "eth_chainId" => json!("0x1237"),
+            "eth_blockNumber" => json!("0x10"),
+            "eth_getBlockByNumber" if body["params"][0] == "0x0" => {
+                json!({"hash": GENESIS, "timestamp": "0x3e8"})
+            }
+            "eth_getBlockByNumber" => json!({"timestamp": "0x3e8"}),
+            "eth_getLogs" => json!([pons_buy_event(WALLET, WALLET)]),
+            "eth_getBlockReceipts" => json!([{"transactionHash": h, "blockNumber":"0x7",
+                "transactionIndex":"0x1","status":"0x1","gasUsed":"0x64","effectiveGasPrice":"0x2",
+                "logs":[
+                  {"address": TOKEN, "topics":[TRANSFER, topic_addr(PONS_CURVE), topic_addr(WALLET)],
+                   "data": word(1000), "blockNumber":"0x7","transactionIndex":"0x1","logIndex":"0x0"},
+                  pons_buy_event(WALLET, WALLET)]}]),
+            "eth_getTransactionByHash" => json!({"hash": h, "from": WALLET, "to": PONS_CURVE,
+                "value":"0x5", "blockNumber":"0x7","transactionIndex":"0x1"}),
+            "eth_call" => {
+                let to = body["params"][0]["to"]
+                    .as_str()
+                    .unwrap()
+                    .to_ascii_lowercase();
+                let data = body["params"][0]["data"].as_str().unwrap().to_string();
+                match (&data[..10], to.as_str()) {
+                    ("0xc45a0155", PONS_CURVE) => json!(addr_word(PONS_FACTORY)),
+                    ("0xfc0c546a", PONS_CURVE) => json!(addr_word(TOKEN)),
+                    ("0x3de35b79", PONS_CURVE) => json!(word(0)),
+                    ("0x3cf28b5a", PONS_FACTORY) => json!(format!(
+                        "0x{}{}{}",
+                        &addr_word(TOKEN)[2..],
+                        &addr_word(PONS_CURVE)[2..],
+                        "00".repeat(32 * 13)
+                    )),
+                    other => panic!("unexpected call {other:?}"),
+                }
+            }
+            other => panic!("unexpected {other}"),
+        };
+        ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":1,"result":result}))
+    }
+}
+
+#[tokio::test]
+async fn robinhood_pons_scan_is_topic_only_reads_curve_metadata_and_books_the_signer() {
+    let s = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(PonsChain)
+        .mount(&s)
+        .await;
+    let out_path = tmp("rh_pons.json");
+    let out = run(
+        rpc_env(&s),
+        base_args(&[
+            "--swaps",
+            "pons",
+            "--from-block",
+            "0",
+            "--to-block",
+            "16",
+            "--out",
+            &out_path,
+        ]),
+    )
+    .await;
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    for text in [&out.stdout, &out.stderr] {
+        assert!(!text.contains(SECRET), "{text}");
+    }
+    let filters = get_logs_filters(&s).await;
+    assert_eq!(filters.len(), 1, "{filters:?}");
+    // Topic-only (any emitter): Pons buy and sell, nothing else.
+    assert!(filters[0].get("address").is_none(), "{filters:?}");
+    assert_eq!(filters[0]["topics"][0], json!([PONS_BUY, PONS_SELL]));
+    assert!(
+        out.stdout.contains("curve_metadata: emitters_read=1"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("admitted=1 refused=0"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(&format!(
+            "pons_v2_curve_buy {PONS_CURVE} count=1 gate=gated"
+        )),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("launchpad: gated_events=1 account_is_tx_from=1 account_other=0 recipient_other_than_account=0"),
+        "{}",
+        out.stdout
+    );
+    assert!(out.stdout.contains("trades=1"), "{}", out.stdout);
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(v["scope"]["swaps"], "pons");
+    let row = &v["curve_metadata"][0];
+    assert_eq!(row["emitter"], PONS_CURVE);
+    assert_eq!(row["kind"], "pons_v2");
+    assert_eq!(row["factory"], PONS_FACTORY);
+    assert_eq!(row["token"], TOKEN);
+    assert_eq!(row["registered_curve"], PONS_CURVE);
+    assert_eq!(row["quote"], format!("0x{}", "00".repeat(20)));
+    // The curve reads are in the recorded calls too (replayable).
+    let calls = v["calls"].as_array().unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c["method"] == "eth_call" && c["params"][0]["to"] == PONS_FACTORY)
+    );
+}
+
+#[tokio::test]
+async fn swaps_all_on_robinhood_adds_curve_topics_and_curves_need_a_pinned_factory() {
+    let s = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(PonsChain)
+        .mount(&s)
+        .await;
+    let out = run(
+        rpc_env(&s),
+        base_args(&["--swaps", "all", "--from-block", "0", "--to-block", "16"]),
+    )
+    .await;
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    let filters = get_logs_filters(&s).await;
+    let topic_only: Vec<&Value> = filters
+        .iter()
+        .filter(|f| f.get("address").is_none())
+        .collect();
+    assert_eq!(topic_only.len(), 1, "{filters:?}");
+    let t = topic_only[0]["topics"][0].as_array().unwrap();
+    for topic in [PONS_BUY, PONS_SELL, BAGS_BOUGHT] {
+        assert!(t.contains(&json!(topic)), "{t:?}");
+    }
+    // BSC pins neither family: `all` skips them, asking for one is a typed error.
+    let bsc = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(BscChain {
+            pancake_pool: pancake_pool(),
+        })
+        .mount(&bsc)
+        .await;
+    for (flag, what) in [("pons", "Pons V2 factory"), ("bags", "BagsFactory")] {
+        let out = run(
+            rpc_env(&bsc),
+            bsc_args(&["--swaps", flag, "--from-block", "0", "--to-block", "16"]),
+        )
+        .await;
+        assert_eq!(out.code, 4, "{}{}", out.stdout, out.stderr);
+        assert!(out.stderr.contains(what), "{}", out.stderr);
+    }
 }

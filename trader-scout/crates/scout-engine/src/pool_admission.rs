@@ -15,8 +15,12 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::Address;
 use scout_core::RawEvmTransaction;
-use scout_dex_evm::{PoolMetadata, SwapVenue, SwapVenueGate};
-use scout_providers::{EvmRpcClient, EvmSourceError, PoolKind, PoolOnchainMetadata};
+use scout_dex_evm::{
+    AnchorRole, CurveMetadata, PoolMetadata, SwapVenue, SwapVenueGate, VENUE_DEPLOYMENTS,
+};
+use scout_providers::{
+    CurveKind, CurveOnchainMetadata, EvmRpcClient, EvmSourceError, PoolKind, PoolOnchainMetadata,
+};
 
 /// Default cap on pool lookups per call (each costs 3-5 `eth_call`s).
 pub const DEFAULT_MAX_POOL_LOOKUPS: usize = 256;
@@ -45,8 +49,69 @@ pub fn pool_kind(venue: SwapVenue) -> Option<PoolKind> {
         SwapVenue::AerodromeV2 => Some(PoolKind::AerodromeV2),
         SwapVenue::AerodromeSlipstream => Some(PoolKind::Slipstream),
         SwapVenue::PancakeV3 => Some(PoolKind::PancakeV3),
-        SwapVenue::UniswapV4 | SwapVenue::FourMemeV1 | SwapVenue::FourMemeV2 => None,
+        SwapVenue::UniswapV4
+        | SwapVenue::FourMemeV1
+        | SwapVenue::FourMemeV2
+        | SwapVenue::PonsV2Curve
+        | SwapVenue::BagsCurve => None,
     }
+}
+
+/// The curve ABI a launchpad-curve venue's emitters have (`None` for pools).
+#[must_use]
+pub fn curve_kind(venue: SwapVenue) -> Option<CurveKind> {
+    match venue {
+        SwapVenue::PonsV2Curve => Some(CurveKind::PonsV2),
+        SwapVenue::BagsCurve => Some(CurveKind::Bags),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn curve_venue(kind: CurveKind) -> SwapVenue {
+    match kind {
+        CurveKind::PonsV2 => SwapVenue::PonsV2Curve,
+        CurveKind::Bags => SwapVenue::BagsCurve,
+    }
+}
+
+/// The gate's view of what a curve reported.
+#[must_use]
+pub fn gate_curve_metadata(m: &CurveOnchainMetadata) -> CurveMetadata {
+    CurveMetadata {
+        factory: m.factory,
+        token: m.token,
+        quote: m.quote,
+        registered_curve: m.registered_curve,
+    }
+}
+
+/// The chain's pinned curve factories of `venue` (the only ones the
+/// confirmation is asked from).
+#[must_use]
+pub fn pinned_curve_factories(chain_id: u64, venue: SwapVenue) -> Vec<Address> {
+    VENUE_DEPLOYMENTS
+        .iter()
+        .filter(|d| d.chain_id == chain_id && d.venue == venue && d.role == AnchorRole::PoolFactory)
+        .map(|d| d.anchor)
+        .collect()
+}
+
+/// Admit every recorded curve (offline: fixture `curve_metadata` rows).
+pub fn admit_recorded_curves(
+    gate: &mut SwapVenueGate,
+    recorded: &[CurveOnchainMetadata],
+) -> PoolAdmissionReport {
+    let mut report = PoolAdmissionReport::default();
+    for m in recorded {
+        match gate.admit_curve(curve_venue(m.kind), m.emitter, &gate_curve_metadata(m)) {
+            Ok(_) => report.admitted += 1,
+            Err(r) => {
+                report.refused.insert(m.emitter, r.to_string());
+            }
+        }
+    }
+    report
 }
 
 #[must_use]
@@ -110,6 +175,21 @@ pub async fn learn_pools(
     for (n, (venue, emitter)) in pending.into_iter().enumerate() {
         if n >= max_lookups {
             report.deferred += 1;
+            continue;
+        }
+        if let Some(kind) = curve_kind(venue) {
+            // Launchpad curve: the pinned factory's own record decides.
+            report.lookups += 1;
+            let factories = pinned_curve_factories(gate.chain_id(), venue);
+            let meta = rpc
+                .curve_metadata(emitter, kind, &factories, LIVE_BLOCK)
+                .await?;
+            match gate.admit_curve(venue, emitter, &gate_curve_metadata(&meta)) {
+                Ok(_) => report.admitted += 1,
+                Err(r) => {
+                    report.refused.insert(emitter, r.to_string());
+                }
+            }
             continue;
         }
         let Some(kind) = pool_kind(venue) else {
@@ -486,5 +566,100 @@ mod tests {
         ));
         assert_eq!(pool_kind(SwapVenue::PancakeV3), Some(PoolKind::PancakeV3));
         assert_eq!(pool_venue(PoolKind::PancakeV3), SwapVenue::PancakeV3);
+    }
+
+    /// Robinhood launchpad curves: Pons V2 (`factory()` + `getLaunchedToken`)
+    /// and Bags (`TOKEN()` + `curveForToken`) are admitted by the factory's
+    /// own record; a curve the factory does not confirm stays a gap.
+    struct CurveNode {
+        pons_factory: Address,
+        bags_factory: Address,
+    }
+    impl Respond for CurveNode {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            let reply = |r: String| {
+                ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":1,"result":r}))
+            };
+            let to: Address = body["params"][0]["to"].as_str().unwrap().parse().unwrap();
+            let sel = &body["params"][0]["data"].as_str().unwrap()[..10];
+            let token = Address::repeat_byte(0x70);
+            let revert = || {
+                ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":1,
+                    "error":{"code":3,"message":"execution reverted"}}))
+            };
+            match (to.as_slice()[19], sel) {
+                // Pons curves 0xc1 (confirmed) and 0xc2 (factory records 0xc1).
+                (0xc1 | 0xc2, "0xc45a0155") => reply(word(self.pons_factory)),
+                (0xc1 | 0xc2, "0xfc0c546a") => reply(word(token)),
+                (0xc1 | 0xc2, "0x3de35b79") => reply(word(Address::ZERO)),
+                (_, "0x3cf28b5a") if to == self.pons_factory => reply(format!(
+                    "0x{}{}{}",
+                    &word(token)[2..],
+                    &word(Address::repeat_byte(0xc1))[2..],
+                    "00".repeat(32 * 13)
+                )),
+                // Bags curve 0xb1.
+                (0xb1, "0x82bfefc8") => reply(word(token)),
+                (0xb1, "0xad5c4648") => reply(word(Address::repeat_byte(0x99))),
+                (_, "0x8580756c") if to == self.bags_factory => {
+                    reply(word(Address::repeat_byte(0xb1)))
+                }
+                _ => revert(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn launchpad_curves_are_admitted_by_the_factorys_record_and_nothing_else() {
+        let pons_factory = address!("7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e");
+        let bags_factory = address!("e8Cc4431adF8b5A847C113EF0c6af9043219Cb37");
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(CurveNode {
+                pons_factory,
+                bags_factory,
+            })
+            .mount(&s)
+            .await;
+        let client = rpc(&s, ROBINHOOD, None).await;
+        let (pons, pons_dup, bags, junk) = (
+            Address::repeat_byte(0xc1),
+            Address::repeat_byte(0xc2),
+            Address::repeat_byte(0xb1),
+            Address::repeat_byte(0xdd),
+        );
+        let ev = |a: Address, t: alloy_primitives::B256| swap(a, t, 128);
+        let txs = vec![tx_with(vec![
+            ev(pons, scout_dex_evm::PONS_V2_CURVE_BUY_TOPIC0),
+            ev(pons_dup, scout_dex_evm::PONS_V2_CURVE_SELL_TOPIC0),
+            swap(bags, scout_dex_evm::BAGS_TOKENS_BOUGHT_TOPIC0, 320),
+            ev(junk, scout_dex_evm::PONS_V2_CURVE_BUY_TOPIC0),
+        ])];
+        let mut gate = SwapVenueGate::new(ROBINHOOD.chain_id);
+        let r = learn_pools(&mut gate, &client, &txs, 10).await.unwrap();
+        assert_eq!(
+            (r.lookups, r.admitted, r.refused.len(), r.deferred),
+            (4, 2, 2, 0),
+            "{r:?}"
+        );
+        assert!(r.refused[&pons_dup].contains("factory records"), "{r:?}");
+        assert!(r.refused[&junk].contains("no factory"), "{r:?}");
+        assert_eq!(
+            gate.curve_identity(pons).map(|c| (c.token, c.quote)),
+            Some((Address::repeat_byte(0x70), Some(Address::ZERO)))
+        );
+        assert!(gate.curve_identity(bags).is_some());
+        assert_eq!(curve_kind(SwapVenue::BagsCurve), Some(CurveKind::Bags));
+        assert_eq!(curve_venue(CurveKind::PonsV2), SwapVenue::PonsV2Curve);
+        assert_eq!(
+            pinned_curve_factories(4663, SwapVenue::PonsV2Curve),
+            vec![pons_factory]
+        );
+        // A second call asks nothing new.
+        let n = s.received_requests().await.unwrap().len();
+        let again = learn_pools(&mut gate, &client, &txs, 10).await.unwrap();
+        assert_eq!(again, PoolAdmissionReport::default());
+        assert_eq!(s.received_requests().await.unwrap().len(), n);
     }
 }
