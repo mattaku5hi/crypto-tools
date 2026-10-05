@@ -788,6 +788,82 @@ async fn recorded_eth_calls_replay_to_the_recorded_curve_metadata() {
     }
 }
 
+/// ADR-020 amendment 8: the launchpad event is evidence only; trader identity
+/// and amounts come from the transaction (`tx.from` and its own deltas).
+/// Runs the extraction over every admitted curve transaction of the fixtures
+/// and prints the outcome counts (booked trades, remaining no-trade reasons,
+/// router-account / other-recipient counters).
+#[tokio::test]
+async fn extraction_books_curve_trades_from_tx_from_whatever_the_event_account() {
+    use scout_core::RawEvmTransaction;
+    use scout_engine::{EvmExtractionConfig, EvmTxOutcome, extract_evm_trades};
+    let mut total = scout_engine::EvmExtractionSummary::default();
+    for path in robinhood_fixtures() {
+        let l = load(&path).await;
+        let gate = gate_for(&l);
+        if l.recorded.is_empty() {
+            continue;
+        }
+        let curve_txs: Vec<RawEvmTransaction> = l
+            .receipts
+            .iter()
+            .filter(|r| {
+                r.logs
+                    .iter()
+                    .any(|g| matches!(decode_curve_trade(g), DecodeOutcome::Decoded(_)))
+            })
+            .filter_map(|r| {
+                let t = l.txs.get(&r.tx_hash)?;
+                Some(RawEvmTransaction {
+                    chain: ROBINHOOD.verified_chain_key(),
+                    hash: r.tx_hash,
+                    block_number: r.block_number,
+                    transaction_index: r.transaction_index,
+                    block_time: 1,
+                    from: t.from,
+                    to: t.to,
+                    value: t.value,
+                    status: r.status,
+                    gas_used: r.gas_used,
+                    effective_gas_price: r.effective_gas_price.unwrap_or_default(),
+                    l1_fee: r.l1_fee,
+                    logs: r.logs.clone(),
+                    internal_transfers: None,
+                    native_source: None,
+                    native_balance_diff: None,
+                })
+            })
+            .collect();
+        let mut cfg = EvmExtractionConfig::new(ROBINHOOD, gate);
+        cfg.quote_tokens = EvmExtractionConfig::for_profile(ROBINHOOD).quote_tokens;
+        let (ex, sum) = extract_evm_trades(&curve_txs, &cfg, None, None);
+        println!(
+            "{}: txs {} trades {} unknown_consideration {} no_trade {:?} account_is_router {} recipient_other {}",
+            l.name,
+            sum.transactions,
+            sum.trades,
+            sum.unknown_consideration,
+            sum.no_trade,
+            sum.launchpad_account_is_router,
+            sum.launchpad_recipient_other
+        );
+        for e in &ex {
+            if let EvmTxOutcome::Trade(t) = &e.outcome {
+                assert_eq!(
+                    t.wallet,
+                    curve_txs.iter().find(|x| x.hash == e.tx_hash).unwrap().from
+                );
+            }
+        }
+        total.transactions += sum.transactions;
+        total.trades += sum.trades;
+    }
+    println!(
+        "curve txs {} booked trades {}",
+        total.transactions, total.trades
+    );
+}
+
 /// Pons V1 launches Uniswap v3 pools (nothing to decode): the pinned V1 ABI
 /// names the DEX factory per launch (`TokenLaunched.dexFactory`/`pool`), and a
 /// pool of the official Robinhood Uniswap v3 factory is admitted by the

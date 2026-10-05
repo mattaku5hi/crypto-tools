@@ -64,7 +64,7 @@ touched by many txs per block so the sole-touch rule cannot isolate it: the BNB 
 **The native equations needed a live capture; it showed the launch-buy surcharge above.** The wallet-side rule stays ADR-020: the
 event is evidence of a swap on `token` for `account`; the trade is booked only when `account == tx.from` and the
 wallet's own deltas are one token + one quote; amounts come from those deltas, never from the event. A router/bot
-`account` is `launchpad_account_not_wallet` (counted, not attributed).
+`account` is counted (superseded by ADR-020 amendment 8: informational `launchpad_account_is_router`, the booking uses the signer's own deltas).
 
 ## Live recapture 2026-10-04b (HEAD-200..HEAD-171, 624 swap logs, 300 txs, 171 emitters)
 Added `evm_bsc_swaps_all_2026-10-04b.json`; the table below is over BOTH fixtures (exploratory + live). The two failures

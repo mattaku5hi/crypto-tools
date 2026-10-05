@@ -459,9 +459,7 @@ pub fn build_evm_wallet_ledger(
                     extras.rejected_swap_txs += 1;
                     let rr = &mut b.diag.route_rejected;
                     match reason {
-                        NoTradeReason::NotTxSigner
-                        | NoTradeReason::LaunchpadAccountNotWallet
-                        | NoTradeReason::LaunchpadRecipientNotWallet => {
+                        NoTradeReason::NotTxSigner => {
                             rr.wallet_not_signer += 1;
                         }
                         NoTradeReason::MultiAsset

@@ -212,14 +212,6 @@ pub enum NoTradeReason {
     NoQuoteLeg,
     /// No gated venue swap event involves the traded token (rule b).
     NoVerifiedSwapEvent,
-    /// A gated launchpad (four.meme) event names the traded token but its
-    /// `account` is not the wallet: a router/bot contract traded, the wallet
-    /// is not attributed (invariant #2). Counted, never booked.
-    LaunchpadAccountNotWallet,
-    /// A gated launchpad CURVE event (Pons V2 / Bags) names the wallet as
-    /// buyer/seller but another `recipient` receives the output: a
-    /// swap-with-receiver, counted and never booked (invariant #2).
-    LaunchpadRecipientNotWallet,
     /// Broken log structure (invariant #18).
     MalformedLog(String),
     /// Delta arithmetic overflowed.
@@ -249,6 +241,14 @@ pub struct EvmTxExtraction {
     /// Swap logs of gated, verified venues in the transaction (> 0 makes a
     /// rejection a "swap-shaped transaction that was not booked").
     pub gated_swap_logs: u32,
+    /// A gated launchpad event of the tx names an `account`/`buyer`/`seller`
+    /// other than `tx.from` (router/bot contract). Informational, never a
+    /// gate (ADR-020 amendment 8); counted as `launchpad_account_is_router`
+    /// when a trade was booked.
+    pub launchpad_account_other: bool,
+    /// A gated launchpad curve event of the tx pays its output to a
+    /// `recipient` other than the wallet (`launchpad_recipient_other`).
+    pub launchpad_recipient_other: bool,
 }
 
 fn fee_of(tx: &RawEvmTransaction, profile: &EvmChainProfile) -> EvmFee {
@@ -349,6 +349,8 @@ pub fn extract_evm_trade(
     let nft =
         u32::try_from(tx.logs.iter().filter(|l| is_erc721_transfer(l)).count()).unwrap_or(u32::MAX);
     let gated = std::cell::Cell::new(0u32);
+    let lp_account_other = std::cell::Cell::new(false);
+    let lp_recipient_other = std::cell::Cell::new(false);
     let done = |outcome: EvmTxOutcome, ungated_swap_logs: u32| EvmTxExtraction {
         tx_hash: tx.hash,
         wallet: w,
@@ -357,6 +359,8 @@ pub fn extract_evm_trade(
         ungated_swap_logs,
         nft_transfer_logs: nft,
         gated_swap_logs: gated.get(),
+        launchpad_account_other: lp_account_other.get(),
+        launchpad_recipient_other: lp_recipient_other.get(),
     };
     let no = |reason: NoTradeReason, ungated: u32| done(EvmTxOutcome::NoTrade(reason), ungated);
 
@@ -407,6 +411,16 @@ pub fn extract_evm_trade(
             GateOutcome::UngatedEmitter { .. } => ungated += 1,
             GateOutcome::Malformed(m) => return no(NoTradeReason::MalformedLog(m), ungated),
             GateOutcome::NotSwap => {}
+        }
+    }
+
+    // Informational launchpad counters (never gates, ADR-020 amendment 8).
+    for lp in swaps.iter().filter_map(|s| s.launchpad) {
+        if lp.account != tx.from {
+            lp_account_other.set(true);
+        }
+        if lp.recipient.is_some_and(|r| r != w) {
+            lp_recipient_other.set(true);
         }
     }
 
@@ -484,33 +498,21 @@ pub fn extract_evm_trade(
         return no(NoTradeReason::TokenFilterMismatch, ungated);
     }
 
-    // --- Rule b: a gated swap event whose emitter moved `token`; a launchpad
-    // event (four.meme TokenManager) instead names token and account itself:
-    // it counts only for the wallet it names (amounts still come from the
-    // wallet's own deltas, never from the event).
+    // --- Rule b: a gated swap event involving `token`. A pool/PoolManager event
+    // must have its emitter move `token`; a launchpad event (four.meme manager,
+    // Pons V2 / Bags curve) names the token itself. Trader identity and amounts
+    // come from the transaction (ADR-020 §2 a, c, d, amendment 8): the event's
+    // account/buyer/seller and recipient are informational and never gate.
     let involved = swaps
         .iter()
         .filter(|s| match s.launchpad {
-            Some(lp) => lp.token == token && lp.account == w && lp.recipient.is_none_or(|r| r == w),
+            Some(lp) => lp.token == token,
             None => transfers
                 .iter()
                 .any(|t| t.token == token && (t.from == s.emitter || t.to == s.emitter)),
         })
         .max_by_key(|s| s.verification);
     let Some(venue) = involved else {
-        if swaps.iter().any(|s| {
-            s.launchpad.is_some_and(|lp| {
-                lp.token == token && lp.account == w && lp.recipient.is_some_and(|r| r != w)
-            })
-        }) {
-            return no(NoTradeReason::LaunchpadRecipientNotWallet, ungated);
-        }
-        if swaps.iter().any(|s| {
-            s.launchpad
-                .is_some_and(|lp| lp.token == token && lp.account != w)
-        }) {
-            return no(NoTradeReason::LaunchpadAccountNotWallet, ungated);
-        }
         return no(NoTradeReason::NoVerifiedSwapEvent, ungated);
     };
 
@@ -616,6 +618,13 @@ pub struct EvmExtractionSummary {
     pub unknown_consideration: u64,
     pub no_trade: BTreeMap<String, u64>,
     pub ungated_swap_logs: u64,
+    /// Booked trades whose launchpad event names an account other than
+    /// `tx.from` (router/bot): informational (ADR-020 amendment 8).
+    pub launchpad_account_is_router: u64,
+    /// Transactions with a launchpad curve event paying a recipient other
+    /// than the wallet (any outcome; a booked trade needs the wallet's own
+    /// deltas to show the token).
+    pub launchpad_recipient_other: u64,
 }
 
 fn reason_label(r: &NoTradeReason) -> &'static str {
@@ -628,8 +637,6 @@ fn reason_label(r: &NoTradeReason) -> &'static str {
         NoTradeReason::SameSign => "same_sign",
         NoTradeReason::NoQuoteLeg => "no_quote_leg",
         NoTradeReason::NoVerifiedSwapEvent => "no_verified_swap_event",
-        NoTradeReason::LaunchpadAccountNotWallet => "launchpad_account_not_wallet",
-        NoTradeReason::LaunchpadRecipientNotWallet => "launchpad_recipient_not_wallet",
         NoTradeReason::MalformedLog(_) => "malformed_log",
         NoTradeReason::Overflow => "overflow",
     }
@@ -658,9 +665,11 @@ pub fn extract_evm_trades(
         summary.transactions += 1;
         summary.ungated_swap_logs += u64::from(e.ungated_swap_logs);
         summary.nft_transfer_logs += u64::from(e.nft_transfer_logs);
+        summary.launchpad_recipient_other += u64::from(e.launchpad_recipient_other);
         match &e.outcome {
             EvmTxOutcome::Trade(t) => {
                 summary.trades += 1;
+                summary.launchpad_account_is_router += u64::from(e.launchpad_account_other);
                 if matches!(t.consideration, Consideration::Unknown(_)) {
                     summary.unknown_consideration += 1;
                 }
@@ -1166,9 +1175,10 @@ mod tests {
     }
 
     #[test]
-    fn fourmeme_event_naming_another_account_does_not_attribute_the_signer() {
-        // A bot/router contract is the event's `account`; the signer ends up
-        // with the tokens after a forward. Not attributed, counted.
+    fn fourmeme_event_naming_a_router_account_still_books_the_signers_own_deltas() {
+        // ADR-020 amendment 8: a bot/router contract is the event's `account`;
+        // the signer (tx.from) ends up with the tokens and paid the value: the
+        // event is only evidence, the account is an informational counter.
         let bot = Address::repeat_byte(0x99);
         let t = bsc_tx(
             vec![
@@ -1179,10 +1189,26 @@ mod tests {
             7,
         );
         let e = extract_evm_trade(&t, &bsc_cfg(), None, None);
-        assert_eq!(reason(&e), &NoTradeReason::LaunchpadAccountNotWallet);
+        let tr = trade(&e);
+        assert_eq!(
+            (tr.side, tr.token_amount, tr.consideration),
+            (
+                TradeSide::Buy,
+                U256::from(1_000u16),
+                Consideration::Exact(U256::from(7u8))
+            )
+        );
+        assert!(e.launchpad_account_other && !e.launchpad_recipient_other);
         assert_eq!(e.gated_swap_logs, 1);
         let (_, sum) = extract_evm_trades(&[t], &bsc_cfg(), None, None);
-        assert_eq!(sum.no_trade.get("launchpad_account_not_wallet"), Some(&1));
+        assert_eq!((sum.trades, sum.launchpad_account_is_router), (1, 1));
+        // A router that keeps the tokens leaves the signer no token delta: no trade.
+        let t = bsc_tx(
+            vec![transfer(TOKEN, FM_V2, bot, 1_000), fm_v2(true, TOKEN, bot)],
+            7,
+        );
+        let e = extract_evm_trade(&t, &bsc_cfg(), None, None);
+        assert_eq!(reason(&e), &NoTradeReason::NoTradedToken);
         // An event for another token is not evidence for this one either.
         let t = bsc_tx(
             vec![transfer(TOKEN, FM_V2, W, 1_000), fm_v2(true, OTHER, W)],
@@ -1276,8 +1302,8 @@ mod tests {
             )
         );
         assert_eq!(tr.consideration, Consideration::Exact(U256::from(7u8)));
-        // IdlOnly until a fixture passes evm_robinhood_launchpads.rs.
-        assert_eq!(tr.venue_verification, VenueVerification::IdlOnly);
+        // Pons V2 is FixtureVerified (evm_robinhood_launchpads.rs, n = 200).
+        assert_eq!(tr.venue_verification, VenueVerification::FixtureVerified);
         assert_eq!(e.gated_swap_logs, 1);
         // A curve that nobody admitted is not evidence (invariant #16).
         let e = extract_evm_trade(&t, &cfg(), None, None);
@@ -1286,25 +1312,28 @@ mod tests {
     }
 
     #[test]
-    fn pons_curve_events_for_another_account_or_receiver_are_not_attributed() {
-        // A router is the buyer and forwards the tokens to the signer.
+    fn pons_curve_router_account_books_and_other_recipient_is_counted() {
+        // A router is the buyer and forwards the tokens to the signer, who paid.
         let router = Address::repeat_byte(0x99);
-        let t = tx(vec![
+        let mut t = tx(vec![
             transfer(TOKEN, CURVE, router, 1_000),
             transfer(TOKEN, router, W, 1_000),
             pons_event(true, router, router),
         ]);
+        t.value = U256::from(7u8);
         let e = extract_evm_trade(&t, &curve_cfg(), None, None);
-        assert_eq!(reason(&e), &NoTradeReason::LaunchpadAccountNotWallet);
-        // The signer sells but the proceeds go to another recipient.
+        assert_eq!(trade(&e).token_amount, U256::from(1_000u16));
+        assert!(e.launchpad_account_other && e.launchpad_recipient_other);
+        // Tokens went to a recipient that is not the wallet: W's deltas show no
+        // token, nothing is booked, the case is counted.
         let t = tx(vec![
-            transfer(TOKEN, W, CURVE, 1_000),
-            pons_event(false, W, router),
+            transfer(TOKEN, CURVE, router, 1_000),
+            pons_event(true, W, router),
         ]);
         let e = extract_evm_trade(&t, &curve_cfg(), None, None);
-        assert_eq!(reason(&e), &NoTradeReason::LaunchpadRecipientNotWallet);
-        assert_eq!(e.gated_swap_logs, 1);
+        assert_eq!(reason(&e), &NoTradeReason::NoTradedToken);
+        assert!(e.launchpad_recipient_other);
         let (_, sum) = extract_evm_trades(&[t], &curve_cfg(), None, None);
-        assert_eq!(sum.no_trade.get("launchpad_recipient_not_wallet"), Some(&1));
+        assert_eq!((sum.trades, sum.launchpad_recipient_other), (0, 1));
     }
 }

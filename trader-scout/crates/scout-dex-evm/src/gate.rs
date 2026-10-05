@@ -478,10 +478,12 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         AnchorRole::SwapEmitter,
     ),
     // Robinhood launchpads (ADR-020 amendment 8). Per-token curves are
-    // admitted through their factory's own record; IdlOnly until a committed
-    // `evm_robinhood_*` fixture passes `evm_robinhood_launchpads.rs`.
+    // admitted through their factory's own record. Pons V2 is FixtureVerified
+    // by `evm_robinhood_pons_curves_2026-10-05.json` (n = 200 (tx, curve)
+    // samples, token side 200/200 exact; quote side ERC-20 exact 29, native
+    // exact 12, rest unclaimed); Bags stays IdlOnly (no live samples).
     // Pons V2 factory (official ponsdotdev/pons-labs @ 44a3db91).
-    dep(
+    dep_fixture_verified(
         4663,
         SwapVenue::PonsV2Curve,
         address!("7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e"),
@@ -1121,9 +1123,9 @@ mod tests {
                     address!("5c952063c7fc8610FFDB798152D69F0B9550762b"),
                 ]
                 .contains(&d.anchor);
-            // Robinhood launchpad curves (Pons V2, Bags) are IdlOnly until a
-            // committed fixture passes `evm_robinhood_launchpads.rs`.
-            let expected = if d.venue.is_curve() {
+            // Robinhood launchpad curves: Pons V2 FixtureVerified (n = 200,
+            // `evm_robinhood_launchpads.rs`), Bags IdlOnly (no live samples).
+            let expected = if d.venue == SwapVenue::BagsCurve {
                 VenueVerification::IdlOnly
             } else if d.chain_id == 4663 || d.chain_id == 8453 || bsc_verified {
                 VenueVerification::FixtureVerified
@@ -1673,10 +1675,10 @@ mod tests {
                 .admit_curve(SwapVenue::PonsV2Curve, curve, &good)
                 .is_err()
         );
-        // Admission: IdlOnly (no fixture), the event names token (the curve's), account and recipient.
+        // Admission: FixtureVerified (Pons V2, n = 200), the event names token (the curve's), account and recipient.
         assert_eq!(
             gate.admit_curve(SwapVenue::PonsV2Curve, curve, &good),
-            Ok(VenueVerification::IdlOnly)
+            Ok(VenueVerification::FixtureVerified)
         );
         assert_eq!(gate.curve_identity(curve).map(|c| c.token), Some(token));
         let to = Address::repeat_byte(0x72);
@@ -1684,7 +1686,11 @@ mod tests {
             GateOutcome::Verified(v) => {
                 assert_eq!(
                     (v.venue, v.emitter, v.verification),
-                    (SwapVenue::PonsV2Curve, curve, VenueVerification::IdlOnly)
+                    (
+                        SwapVenue::PonsV2Curve,
+                        curve,
+                        VenueVerification::FixtureVerified
+                    )
                 );
                 assert_eq!(
                     v.launchpad,

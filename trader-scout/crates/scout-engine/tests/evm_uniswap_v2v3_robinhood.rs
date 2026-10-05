@@ -123,20 +123,25 @@ async fn load(path: &PathBuf) -> Loaded {
         .and_then(Value::as_array)
         .map(|rows| {
             rows.iter()
-                .map(|r| PoolOnchainMetadata {
-                    emitter: opt_addr(&r["emitter"]).expect("emitter"),
-                    kind: match r["kind"].as_str().unwrap() {
+                // Families Robinhood pins no factory for (a `--swaps all` capture also
+                // reads Pancake v3 / Aerodrome shaped emitters) are not this test's.
+                .filter_map(|r| {
+                    let kind = match r["kind"].as_str().unwrap() {
                         "v2" => PoolKind::V2,
                         "v3" => PoolKind::V3,
-                        other => panic!("kind {other}"),
-                    },
-                    factory: opt_addr(&r["factory"]),
-                    token0: opt_addr(&r["token0"]),
-                    token1: opt_addr(&r["token1"]),
-                    fee: r["fee"].as_u64().map(|f| u32::try_from(f).unwrap()),
-                    stable: None,
-                    tick_spacing: None,
-                    registered_pool: opt_addr(&r["registered_pool"]),
+                        _ => return None,
+                    };
+                    Some(PoolOnchainMetadata {
+                        emitter: opt_addr(&r["emitter"]).expect("emitter"),
+                        kind,
+                        factory: opt_addr(&r["factory"]),
+                        token0: opt_addr(&r["token0"]),
+                        token1: opt_addr(&r["token1"]),
+                        fee: r["fee"].as_u64().map(|f| u32::try_from(f).unwrap()),
+                        stable: None,
+                        tick_spacing: None,
+                        registered_pool: opt_addr(&r["registered_pool"]),
+                    })
                 })
                 .collect()
         })
