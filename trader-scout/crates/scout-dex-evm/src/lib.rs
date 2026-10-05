@@ -38,9 +38,10 @@ pub use gate::{
 pub use pancake::{PANCAKE_V3_SWAP_TOPIC0, PancakeV3Swap, decode_pancake_v3_swap};
 pub use quote::{
     PANCAKE_V2_BSC_FACTORY, PANCAKE_V2_FEE, QuoterFamily, UNISWAP_V2_FEE, V2Fee, V4PoolKey,
-    aerodrome_amount_out_calldata, decode_amount_out, decode_reserves, pinned_quoter,
-    pinned_slipstream_quoter, price_impact_bps, selector, v2_amount_out, v2_fee_for_factory,
-    v2_reserves_calldata, v3_quote_calldata, v4_quote_calldata,
+    aerodrome_amount_out_calldata, decode_amount_out, decode_reserves, decode_v4_pool_keys,
+    pinned_quoter, pinned_slipstream_quoter, pinned_v4_position_manager, price_impact_bps,
+    selector, v2_amount_out, v2_fee_for_factory, v2_reserves_calldata, v3_quote_calldata,
+    v4_pool_keys_calldata, v4_quote_calldata,
 };
 pub use uniswap::{
     V2_PAIR_CREATED_TOPIC0, V2PairCreated, V3_POOL_CREATED_TOPIC0, V3_SWAP_TOPIC0, V3PoolCreated,

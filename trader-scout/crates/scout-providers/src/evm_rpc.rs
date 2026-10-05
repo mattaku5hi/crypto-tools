@@ -49,6 +49,8 @@ pub enum EvmSourceError {
     TooManyLogs { cap: usize },
     #[error("eth_getLogs split limit of {limit} reached")]
     TooManySplits { limit: u32 },
+    #[error("eth_getLogs request cap of {limit} reached")]
+    TooManyLogRequests { limit: u32 },
     #[error("malformed {what}: {detail}")]
     Malformed { what: &'static str, detail: String },
     #[error("{what} not found at the endpoint")]
@@ -86,6 +88,9 @@ pub struct EvmRpcConfig {
     pub max_splits: u32,
     /// Max cached block timestamps.
     pub timestamp_cache_cap: usize,
+    /// Hard cap on `eth_getLogs` requests (attempts, failed ones included) of
+    /// ONE `get_logs` call; `None` = only the split limit applies.
+    pub max_log_requests: Option<u32>,
 }
 
 impl Default for EvmRpcConfig {
@@ -95,6 +100,7 @@ impl Default for EvmRpcConfig {
             max_logs: 200_000,
             max_splits: 100_000,
             timestamp_cache_cap: 65_536,
+            max_log_requests: None,
         }
     }
 }
@@ -490,6 +496,27 @@ impl EvmRpcClient {
         c
     }
 
+    /// A clone sharing every cache and the request budget whose `get_logs`
+    /// never issues more than `max_requests` `eth_getLogs` requests.
+    #[must_use]
+    pub fn with_max_log_requests(&self, max_requests: u32) -> Self {
+        let mut c = self.clone();
+        c.cfg.max_log_requests = Some(
+            c.cfg
+                .max_log_requests
+                .map_or(max_requests, |m| m.min(max_requests)),
+        );
+        c
+    }
+
+    /// Requests left in the shared budget (`None` = unlimited).
+    #[must_use]
+    pub fn remaining_budget(&self) -> Option<u64> {
+        self.rpc
+            .request_limit()
+            .map(|l| l.saturating_sub(self.rpc.total_requests_made()))
+    }
+
     /// Logical JSON-RPC calls made so far by method (retries not counted).
     #[must_use]
     pub fn calls_by_method(&self) -> BTreeMap<String, u64> {
@@ -610,6 +637,7 @@ impl EvmRpcClient {
         let mut stack = vec![(from, to)];
         let mut out: Vec<scout_core::RawEvmLog> = Vec::new();
         let (mut requests, mut splits) = (0u32, 0u32);
+        let mut attempts = 0u32;
         // Provider-announced maximum span (blocks) once a range error showed
         // one: later windows are cut to it up front instead of failing again.
         let mut span_cap: Option<u64> = None;
@@ -624,6 +652,12 @@ impl EvmRpcClient {
                 stack.push((a, a + cap - 1));
                 continue;
             }
+            if let Some(limit) = self.cfg.max_log_requests
+                && attempts >= limit
+            {
+                return Err(EvmSourceError::TooManyLogRequests { limit });
+            }
+            attempts += 1;
             match self
                 .call_json("eth_getLogs", json!([filter.to_json(a, b)]))
                 .await
@@ -1391,6 +1425,34 @@ mod tests {
         );
         let e = c.get_logs(&LogFilter::default(), 0, 1).await.unwrap_err();
         assert!(matches!(e, EvmSourceError::TooManyLogs { cap: 1 }));
+    }
+
+    #[tokio::test]
+    async fn log_request_cap_is_a_hard_bound_and_counts_failed_attempts() {
+        let s = MockServer::start().await;
+        mount_method(&s, "eth_getLogs", ok(json!([]))).await;
+        // 10-block spans over 100 blocks would need 10 requests; cap = 3.
+        let c = client(&s, ROBINHOOD, None).with_max_log_requests(3);
+        let mut f = LogFilter::default();
+        f.addresses.push(Address::ZERO);
+        // Fresh server answering a range error to every window.
+        let s2 = MockServer::start().await;
+        mount_method(
+            &s2,
+            "eth_getLogs",
+            err(-32600, "up to a 10 block range; should work: [0x0, 0x9]"),
+        )
+        .await;
+        let c2 = client(&s2, ROBINHOOD, None).with_max_log_requests(3);
+        let e = c2.get_logs(&f, 0, 100).await.unwrap_err();
+        assert!(matches!(e, EvmSourceError::TooManyLogRequests { limit: 3 }));
+        assert_eq!(
+            c2.calls_by_method().get("eth_getLogs").copied(),
+            Some(3),
+            "never more than the cap"
+        );
+        // Under the cap a call succeeds.
+        assert!(c.get_logs(&f, 0, 5).await.is_ok());
     }
 
     #[tokio::test]

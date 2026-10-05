@@ -407,6 +407,31 @@ pub fn open_valuation_meta_evm(
     }
 }
 
+/// `valuation cost: positions=N planned_calls=M budget_left=K` (stderr): what
+/// the cost plan admitted, so `--max-requests` can be sized. `None` when the
+/// valuation did not read anything.
+#[must_use]
+pub fn valuation_cost_line_evm(
+    run: Option<&scout_sdk::engine::EvmOpenValuationRun>,
+) -> Option<String> {
+    let r = run.filter(|r| r.ran && !r.historical && r.state_block.is_some())?;
+    Some(format!(
+        "valuation cost: positions={} planned_calls={} budget_left={}{}",
+        r.planned_positions,
+        r.planned_calls,
+        r.budget_left
+            .map_or_else(|| "unlimited".to_string(), |b| b.to_string()),
+        if r.refused_positions > 0 {
+            format!(
+                " refused={} (request_budget_exhausted)",
+                r.refused_positions
+            )
+        } else {
+            String::new()
+        }
+    ))
+}
+
 /// One stderr line summarising the EVM valuation step.
 #[must_use]
 pub fn open_valuation_line_evm(

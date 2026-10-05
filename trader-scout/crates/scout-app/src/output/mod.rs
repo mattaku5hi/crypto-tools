@@ -20,7 +20,7 @@ pub use jsonl::{JsonlRecord, RunStatus, SCHEMA_VERSION, Window};
 pub use open_valuation::{
     FeeBpsDto, OpenPositionDto, OpenValuationMetaDto, OpenValuationTotalsDto, ledger_totals_dto,
     open_positions_dto, open_valuation_line, open_valuation_line_evm, open_valuation_meta,
-    open_valuation_meta_evm, totals_dto,
+    open_valuation_meta_evm, totals_dto, valuation_cost_line_evm,
 };
 pub use pricing::{
     PrefetchDto, PriceCoverageDto, PricingMetaDto, PricingMetaInput, pricing_line, pricing_meta,

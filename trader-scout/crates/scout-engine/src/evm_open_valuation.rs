@@ -7,7 +7,10 @@
 //! the valuation):
 //! * Uniswap v3 / Pancake v3 / Slipstream: official `QuoterV2.quoteExactInputSingle`;
 //! * Uniswap v4: official `V4Quoter.quoteExactInputSingle` (PoolKey rebuilt from
-//!   the pool's `Initialize` log and verified against the pool id);
+//!   the official PositionManager's `poolKeys(bytes25)` (one `eth_call`),
+//!   accepted only when the key hashes to the full pool id; fallback: the
+//!   pool's `Initialize` log through the logs endpoint under a hard per-run
+//!   request cap);
 //! * Uniswap v2 / Pancake v2: pair `getReserves()` + the exact constant-product
 //!   formula with the factory's fee (`scout_dex_evm::v2_fee_for_factory`);
 //! * Aerodrome v2: the pool's own `getAmountOut`.
@@ -26,9 +29,10 @@ use alloy_primitives::{Address, B256, U256};
 use scout_core::Money;
 use scout_dex_evm::{
     QuoterFamily, SwapVenue, V2Fee, V4_INITIALIZE_TOPIC0, V4PoolKey, aerodrome_amount_out_calldata,
-    decode_amount_out, decode_reserves, decode_v4_initialize, pinned_quoter,
-    pinned_slipstream_quoter, price_impact_bps, selector, v2_amount_out, v2_fee_for_factory,
-    v2_reserves_calldata, v3_quote_calldata, v4_quote_calldata,
+    decode_amount_out, decode_reserves, decode_v4_initialize, decode_v4_pool_keys, pinned_quoter,
+    pinned_slipstream_quoter, pinned_v4_position_manager, price_impact_bps, selector,
+    v2_amount_out, v2_fee_for_factory, v2_reserves_calldata, v3_quote_calldata,
+    v4_pool_keys_calldata, v4_quote_calldata,
 };
 use scout_pricing::{PriceLabel, PriceSource, QuoteAsset};
 use scout_providers::{EvmRpcClient, EvmSourceError, LogFilter};
@@ -52,8 +56,10 @@ pub const LABEL_TRANSFER_TAX_NOT_MODELLED: &str = "transfer_tax_not_modelled";
 const MAX_CACHED_CALLS: usize = 4_096;
 /// `eth_getLogs` split limit of one v4 `Initialize` lookup.
 const KEY_LOOKUP_MAX_SPLITS: u32 = 32;
-/// Default cap on v4 pool-key lookups per run.
+/// Default cap on v4 pool-key FALLBACK (log) lookups per run.
 pub const DEFAULT_MAX_KEY_LOOKUPS: usize = 32;
+/// Default hard cap on `eth_getLogs` requests of the v4 pool-key fallback per run.
+pub const DEFAULT_MAX_FALLBACK_LOG_REQUESTS: u64 = 64;
 
 /// Why a position is not valued. Never a zero value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -398,9 +404,16 @@ pub struct EvmOpenValuationRun {
     pub state_block: Option<u64>,
     /// Logical `eth_call`s made (answers served from the cache are not counted).
     pub eth_calls: u64,
-    /// `eth_getLogs` requests of v4 `Initialize` lookups.
+    /// `eth_getLogs` requests of v4 `Initialize` fallback lookups.
     pub log_calls: u64,
     pub cache_hits: u64,
+    /// Cost plan (ADR-019 amendment): positions planned, calls planned for
+    /// the admitted ones, the shared budget left when planning (`None` =
+    /// unlimited) and positions refused up front.
+    pub planned_positions: u64,
+    pub planned_calls: u64,
+    pub budget_left: Option<u64>,
+    pub refused_positions: u64,
     pub wallets_with_open: u64,
     pub totals: EvmOpenValuationTotals,
     pub budget_exhausted: bool,
@@ -414,6 +427,8 @@ pub struct EvmValuationOptions {
     /// (reported as `quoter_source = override`).
     pub quoter_overrides: BTreeMap<QuoterFamily, Address>,
     pub max_key_lookups: usize,
+    /// Hard cap on `eth_getLogs` requests of the Initialize fallback per run.
+    pub max_fallback_log_requests: u64,
 }
 
 impl Default for EvmValuationOptions {
@@ -421,6 +436,7 @@ impl Default for EvmValuationOptions {
         Self {
             quoter_overrides: BTreeMap::new(),
             max_key_lookups: DEFAULT_MAX_KEY_LOOKUPS,
+            max_fallback_log_requests: DEFAULT_MAX_FALLBACK_LOG_REQUESTS,
         }
     }
 }
@@ -480,6 +496,26 @@ struct Valuer<'a> {
     idents: BTreeMap<Address, Option<PoolIdent>>,
     keys: BTreeMap<B256, Option<V4PoolKey>>,
     key_lookups: usize,
+    /// Fallback log requests still allowed (run cap, further limited to the
+    /// budget slack the plan left: the fallback never burns planned calls).
+    fallback_logs_left: u64,
+    /// A call hit the budget limit at run time (beyond the plan, e.g. retries).
+    runtime_exhausted: bool,
+}
+
+/// What the cost plan has already counted (cache-aware simulation).
+#[derive(Default, Clone)]
+struct PlanSim {
+    calls: BTreeSet<(Address, String)>,
+    pools: BTreeSet<Address>,
+    keys: BTreeSet<B256>,
+    /// (pool or pool id, token, amount) quotes an earlier position already
+    /// planned while the identity (so the calldata) was still unknown.
+    quotes: BTreeSet<(B256, Address, u128)>,
+}
+
+fn sel_data(sig: &str) -> String {
+    format!("0x{}", alloy_primitives::hex::encode(selector(sig)))
 }
 
 fn word_address(b: &[u8]) -> Option<Address> {
@@ -503,6 +539,7 @@ impl Valuer<'_> {
     fn note_error(&mut self, e: &EvmSourceError) {
         if e.is_budget_exhausted() {
             self.run.budget_exhausted = true;
+            self.runtime_exhausted = true;
         }
         if self.run.fetch_error.is_none() {
             self.run.fetch_error = Some(crate::sanitize_provider_text(&e.to_string()));
@@ -625,7 +662,33 @@ impl Valuer<'_> {
         if let Some(k) = self.keys.get(&pool_id) {
             return k.ok_or(EvmUnvaluedReason::PoolKeyUnknown);
         }
-        if self.key_lookups >= self.opts.max_key_lookups {
+        // 1. The official PositionManager: one `eth_call`, accepted only when
+        //    the key hashes to the full pool id (a zeroed key = unregistered).
+        if let Some(pm) = pinned_v4_position_manager(self.cfg.profile.chain_id) {
+            self.run.eth_calls += 1;
+            match self
+                .rpc
+                .eth_call(pm, &v4_pool_keys_calldata(pool_id), &self.block_hex)
+                .await
+            {
+                Ok(Some(bytes)) => {
+                    if let Some(k) = decode_v4_pool_keys(&bytes, pool_id) {
+                        self.keys.insert(pool_id, Some(k));
+                        return Ok(k);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) if e.is_budget_exhausted() => {
+                    self.note_error(&e);
+                    return Err(EvmUnvaluedReason::RequestBudgetExhausted);
+                }
+                // Any other failure: the log fallback may still find the key.
+                Err(_) => {}
+            }
+        }
+        // 2. Fallback: the `Initialize` log through the logs endpoint, under
+        //    a hard cap on log requests per run.
+        if self.key_lookups >= self.opts.max_key_lookups || self.fallback_logs_left == 0 {
             return Err(EvmUnvaluedReason::PoolKeyUnknown);
         }
         self.key_lookups += 1;
@@ -638,25 +701,40 @@ impl Valuer<'_> {
                 None,
             ],
         };
-        let rpc = self.rpc.with_max_splits(KEY_LOOKUP_MAX_SPLITS);
+        let cap = u32::try_from(self.fallback_logs_left).unwrap_or(u32::MAX);
+        let rpc = self
+            .rpc
+            .with_max_splits(KEY_LOOKUP_MAX_SPLITS)
+            .with_max_log_requests(cap);
+        let before = rpc
+            .calls_by_method()
+            .get("eth_getLogs")
+            .copied()
+            .unwrap_or(0);
         let res = rpc.get_logs(&filter, 0, self.block).await;
+        let used = rpc
+            .calls_by_method()
+            .get("eth_getLogs")
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(before);
+        self.run.log_calls += used;
+        self.fallback_logs_left = self.fallback_logs_left.saturating_sub(used);
         let key = match res {
-            Ok(r) => {
-                self.run.log_calls += u64::from(r.requests);
-                r.logs
-                    .iter()
-                    .filter(|l| l.address == manager)
-                    .find_map(|l| decode_v4_initialize(l).decoded())
-                    .map(|i| V4PoolKey {
-                        currency0: i.currency0,
-                        currency1: i.currency1,
-                        fee: i.fee,
-                        tick_spacing: i.tick_spacing,
-                        hooks: i.hooks,
-                    })
-                    // The pool id is the hash of the key: a mismatch is no key.
-                    .filter(|k| k.pool_id() == pool_id)
-            }
+            Ok(r) => r
+                .logs
+                .iter()
+                .filter(|l| l.address == manager)
+                .find_map(|l| decode_v4_initialize(l).decoded())
+                .map(|i| V4PoolKey {
+                    currency0: i.currency0,
+                    currency1: i.currency1,
+                    fee: i.fee,
+                    tick_spacing: i.tick_spacing,
+                    hooks: i.hooks,
+                })
+                // The pool id is the hash of the key: a mismatch is no key.
+                .filter(|k| k.pool_id() == pool_id),
             Err(e) => {
                 self.note_error(&e);
                 if e.is_budget_exhausted() {
@@ -857,6 +935,177 @@ impl Valuer<'_> {
                     unit,
                     qt,
                 ))
+            }
+        }
+    }
+
+    /// Planned requests of one position given what is already cached and what
+    /// earlier admitted positions will fetch. An upper bound of the calls the
+    /// valuation makes (a failure on the way costs less); the Initialize
+    /// fallback is NOT counted here: it only spends the budget slack.
+    fn position_cost(&self, info: &crate::EvmOpenVenueInfo, sim: &mut PlanSim) -> u64 {
+        let Some(last) = info.last else { return 0 };
+        let token = info.token;
+        let amount = U256::from(info.open_amount_raw);
+        let probe = info.open_amount_raw.div_euclid(1000);
+        // Quotes (full + probe) of a pool whose calldata is not yet known:
+        // free when an earlier admitted position planned the same ones.
+        let probes = |sim: &mut PlanSim, scope: B256| {
+            u64::from(sim.quotes.insert((scope, token, info.open_amount_raw)))
+                + u64::from(probe > 0 && sim.quotes.insert((scope, token, probe)))
+        };
+        let mut c = 0u64;
+        let call = |me: &Self, sim: &mut PlanSim, to: Address, data: String| -> u64 {
+            if me.calls.contains_key(&(to, data.clone())) || sim.calls.contains(&(to, data.clone()))
+            {
+                0
+            } else {
+                sim.calls.insert((to, data));
+                1
+            }
+        };
+        match last.venue {
+            SwapVenue::FourMemeV1 | SwapVenue::FourMemeV2 => 0,
+            SwapVenue::UniswapV4 => {
+                let Some(pool_id) = last.pool_id else {
+                    return 0;
+                };
+                let Ok((quoter, _)) = self.quoter(QuoterFamily::UniswapV4) else {
+                    return 0;
+                };
+                match self.keys.get(&pool_id) {
+                    Some(None) => 0,
+                    Some(Some(key)) => {
+                        let (zfo, other) = if key.currency0 == token {
+                            (true, key.currency1)
+                        } else if key.currency1 == token {
+                            (false, key.currency0)
+                        } else {
+                            return 0;
+                        };
+                        if self.quote_side(other).is_none() {
+                            return 0;
+                        }
+                        c += call(
+                            self,
+                            sim,
+                            quoter,
+                            v4_quote_calldata(key, zfo, info.open_amount_raw),
+                        );
+                        if probe > 0 {
+                            c += call(self, sim, quoter, v4_quote_calldata(key, zfo, probe));
+                        }
+                        c
+                    }
+                    None => {
+                        if sim.keys.insert(pool_id)
+                            && pinned_v4_position_manager(self.cfg.profile.chain_id).is_some()
+                        {
+                            c += 1;
+                        }
+                        c + probes(sim, pool_id)
+                    }
+                }
+            }
+            SwapVenue::UniswapV3 | SwapVenue::PancakeV3 | SwapVenue::AerodromeSlipstream => {
+                let family = match last.venue {
+                    SwapVenue::UniswapV3 => QuoterFamily::UniswapV3,
+                    SwapVenue::PancakeV3 => QuoterFamily::PancakeV3,
+                    _ => QuoterFamily::Slipstream,
+                };
+                let slip = family == QuoterFamily::Slipstream;
+                if !slip && self.quoter(family).is_err() {
+                    return 0;
+                }
+                match self.idents.get(&last.pool) {
+                    Some(None) => 0,
+                    Some(Some(id)) => {
+                        let quoter = if slip {
+                            self.slipstream_quoter(id.factory)
+                        } else {
+                            self.quoter(family)
+                        };
+                        let Ok((quoter, _)) = quoter else { return 0 };
+                        let Some(other) = other_token(id, token) else {
+                            return 0;
+                        };
+                        if self.quote_side(other).is_none() {
+                            return 0;
+                        }
+                        let sel = if slip {
+                            id.tick_spacing
+                        } else {
+                            id.fee.and_then(|f| i32::try_from(f).ok())
+                        };
+                        let Some(sel) = sel else { return 0 };
+                        c += call(
+                            self,
+                            sim,
+                            quoter,
+                            v3_quote_calldata(family, token, other, amount, sel),
+                        );
+                        if probe > 0 {
+                            c += call(
+                                self,
+                                sim,
+                                quoter,
+                                v3_quote_calldata(family, token, other, U256::from(probe), sel),
+                            );
+                        }
+                        c
+                    }
+                    None => {
+                        if sim.pools.insert(last.pool) {
+                            let sigs: &[&str] = if slip {
+                                &["token0()", "token1()", "factory()", "tickSpacing()"]
+                            } else {
+                                &["token0()", "token1()", "fee()"]
+                            };
+                            for sg in sigs {
+                                c += call(self, sim, last.pool, sel_data(sg));
+                            }
+                        }
+                        c + probes(sim, last.pool.into_word())
+                    }
+                }
+            }
+            SwapVenue::UniswapV2 | SwapVenue::AerodromeV2 => {
+                let v2 = last.venue == SwapVenue::UniswapV2;
+                match self.idents.get(&last.pool) {
+                    Some(None) => return 0,
+                    Some(Some(_)) => {}
+                    None => {
+                        if sim.pools.insert(last.pool) {
+                            let sigs: &[&str] = if v2 {
+                                &["token0()", "token1()", "factory()"]
+                            } else {
+                                &["token0()", "token1()"]
+                            };
+                            for sg in sigs {
+                                c += call(self, sim, last.pool, sel_data(sg));
+                            }
+                        }
+                    }
+                }
+                if v2 {
+                    c + call(self, sim, last.pool, v2_reserves_calldata())
+                } else {
+                    c += call(
+                        self,
+                        sim,
+                        last.pool,
+                        aerodrome_amount_out_calldata(amount, token),
+                    );
+                    if probe > 0 {
+                        c += call(
+                            self,
+                            sim,
+                            last.pool,
+                            aerodrome_amount_out_calldata(U256::from(probe), token),
+                        );
+                    }
+                    c
+                }
             }
         }
     }
@@ -1076,14 +1325,62 @@ pub async fn apply_evm_open_valuation(
             idents: BTreeMap::new(),
             keys: BTreeMap::new(),
             key_lookups: 0,
+            fallback_logs_left: opts.max_fallback_log_requests,
+            runtime_exhausted: false,
         });
-        for (i, infos, lots) in &jobs {
+        // Cost plan: admit positions in order while their (cache-aware)
+        // planned calls fit the remaining budget; the rest are refused up
+        // front, before any call is burnt on them.
+        let mut admits: Vec<Vec<bool>> = Vec::new();
+        if let Some(val) = valuer.as_mut() {
+            let left = rpc.remaining_budget();
+            let mut remaining = left;
+            let mut sim = PlanSim::default();
+            let mut refusing = false;
+            let (mut total, mut planned, mut refused) = (0u64, 0u64, 0u64);
+            for (_, infos, _) in &jobs {
+                let mut row = Vec::with_capacity(infos.len());
+                for info in infos {
+                    let mut trial = sim.clone();
+                    let cost = val.position_cost(info, &mut trial);
+                    let fits = cost == 0 || (!refusing && remaining.is_none_or(|r| cost <= r));
+                    if fits {
+                        sim = trial;
+                        total += cost;
+                        planned += 1;
+                        remaining = remaining.map(|r| r.saturating_sub(cost));
+                    } else {
+                        refusing = true;
+                        refused += 1;
+                    }
+                    row.push(fits);
+                }
+                admits.push(row);
+            }
+            val.run.planned_positions = planned;
+            val.run.planned_calls = total;
+            val.run.budget_left = left;
+            val.run.refused_positions = refused;
+            if refused > 0 {
+                val.run.budget_exhausted = true;
+            }
+            // The fallback only spends what the plan left over.
+            if let Some(l) = left {
+                val.fallback_logs_left = val.fallback_logs_left.min(l.saturating_sub(total));
+            }
+        }
+        for (ji, (i, infos, lots)) in jobs.iter().enumerate() {
             let view = match (&mut valuer, &head) {
                 (Some(val), Ok(block)) => {
                     let mut positions = Vec::with_capacity(infos.len());
-                    for info in infos {
+                    for (pi, info) in infos.iter().enumerate() {
                         let basis = Basis::of(lots.iter().find(|x| x.mint == evm_key(info.token)));
-                        positions.push(if val.run.budget_exhausted {
+                        let admitted = admits
+                            .get(ji)
+                            .and_then(|r| r.get(pi))
+                            .copied()
+                            .unwrap_or(true);
+                        positions.push(if !admitted || val.runtime_exhausted {
                             EvmPositionValuation {
                                 token: info.token,
                                 open_amount_raw: info.open_amount_raw,

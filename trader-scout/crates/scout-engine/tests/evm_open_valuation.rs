@@ -47,6 +47,11 @@ const TOKEN: Address = address!("00000000000000000000000000000000000000c1");
 const OTHER: Address = address!("00000000000000000000000000000000000000c2");
 const POOL: Address = address!("00000000000000000000000000000000000000d1");
 const SLIP_GEN2_FACTORY: Address = address!("aDe65c38CD4849aDBA595a4323a8C7DdfE89716a");
+const PM_RH_POSITION: Address = address!("58daec3116aae6d93017baaea7749052e8a04fa7");
+const TOKEN2: Address = address!("00000000000000000000000000000000000000c3");
+const TOKEN3: Address = address!("00000000000000000000000000000000000000c4");
+const POOL2: Address = address!("00000000000000000000000000000000000000d2");
+const POOL3: Address = address!("00000000000000000000000000000000000000d3");
 const PM_RH: Address = address!("8366a39cc670b4001a1121b8f6a443a643e40951");
 
 // ---------------------------------------------------------------------
@@ -111,6 +116,12 @@ struct Chain {
 
 impl Chain {
     async fn start(rules: Vec<Rule>, logs: Vec<RawEvmLog>) -> Self {
+        Self::start_with(rules, logs, None).await
+    }
+
+    /// `log_span_cap`: Alchemy-free-tier-shaped `eth_getLogs` (ranges wider
+    /// than the span are refused with a range error).
+    async fn start_with(rules: Vec<Rule>, logs: Vec<RawEvmLog>, log_span_cap: Option<u64>) -> Self {
         let calls: Calls = Arc::new(Mutex::new(Vec::new()));
         let c2 = Arc::clone(&calls);
         let log_json: Vec<Value> = logs
@@ -150,6 +161,22 @@ impl Chain {
                             String::new(),
                             params[0].to_string(),
                         ));
+                        let hex = |k: &str| {
+                            u64::from_str_radix(
+                                params[0][k].as_str().unwrap().trim_start_matches("0x"),
+                                16,
+                            )
+                            .unwrap()
+                        };
+                        if let Some(span) = log_span_cap
+                            && hex("toBlock") - hex("fromBlock") + 1 > span
+                        {
+                            let a = hex("fromBlock");
+                            return ResponseTemplate::new(400).set_body_json(json!({
+                                "jsonrpc":"2.0","id":id,"error":{"code":-32600,"message":format!(
+                                    "Under the Free tier plan, you can make eth_getLogs requests with up to a {span} block range. Based on your parameters, this block range should work: [{a:#x}, {:#x}]",
+                                    a + span - 1)}}));
+                        }
                         result(json!(log_json))
                     }
                     "eth_call" => {
@@ -250,6 +277,23 @@ fn buy(
     token_amt: u128,
     l1_fee: Option<u128>,
 ) -> RawEvmTransaction {
+    buy_tok(
+        TOKEN, profile, wallet, n, pool, kind, quote, quote_amt, token_amt, l1_fee,
+    )
+}
+
+fn buy_tok(
+    token: Address,
+    profile: EvmChainProfile,
+    wallet: Address,
+    n: u64,
+    pool: Address,
+    kind: Kind,
+    quote: Address,
+    quote_amt: u128,
+    token_amt: u128,
+    l1_fee: Option<u128>,
+) -> RawEvmTransaction {
     let swap = match kind {
         Kind::V3 | Kind::Slipstream => rlog(
             pool,
@@ -303,7 +347,7 @@ fn buy(
         l1_fee: l1_fee.map(U256::from),
         logs: vec![
             transfer(quote, wallet, pool, quote_amt, n, 0),
-            transfer(TOKEN, pool, wallet, token_amt, n, 1),
+            transfer(token, pool, wallet, token_amt, n, 1),
             swap,
         ],
         native_source: None,
@@ -408,6 +452,32 @@ fn v3_rules(
     out_full: u128,
     out_probe: u128,
 ) -> Vec<Rule> {
+    v3_rules_tok(
+        TOKEN,
+        quoter,
+        family,
+        pool,
+        t0,
+        t1,
+        pool_selector,
+        amount,
+        out_full,
+        out_probe,
+    )
+}
+
+fn v3_rules_tok(
+    token_in: Address,
+    quoter: Address,
+    family: QuoterFamily,
+    pool: Address,
+    t0: Address,
+    t1: Address,
+    pool_selector: i32,
+    amount: u128,
+    out_full: u128,
+    out_probe: u128,
+) -> Vec<Rule> {
     let mut rules = vec![
         rule(pool, &sel_hex("token0()"), ok(words(&[addr_word(t0)]))),
         rule(pool, &sel_hex("token1()"), ok(words(&[addr_word(t1)]))),
@@ -430,8 +500,7 @@ fn v3_rules(
             ok(words(&[word(u128::try_from(pool_selector).unwrap())])),
         ));
     }
-    let token_in = TOKEN;
-    let token_out = if t0 == TOKEN { t1 } else { t0 };
+    let token_out = if t0 == token_in { t1 } else { t0 };
     for (a, out) in [(amount, out_full), (amount / 1000, out_probe)] {
         let data = v3_quote_calldata(family, token_in, token_out, U256::from(a), pool_selector);
         rules.push(Rule {
@@ -756,7 +825,13 @@ async fn v4_robinhood_key_from_initialize_and_quote_and_failure_paths() {
         only(&cards[0]).unvalued_reason(),
         Some(EvmUnvaluedReason::PoolKeyUnknown)
     );
-    assert!(chain.eth_calls().is_empty());
+    // Only the PositionManager was asked (no quoter call).
+    assert!(
+        chain
+            .eth_calls()
+            .iter()
+            .all(|c| c.0 == format!("{PM_RH_POSITION:#x}"))
+    );
 
     // A log whose key does not hash to the pool id is not a key.
     let mut forged = key;
@@ -1865,4 +1940,314 @@ mod replays {
         assert!(!v.transfer_tax_not_modelled);
         let _ = BTreeMap::<u8, u8>::new();
     }
+}
+
+// ---------------------------------------------------------------------
+// v4 PoolKey via the PositionManager, log fallback cap, cost plan
+// ---------------------------------------------------------------------
+
+fn pm_key_rule(pool_id: B256, key: &V4PoolKey) -> Rule {
+    let words_ = [
+        addr_word(key.currency0),
+        addr_word(key.currency1),
+        word(u128::from(key.fee)),
+        word(u128::try_from(key.tick_spacing).unwrap()),
+        addr_word(key.hooks),
+    ];
+    Rule {
+        to: PM_RH_POSITION,
+        prefix: scout_dex_evm::v4_pool_keys_calldata(pool_id).to_ascii_lowercase(),
+        contains: None,
+        ans: ok(words(&words_)),
+    }
+}
+
+fn v4_tx(id: B256, wallet: Address, n: u64) -> RawEvmTransaction {
+    buy(
+        ROBINHOOD,
+        wallet,
+        n,
+        PM_RH,
+        Kind::V4(id),
+        ROBINHOOD.wrapped_native,
+        ETH / 2,
+        1_000_000_000,
+        None,
+    )
+}
+
+fn count_logs(chain: &Chain) -> usize {
+    chain
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| c.0 == "eth_getLogs")
+        .count()
+}
+
+#[tokio::test]
+async fn v4_position_manager_valid_zeroed_and_forged_keys() {
+    let key = v4_key();
+    let id = key.pool_id();
+    let cfg = cfg_with(ROBINHOOD, &[]);
+    let quoter = address!("8dc178efb8111bb0973dd9d722ebeff267c98f94");
+    let q = v4_rules(
+        &key,
+        quoter,
+        1_000_000_000,
+        7 * ETH / 10,
+        800_000_000_000_000,
+    );
+    let tx = v4_tx(id, W, 1);
+
+    // Valid key: one eth_call, no log request at all.
+    let mut rules = q.clone();
+    rules.push(pm_key_rule(id, &key));
+    let chain = Chain::start(rules, vec![]).await;
+    let mut cards = vec![card(&cfg, W, std::slice::from_ref(&tx))];
+    let run = value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    let v = only(&cards[0]).valued().unwrap();
+    assert_eq!(v.realizable_raw, 7 * ETH / 10);
+    assert_eq!((run.log_calls, count_logs(&chain)), (0, 0));
+    // PM key + 2 quotes, as planned.
+    assert_eq!((run.eth_calls, run.planned_calls), (3, 3));
+
+    // Zeroed key (pool never registered): fallback to the Initialize log.
+    let mut rules = q.clone();
+    rules.push(pm_key_rule(
+        id,
+        &V4PoolKey {
+            currency0: Address::ZERO,
+            currency1: Address::ZERO,
+            fee: 0,
+            tick_spacing: 0,
+            hooks: Address::ZERO,
+        },
+    ));
+    let chain = Chain::start(rules, vec![init_log(PM_RH, &key, id)]).await;
+    let mut cards = vec![card(&cfg, W, std::slice::from_ref(&tx))];
+    let run = value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    assert!(only(&cards[0]).valued().is_some());
+    assert_eq!((run.log_calls, count_logs(&chain)), (1, 1));
+
+    // Forged key (does not hash to the pool id): rejected, no quote issued;
+    // with no Initialize log either the pool key stays unknown.
+    let mut forged = key;
+    forged.fee = 10_000;
+    let mut rules = q.clone();
+    rules.push(pm_key_rule(id, &forged));
+    let chain = Chain::start(rules.clone(), vec![]).await;
+    let mut cards = vec![card(&cfg, W, std::slice::from_ref(&tx))];
+    let run = value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    assert_eq!(
+        only(&cards[0]).unvalued_reason(),
+        Some(EvmUnvaluedReason::PoolKeyUnknown)
+    );
+    assert_eq!(run.log_calls, 1);
+    assert!(
+        chain
+            .eth_calls()
+            .iter()
+            .all(|c| c.0 == format!("{PM_RH_POSITION:#x}"))
+    );
+    // ... and a forged log is no key either.
+    let chain = Chain::start(rules, vec![init_log(PM_RH, &forged, id)]).await;
+    let mut cards = vec![card(&cfg, W, std::slice::from_ref(&tx))];
+    value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    assert_eq!(
+        only(&cards[0]).unvalued_reason(),
+        Some(EvmUnvaluedReason::PoolKeyUnknown)
+    );
+}
+
+#[tokio::test]
+async fn v4_fallback_log_requests_are_capped_per_run() {
+    let key = v4_key();
+    let id = key.pool_id();
+    let mut key2 = key;
+    key2.fee = 500;
+    let id2 = key2.pool_id();
+    let cfg = cfg_with(ROBINHOOD, &[]);
+    // 10-block log cap at head 0x1000: the lookup would need ~410 requests.
+    let chain = Chain::start_with(vec![], vec![], Some(10)).await;
+    let mut cards = vec![
+        card(&cfg, W, &[v4_tx(id, W, 1)]),
+        card(&cfg, W2, &[v4_tx(id2, W2, 2)]),
+    ];
+    let opts = EvmValuationOptions {
+        max_fallback_log_requests: 5,
+        ..EvmValuationOptions::default()
+    };
+    let run = value(&mut cards, &chain, &cfg, &opts).await;
+    assert_eq!(count_logs(&chain), 5, "hard cap, never more");
+    assert_eq!(run.log_calls, 5);
+    for c in &cards {
+        assert_eq!(
+            only(c).unvalued_reason(),
+            Some(EvmUnvaluedReason::PoolKeyUnknown)
+        );
+    }
+    // The default cap is 64.
+    let chain = Chain::start_with(vec![], vec![], Some(10)).await;
+    let mut cards = vec![card(&cfg, W, &[v4_tx(id, W, 1)])];
+    let run = value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    assert_eq!(count_logs(&chain), 64);
+    assert_eq!(run.log_calls, 64);
+}
+
+#[tokio::test]
+async fn v4_fallback_never_spends_planned_budget() {
+    let key = v4_key();
+    let id = key.pool_id();
+    let cfg = cfg_with(ROBINHOOD, &[]);
+    // Budget left after eth_blockNumber = exactly the plan (PM + 2 quotes):
+    // the PositionManager answers "zeroed", the fallback has no slack.
+    let zero = V4PoolKey {
+        currency0: Address::ZERO,
+        currency1: Address::ZERO,
+        fee: 0,
+        tick_spacing: 0,
+        hooks: Address::ZERO,
+    };
+    let chain = Chain::start(vec![pm_key_rule(id, &zero)], vec![]).await;
+    let mut cards = vec![card(&cfg, W, &[v4_tx(id, W, 1)])];
+    let run = apply_evm_open_valuation(
+        &mut cards,
+        &chain.rpc_budget(ROBINHOOD, Some(4)),
+        &cfg,
+        &AnalysisWindow::none(AS_OF),
+        &EvmValuationOptions::default(),
+    )
+    .await;
+    assert_eq!((run.planned_calls, run.budget_left), (3, Some(3)));
+    assert_eq!(count_logs(&chain), 0);
+    assert_eq!(
+        only(&cards[0]).unvalued_reason(),
+        Some(EvmUnvaluedReason::PoolKeyUnknown)
+    );
+    assert!(chain.server.received_requests().await.unwrap().len() <= 4);
+}
+
+#[tokio::test]
+async fn cost_plan_admits_in_order_refuses_the_rest_and_burns_nothing_extra() {
+    let weth = ROBINHOOD.wrapped_native;
+    let quoter = address!("33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7");
+    let cfg = cfg_with(
+        ROBINHOOD,
+        &[
+            (SwapVenue::UniswapV3, POOL),
+            (SwapVenue::UniswapV3, POOL2),
+            (SwapVenue::UniswapV3, POOL3),
+        ],
+    );
+    let order = |t: Address| if t < weth { (t, weth) } else { (weth, t) };
+    let mut rules = Vec::new();
+    for (tok, pool) in [(TOKEN, POOL), (TOKEN2, POOL2), (TOKEN3, POOL3)] {
+        let (t0, t1) = order(tok);
+        rules.extend(v3_rules_tok(
+            tok,
+            quoter,
+            QuoterFamily::UniswapV3,
+            pool,
+            t0,
+            t1,
+            3000,
+            1_000_000_000,
+            ETH,
+            ETH + 1,
+        ));
+    }
+    let tx = |tok, pool, w, n| {
+        buy_tok(
+            tok,
+            ROBINHOOD,
+            w,
+            n,
+            pool,
+            Kind::V3,
+            weth,
+            ETH / 2,
+            1_000_000_000,
+            None,
+        )
+    };
+    let wallets = || {
+        vec![
+            card(&cfg, W, &[tx(TOKEN, POOL, W, 1)]),
+            card(&cfg, W2, &[tx(TOKEN2, POOL2, W2, 2)]),
+            card(
+                &cfg,
+                address!("00000000000000000000000000000000000000a3"),
+                &[tx(
+                    TOKEN3,
+                    POOL3,
+                    address!("00000000000000000000000000000000000000a3"),
+                    3,
+                )],
+            ),
+            // Same token/pool/amount as the first: fully cached, costs 0.
+            card(
+                &cfg,
+                address!("00000000000000000000000000000000000000a4"),
+                &[tx(
+                    TOKEN,
+                    POOL,
+                    address!("00000000000000000000000000000000000000a4"),
+                    4,
+                )],
+            ),
+        ]
+    };
+    // eth_blockNumber + room for exactly two uncached positions (3 identity
+    // + 2 quotes each).
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let chain = Chain::start(rules.clone(), vec![]).await;
+        let mut cards = wallets();
+        let run = apply_evm_open_valuation(
+            &mut cards,
+            &chain.rpc_budget(ROBINHOOD, Some(11)),
+            &cfg,
+            &AnalysisWindow::none(AS_OF),
+            &EvmValuationOptions::default(),
+        )
+        .await;
+        assert_eq!(run.budget_left, Some(10));
+        assert_eq!(run.planned_calls, 10);
+        assert_eq!(run.planned_positions, 3, "two uncached + the cached one");
+        assert_eq!(run.refused_positions, 1);
+        assert!(run.budget_exhausted);
+        let reasons: Vec<_> = cards.iter().map(|c| only(c).unvalued_reason()).collect();
+        assert_eq!(
+            reasons,
+            vec![
+                None,
+                None,
+                Some(EvmUnvaluedReason::RequestBudgetExhausted),
+                None
+            ]
+        );
+        // No burn beyond the plan: blockNumber + exactly the planned calls.
+        assert_eq!(chain.eth_calls().len(), 10);
+        assert_eq!(run.eth_calls, 10);
+        assert_eq!(chain.server.received_requests().await.unwrap().len(), 11);
+        seen.push((run.planned_calls, reasons));
+    }
+    assert_eq!(seen[0], seen[1], "planning is deterministic");
+
+    // A budget too small for even the first position refuses all of the
+    // costly ones before a single eth_call.
+    let chain = Chain::start(rules, vec![]).await;
+    let mut cards = wallets();
+    let run = apply_evm_open_valuation(
+        &mut cards,
+        &chain.rpc_budget(ROBINHOOD, Some(3)),
+        &cfg,
+        &AnalysisWindow::none(AS_OF),
+        &EvmValuationOptions::default(),
+    )
+    .await;
+    assert_eq!((run.planned_calls, run.refused_positions), (0, 4));
+    assert!(chain.eth_calls().is_empty());
 }

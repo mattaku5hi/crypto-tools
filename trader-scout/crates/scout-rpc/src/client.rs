@@ -222,6 +222,12 @@ impl RpcClient {
         self.budget.used.load(Ordering::Acquire)
     }
 
+    /// The request budget limit (`None` = unlimited).
+    #[must_use]
+    pub fn request_limit(&self) -> Option<u64> {
+        self.budget.limit
+    }
+
     fn budget_error(&self) -> ProviderError {
         ProviderError::Other(Box::new(RequestBudgetExhausted {
             limit: self.budget.limit.unwrap_or(0),

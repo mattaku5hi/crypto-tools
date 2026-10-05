@@ -92,3 +92,18 @@ Status: Accepted (2026-10-04). Extends this ADR to Robinhood, Base and BSC walle
 Evidence: `crates/scout-engine/tests/evm_open_valuation.rs` (each venue path, revert, unknown PoolKey, budget,
 USD, unrealized states, ranking, replays of one real Robinhood v4 wallet card with the fixture's real `Initialize`
 log and one real Base USDC wallet card with mocked quoter answers).
+
+**Amendment 1 note (2026-10-05): v4 PoolKey source and valuation cost plan.** The first live run (Robinhood wallet
+`0x41de...`, Alchemy free tier, 178 open positions) spent 2,925 `eth_getLogs` on `Initialize` lookups (10-block range
+cap) and left every position `request_budget_exhausted`. Changes: (a) the v4 PoolKey is read with one `eth_call`
+`poolKeys(bytes25 poolId[0..25])` on the official PositionManager pinned per chain (Robinhood
+`0x58daec31...4fa7`, Base `0x7c5f5a4b...9bdc`, BSC `0x7a4a5c91...f95b`; each `poolManager()` returned the pinned
+PoolManager) and is accepted only when `keccak256(abi.encode(key)) == poolId` over all 32 bytes and
+`currency0 != currency1` (a zeroed key = never registered); (b) fallback to the `Initialize` log goes through the logs
+endpoint under a hard cap of 64 `eth_getLogs` requests per run, failed attempts included, and never spends more than
+the budget left over by the plan; (c) before quoting, the valuation plans its requests (pool identity, PositionManager
+lookups, 2 quote calls per position with the impact probe; cache-aware, counting what earlier admitted positions
+fetch) and admits positions in order while they fit the remaining `--max-requests`; the rest are
+`request_budget_exhausted` up front (no partial burn, run incomplete), positions that cost nothing (fully cached)
+are always admitted. stderr: `valuation cost: positions=N planned_calls=M budget_left=K`; the diagnostics line
+`requests_made=...` carries `(incl. valuation planned_calls=M)`. Quotes remain venue `eth_call`s pinned to one block.

@@ -121,9 +121,15 @@ pub struct EvmOpenValuationMetaDto {
     pub state_block: Option<u64>,
     /// `eth_call`s made (cache hits excluded); counted in `scan.requests_made`.
     pub eth_calls: u64,
-    /// `eth_getLogs` requests of v4 `Initialize` lookups.
+    /// `eth_getLogs` requests of the v4 `Initialize` fallback (hard-capped per run).
     pub log_calls: u64,
     pub cache_hits: u64,
+    /// Cost plan: positions admitted, their planned calls, the budget left
+    /// when planning (`null` = unlimited) and positions refused up front.
+    pub planned_positions: u64,
+    pub planned_calls: u64,
+    pub budget_left: Option<u64>,
+    pub refused_positions: u64,
     pub caveat_label: &'static str,
     pub totals: EvmOpenValuationTotalsDto,
 }
@@ -137,6 +143,10 @@ pub fn evm_meta_dto(run: &EvmOpenValuationRun, native: &str) -> EvmOpenValuation
         eth_calls: run.eth_calls,
         log_calls: run.log_calls,
         cache_hits: run.cache_hits,
+        planned_positions: run.planned_positions,
+        planned_calls: run.planned_calls,
+        budget_left: run.budget_left,
+        refused_positions: run.refused_positions,
         caveat_label: LABEL_TRANSFER_TAX_NOT_MODELLED,
         totals: evm_totals_dto(&run.totals, native),
     }

@@ -76,6 +76,60 @@ pub fn pinned_quoter(chain_id: u64, family: QuoterFamily) -> Option<Address> {
     }
 }
 
+/// The pinned official Uniswap v4 `PositionManager` of `chain_id`
+/// (developers.uniswap.org v4 deployments; each address's live
+/// `poolManager()` getter returns the pinned PoolManager, orchestrator check
+/// 2026-10-05). It exposes `poolKeys(bytes25)`, the PoolKey of every pool a
+/// position was minted on; `None` = unpinned.
+#[must_use]
+pub fn pinned_v4_position_manager(chain_id: u64) -> Option<Address> {
+    match chain_id {
+        4663 => Some(address!("58daec3116aae6d93017baaea7749052e8a04fa7")),
+        8453 => Some(address!("7c5f5a4bbd8fd63184577525326123b519429bdc")),
+        56 => Some(address!("7a4a5c919ae2541aed11041a1aeee68f1287f95b")),
+        _ => None,
+    }
+}
+
+/// `poolKeys(bytes25)` of the v4 `PositionManager`: the argument is the
+/// pool id truncated to its FIRST 25 bytes, left-aligned in one word.
+#[must_use]
+pub fn v4_pool_keys_calldata(pool_id: B256) -> String {
+    let mut w = [0u8; 32];
+    for (d, b) in w.iter_mut().zip(pool_id.as_slice().iter().take(25)) {
+        *d = *b;
+    }
+    hex_call(selector("poolKeys(bytes25)"), &[w])
+}
+
+fn word_address_or_zero(b: &[u8]) -> Option<Address> {
+    let (head, tail) = b.split_at_checked(12)?;
+    head.iter()
+        .all(|x| *x == 0)
+        .then(|| Address::from_slice(tail))
+}
+
+/// Decode a `poolKeys(bytes25)` answer (5 words) and ACCEPT it only when
+/// `keccak256(abi.encode(key)) == pool_id` over the full 32 bytes and the
+/// two currencies differ (a zeroed key = pool never registered).
+#[must_use]
+pub fn decode_v4_pool_keys(b: &[u8], pool_id: B256) -> Option<V4PoolKey> {
+    let w = |i: usize| -> Option<&[u8]> {
+        b.get(i.checked_mul(32)?..i.checked_add(1)?.checked_mul(32)?)
+    };
+    let fee = u32::try_from(U256::from_be_slice(w(2)?)).ok()?;
+    let ts = I256::from_raw(U256::from_be_slice(w(3)?));
+    let tick_spacing = i32::try_from(ts).ok()?;
+    let key = V4PoolKey {
+        currency0: word_address_or_zero(w(0)?)?,
+        currency1: word_address_or_zero(w(1)?)?,
+        fee,
+        tick_spacing,
+        hooks: word_address_or_zero(w(4)?)?,
+    };
+    (key.currency0 != key.currency1 && key.pool_id() == pool_id).then_some(key)
+}
+
 /// The pinned Slipstream quoter of a pool's `factory()` on `chain_id`
 /// (github.com/aerodrome-finance/slipstream README; each quoter's live
 /// `factory()` getter equals the key on 2026-10-04). The calldata shape
@@ -356,6 +410,39 @@ mod tests {
             [0xc6, 0xa5, 0x02, 0x6a]
         );
         assert_eq!(selector("getReserves()"), [0x09, 0x02, 0xf1, 0xac]);
+    }
+
+    #[test]
+    fn v4_pool_keys_calldata_truncates_to_25_bytes_and_decode_checks_the_hash() {
+        let key = V4PoolKey {
+            currency0: Address::ZERO,
+            currency1: Address::repeat_byte(0x11),
+            fee: 3000,
+            tick_spacing: -60,
+            hooks: Address::repeat_byte(0x22),
+        };
+        let id = key.pool_id();
+        let cd = v4_pool_keys_calldata(id);
+        let raw = alloy_primitives::hex::decode(cd.trim_start_matches("0x")).unwrap_or_default();
+        assert_eq!(raw.len(), 36);
+        assert_eq!(raw.get(..4), Some(&selector("poolKeys(bytes25)")[..]));
+        assert_eq!(raw.get(4..29), id.as_slice().get(..25));
+        assert!(raw.get(29..).is_some_and(|t| t.iter().all(|b| *b == 0)));
+        let mut ans = Vec::new();
+        for w in [
+            key.words()[0],
+            key.words()[1],
+            key.words()[2],
+            key.words()[3],
+            key.words()[4],
+        ] {
+            ans.extend_from_slice(&w);
+        }
+        assert_eq!(decode_v4_pool_keys(&ans, id), Some(key));
+        // Wrong id (forged / other pool) and zeroed key are refused.
+        assert_eq!(decode_v4_pool_keys(&ans, B256::repeat_byte(1)), None);
+        assert_eq!(decode_v4_pool_keys(&[0u8; 160], id), None);
+        assert_eq!(decode_v4_pool_keys(&ans[..128], id), None);
     }
 
     #[test]

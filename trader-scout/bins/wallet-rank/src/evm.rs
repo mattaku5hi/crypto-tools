@@ -81,6 +81,9 @@ pub(crate) fn run_evm(
         "{}",
         scout_app::open_valuation_line_evm("wallet-rank", valuation.as_ref())
     );
+    if let Some(l) = scout_app::valuation_cost_line_evm(valuation.as_ref()) {
+        eprintln!("{l}");
+    }
     let secrets = run.secrets.clone();
     let scrub = move |t: &str| {
         let mut o = t.to_string();
@@ -132,7 +135,13 @@ pub(crate) fn run_evm(
         &stats,
         &report,
         window,
-        requests_made,
+        (
+            requests_made,
+            valuation
+                .as_ref()
+                .filter(|v| v.ran && v.state_block.is_some())
+                .map(|v| v.planned_calls),
+        ),
         elapsed_ms,
         &scrub,
         args,
@@ -225,7 +234,7 @@ fn print_diagnostics(
     stats: &scout_engine::SolanaWalletStatsReport,
     report: &scout_engine::WalletRankReport,
     window: &AnalysisWindow,
-    requests_made: u64,
+    (requests_made, valuation_planned_calls): (u64, Option<u64>),
     elapsed_ms: u64,
     scrub: &dyn Fn(&str) -> String,
     args: &Args,
@@ -261,7 +270,7 @@ fn print_diagnostics(
         );
     }
     eprintln!(
-        "  window: {} concurrency={} requests_made={requests_made} max_requests={} elapsed_ms={elapsed_ms} (stderr only)",
+        "  window: {} concurrency={} requests_made={requests_made}{} max_requests={} elapsed_ms={elapsed_ms} (stderr only)",
         match window.bounds() {
             Some((s, u)) => format!(
                 "[{}, {}) source={}",
@@ -272,6 +281,9 @@ fn print_diagnostics(
             None => "none".to_string(),
         },
         stats.concurrency,
+        valuation_planned_calls.map_or_else(String::new, |n| format!(
+            " (incl. valuation planned_calls={n})"
+        )),
         limit_text(args.max_requests)
     );
     match stats.stop {

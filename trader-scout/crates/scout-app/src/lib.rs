@@ -45,7 +45,7 @@ pub use output::{
     VenueDiagDto, VenueEventsDto, Window, WriteOutcome, evidence_dtos, evidence_line, evm_meta_dto,
     evm_spelling, evm_totals_dto, ledger_evm_totals_dto, ledger_totals_dto, open_positions_dto,
     open_valuation_line, open_valuation_line_evm, open_valuation_meta, open_valuation_meta_evm,
-    pricing_line, pricing_meta, totals_dto, write_lines_to_stdout,
+    pricing_line, pricing_meta, totals_dto, valuation_cost_line_evm, write_lines_to_stdout,
 };
 pub use price_source::{
     COINBASE_ENDPOINT_ENV, build_coinbase_source, build_coinbase_source_evm,
