@@ -6,7 +6,7 @@
 //! `wallet-stats` prints), then `rank_solana_wallets` applies the profile
 //! gates and the documented sort. Every input wallet ends up in the ranked
 //! list or in the exclusions (with all reasons); nothing is dropped.
-//! Without a key, or for EVM/mixed input, the run exits 4.
+//! Without a key the Solana chain fails (exit 4 if it is the only chain). Mixed/multi-chain input is partitioned per chain (see multi.rs).
 //!
 //! Exit codes (CLI.md §8): 0 the whole wallet universe was scanned within
 //! the declared scope (an empty or short shortlist is a normal outcome);
@@ -37,8 +37,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use scout_api::ProviderError;
-use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
-use scout_core::{AddressBytes, ChainFamily, SolanaPubkey, WalletKey};
+use scout_app::{ChainRun, InputFormat, WriteOutcome, write_lines_to_stdout};
+use scout_core::{AddressBytes, ChainFamily, ChainKey, SolanaPubkey, WalletKey};
 use scout_engine::{
     AnalysisWindow, DEFAULT_TOP, LedgerDecoders, QuoteUnit, RankBy, RankPolicy, RankProfile,
     ScanStop, SolanaWalletStatsReport, WalletRankReport, pump_amm_decoder,
@@ -53,6 +53,7 @@ use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
 use tokio_util::sync::CancellationToken;
 
 mod evm;
+mod multi;
 mod output;
 
 use output::{RunMetaInput, SummaryInput};
@@ -77,7 +78,7 @@ const DEFAULT_TOKEN_ACCOUNTS: &str = "balance-changed";
 
 /// Rank input wallets by realized trading performance (Solana pump.fun
 /// bonding-curve + PumpSwap AMM slice, SOL-quoted ledger).
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(name = "wallet-rank", version)]
 struct Args {
     /// Input file path, or `-` for stdin.
@@ -117,8 +118,26 @@ struct Args {
     /// leg valued in USD with Coinbase Exchange 1m candles (USDC at par,
     /// labelled), so SOL- and USDC-quoted wallets compare in one column;
     /// the run then also fetches prices (see --max-price-requests).
-    #[arg(long, default_value = "sol", value_parser = ["sol", "eth", "usdc", "usdt", "usdg", "usd"])]
-    quote: String,
+    ///
+    /// Multi-chain input (several chains in one run): `usd` is the default
+    /// and the only mode that ranks across chains (USD lower bounds,
+    /// ADR-016/018, each row shows its chain). A native/stable unit
+    /// (`sol`, `eth`, `bnb`, `usdc`, `usdt`, `usdg`) ranks each chain where
+    /// it exists separately (`--top` per chain) and excludes the wallets of
+    /// the other chains with `quote_unit_not_on_chain` (not scanned).
+    #[arg(long, value_parser = ["sol", "eth", "bnb", "usdc", "usdt", "usdg", "usd"])]
+    quote: Option<String>,
+
+    /// Multi-chain input: chains run at once (1..=4, default 2), each with
+    /// its own sources and its own `--max-requests` budget. Single-chain
+    /// input ignores it. Stderr diagnostics of concurrent chains may
+    /// interleave (use 1 for an ordered log).
+    #[arg(
+        long,
+        default_value_t = scout_app::DEFAULT_CHAIN_CONCURRENCY,
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(scout_app::MAX_CHAIN_CONCURRENCY))
+    )]
+    chain_concurrency: u32,
 
     /// Total HTTP request budget for PRICE candles under `--quote usd`
     /// (retries included), N >= 1. Counted apart from --max-requests as
@@ -267,7 +286,7 @@ struct Args {
     period: Option<String>,
 }
 
-fn policy_from(args: &Args) -> Result<RankPolicy, String> {
+fn policy_from(args: &Args, quote: &str) -> Result<RankPolicy, String> {
     let rank_by = match args.rank_by.as_str() {
         "realized-net-pnl" => RankBy::RealizedNetPnl,
         "realized-cost-roi" => RankBy::RealizedCostRoi,
@@ -307,12 +326,12 @@ fn policy_from(args: &Args) -> Result<RankPolicy, String> {
     p.require_valued_open = args.require_valued_open;
     p.max_unknown_episode_share_percent = args.max_unknown_episode_share;
     p.exclude_unbounded = args.exclude_unbounded;
-    p.quote = match args.quote.as_str() {
+    p.quote = match quote {
         "usdc" => QuoteUnit::UsdcUnits,
         "usdt" => QuoteUnit::UsdtUnits,
         "usdg" => QuoteUnit::UsdgUnits,
         "usd" => QuoteUnit::ReportCurrency,
-        "eth" => QuoteUnit::Wei,
+        "eth" | "bnb" => QuoteUnit::Wei,
         _ => QuoteUnit::Lamports,
     };
     Ok(p)
@@ -370,7 +389,9 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let policy = match policy_from(&args) {
+    // Validates the flags (exit 2) before any input is read; the unit is
+    // chosen again below once the number of chains is known.
+    let policy = match policy_from(&args, args.quote.as_deref().unwrap_or("sol")) {
         Ok(p) => p,
         Err(message) => {
             eprintln!("wallet-rank: {message}");
@@ -426,42 +447,90 @@ fn main() -> ExitCode {
         );
     }
 
-    let family = match scout_app::run_family(wallets.iter().map(|w| &w.chain), "wallet-rank") {
-        Ok(f) => f,
-        Err(message) => {
-            eprintln!("{message}");
-            return ExitCode::from(2);
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("wallet-rank: could not start async runtime: {err}");
+            return ExitCode::from(4);
         }
     };
-    if let scout_app::RunFamily::Evm(chain) = &family {
-        let policy = match evm_policy(policy, chain) {
-            Ok(p) => p,
-            Err(message) => {
-                eprintln!("wallet-rank: {message}");
-                return ExitCode::from(2);
-            }
-        };
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(err) => {
-                eprintln!("wallet-rank: could not start async runtime: {err}");
-                return ExitCode::from(4);
-            }
-        };
-        return evm::run_evm(
+    let groups = scout_app::partition_by_chain(&wallets, |w| &w.chain);
+    if groups.len() > 1 {
+        return multi::run_multi(
             &rt,
             &wallets,
-            chain,
+            &groups,
             &args,
-            &policy,
             &window,
             parsed.duplicate_count,
             upstream_complete,
         );
     }
-    if matches!(policy.quote, QuoteUnit::Wei | QuoteUnit::UsdgUnits) {
+    // One chain: the classic run, quote default `sol` (native on any chain).
+    let chain = groups
+        .first()
+        .map_or_else(scout_engine::solana_mainnet_chain, |g| g.chain.clone());
+    let policy = if chain.family == ChainFamily::Evm {
+        match evm_policy(policy, &chain) {
+            Ok(p) => p,
+            Err(message) => {
+                eprintln!("wallet-rank: {message}");
+                return ExitCode::from(2);
+            }
+        }
+    } else if matches!(policy.quote, QuoteUnit::Wei | QuoteUnit::UsdgUnits) {
         eprintln!("wallet-rank: --quote eth/usdg is only valid for EVM input");
         return ExitCode::from(2);
+    } else {
+        policy
+    };
+    let r = run_chain(
+        &rt,
+        &wallets,
+        &chain,
+        &args,
+        &policy,
+        &window,
+        parsed.duplicate_count,
+        upstream_complete,
+    );
+    if r.run.failure.is_some() {
+        return ExitCode::from(r.run.status);
+    }
+    let outcome = write_lines_to_stdout(r.run.lines);
+    if r.run.cancelled {
+        return ExitCode::from(130);
+    }
+    if matches!(outcome, WriteOutcome::PipeClosed) {
+        return ExitCode::from(141);
+    }
+    ExitCode::from(r.run.status)
+}
+
+/// One chain's run (its own sources, settings and budget) under `policy`
+/// (already translated to this chain's units).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_chain(
+    rt: &tokio::runtime::Runtime,
+    wallets: &[WalletKey],
+    chain: &ChainKey,
+    args: &Args,
+    policy: &RankPolicy,
+    window: &AnalysisWindow,
+    duplicates: usize,
+    upstream_complete: bool,
+) -> RankRun {
+    if chain.family == ChainFamily::Evm {
+        return evm::run_evm(
+            rt,
+            wallets,
+            chain,
+            args,
+            policy,
+            window,
+            duplicates,
+            upstream_complete,
+        );
     }
     let solana: Vec<SolanaPubkey> = wallets
         .iter()
@@ -470,7 +539,6 @@ fn main() -> ExitCode {
             _ => None,
         })
         .collect();
-
     let Some(api_key) = std::env::var(HELIUS_KEY_ENV)
         .ok()
         .filter(|k| !k.trim().is_empty())
@@ -481,25 +549,21 @@ fn main() -> ExitCode {
             wallets.len(),
             args.top
         );
-        return ExitCode::from(4);
-    };
-
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(err) => {
-            eprintln!("wallet-rank: could not start async runtime: {err}");
-            return ExitCode::from(4);
-        }
+        return ChainRun::failed(
+            4,
+            format!("no history provider configured: configuration required, set {HELIUS_KEY_ENV}"),
+        )
+        .into();
     };
     run_solana(
-        &rt,
-        &wallets,
+        rt,
+        wallets,
         &solana,
-        &args,
-        &policy,
-        &window,
+        args,
+        policy,
+        window,
         &api_key,
-        parsed.duplicate_count,
+        duplicates,
         upstream_complete,
     )
 }
@@ -652,13 +716,35 @@ fn build_provider(
         .with_max_total_requests(max_requests))
 }
 
-fn provider_error_exit(err: &ProviderError, secret: &str) -> ExitCode {
+fn provider_error_exit(err: &ProviderError, secret: &str) -> RankRun {
     let text = redact(&err.to_string(), secret);
     match err {
         ProviderError::ConfigurationRequired { .. } => eprintln!("wallet-rank: {text}"),
         _ => eprintln!("wallet-rank: provider error: {text}"),
     }
-    ExitCode::from(4)
+    ChainRun::failed(4, text).into()
+}
+
+/// One chain's run: the rendered output plus what a cross-chain (USD)
+/// ranking needs to re-rank the scanned cards.
+#[derive(Debug, Default)]
+pub(crate) struct RankRun {
+    pub run: ChainRun,
+    /// The scanned cards (`None` when the run produced nothing).
+    pub stats: Option<SolanaWalletStatsReport>,
+    pub prices_made: u64,
+    pub pricing_line: Option<String>,
+    /// Secret substrings of this chain's endpoints (redaction of re-rendered text).
+    pub secrets: Vec<String>,
+}
+
+impl From<ChainRun> for RankRun {
+    fn from(run: ChainRun) -> Self {
+        Self {
+            run,
+            ..Self::default()
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -672,10 +758,10 @@ fn run_solana(
     api_key: &str,
     duplicates: usize,
     upstream_complete: bool,
-) -> ExitCode {
+) -> RankRun {
     let Some(max_pages) = NonZeroU32::new(args.max_pages_per_wallet) else {
         eprintln!("wallet-rank: --max-pages-per-wallet must be at least 1");
-        return ExitCode::from(2);
+        return ChainRun::failed(2, "--max-pages-per-wallet must be at least 1".to_string()).into();
     };
     let options = provider_options(args, window);
     let started = std::time::Instant::now();
@@ -686,11 +772,9 @@ fn run_solana(
     let decoder = match pump_bonding_curve_decoder() {
         Ok(d) => d,
         Err(err) => {
-            eprintln!(
-                "wallet-rank: decoder unavailable: {}",
-                redact(&err.to_string(), api_key)
-            );
-            return ExitCode::from(4);
+            let text = format!("decoder unavailable: {}", redact(&err.to_string(), api_key));
+            eprintln!("wallet-rank: {text}");
+            return ChainRun::failed(4, text).into();
         }
     };
     let amm = pump_amm_decoder();
@@ -812,7 +896,7 @@ fn run_solana(
             Ok(l) => l,
             Err(message) => {
                 eprintln!("wallet-rank: could not render output: {message}");
-                return ExitCode::from(4);
+                return ChainRun::failed(4, format!("could not render output: {message}")).into();
             }
         }
     } else {
@@ -826,28 +910,39 @@ fn run_solana(
         .map(|l| redact_table_line(&l, api_key))
         .collect()
     };
-    let outcome = write_lines_to_stdout(lines);
-
-    if stats.cancelled {
-        return ExitCode::from(130);
-    }
-    if matches!(outcome, WriteOutcome::PipeClosed) {
-        return ExitCode::from(141);
-    }
-    match stats.stop {
-        Some(ScanStop::BudgetExhausted { .. }) => return ExitCode::from(3),
+    let status = match stats.stop {
+        Some(ScanStop::BudgetExhausted { .. }) => 3,
         Some(ScanStop::RateLimited { .. }) => {
-            return ExitCode::from(if stats.any_data() { 3 } else { 4 });
+            if stats.any_data() {
+                3
+            } else {
+                4
+            }
         }
-        None => {}
+        None if stats.all_failed() => 4,
+        None if incomplete => 3,
+        None => 0,
+    };
+    let mut reasons: Vec<String> = stats
+        .incomplete_reasons()
+        .iter()
+        .map(|r| redact(r, api_key))
+        .collect();
+    reasons.extend(price_reasons);
+    RankRun {
+        run: ChainRun {
+            lines,
+            status,
+            cancelled: stats.cancelled,
+            requests_made,
+            failure: None,
+            reasons,
+        },
+        prices_made: pricing.requests_made,
+        pricing_line: pricing.policy.is_some().then_some(pricing_line),
+        secrets: vec![api_key.to_string()],
+        stats: Some(stats),
     }
-    if stats.all_failed() {
-        return ExitCode::from(4);
-    }
-    if incomplete {
-        return ExitCode::from(3);
-    }
-    ExitCode::SUCCESS
 }
 
 /// Scope, policy and coverage on stderr (stdout stays the result format).

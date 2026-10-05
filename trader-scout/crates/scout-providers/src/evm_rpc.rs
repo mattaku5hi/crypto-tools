@@ -452,6 +452,16 @@ pub fn capped_span_from_error(text: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// Result of [`EvmRpcClient::eth_call_detailed`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EthCallOutcome {
+    Returned(Vec<u8>),
+    /// The call reverted; `data` = the node's revert data when it sent any.
+    Reverted {
+        data: Option<Vec<u8>>,
+    },
+}
+
 fn is_empty_envelope(err: &ProviderError) -> bool {
     matches!(err, ProviderError::Other(e) if e.to_string().contains("neither `result` nor `error`"))
 }
@@ -785,6 +795,20 @@ impl EvmRpcClient {
         data: &str,
         block: &str,
     ) -> Result<Option<Vec<u8>>, EvmSourceError> {
+        Ok(match self.eth_call_detailed(to, data, block).await? {
+            EthCallOutcome::Returned(b) => Some(b),
+            EthCallOutcome::Reverted { .. } => None,
+        })
+    }
+
+    /// Like [`Self::eth_call`], keeping the revert data (`error.data`) when
+    /// the node returned it (`None` = reverted without data).
+    pub async fn eth_call_detailed(
+        &self,
+        to: Address,
+        data: &str,
+        block: &str,
+    ) -> Result<EthCallOutcome, EvmSourceError> {
         let v = match self
             .call_json(
                 "eth_call",
@@ -797,19 +821,31 @@ impl EvmRpcClient {
                 if e.downcast_ref::<RequestBudgetExhausted>().is_none()
                     && e.to_string().to_ascii_lowercase().contains("revert") =>
             {
+                let text = e.to_string();
+                let revert_data = text
+                    .rsplit_once(" (data 0x")
+                    .and_then(|(_, t)| t.strip_suffix(')'))
+                    .and_then(|h| alloy_primitives::hex::decode(h).ok());
                 // Recorded as a marker so a replay answers "reverted" too.
                 if let Some(r) = &self.recorder {
+                    let mut marker = json!({"reverted": true});
+                    if let (Some(d), Some(m)) = (&revert_data, marker.as_object_mut()) {
+                        m.insert(
+                            "data".to_string(),
+                            json!(format!("0x{}", alloy_primitives::hex::encode(d))),
+                        );
+                    }
                     r.record(
                         "eth_call",
                         &json!([{"to": format!("{to:#x}"), "data": data}, block]),
-                        &json!({"reverted": true}),
+                        &marker,
                     );
                 }
-                return Ok(None);
+                return Ok(EthCallOutcome::Reverted { data: revert_data });
             }
             Err(e) => return Err(e),
         };
-        crate::evm_wire::bytes(&v, "eth_call result").map(|b| Some(b.to_vec()))
+        crate::evm_wire::bytes(&v, "eth_call result").map(|b| EthCallOutcome::Returned(b.to_vec()))
     }
 
     /// What `emitter` reports about itself (`factory()`, `token0()`,

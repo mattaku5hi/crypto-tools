@@ -9,7 +9,7 @@
 //! and ADR-013 route-swap trades; `--side buy|sell|any`, default `any`;
 //! optional `--since/--until/--period` window scanned newest-first; the
 //! scope/lower-bound caveat is printed on stderr). Without the key, or
-//! for EVM/mixed input, `UnconfiguredProvider` is used and the run
+//! for an unconfigured chain, `UnconfiguredProvider` is used and the run
 //! exits 4 (`ConfigurationRequired`) -- the honest outcome, not a stub.
 //!
 //! Exit codes (ADR-005): 0 complete within declared scope; 2 argument
@@ -61,8 +61,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use scout_api::ProviderError;
-use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
-use scout_core::{AddressBytes, AssetKey, ChainFamily};
+use scout_app::{ChainRun, InputFormat, WriteOutcome, write_lines_to_stdout};
+use scout_core::{AssetKey, ChainFamily, ChainKey};
 use scout_engine::{
     AnalysisWindow, IntersectOptions, PumpTradeVariant, ScanStop, SideFilter,
     SolanaBuyerIntersectReport, SolanaProtocolScope, TokenScanStatus, TradeSide, Venue,
@@ -76,6 +76,7 @@ use scout_rpc::{DEFAULT_MAX_RETRY_AFTER, RequestBudgetExhausted};
 use tokio_util::sync::CancellationToken;
 
 mod evm;
+mod multi;
 mod output;
 
 use output::RunBudget;
@@ -98,7 +99,7 @@ const DEFAULT_SERVER_WINDOW: bool = true;
 
 /// Find wallets that traded (bought and/or sold, `--side`) at least K
 /// distinct input tokens.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(name = "buyer-intersect", version)]
 struct Args {
     /// Input file path, or `-` for stdin.
@@ -185,6 +186,19 @@ struct Args {
     /// and reported). When exhausted the run is partial and exits 3.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
+
+    /// Multi-chain input (tokens of several chains): chains run at once
+    /// (1..=4, default 2), each with its own sources and its own
+    /// `--max-requests` budget. Tokens are chain-scoped: K counts distinct
+    /// tokens within ONE chain, a wallet address on two chains is two wallets
+    /// and hits never merge across chains. A chain with fewer tokens than
+    /// `--min-token-hits` cannot match and is skipped (not scanned).
+    #[arg(
+        long,
+        default_value_t = scout_app::DEFAULT_CHAIN_CONCURRENCY,
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(scout_app::MAX_CHAIN_CONCURRENCY))
+    )]
+    chain_concurrency: u32,
 
     #[command(flatten)]
     net: scout_app::EvmNetOptions,
@@ -309,46 +323,48 @@ fn main() -> ExitCode {
         }
     };
 
-    let token_chains: Vec<&scout_core::ChainKey> = input_tokens
-        .iter()
-        .map(|t| match t {
-            AssetKey::Token(c, _) | AssetKey::Native(c) => c,
-        })
-        .collect();
-    let family = match scout_app::run_family(token_chains, "buyer-intersect") {
-        Ok(f) => f,
-        Err(message) => {
-            eprintln!("{message}");
-            return ExitCode::from(2);
-        }
-    };
-    if let scout_app::RunFamily::Evm(chain) = &family {
-        return evm::run_evm(&rt, &input_tokens, chain, &args, &window);
-    }
-    let all_solana = input_tokens.iter().all(|t| {
-        matches!(
-            t,
-            AssetKey::Token(chain, AddressBytes::Solana(_)) if chain.family == ChainFamily::Solana
-        )
+    let groups = scout_app::partition_by_chain(&input_tokens, |t| match t {
+        AssetKey::Token(c, _) | AssetKey::Native(c) => c,
     });
-
-    if all_solana {
-        let api_key = std::env::var(HELIUS_KEY_ENV)
-            .ok()
-            .filter(|k| !k.trim().is_empty());
-        if let Some(api_key) = api_key {
-            return run_solana(&rt, &input_tokens, &args, &window, &api_key);
-        }
-        let provider = UnconfiguredProvider::new("solana_history", HELIUS_KEY_ENV);
-        return run_legacy(&rt, &provider, &input_tokens, &args);
+    if groups.len() > 1 {
+        return multi::run_multi(&rt, &input_tokens, &groups, &args, &window);
     }
+    let chain = groups
+        .first()
+        .map_or_else(scout_engine::solana_mainnet_chain, |g| g.chain.clone());
+    let run = run_chain(&rt, &input_tokens, &chain, &args, &window);
+    if run.failure.is_some() {
+        return ExitCode::from(run.status);
+    }
+    let outcome = write_lines_to_stdout(run.lines);
+    if run.cancelled {
+        return ExitCode::from(130);
+    }
+    if matches!(outcome, WriteOutcome::PipeClosed) {
+        return ExitCode::from(141);
+    }
+    ExitCode::from(run.status)
+}
 
-    // Per ADR-006, no live-backed EVM HistoryProvider exists yet.
-    // Wiring UnconfiguredProvider here means a real run honestly
-    // reports ConfigurationRequired (exit 4) rather than a stub "not
-    // implemented" message.
-    let provider = UnconfiguredProvider::new("evm_history", "SCOUT_EVM_HISTORY_API_KEY");
-    run_legacy(&rt, &provider, &input_tokens, &args)
+/// One chain's run (its own sources, settings and budget).
+pub(crate) fn run_chain(
+    rt: &tokio::runtime::Runtime,
+    tokens: &[AssetKey],
+    chain: &ChainKey,
+    args: &Args,
+    window: &AnalysisWindow,
+) -> ChainRun {
+    if chain.family == ChainFamily::Evm {
+        return evm::run_evm(rt, tokens, chain, args, window);
+    }
+    let api_key = std::env::var(HELIUS_KEY_ENV)
+        .ok()
+        .filter(|k| !k.trim().is_empty());
+    if let Some(api_key) = api_key {
+        return run_solana(rt, tokens, args, window, &api_key);
+    }
+    let provider = UnconfiguredProvider::new("solana_history", HELIUS_KEY_ENV);
+    run_legacy(rt, &provider, tokens, args)
 }
 
 fn run_legacy(
@@ -356,7 +372,7 @@ fn run_legacy(
     provider: &UnconfiguredProvider,
     input_tokens: &[AssetKey],
     args: &Args,
-) -> ExitCode {
+) -> ChainRun {
     let flows = std::collections::BTreeMap::new();
 
     let result = rt.block_on(run_buyer_intersect(
@@ -381,7 +397,11 @@ fn run_legacy(
             "buyer-intersect: provider reported an unconsumed pagination cursor; \
              results may be incomplete (ADR-005 IncompleteCoverage)"
         );
-        return ExitCode::from(3);
+        return ChainRun {
+            status: 3,
+            reasons: vec!["provider reported an unconsumed pagination cursor".to_string()],
+            ..ChainRun::default()
+        };
     }
 
     // ADR-005 exit code 4 (InfrastructureUnavailable) covers
@@ -407,7 +427,7 @@ fn run_legacy(
 /// sanitized (API-key query values, control characters) and, if given,
 /// the literal key is replaced too: transport errors can embed the
 /// request URL.
-fn provider_error_exit(err: &ProviderError, secret: Option<&str>) -> ExitCode {
+fn provider_error_exit(err: &ProviderError, secret: Option<&str>) -> ChainRun {
     let redact_text = |raw: &str| {
         let mut text = sanitize_provider_text(raw);
         if let Some(secret) = secret.filter(|s| !s.is_empty()) {
@@ -423,21 +443,21 @@ fn provider_error_exit(err: &ProviderError, secret: Option<&str>) -> ExitCode {
              no transactions were observed, nothing to report (IncompleteCoverage, exit 3)",
             exhausted.limit, exhausted.limit
         );
-        return ExitCode::from(3);
+        return ChainRun::failed(
+            3,
+            format!(
+                "request budget exhausted after {} requests; no transactions were observed",
+                exhausted.limit
+            ),
+        );
     }
-    match err {
-        ProviderError::ConfigurationRequired { .. } => {
-            eprintln!("buyer-intersect: {}", redact_text(&err.to_string()));
-        }
-        ProviderError::RateLimited { retry_after } => {
-            eprintln!("buyer-intersect: {}", rate_limited_text(*retry_after));
-        }
-        _ => eprintln!(
-            "buyer-intersect: provider error: {}",
-            redact_text(&err.to_string())
-        ),
-    }
-    ExitCode::from(4)
+    let text = match err {
+        ProviderError::ConfigurationRequired { .. } => redact_text(&err.to_string()),
+        ProviderError::RateLimited { retry_after } => rate_limited_text(*retry_after),
+        _ => format!("provider error: {}", redact_text(&err.to_string())),
+    };
+    eprintln!("buyer-intersect: {text}");
+    ChainRun::failed(4, text)
 }
 
 /// Terminal `RateLimited`: the transport refused to wait out a
@@ -515,10 +535,10 @@ fn run_solana(
     args: &Args,
     window: &AnalysisWindow,
     api_key: &str,
-) -> ExitCode {
+) -> ChainRun {
     let Some(max_pages) = NonZeroU32::new(args.max_pages_per_token) else {
         eprintln!("buyer-intersect: --max-pages-per-token must be at least 1");
-        return ExitCode::from(2);
+        return ChainRun::failed(2, "--max-pages-per-token must be at least 1".to_string());
     };
     // ONE provider for the whole run: the request budget and counter are
     // shared by every token's scan.
@@ -527,7 +547,7 @@ fn run_solana(
         Ok(n) => n,
         Err(message) => {
             eprintln!("buyer-intersect: {message}");
-            return ExitCode::from(2);
+            return ChainRun::failed(2, message);
         }
     };
     let started = std::time::Instant::now();
@@ -572,7 +592,7 @@ fn run_solana(
     print_solana_diagnostics(&report, api_key, budget, elapsed_ms);
     let incomplete = report.is_coverage_incomplete();
     let captured_at = scout_app::now_utc_rfc3339();
-    let outcome = match emit_solana_matches(
+    let lines = match emit_solana_matches(
         &report,
         input_tokens,
         &args.format,
@@ -581,22 +601,24 @@ fn run_solana(
         budget,
         api_key,
     ) {
-        Ok(outcome) => outcome,
+        Ok(lines) => lines,
         Err(message) => {
             eprintln!("buyer-intersect: could not render output: {message}");
-            return ExitCode::from(4);
+            return ChainRun::failed(4, format!("could not render output: {message}"));
         }
     };
-    if report.cancelled {
-        return ExitCode::from(130);
+    ChainRun {
+        lines,
+        status: if incomplete { 3 } else { 0 },
+        cancelled: report.cancelled,
+        requests_made,
+        failure: None,
+        reasons: report
+            .incomplete_reasons()
+            .iter()
+            .map(|r| redact(r, api_key))
+            .collect(),
     }
-    if matches!(outcome, WriteOutcome::PipeClosed) {
-        return ExitCode::from(141);
-    }
-    if incomplete {
-        return ExitCode::from(3);
-    }
-    ExitCode::SUCCESS
 }
 
 fn redact(text: &str, secret: &str) -> String {
@@ -856,7 +878,7 @@ fn emit_solana_matches(
     captured_at: &str,
     budget: RunBudget,
     api_key: &str,
-) -> Result<WriteOutcome, String> {
+) -> Result<Vec<String>, String> {
     let lines: Vec<String> = if format == "jsonl" {
         let run_id = run_id_from(captured_at);
         output::solana_jsonl_lines(
@@ -871,7 +893,7 @@ fn emit_solana_matches(
     } else {
         solana_table_lines(report)
     };
-    Ok(write_lines_to_stdout(lines))
+    Ok(lines)
 }
 
 /// `buyer-intersect-20261002T123456Z`: unique per second, sortable.
@@ -931,7 +953,7 @@ fn table_lines(report: &scout_engine::BuyerIntersectReport) -> Vec<String> {
         .collect()
 }
 
-fn emit_report(report: &scout_engine::BuyerIntersectReport, format: &str) -> ExitCode {
+fn emit_report(report: &scout_engine::BuyerIntersectReport, format: &str) -> ChainRun {
     let lines: Vec<String> = if format == "jsonl" {
         let rendered: Result<Vec<String>, String> = report
             .matches
@@ -945,15 +967,15 @@ fn emit_report(report: &scout_engine::BuyerIntersectReport, format: &str) -> Exi
             Ok(lines) => lines,
             Err(message) => {
                 eprintln!("buyer-intersect: could not render output: {message}");
-                return ExitCode::from(4);
+                return ChainRun::failed(4, format!("could not render output: {message}"));
             }
         }
     } else {
         table_lines(report)
     };
-    match write_lines_to_stdout(lines) {
-        WriteOutcome::Complete => ExitCode::SUCCESS,
-        WriteOutcome::PipeClosed => ExitCode::from(141),
+    ChainRun {
+        lines,
+        ..ChainRun::default()
     }
 }
 

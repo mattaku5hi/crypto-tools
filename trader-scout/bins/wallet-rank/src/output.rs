@@ -102,11 +102,26 @@ fn exposure_cell(o: &WalletRankObservation) -> String {
         OpenExposure::None => "none".to_string(),
         OpenExposure::Open { positions, .. } if o.open_exposure.evm_totals().is_some() => {
             let t = o.open_exposure.evm_totals().unwrap_or_default();
-            format!(
-                "{}({}/{positions} priced by on-chain quote)",
-                o.open_exposure.label(),
-                t.valued
-            )
+            let mut extra = String::new();
+            if t.illiquid > 0 {
+                extra.push_str(&format!(", illiquid {}", t.illiquid));
+            }
+            if t.partially_fillable > 0 {
+                extra.push_str(&format!(", partial {}", t.partially_fillable));
+            }
+            if extra.is_empty() {
+                format!(
+                    "{}({}/{positions} priced by on-chain quote)",
+                    o.open_exposure.label(),
+                    t.valued
+                )
+            } else {
+                format!(
+                    "{}(valued {}/{positions}{extra})",
+                    o.open_exposure.label(),
+                    t.valued
+                )
+            }
         }
         OpenExposure::Open { positions, .. } => match o.open_exposure.totals() {
             Some(t) if t.valued > 0 => format!(

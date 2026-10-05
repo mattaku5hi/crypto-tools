@@ -91,6 +91,107 @@ pub fn pinned_v4_position_manager(chain_id: u64) -> Option<Address> {
     }
 }
 
+/// The pinned official Uniswap v4 `StateView` of `chain_id`
+/// (developers.uniswap.org v4 deployments); `getLiquidity(bytes32)` of it is
+/// the pool's in-range liquidity. `None` = unpinned.
+#[must_use]
+pub fn pinned_v4_state_view(chain_id: u64) -> Option<Address> {
+    match chain_id {
+        4663 => Some(address!("f3334192d15450cdd385c8b70e03f9a6bd9e673b")),
+        8453 => Some(address!("a3c0c9b65bad0b08107aa264b0f3db444b867a71")),
+        56 => Some(address!("d13dd3d6e93f276fafc9db9e6bb47c1180aee0c4")),
+        _ => None,
+    }
+}
+
+/// `getLiquidity(bytes32 poolId)` of the v4 `StateView`.
+#[must_use]
+pub fn v4_liquidity_calldata(pool_id: B256) -> String {
+    let mut w = [0u8; 32];
+    w.copy_from_slice(pool_id.as_slice());
+    hex_call(selector("getLiquidity(bytes32)"), &[w])
+}
+
+/// `liquidity()` of a v3-family pool (Uniswap, Pancake, Slipstream).
+#[must_use]
+pub fn v3_liquidity_calldata() -> String {
+    hex_call(selector("liquidity()"), &[])
+}
+
+/// A `uint128` liquidity answer (one word that fits 128 bits).
+#[must_use]
+pub fn decode_liquidity(b: &[u8]) -> Option<u128> {
+    u128::try_from(word_at(b, 0)?).ok()
+}
+
+/// What a quoter's revert data says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoterRevert {
+    /// Reverted without any data (v3-family quoters on an empty range).
+    NoData,
+    /// v4 `NotEnoughLiquidity(bytes32 poolId)`.
+    NotEnoughLiquidity(B256),
+    /// v4 `PoolNotInitialized()`.
+    PoolNotInitialized,
+    /// Anything else: the first 4 bytes (`None` when shorter than 4).
+    Other { selector: Option<[u8; 4]> },
+}
+
+impl QuoterRevert {
+    /// The raw 4-byte selector the revert carried, when it is not one of the
+    /// recognised shapes.
+    #[must_use]
+    pub fn raw_selector(self) -> Option<[u8; 4]> {
+        match self {
+            Self::NotEnoughLiquidity(_) => Some(selector("NotEnoughLiquidity(bytes32)")),
+            Self::PoolNotInitialized => Some(selector("PoolNotInitialized()")),
+            Self::Other { selector } => selector,
+            Self::NoData => None,
+        }
+    }
+}
+
+/// Decode quoter revert data: unwraps the V4Quoter's
+/// `UnexpectedRevertBytes(bytes)` (`0x6190b2b0`, at most 2 levels) and
+/// recognises `NotEnoughLiquidity(bytes32)` and `PoolNotInitialized()`.
+#[must_use]
+pub fn decode_quoter_revert(data: &[u8]) -> QuoterRevert {
+    let mut cur = data;
+    for _ in 0..2 {
+        if cur.get(..4) != Some(&selector("UnexpectedRevertBytes(bytes)")[..]) {
+            break;
+        }
+        let inner = cur.get(4..).and_then(|body| {
+            let off = usize::try_from(word_at(body, 0)?).ok()?;
+            let len_at = off.checked_div(32).filter(|_| off % 32 == 0)?;
+            let len = usize::try_from(word_at(body, len_at)?).ok()?;
+            let start = off.checked_add(32)?;
+            body.get(start..start.checked_add(len)?)
+        });
+        match inner {
+            Some(i) => cur = i,
+            None => break,
+        }
+    }
+    let Some(sel) = cur.get(..4) else {
+        return if cur.is_empty() {
+            QuoterRevert::NoData
+        } else {
+            QuoterRevert::Other { selector: None }
+        };
+    };
+    if sel == selector("NotEnoughLiquidity(bytes32)") {
+        if let Some(id) = cur.get(4..36) {
+            return QuoterRevert::NotEnoughLiquidity(B256::from_slice(id));
+        }
+    } else if sel == selector("PoolNotInitialized()") {
+        return QuoterRevert::PoolNotInitialized;
+    }
+    let mut s = [0u8; 4];
+    s.copy_from_slice(sel);
+    QuoterRevert::Other { selector: Some(s) }
+}
+
 /// `poolKeys(bytes25)` of the v4 `PositionManager`: the argument is the
 /// pool id truncated to its FIRST 25 bytes, left-aligned in one word.
 #[must_use]
@@ -510,6 +611,87 @@ mod tests {
         assert!(pinned_slipstream_quoter(8453, gen2).is_some());
         assert!(pinned_slipstream_quoter(56, gen2).is_none());
         assert!(pinned_slipstream_quoter(8453, Address::repeat_byte(1)).is_none());
+    }
+
+    fn wrap_unexpected(inner: &[u8]) -> Vec<u8> {
+        let mut v = selector("UnexpectedRevertBytes(bytes)").to_vec();
+        v.extend_from_slice(&U256::from(0x20u8).to_be_bytes::<32>());
+        v.extend_from_slice(&U256::from(inner.len()).to_be_bytes::<32>());
+        v.extend_from_slice(inner);
+        while v.len() % 32 != 4 {
+            v.push(0);
+        }
+        v
+    }
+
+    #[test]
+    fn revert_selectors_are_the_documented_ones() {
+        assert_eq!(
+            selector("UnexpectedRevertBytes(bytes)"),
+            [0x61, 0x90, 0xb2, 0xb0]
+        );
+        assert_eq!(
+            selector("NotEnoughLiquidity(bytes32)"),
+            [0x7a, 0x5e, 0xd7, 0x34]
+        );
+        assert_eq!(selector("PoolNotInitialized()"), [0x48, 0x6a, 0xa3, 0x07]);
+    }
+
+    #[test]
+    fn quoter_revert_decoding() {
+        let id = B256::repeat_byte(0x42);
+        let mut nel = selector("NotEnoughLiquidity(bytes32)").to_vec();
+        nel.extend_from_slice(id.as_slice());
+        assert_eq!(
+            decode_quoter_revert(&wrap_unexpected(&nel)),
+            QuoterRevert::NotEnoughLiquidity(id)
+        );
+        assert_eq!(
+            decode_quoter_revert(&nel),
+            QuoterRevert::NotEnoughLiquidity(id)
+        );
+        assert_eq!(
+            decode_quoter_revert(&wrap_unexpected(&selector("PoolNotInitialized()"))),
+            QuoterRevert::PoolNotInitialized
+        );
+        assert_eq!(decode_quoter_revert(&[]), QuoterRevert::NoData);
+        let other = wrap_unexpected(&[0xde, 0xad, 0xbe, 0xef, 1, 2]);
+        assert_eq!(
+            decode_quoter_revert(&other),
+            QuoterRevert::Other {
+                selector: Some([0xde, 0xad, 0xbe, 0xef])
+            }
+        );
+        // Truncated wrapper / short data never panic.
+        assert_eq!(
+            decode_quoter_revert(&other[..40]),
+            QuoterRevert::Other {
+                selector: Some(selector("UnexpectedRevertBytes(bytes)"))
+            }
+        );
+        assert_eq!(
+            decode_quoter_revert(&[1, 2]),
+            QuoterRevert::Other { selector: None }
+        );
+    }
+
+    #[test]
+    fn liquidity_calldata_and_pins() {
+        let id = B256::repeat_byte(7);
+        let cd = v4_liquidity_calldata(id);
+        assert_eq!(cd.len(), 2 + 8 + 64);
+        assert!(cd.starts_with(&format!(
+            "0x{}",
+            alloy_primitives::hex::encode(selector("getLiquidity(bytes32)"))
+        )));
+        assert_eq!(v3_liquidity_calldata(), "0x1a686502");
+        assert_eq!(decode_liquidity(&[0u8; 32]), Some(0));
+        assert_eq!(decode_liquidity(&[0u8; 8]), None);
+        assert_eq!(decode_liquidity(&[0xffu8; 32]), None);
+        assert!(pinned_v4_state_view(4663).is_some());
+        assert!(pinned_v4_state_view(8453).is_some());
+        assert!(pinned_v4_state_view(56).is_some());
+        assert!(pinned_v4_state_view(1).is_none());
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! wallet) drives `run_solana_wallet_stats` (pump.fun bonding-curve SOL
 //! ledger, ADR-010). One card/row per distinct input wallet, first
 //! appearance order; failures and gaps are shown on the card, never
-//! dropped. Without a key, or for EVM/mixed input, the run exits 4.
+//! dropped. Without a key the Solana chain fails (exit 4 if it is the only chain). Mixed/multi-chain input is partitioned per chain (see multi.rs).
 //!
 //! `--max-requests N` (N >= 1) bounds the TOTAL HTTP attempts of the run
 //! (retries included); absent = unlimited but counted. Run-terminal stops
@@ -51,8 +51,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use scout_api::ProviderError;
-use scout_app::{InputFormat, WriteOutcome, write_lines_to_stdout};
-use scout_core::{AddressBytes, ChainFamily, SolanaPubkey, WalletKey};
+use scout_app::{ChainRun, InputFormat, WriteOutcome, write_lines_to_stdout};
+use scout_core::{AddressBytes, ChainFamily, ChainKey, SolanaPubkey, WalletKey};
 use scout_engine::{
     AnalysisWindow, LedgerDecoders, ScanStop, SolanaWalletStatsReport, pump_amm_decoder,
     pump_bonding_curve_decoder, run_solana_wallet_stats_concurrent, sanitize_provider_text,
@@ -65,6 +65,7 @@ use scout_rpc::DEFAULT_MAX_RETRY_AFTER;
 use tokio_util::sync::CancellationToken;
 
 mod evm;
+mod multi;
 mod output;
 
 use output::{Detail, RunMetaInput, SortMode};
@@ -88,7 +89,7 @@ const DEFAULT_SERVER_WINDOW: bool = true;
 const DEFAULT_TOKEN_ACCOUNTS: &str = "balance-changed";
 
 /// Print stats for every input wallet, including N/A and no-activity cases.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(name = "wallet-stats", version)]
 struct Args {
     /// Input file path, or `-` for stdin.
@@ -176,6 +177,18 @@ struct Args {
     /// is `error`, the rest `not_scanned`; exit 3.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     max_requests: Option<u64>,
+
+    /// Multi-chain input (Solana and/or several EVM chains): chains run at
+    /// once (1..=4, default 2). Each chain runs with its own sources and its
+    /// own `--max-requests` budget; cards are merged in input order.
+    /// Single-chain input ignores it. Stderr diagnostics of chains that run
+    /// at once may interleave (use 1 for a sequential, ordered log).
+    #[arg(
+        long,
+        default_value_t = scout_app::DEFAULT_CHAIN_CONCURRENCY,
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(scout_app::MAX_CHAIN_CONCURRENCY))
+    )]
+    chain_concurrency: u32,
 
     #[command(flatten)]
     net: scout_app::EvmNetOptions,
@@ -287,29 +300,70 @@ fn main() -> ExitCode {
         );
     }
 
-    // A run is about ONE chain family (never a silent partial list).
-    let family = match scout_app::run_family(wallets.iter().map(|w| &w.chain), "wallet-stats") {
-        Ok(f) => f,
-        Err(message) => {
-            eprintln!("{message}");
-            return ExitCode::from(2);
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("wallet-stats: could not start async runtime: {err}");
+            return ExitCode::from(4);
         }
     };
-    if let scout_app::RunFamily::Evm(chain) = &family {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(err) => {
-                eprintln!("wallet-stats: could not start async runtime: {err}");
-                return ExitCode::from(4);
-            }
-        };
-        return evm::run_evm(
+    // Partition by chain (first-appearance order). One group = the classic
+    // single-chain run; several = a multi-chain run (CLI.md §5).
+    let groups = scout_app::partition_by_chain(&wallets, |w| &w.chain);
+    if groups.len() <= 1 {
+        let chain = groups
+            .first()
+            .map_or_else(scout_engine::solana_mainnet_chain, |g| g.chain.clone());
+        let run = run_chain(
             &rt,
             &wallets,
-            chain,
+            &chain,
             &args,
             &window,
             parsed.duplicate_count,
+            upstream_complete,
+        );
+        if run.failure.is_some() {
+            return ExitCode::from(run.status);
+        }
+        let outcome = write_lines_to_stdout(run.lines);
+        if run.cancelled {
+            return ExitCode::from(130);
+        }
+        if matches!(outcome, WriteOutcome::PipeClosed) {
+            return ExitCode::from(141);
+        }
+        return ExitCode::from(run.status);
+    }
+    run_multi(
+        &rt,
+        &wallets,
+        &groups,
+        &args,
+        &window,
+        parsed.duplicate_count,
+        upstream_complete,
+    )
+}
+
+/// One chain's run (its own sources, settings and budget).
+fn run_chain(
+    rt: &tokio::runtime::Runtime,
+    wallets: &[WalletKey],
+    chain: &ChainKey,
+    args: &Args,
+    window: &AnalysisWindow,
+    duplicates: usize,
+    upstream_complete: bool,
+) -> ChainRun {
+    if chain.family == ChainFamily::Evm {
+        return evm::run_evm(
+            rt,
+            wallets,
+            chain,
+            args,
+            window,
+            duplicates,
             upstream_complete,
         );
     }
@@ -320,7 +374,6 @@ fn main() -> ExitCode {
             _ => None,
         })
         .collect();
-
     let Some(api_key) = std::env::var(HELIUS_KEY_ENV)
         .ok()
         .filter(|k| !k.trim().is_empty())
@@ -330,26 +383,133 @@ fn main() -> ExitCode {
              configuration required, set {HELIUS_KEY_ENV}",
             wallets.len()
         );
-        return ExitCode::from(4);
-    };
-
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(err) => {
-            eprintln!("wallet-stats: could not start async runtime: {err}");
-            return ExitCode::from(4);
-        }
+        return ChainRun::failed(
+            4,
+            format!("no history provider configured: configuration required, set {HELIUS_KEY_ENV}"),
+        );
     };
     run_solana(
-        &rt,
-        &wallets,
+        rt,
+        wallets,
         &solana,
-        &args,
-        &window,
+        args,
+        window,
         &api_key,
-        parsed.duplicate_count,
+        duplicates,
         upstream_complete,
     )
+}
+
+/// Multi-chain run: chains run (bounded) with their own sources, outputs are
+/// merged in input order, the exit code aggregates the per-chain codes.
+fn run_multi(
+    rt: &tokio::runtime::Runtime,
+    wallets: &[WalletKey],
+    groups: &[scout_app::ChainGroup],
+    args: &Args,
+    window: &AnalysisWindow,
+    duplicates: usize,
+    upstream_complete: bool,
+) -> ExitCode {
+    let mut sub = args.clone();
+    if args.sort != "input" {
+        eprintln!(
+            "wallet-stats: --sort {} is ignored for multi-chain input (cards keep the input \
+             order; native units are not comparable across chains, see wallet-rank --quote usd)",
+            args.sort
+        );
+    }
+    sub.sort = "input".to_string();
+    let names: Vec<&str> = groups.iter().map(|g| g.name).collect();
+    eprintln!(
+        "wallet-stats: multi-chain run over {} chains ({}); --max-requests applies per chain run, \
+         chain concurrency {}",
+        groups.len(),
+        names.join(", "),
+        args.chain_concurrency
+    );
+    let results = scout_app::run_chains_bounded(
+        groups.iter().collect(),
+        usize::try_from(args.chain_concurrency).unwrap_or(1),
+        |g| {
+            let keys: Vec<WalletKey> = g
+                .indices
+                .iter()
+                .filter_map(|i| wallets.get(*i).cloned())
+                .collect();
+            // The upstream-complete rule is applied once, to the merged run.
+            run_chain(rt, &keys, &g.chain, &sub, window, 0, true)
+        },
+    );
+    let runs: Vec<ChainRun> = results
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|m| ChainRun::failed(4, m)))
+        .collect();
+    let statuses: Vec<u8> = runs.iter().map(|r| r.status).collect();
+    let mut overall = scout_app::aggregate_exit(&statuses);
+    if overall == 0 && !upstream_complete {
+        overall = 3;
+    }
+    let cancelled = runs.iter().any(|r| r.cancelled);
+    for (g, r) in groups.iter().zip(&runs) {
+        eprintln!(
+            "wallet-stats: chain {}: exit={} requests_made={} max_requests={}{}",
+            g.name,
+            r.status,
+            r.requests_made,
+            limit_text(args.max_requests),
+            r.failure
+                .as_ref()
+                .map_or_else(String::new, |m| format!(" FAILED: {m}"))
+        );
+    }
+    eprintln!(
+        "wallet-stats: multi-chain exit code {overall} (worst chain rules, exit 4 only if every chain failed)"
+    );
+    let captured_at = scout_app::now_utc_rfc3339();
+    let detail = if args.detail == "full" {
+        Detail::Full
+    } else {
+        Detail::Summary
+    };
+    let lines = if args.format == "jsonl" {
+        let compact: String = captured_at
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect();
+        let run_id = format!("wallet-stats-{compact}");
+        match multi::jsonl(
+            wallets,
+            groups,
+            &runs,
+            &multi::MergeInput {
+                run_id: &run_id,
+                captured_at: &captured_at,
+                detail,
+                chain_concurrency: usize::try_from(args.chain_concurrency).unwrap_or(1),
+                duplicates,
+                upstream_complete,
+                overall_status: overall,
+                cancelled,
+            },
+        ) {
+            Ok(l) => l,
+            Err(message) => {
+                eprintln!("wallet-stats: could not render output: {message}");
+                return ExitCode::from(4);
+            }
+        }
+    } else {
+        multi::table(wallets, groups, &runs, detail, window)
+    };
+    let outcome = write_lines_to_stdout(lines);
+    if cancelled {
+        return ExitCode::from(130);
+    }
+    if matches!(outcome, WriteOutcome::PipeClosed) {
+        return ExitCode::from(141);
+    }
+    ExitCode::from(overall)
 }
 
 /// Outcome of the ADR-018 pricing step (all `None` with `--no-usd`).
@@ -501,13 +661,13 @@ fn build_provider(
         .with_max_total_requests(max_requests))
 }
 
-fn provider_error_exit(err: &ProviderError, secret: &str) -> ExitCode {
+fn provider_error_exit(err: &ProviderError, secret: &str) -> ChainRun {
     let text = redact(&err.to_string(), secret);
     match err {
         ProviderError::ConfigurationRequired { .. } => eprintln!("wallet-stats: {text}"),
         _ => eprintln!("wallet-stats: provider error: {text}"),
     }
-    ExitCode::from(4)
+    ChainRun::failed(4, text)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -520,10 +680,10 @@ fn run_solana(
     api_key: &str,
     duplicates: usize,
     upstream_complete: bool,
-) -> ExitCode {
+) -> ChainRun {
     let Some(max_pages) = NonZeroU32::new(args.max_pages_per_wallet) else {
         eprintln!("wallet-stats: --max-pages-per-wallet must be at least 1");
-        return ExitCode::from(2);
+        return ChainRun::failed(2, "--max-pages-per-wallet must be at least 1".to_string());
     };
     // ONE provider for the whole run: the budget and counter are shared
     // by every wallet's scan.
@@ -536,11 +696,9 @@ fn run_solana(
     let decoder = match pump_bonding_curve_decoder() {
         Ok(d) => d,
         Err(err) => {
-            eprintln!(
-                "wallet-stats: decoder unavailable: {}",
-                redact(&err.to_string(), api_key)
-            );
-            return ExitCode::from(4);
+            let text = format!("decoder unavailable: {}", redact(&err.to_string(), api_key));
+            eprintln!("wallet-stats: {text}");
+            return ChainRun::failed(4, text);
         }
     };
     let amm = pump_amm_decoder();
@@ -655,7 +813,7 @@ fn run_solana(
             Ok(l) => l,
             Err(message) => {
                 eprintln!("wallet-stats: could not render output: {message}");
-                return ExitCode::from(4);
+                return ChainRun::failed(4, format!("could not render output: {message}"));
             }
         }
     } else {
@@ -664,28 +822,33 @@ fn run_solana(
             .map(|l| redact_table_line(&l, api_key))
             .collect()
     };
-    let outcome = write_lines_to_stdout(lines);
-
-    if report.cancelled {
-        return ExitCode::from(130);
-    }
-    if matches!(outcome, WriteOutcome::PipeClosed) {
-        return ExitCode::from(141);
-    }
-    match report.stop {
-        Some(ScanStop::BudgetExhausted { .. }) => return ExitCode::from(3),
+    let status = match report.stop {
+        Some(ScanStop::BudgetExhausted { .. }) => 3,
         Some(ScanStop::RateLimited { .. }) => {
-            return ExitCode::from(if report.any_data() { 3 } else { 4 });
+            if report.any_data() {
+                3
+            } else {
+                4
+            }
         }
-        None => {}
+        None if report.all_failed() => 4,
+        None if incomplete => 3,
+        None => 0,
+    };
+    let mut reasons: Vec<String> = report
+        .incomplete_reasons()
+        .iter()
+        .map(|r| redact(r, api_key))
+        .collect();
+    reasons.extend(price_reasons);
+    ChainRun {
+        lines,
+        status,
+        cancelled: report.cancelled,
+        requests_made,
+        failure: None,
+        reasons,
     }
-    if report.all_failed() {
-        return ExitCode::from(4);
-    }
-    if incomplete {
-        return ExitCode::from(3);
-    }
-    ExitCode::SUCCESS
 }
 
 /// Scope and coverage on stderr (stdout stays the single result format).

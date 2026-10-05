@@ -7,9 +7,7 @@
 //! and the evidence (transaction hash + block) are EVM-specific.
 //! The RPC URL (a secret on keyed providers) is never printed.
 
-use std::process::ExitCode;
-
-use scout_app::{WriteOutcome, write_lines_to_stdout};
+use scout_app::ChainRun;
 use scout_core::{AssetKey, ChainKey};
 use scout_engine::{
     AnalysisWindow, EvmBuyerIntersectReport, EvmTokenScanSummary, ScanStop, TokenScanStatus,
@@ -29,7 +27,7 @@ pub(crate) fn run_evm(
     chain: &ChainKey,
     args: &Args,
     window: &AnalysisWindow,
-) -> ExitCode {
+) -> ChainRun {
     let started = std::time::Instant::now();
     let notice: scout_app::LimiterNotice =
         std::sync::Arc::new(|m| eprintln!("buyer-intersect: warning: {m}"));
@@ -46,11 +44,11 @@ pub(crate) fn run_evm(
         Ok(s) => s,
         Err(scout_app::EvmSetupError::Usage(m)) => {
             eprintln!("buyer-intersect: {m}");
-            return ExitCode::from(2);
+            return ChainRun::failed(2, m);
         }
         Err(scout_app::EvmSetupError::Config(m)) => {
             eprintln!("buyer-intersect: {m}");
-            return ExitCode::from(4);
+            return ChainRun::failed(4, m);
         }
     };
     for w in &setup.warnings {
@@ -81,11 +79,9 @@ pub(crate) fn run_evm(
         let blocks = match rt.block_on(scanner.resolve_window(since, until)) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!(
-                    "buyer-intersect: could not resolve the window: {}",
-                    scrub(&e.to_string())
-                );
-                return ExitCode::from(4);
+                let text = format!("could not resolve the window: {}", scrub(&e.to_string()));
+                eprintln!("buyer-intersect: {text}");
+                return ChainRun::failed(4, text);
             }
         };
         let hint = scout_app::logs_rpc_env_name(setup.profile.name)
@@ -98,7 +94,7 @@ pub(crate) fn run_evm(
             hint,
         ) {
             eprintln!("buyer-intersect: {m}");
-            return ExitCode::from(4);
+            return ChainRun::failed(4, m);
         }
     }
     let mut info = setup.info.clone();
@@ -132,13 +128,17 @@ pub(crate) fn run_evm(
                     "buyer-intersect: request budget exhausted before any data: {} (IncompleteCoverage, exit 3)",
                     scrub(&err.to_string())
                 );
-                return ExitCode::from(3);
+                return ChainRun::failed(
+                    3,
+                    format!(
+                        "request budget exhausted before any data: {}",
+                        scrub(&err.to_string())
+                    ),
+                );
             }
-            eprintln!(
-                "buyer-intersect: provider error: {}",
-                scrub(&err.to_string())
-            );
-            return ExitCode::from(4);
+            let text = format!("provider error: {}", scrub(&err.to_string()));
+            eprintln!("buyer-intersect: {text}");
+            return ChainRun::failed(4, text);
         }
     };
     let requests_made = setup.rpc.total_requests_made();
@@ -160,23 +160,24 @@ pub(crate) fn run_evm(
             Ok(l) => l,
             Err(m) => {
                 eprintln!("buyer-intersect: could not render output: {m}");
-                return ExitCode::from(4);
+                return ChainRun::failed(4, format!("could not render output: {m}"));
             }
         }
     } else {
         table_lines(&report)
     };
-    let outcome = write_lines_to_stdout(lines);
-    if report.cancelled {
-        return ExitCode::from(130);
+    ChainRun {
+        lines,
+        status: if incomplete { 3 } else { 0 },
+        cancelled: report.cancelled,
+        requests_made,
+        failure: None,
+        reasons: report
+            .incomplete_reasons()
+            .iter()
+            .map(|r| scrub(r))
+            .collect(),
     }
-    if matches!(outcome, WriteOutcome::PipeClosed) {
-        return ExitCode::from(141);
-    }
-    if incomplete {
-        return ExitCode::from(3);
-    }
-    ExitCode::SUCCESS
 }
 
 fn side_letters(h: &scout_engine::EvmTokenSideHits) -> &'static str {

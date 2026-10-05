@@ -1,6 +1,11 @@
 //! CLI integration tests for `wallet-rank`: run the compiled binary as a
 //! subprocess and check exit codes per ADR-005/CLI.md §8.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -250,14 +255,23 @@ fn valid_flags_parse_and_reach_the_key_check() {
 }
 
 #[test]
-fn mixed_solana_and_evm_input_is_exit_2_and_never_silently_dropped() {
+fn mixed_solana_and_evm_input_is_a_multi_chain_run_never_silently_dropped() {
     let input = format!("solana:{SOL_A}\nbase:0x1111111111111111111111111111111111111111\n");
-    let (code, stdout, stderr) = run_env(&["--input", "-"], &input, Some("KEYSECRET777"));
-    // ADR-020 step 2: one run = one chain family; mixed input is refused
-    // (usage error) before anything is scanned or printed.
-    assert_eq!(code, 2, "{stderr}");
-    assert!(stderr.contains("mixed Solana and EVM"), "{stderr}");
-    assert!(stdout.is_empty());
+    // No keys: every chain fails, both wallets stay in the output as
+    // exclusions (provider_error); mixed input defaults to `--quote usd`.
+    let (code, stdout, stderr) = run_env(&["--input", "-", "--format", "jsonl"], &input, None);
+    assert_eq!(code, 4, "{stderr}");
+    let recs: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let ex: Vec<&serde_json::Value> = recs
+        .iter()
+        .filter(|v| v["kind"] == "wallet_excluded")
+        .collect();
+    assert_eq!(ex.len(), 2, "{stdout}");
+    assert!(ex.iter().all(|e| e["primary_reason"] == "provider_error"));
+    assert_eq!(recs[0]["quote"], "usd");
 }
 
 #[test]

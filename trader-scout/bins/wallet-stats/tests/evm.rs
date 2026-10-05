@@ -296,15 +296,18 @@ async fn table_output_uses_eth_columns_and_18_decimal_amounts() {
 #[tokio::test]
 async fn refusals_have_the_documented_exit_codes() {
     let m = mocks().await;
-    // Mixed Solana + EVM: exit 2, nothing scanned.
+    // Mixed Solana + EVM is a multi-chain run (CLI.md §5): Robinhood runs, the
+    // Solana chain has no Helius key -> its card is `error`, exit 3 (partial).
     let mixed = format!("robinhood:{W1}\nsolana:2tgUbS9UMoQD6GkDZBiqKYCURnGrSb6ocYwRABrSJUvY\n");
-    let o = run(env_of(&m), args(&[]), mixed).await;
-    assert_eq!(o.code, 2, "{}", o.stderr);
-    assert!(o.stderr.contains("mixed Solana and EVM"));
-    assert_eq!(m.rpc.received_requests().await.unwrap().len(), 0);
-    // Two EVM chains: exit 2.
+    let o = run(env_of(&m), args(&["--format", "jsonl"]), mixed).await;
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    assert!(o.stdout.contains("SCOUT_HELIUS_API_KEY"), "{}", o.stdout);
+    assert!(!m.rpc.received_requests().await.unwrap().is_empty());
+    // Two EVM chains: Base has no RPC variable -> its card is `error`, exit 3.
     let two = format!("robinhood:{W1}\nbase:{W2}\n");
-    assert_eq!(run(env_of(&m), args(&[]), two).await.code, 2);
+    let o = run(env_of(&m), args(&["--format", "jsonl"]), two).await;
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    assert!(o.stdout.contains("SCOUT_BASE_RPC_URL"), "{}", o.stdout);
     // Missing explorer key: exit 4, names the variable.
     let mut env = env_of(&m);
     env.retain(|(k, _)| *k != "SCOUT_BLOCKSCOUT_API_KEY");

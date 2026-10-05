@@ -1083,6 +1083,93 @@ fn quote_usd_ranks_on_the_usd_block_and_unpriced_wallets_are_metric_unknown() {
     assert_eq!(top.quote, QuoteUnit::ReportCurrency);
 }
 
+// ---------------------------------------------------------------------
+// Multi-chain (CLI.md §4): chain-scoped identity, USD across chains,
+// quote_unit_not_on_chain.
+// ---------------------------------------------------------------------
+
+fn on_chain(mut w: SolanaWalletStats, chain_id: u64) -> SolanaWalletStats {
+    w.chain = scout_engine::ChainDisplay::evm_by_chain_id(chain_id).unwrap();
+    w
+}
+
+#[test]
+fn usd_ranking_across_chains_keeps_the_same_address_on_two_chains_apart() {
+    use scout_engine::QuoteUnit;
+    // The SAME address bytes (7) on Base and Robinhood plus a Solana wallet:
+    // three wallets (invariant 3), ranked in one USD list.
+    let wallets = vec![
+        with_usd(Spec::new(7).build(), 25, 300, 10_000, 0), // solana-shaped bytes
+        on_chain(with_usd(Spec::new(7).build(), 25, 900, 10_000, 0), 8453),
+        on_chain(with_usd(Spec::new(7).build(), 25, 600, 10_000, 0), 4663),
+        // Equal USD pnl on two chains: the chain name is the final tie-break.
+        on_chain(with_usd(Spec::new(8).build(), 25, 100, 10_000, 0), 8453),
+        on_chain(with_usd(Spec::new(8).build(), 25, 100, 10_000, 0), 4663),
+    ];
+    let rep = rank_solana_wallets(
+        &wallets,
+        &policy(RankProfile::None, RankBy::RealizedNetPnl, 3).with_quote(QuoteUnit::ReportCurrency),
+    );
+    let order: Vec<(&str, Option<i128>)> = rep
+        .ranked
+        .iter()
+        .map(|r| (r.observation.chain.name, r.observation.net_pnl_raw))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("base", Some(900)),
+            ("robinhood", Some(600)),
+            ("solana", Some(300))
+        ]
+    );
+    // Below-top wallets keep their chain and the input order (not merged by address).
+    let below: Vec<&str> = rep
+        .excluded
+        .iter()
+        .map(|e| e.observation.chain.name)
+        .collect();
+    assert_eq!(below, vec!["base", "robinhood"]);
+    assert!(
+        rep.excluded
+            .iter()
+            .all(|e| e.reasons == vec![R::BelowTopN] && e.eligible_rank.is_some())
+    );
+    assert_eq!(rep.input_count, 5);
+}
+
+#[test]
+fn quote_unit_not_on_chain_excludes_every_wallet_with_that_single_reason() {
+    use scout_engine::{QuoteUnit, exclude_quote_unit_not_on_chain};
+    let cards = vec![
+        scout_engine::SolanaWalletStats {
+            ledger: None,
+            status: WalletScanStatus::NotScanned,
+            transactions_scanned: None,
+            ..on_chain(Spec::new(1).build(), 4663)
+        },
+        scout_engine::SolanaWalletStats {
+            ledger: None,
+            status: WalletScanStatus::NotScanned,
+            transactions_scanned: None,
+            ..on_chain(Spec::new(2).build(), 4663)
+        },
+    ];
+    let rep = exclude_quote_unit_not_on_chain(
+        &cards,
+        &policy(RankProfile::None, RankBy::RealizedNetPnl, 10).with_quote(QuoteUnit::UsdcUnits),
+    );
+    assert!(rep.ranked.is_empty());
+    assert_eq!(rep.excluded.len(), 2);
+    assert!(
+        rep.excluded
+            .iter()
+            .all(|e| e.reasons == vec![R::QuoteUnitNotOnChain])
+    );
+    assert_eq!(R::QuoteUnitNotOnChain.label(), "quote_unit_not_on_chain");
+    assert_partition(&rep);
+}
+
 #[test]
 fn quote_usd_gates_use_usd_counts_and_usd_unknown_share() {
     use scout_engine::QuoteUnit;

@@ -43,9 +43,29 @@ pub struct JsonRpcError {
     pub data: Option<serde_json::Value>,
 }
 
+/// Longest `error.data` hex string (with `0x`) echoed into the error text.
+const MAX_ERROR_DATA_HEX_CHARS: usize = 2 + 2 * 1024;
+
+impl JsonRpcError {
+    /// `error.data` when it is a bounded `0x`-hex string, else `None`.
+    #[must_use]
+    pub fn revert_data_hex(&self) -> Option<&str> {
+        let s = self.data.as_ref()?.as_str()?;
+        let h = s.strip_prefix("0x")?;
+        (s.len() <= MAX_ERROR_DATA_HEX_CHARS && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then_some(s)
+    }
+}
+
 impl std::fmt::Display for JsonRpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "JSON-RPC error {}: {}", self.code, self.message)
+        write!(f, "JSON-RPC error {}: {}", self.code, self.message)?;
+        // `eth_call` revert data (`error.data` = 0x-hex): kept, bounded and
+        // hex-only, so callers can decode the revert reason.
+        if let Some(d) = self.revert_data_hex() {
+            write!(f, " (data {d})")?;
+        }
+        Ok(())
     }
 }
 

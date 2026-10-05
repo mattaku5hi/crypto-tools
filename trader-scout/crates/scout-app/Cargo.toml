@@ -27,5 +27,6 @@ toml.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+scout-dex-evm.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock.workspace = true

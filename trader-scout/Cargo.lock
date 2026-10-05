@@ -3178,6 +3178,7 @@ dependencies = [
  "csv",
  "scout-api",
  "scout-core",
+ "scout-dex-evm",
  "scout-pricing",
  "scout-providers",
  "scout-rpc",

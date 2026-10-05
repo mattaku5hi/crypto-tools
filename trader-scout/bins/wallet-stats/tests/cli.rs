@@ -1,6 +1,11 @@
 //! CLI integration tests for `wallet-stats`: run the compiled binary as a
 //! subprocess and check exit codes per ADR-005/CLI.md §8.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -200,14 +205,21 @@ fn valid_window_options_are_accepted_and_reach_the_key_check() {
 }
 
 #[test]
-fn mixed_solana_and_evm_input_is_exit_2_and_never_silently_dropped() {
+fn mixed_solana_and_evm_input_is_a_multi_chain_run_never_silently_dropped() {
     let input = format!("solana:{SOL_A}\nbase:0x1111111111111111111111111111111111111111\n");
-    let (code, stdout, stderr) = run_env(&["--input", "-"], &input, Some("KEYSECRET777"));
-    // ADR-020 step 2: one run = one chain family; mixed input is refused
-    // (usage error) before anything is scanned or printed.
-    assert_eq!(code, 2, "{stderr}");
-    assert!(stderr.contains("mixed Solana and EVM"), "{stderr}");
-    assert!(stdout.is_empty());
+    // No keys at all: every chain fails, but both wallets stay in the output
+    // as `error` cards with the reason (exit 4 only because ALL chains failed).
+    let (code, stdout, stderr) = run_env(&["--input", "-", "--format", "jsonl"], &input, None);
+    assert_eq!(code, 4, "{stderr}");
+    let cards: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .filter(|v: &serde_json::Value| v["kind"] == "wallet_stats")
+        .collect();
+    assert_eq!(cards.len(), 2, "{stdout}");
+    assert!(cards.iter().all(|c| c["status"] == "error"));
+    assert_eq!(cards[0]["wallet"]["chain"], "solana");
+    assert_eq!(cards[1]["wallet"]["chain"], "base");
 }
 
 #[test]

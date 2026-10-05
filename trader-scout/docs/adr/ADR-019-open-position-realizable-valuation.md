@@ -107,3 +107,29 @@ fetch) and admits positions in order while they fit the remaining `--max-request
 `request_budget_exhausted` up front (no partial burn, run incomplete), positions that cost nothing (fully cached)
 are always admitted. stderr: `valuation cost: positions=N planned_calls=M budget_left=K`; the diagnostics line
 `requests_made=...` carries `(incl. valuation planned_calls=M)`. Quotes remain venue `eth_call`s pinned to one block.
+
+**Amendment 1 note (2026-10-05): dead pools (illiquid / partially fillable / revert decoding).** The live rerun
+(Robinhood, Alchemy) answered 163/163 open positions `quote_reverted`: the V4Quoter reverts with
+`UnexpectedRevertBytes(bytes)` (`0x6190b2b0`) wrapping `NotEnoughLiquidity(bytes32 poolId)` (`0x7a5ed734`) and
+`StateView.getLiquidity(poolId) == 0`: the last pool of abandoned memecoins is dead. Rules:
+
+1. **Revert decoding.** Revert data (`error.data`) is unwrapped from `UnexpectedRevertBytes` (max 2 levels) and
+   recognised as `NotEnoughLiquidity(bytes32)`, `PoolNotInitialized()` (`0x486aa307`; position `unvalued
+   { pool_not_initialized }`) or any other selector (`unvalued { quote_reverted }` with the raw 4-byte
+   `revert_selector` recorded). Selectors are computed by keccak in tests.
+2. **Liquidity confirmation.** After `NotEnoughLiquidity` (v4) or a no-data revert (v3 / Pancake / Slipstream, an
+   empty range) one liquidity read is made at the pinned block: v4 `StateView.getLiquidity(bytes32)` (StateView
+   pinned per chain from developers.uniswap.org v4 deployments: Robinhood `0xf3334192...e673b`, Base
+   `0xa3c0c9b6...7a71`, BSC `0xd13dd3d6...e0c4`; an unpinned chain stays `quote_reverted`), v3-family `pool.liquidity()`.
+   A v3-family revert WITH data is never read as "no liquidity".
+3. **`liquidity == 0` -> status `illiquid`** (reason `no_liquidity_in_last_pool`): `realizable_lower_bound_raw = 0`,
+   caveat `other_pools_not_searched` (only the last-traded pool is asked, a better pool may exist), unrealized
+   `lower_bound` = `-known remaining basis` (kept apart from the exact `unrealized_pnl`, which stays null).
+4. **`liquidity > 0` but the whole amount does not fill -> status `partially_fillable`:** a bisection of the largest
+   fillable amount (at most 12 quote calls, further limited to the budget slack of the cost plan; no slack = no
+   search, lower bound 0) reports `realizable_lower_bound_raw` of that amount plus `unfillable_amount_raw`, same caveat.
+5. **Lower bounds are never exact:** excluded from the exact `realizable` / `unrealized` totals (separate
+   `illiquid` / `partially_fillable` counts and per-unit lower-bound sums), no probe, no USD (`lower_bound_not_priced`).
+   Unvalued and illiquid positions now record the venue, pool address and v4 pool id.
+6. **Cost plan** reserves one liquidity read per position (upper bound; made only after a revert); the bounded
+   search is not planned, it spends slack only.

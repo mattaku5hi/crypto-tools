@@ -255,6 +255,10 @@ impl Default for RankPolicy {
 /// reason order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ExclusionReason {
+    /// Multi-chain run: the requested native/stable `--quote` unit does not
+    /// exist on the wallet's chain, so the wallet is not ranked in it (and
+    /// is not scanned for it).
+    QuoteUnitNotOnChain,
     ProviderError,
     /// The run stopped (budget / terminal rate limit) before this wallet.
     NotScanned,
@@ -285,6 +289,7 @@ impl ExclusionReason {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::QuoteUnitNotOnChain => "quote_unit_not_on_chain",
             Self::ProviderError => "provider_error",
             Self::NotScanned => "not_scanned",
             Self::IncompleteCoverage => "incomplete_coverage",
@@ -818,6 +823,7 @@ fn cmp_best_first(by: RankBy, a: &WalletRankObservation, b: &WalletRankObservati
         .then(primary)
         .then_with(|| closed_known(b).cmp(&closed_known(a)))
         .then_with(|| a.wallet.cmp(&b.wallet))
+        .then_with(|| a.chain.name.cmp(b.chain.name))
 }
 
 fn metric_known(by: RankBy, o: &WalletRankObservation) -> bool {
@@ -970,7 +976,12 @@ pub fn rank_solana_wallets(wallets: &[SolanaWalletStats], policy: &RankPolicy) -
             ));
         }
     }
-    let input_index = |wallet: &SolanaPubkey| wallets.iter().position(|w| w.wallet == *wallet);
+    // Invariant 3: the same address on two chains is two wallets.
+    let input_index = |o: &WalletRankObservation| {
+        wallets
+            .iter()
+            .position(|w| w.wallet == o.wallet && w.chain == o.chain)
+    };
     eligible.sort_by(|a, b| cmp_best_first(policy.rank_by, a, b));
     let eligible_count = eligible.len();
     let mut ranked = Vec::new();
@@ -982,7 +993,7 @@ pub fn rank_solana_wallets(wallets: &[SolanaWalletStats], policy: &RankPolicy) -
                 observation: obs,
             });
         } else {
-            let idx = input_index(&obs.wallet).unwrap_or(usize::MAX);
+            let idx = input_index(&obs).unwrap_or(usize::MAX);
             excluded.push((
                 idx,
                 ExcludedWallet {
@@ -999,6 +1010,31 @@ pub fn rank_solana_wallets(wallets: &[SolanaWalletStats], policy: &RankPolicy) -
         ranked,
         excluded: excluded.into_iter().map(|(_, e)| e).collect(),
         eligible_count,
+        input_count: wallets.len(),
+    }
+}
+
+/// Multi-chain native-unit ranking: every wallet of a chain on which the
+/// requested quote unit does not exist is excluded (never ranked, never
+/// scanned) with the single reason [`ExclusionReason::QuoteUnitNotOnChain`].
+/// `wallets` are the unscanned cards of that chain.
+#[must_use]
+pub fn exclude_quote_unit_not_on_chain(
+    wallets: &[SolanaWalletStats],
+    policy: &RankPolicy,
+) -> WalletRankReport {
+    WalletRankReport {
+        policy: *policy,
+        ranked: Vec::new(),
+        excluded: wallets
+            .iter()
+            .map(|w| ExcludedWallet {
+                reasons: vec![ExclusionReason::QuoteUnitNotOnChain],
+                eligible_rank: None,
+                observation: observe(w, policy.quote),
+            })
+            .collect(),
+        eligible_count: 0,
         input_count: wallets.len(),
     }
 }

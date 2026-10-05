@@ -158,9 +158,15 @@ async fn quote_units_are_validated_per_chain_family() {
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert!(o.stdout.contains("realized_net_pnl_usdg"));
     let mixed = format!("robinhood:{W1}\nsolana:2tgUbS9UMoQD6GkDZBiqKYCURnGrSb6ocYwRABrSJUvY\n");
-    let o = run(&rpc, &ex, &[], mixed).await;
-    assert_eq!(o.code, 2);
-    assert!(o.stderr.contains("mixed Solana and EVM"));
+    // Multi-chain (default --quote usd): Robinhood runs, Solana has no key
+    // (excluded provider_error): a partial universe, exit 3.
+    let o = run(&rpc, &ex, &["--format", "jsonl"], mixed).await;
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    assert!(
+        o.stdout.contains("\"primary_reason\":\"provider_error\""),
+        "{}",
+        o.stdout
+    );
     let o = run(
         &rpc,
         &ex,

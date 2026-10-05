@@ -427,9 +427,17 @@ fn evm_open_valuation_cells(
     v: &scout_engine::EvmOpenValuationView,
 ) -> [String; 5] {
     let t = v.totals();
+    // Illiquid / partially fillable exits are lower bounds: never in the exact sums.
+    let inexact = t.illiquid + t.partially_fillable;
+    let incomplete = t.unvalued + inexact;
     let mut real: BTreeMap<QuoteUnit, i128> = BTreeMap::new();
     let mut unreal: BTreeMap<QuoteUnit, i128> = BTreeMap::new();
-    for p in v.positions.iter().filter_map(|p| p.valued()) {
+    for p in v
+        .positions
+        .iter()
+        .filter_map(|p| p.valued())
+        .filter(|p| p.exit_status == scout_engine::EXIT_STATUS_EXACT)
+    {
         *real.entry(p.quote_unit).or_insert(0) = real
             .get(&p.quote_unit)
             .copied()
@@ -441,11 +449,11 @@ fn evm_open_valuation_cells(
         }
     }
     let realizable = if t.valued == 0 {
-        na(t.unvalued_by_reason
-            .iter()
-            .next()
-            .map_or("unvalued", |(k, _)| *k))
-    } else if t.unvalued > 0 {
+        na(t.unvalued_by_reason.iter().next().map_or(
+            if inexact > 0 { "illiquid" } else { "unvalued" },
+            |(k, _)| *k,
+        ))
+    } else if incomplete > 0 {
         format!(
             "N/A (partial: {} of {} valued, {})",
             t.valued,
@@ -457,7 +465,7 @@ fn evm_open_valuation_cells(
     };
     let unrealized = if t.unrealized_known_positions == 0 {
         na("no known-basis valued position")
-    } else if t.unrealized_unknown_positions > 0 || t.unvalued > 0 {
+    } else if t.unrealized_unknown_positions > 0 || incomplete > 0 {
         format!(
             "N/A (known subset: {})",
             units_text(&l.chain, &unreal, MONEY_SCALE)
@@ -477,7 +485,7 @@ fn evm_open_valuation_cells(
     };
     let unrealized_usd = if t.usd_unrealized_known_positions == 0 {
         na("no known USD unrealized position")
-    } else if t.usd_unrealized_unknown_positions > 0 || t.unvalued > 0 {
+    } else if t.usd_unrealized_unknown_positions > 0 || incomplete > 0 {
         format!(
             "N/A (known subset: {})",
             money_str(Money::from_scaled_units(t.usd_unrealized_known_scaled))
@@ -485,13 +493,19 @@ fn evm_open_valuation_cells(
     } else {
         money_str(Money::from_scaled_units(t.usd_unrealized_known_scaled))
     };
-    [
-        format!("{}/{}", t.valued, t.positions),
-        realizable,
-        unrealized,
-        value_usd,
-        unrealized_usd,
-    ]
+    let count = if inexact > 0 {
+        let mut c = format!("valued {}/{}", t.valued, t.positions);
+        if t.illiquid > 0 {
+            c.push_str(&format!(", illiquid {}", t.illiquid));
+        }
+        if t.partially_fillable > 0 {
+            c.push_str(&format!(", partial {}", t.partially_fillable));
+        }
+        c
+    } else {
+        format!("{}/{}", t.valued, t.positions)
+    };
+    [count, realizable, unrealized, value_usd, unrealized_usd]
 }
 
 /// ADR-016: `wins / (known + unknown)` as an exact fraction and percent.
@@ -662,6 +676,19 @@ fn detail_lines(w: &SolanaWalletStats, out: &mut Vec<String>) {
 /// ADR-019 suffix of an open-position line.
 fn open_valuation_text(d: &scout_app::OpenPositionDto) -> String {
     let opt = |v: &Option<String>| v.clone().unwrap_or_else(|| "N/A".to_string());
+    if d.status == "illiquid" || d.status == "partially_fillable" {
+        let e = d.evm.as_ref();
+        return format!(
+            " valuation={} lower_bound_raw={} unfillable_amount_raw={} reason={} caveat={}",
+            d.status,
+            e.and_then(|e| e.realizable_lower_bound_raw.clone())
+                .unwrap_or_else(|| opt(&None)),
+            e.and_then(|e| e.unfillable_amount_raw.clone())
+                .unwrap_or_else(|| opt(&None)),
+            e.and_then(|e| e.illiquid_reason).unwrap_or("-"),
+            e.and_then(|e| e.fill_caveat).unwrap_or("-"),
+        );
+    }
     if d.status != "valued" {
         return format!(
             " valuation=unvalued reason={}",

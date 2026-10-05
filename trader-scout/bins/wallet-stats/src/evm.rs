@@ -7,10 +7,8 @@
 //! listed over plain RPC). The RPC URL and the key are secrets: nothing
 //! prints them, every user-visible text is scrubbed.
 
-use std::process::ExitCode;
-
 use alloy_primitives::Address;
-use scout_app::{WriteOutcome, write_lines_to_stdout};
+use scout_app::ChainRun;
 use scout_core::{AddressBytes, ChainKey, WalletKey};
 use scout_engine::{AnalysisWindow, ScanStop};
 
@@ -25,7 +23,7 @@ pub(crate) fn run_evm(
     window: &AnalysisWindow,
     duplicates: usize,
     upstream_complete: bool,
-) -> ExitCode {
+) -> ChainRun {
     let addrs: Vec<Address> = all
         .iter()
         .filter_map(|w| match &w.address {
@@ -53,15 +51,15 @@ pub(crate) fn run_evm(
         Ok(r) => r,
         Err(scout_app::EvmStatsError::Usage(m)) => {
             eprintln!("{m}");
-            return ExitCode::from(2);
+            return ChainRun::failed(2, m);
         }
         Err(scout_app::EvmStatsError::Config(m)) => {
             eprintln!("{m}");
-            return ExitCode::from(4);
+            return ChainRun::failed(4, m);
         }
         Err(scout_app::EvmStatsError::Budget(m)) => {
             eprintln!("{m}");
-            return ExitCode::from(3);
+            return ChainRun::failed(3, m);
         }
     };
     for w in &run.warnings {
@@ -185,7 +183,7 @@ pub(crate) fn run_evm(
             Ok(l) => l,
             Err(message) => {
                 eprintln!("wallet-stats: could not render output: {message}");
-                return ExitCode::from(4);
+                return ChainRun::failed(4, format!("could not render output: {message}"));
             }
         }
     } else {
@@ -194,27 +192,39 @@ pub(crate) fn run_evm(
             .map(|l| scrub(&l))
             .collect()
     };
-    let outcome = write_lines_to_stdout(lines);
-    if report.cancelled {
-        return ExitCode::from(130);
-    }
-    if matches!(outcome, WriteOutcome::PipeClosed) {
-        return ExitCode::from(141);
-    }
-    match report.stop {
-        Some(ScanStop::BudgetExhausted { .. }) => return ExitCode::from(3),
+    let status = match report.stop {
+        Some(ScanStop::BudgetExhausted { .. }) => 3,
         Some(ScanStop::RateLimited { .. }) => {
-            return ExitCode::from(if report.any_data() { 3 } else { 4 });
+            if report.any_data() {
+                3
+            } else {
+                4
+            }
         }
-        None => {}
+        None if report.all_failed() => {
+            if report.all_failed_for_budget() {
+                3
+            } else {
+                4
+            }
+        }
+        None if incomplete => 3,
+        None => 0,
+    };
+    let mut reasons: Vec<String> = report
+        .incomplete_reasons()
+        .iter()
+        .map(|r| scrub(r))
+        .collect();
+    reasons.extend(price_reasons);
+    ChainRun {
+        lines,
+        status,
+        cancelled: report.cancelled,
+        requests_made,
+        failure: None,
+        reasons,
     }
-    if report.all_failed() {
-        return ExitCode::from(if report.all_failed_for_budget() { 3 } else { 4 });
-    }
-    if incomplete {
-        return ExitCode::from(3);
-    }
-    ExitCode::SUCCESS
 }
 
 fn print_evm_diagnostics(

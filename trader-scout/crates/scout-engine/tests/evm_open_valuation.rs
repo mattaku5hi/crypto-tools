@@ -21,8 +21,8 @@ use scout_core::{EvmTxStatus, RawEvmLog, RawEvmTransaction};
 use scout_dex_evm::{
     PANCAKE_V2_BSC_FACTORY, PANCAKE_V3_SWAP_TOPIC0, QuoterFamily, SwapVenue,
     V2_SWAP_EVENT_SIGNATURE, V3_SWAP_TOPIC0, V4_INITIALIZE_TOPIC0, V4_SWAP_TOPIC0, V4PoolKey,
-    aerodrome_amount_out_calldata, selector, v2_reserves_calldata, v3_quote_calldata,
-    v4_quote_calldata,
+    aerodrome_amount_out_calldata, pinned_v4_state_view, selector, v2_reserves_calldata,
+    v3_quote_calldata, v4_quote_calldata,
 };
 use scout_engine::{
     AnalysisWindow, ChainDisplay, EvmExtractionConfig, EvmOpenValuationRun, EvmUnvaluedReason,
@@ -82,6 +82,16 @@ fn sel_hex(sig: &str) -> String {
 enum Ans {
     Ok(String),
     Revert,
+    /// Reverts with this revert data (`error.data`).
+    RevertData(String),
+    /// Answers `ok` while the amount word (index `word_idx` after the
+    /// selector) is `<= cap`, else reverts with `revert` data.
+    Cap {
+        word_idx: usize,
+        cap: u128,
+        ok: String,
+        revert: String,
+    },
 }
 
 #[derive(Clone)]
@@ -153,6 +163,10 @@ impl Chain {
                         json!({"jsonrpc":"2.0","id":id,"error":{"code":3,"message":msg}}),
                     )
                 };
+                let revert_with = |data: &str| {
+                    ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":id,
+                        "error":{"code":3,"message":"execution reverted","data":data}}))
+                };
                 match m.as_str() {
                     "eth_blockNumber" => result(json!(format!("{HEAD:#x}"))),
                     "eth_getLogs" => {
@@ -196,6 +210,29 @@ impl Chain {
                             Some(Rule {
                                 ans: Ans::Revert, ..
                             }) => error("execution reverted"),
+                            Some(Rule {
+                                ans: Ans::RevertData(d),
+                                ..
+                            }) => revert_with(d),
+                            Some(Rule {
+                                ans:
+                                    Ans::Cap {
+                                        word_idx,
+                                        cap,
+                                        ok,
+                                        revert,
+                                    },
+                                ..
+                            }) => {
+                                let at = 10 + 64 * word_idx;
+                                let amt =
+                                    u128::from_str_radix(&data[at..at + 64], 16).unwrap_or(u128::MAX);
+                                if amt <= *cap {
+                                    result(json!(ok))
+                                } else {
+                                    revert_with(revert)
+                                }
+                            }
                             None => error("unmocked call"),
                         }
                     }
@@ -2010,8 +2047,8 @@ async fn v4_position_manager_valid_zeroed_and_forged_keys() {
     let v = only(&cards[0]).valued().unwrap();
     assert_eq!(v.realizable_raw, 7 * ETH / 10);
     assert_eq!((run.log_calls, count_logs(&chain)), (0, 0));
-    // PM key + 2 quotes, as planned.
-    assert_eq!((run.eth_calls, run.planned_calls), (3, 3));
+    // PM key + 2 quotes made; the plan also reserves the liquidity read.
+    assert_eq!((run.eth_calls, run.planned_calls), (3, 4));
 
     // Zeroed key (pool never registered): fallback to the Initialize log.
     let mut rules = q.clone();
@@ -2101,7 +2138,8 @@ async fn v4_fallback_never_spends_planned_budget() {
     let key = v4_key();
     let id = key.pool_id();
     let cfg = cfg_with(ROBINHOOD, &[]);
-    // Budget left after eth_blockNumber = exactly the plan (PM + 2 quotes):
+    // Budget left after eth_blockNumber = exactly the plan (PM + 2 quotes +
+    // the reserved liquidity read):
     // the PositionManager answers "zeroed", the fallback has no slack.
     let zero = V4PoolKey {
         currency0: Address::ZERO,
@@ -2114,19 +2152,19 @@ async fn v4_fallback_never_spends_planned_budget() {
     let mut cards = vec![card(&cfg, W, &[v4_tx(id, W, 1)])];
     let run = apply_evm_open_valuation(
         &mut cards,
-        &chain.rpc_budget(ROBINHOOD, Some(4)),
+        &chain.rpc_budget(ROBINHOOD, Some(5)),
         &cfg,
         &AnalysisWindow::none(AS_OF),
         &EvmValuationOptions::default(),
     )
     .await;
-    assert_eq!((run.planned_calls, run.budget_left), (3, Some(3)));
+    assert_eq!((run.planned_calls, run.budget_left), (4, Some(4)));
     assert_eq!(count_logs(&chain), 0);
     assert_eq!(
         only(&cards[0]).unvalued_reason(),
         Some(EvmUnvaluedReason::PoolKeyUnknown)
     );
-    assert!(chain.server.received_requests().await.unwrap().len() <= 4);
+    assert!(chain.server.received_requests().await.unwrap().len() <= 5);
 }
 
 #[tokio::test]
@@ -2200,21 +2238,21 @@ async fn cost_plan_admits_in_order_refuses_the_rest_and_burns_nothing_extra() {
         ]
     };
     // eth_blockNumber + room for exactly two uncached positions (3 identity
-    // + 2 quotes each).
+    // + 2 quotes + the reserved liquidity read each).
     let mut seen = Vec::new();
     for _ in 0..2 {
         let chain = Chain::start(rules.clone(), vec![]).await;
         let mut cards = wallets();
         let run = apply_evm_open_valuation(
             &mut cards,
-            &chain.rpc_budget(ROBINHOOD, Some(11)),
+            &chain.rpc_budget(ROBINHOOD, Some(13)),
             &cfg,
             &AnalysisWindow::none(AS_OF),
             &EvmValuationOptions::default(),
         )
         .await;
-        assert_eq!(run.budget_left, Some(10));
-        assert_eq!(run.planned_calls, 10);
+        assert_eq!(run.budget_left, Some(12));
+        assert_eq!(run.planned_calls, 12);
         assert_eq!(run.planned_positions, 3, "two uncached + the cached one");
         assert_eq!(run.refused_positions, 1);
         assert!(run.budget_exhausted);
@@ -2228,7 +2266,8 @@ async fn cost_plan_admits_in_order_refuses_the_rest_and_burns_nothing_extra() {
                 None
             ]
         );
-        // No burn beyond the plan: blockNumber + exactly the planned calls.
+        // No burn beyond the plan: blockNumber + the calls actually needed
+        // (the reserved liquidity reads are not made without a revert).
         assert_eq!(chain.eth_calls().len(), 10);
         assert_eq!(run.eth_calls, 10);
         assert_eq!(chain.server.received_requests().await.unwrap().len(), 11);
@@ -2250,4 +2289,362 @@ async fn cost_plan_admits_in_order_refuses_the_rest_and_burns_nothing_extra() {
     .await;
     assert_eq!((run.planned_calls, run.refused_positions), (0, 4));
     assert!(chain.eth_calls().is_empty());
+}
+
+// ---------------------------------------------------------------------
+// Dead pools: revert decoding, liquidity confirmation, partial fills
+// ---------------------------------------------------------------------
+
+const V4_QUOTER_RH: Address = address!("8dc178efb8111bb0973dd9d722ebeff267c98f94");
+
+fn hex0x(b: &[u8]) -> String {
+    format!("0x{}", alloy_primitives::hex::encode(b))
+}
+
+/// `UnexpectedRevertBytes(bytes)` wrapping `inner`, as the V4Quoter reverts.
+fn wrapped(inner: &[u8]) -> String {
+    let mut v = selector("UnexpectedRevertBytes(bytes)").to_vec();
+    v.extend_from_slice(&U256::from(0x20u8).to_be_bytes::<32>());
+    v.extend_from_slice(&U256::from(inner.len()).to_be_bytes::<32>());
+    v.extend_from_slice(inner);
+    while v.len() % 32 != 4 {
+        v.push(0);
+    }
+    hex0x(&v)
+}
+
+fn not_enough_liquidity(id: B256) -> String {
+    let mut v = selector("NotEnoughLiquidity(bytes32)").to_vec();
+    v.extend_from_slice(id.as_slice());
+    wrapped(&v)
+}
+
+fn state_view_rh() -> Address {
+    pinned_v4_state_view(4663).unwrap()
+}
+
+/// v4 pool on Robinhood: PositionManager key, quoter rule `ans` for every
+/// quote of the key, StateView liquidity `liq` (`None` = no rule).
+fn v4_dead_rules(key: &V4PoolKey, quote: Ans, liq: Option<u128>) -> Vec<Rule> {
+    let id = key.pool_id();
+    let mut rules = vec![pm_key_rule(id, key)];
+    rules.push(Rule {
+        to: V4_QUOTER_RH,
+        prefix: sel_hex(
+            "quoteExactInputSingle(((address,address,uint24,int24,address),bool,uint128,bytes))",
+        )
+        .to_ascii_lowercase(),
+        contains: None,
+        ans: quote,
+    });
+    if let Some(l) = liq {
+        rules.push(rule(
+            state_view_rh(),
+            &sel_hex("getLiquidity(bytes32)"),
+            ok(words(&[word(l)])),
+        ));
+    }
+    rules
+}
+
+async fn run_v4(rules: Vec<Rule>) -> (SolanaWalletStats, EvmOpenValuationRun, Chain) {
+    let key = v4_key();
+    let cfg = cfg_with(ROBINHOOD, &[]);
+    let chain = Chain::start(rules, vec![]).await;
+    let mut cards = vec![card(&cfg, W, &[v4_tx(key.pool_id(), W, 1)])];
+    let run = value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    (cards.remove(0), run, chain)
+}
+
+#[tokio::test]
+async fn v4_not_enough_liquidity_wrapper_with_zero_liquidity_is_illiquid() {
+    let key = v4_key();
+    let id = key.pool_id();
+    let (card, run, chain) = run_v4(v4_dead_rules(
+        &key,
+        Ans::RevertData(not_enough_liquidity(id)),
+        Some(0),
+    ))
+    .await;
+    let p = only(&card);
+    let v = p.valued().unwrap();
+    assert_eq!(v.exit_status, "illiquid");
+    assert_eq!(v.illiquid_reason, Some("no_liquidity_in_last_pool"));
+    assert_eq!(v.fill_caveat, Some("other_pools_not_searched"));
+    assert_eq!(v.realizable_raw, 0);
+    assert_eq!(v.unfillable_amount_raw, Some(1_000_000_000));
+    assert_eq!(
+        v.revert_selector,
+        Some(selector("NotEnoughLiquidity(bytes32)"))
+    );
+    assert_eq!(v.pool_id, Some(id));
+    // Lower bound = -known remaining basis (0.5 ETH + gas 300 wei); never "known".
+    assert_eq!(v.unrealized_status, "lower_bound");
+    assert_eq!(v.unrealized_pnl, None);
+    assert_eq!(
+        v.unrealized_lower_bound,
+        Some(
+            quote_units_to_money(QuoteUnit::Wei, -i128::try_from(ETH / 2 + 300).unwrap()).unwrap()
+        )
+    );
+    // Only one full quote + the StateView read; no probe, no search.
+    let calls = chain.eth_calls();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.0 == format!("{V4_QUOTER_RH:#x}"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.0 == format!("{:#x}", state_view_rh()))
+            .count(),
+        1
+    );
+    assert!(calls.iter().all(|c| c.2 == "0x1000"));
+    let t = view(&card).totals();
+    assert_eq!(
+        (t.valued, t.illiquid, t.partially_fillable, t.unvalued),
+        (0, 1, 0, 0)
+    );
+    assert!(
+        t.realizable_raw_by_unit.is_empty(),
+        "lower bounds stay out of exact sums"
+    );
+    assert_eq!(t.realizable_lower_bound_raw_by_unit["eth"], 0);
+    assert_eq!(t.unrealized_known_positions, 0);
+    assert_eq!(run.totals.illiquid, 1);
+    // USD never prices a lower bound as exact.
+    let src = InMemoryPriceSource::new().with_candles(
+        QuoteAsset::Eth,
+        &[candle(1_789_999_980, "1000"), candle(AS_OF, "2000")],
+    );
+    let mut cards = vec![card];
+    apply_usd_pricing(&mut cards, &src).await;
+    let v = only(&cards[0]).valued().unwrap();
+    assert!(v.usd.is_none());
+    assert_eq!(
+        v.usd_unpriced_reason.as_deref(),
+        Some("lower_bound_not_priced")
+    );
+}
+
+#[tokio::test]
+async fn v4_partial_fill_search_finds_the_largest_fillable_amount_within_12_calls() {
+    let key = v4_key();
+    let id = key.pool_id();
+    let cap = 300_000_000u128;
+    let quote = Ans::Cap {
+        word_idx: 7,
+        cap,
+        // out = 2 wei per... constant answer: only the amount gate matters.
+        ok: words(&[word(777), word(150_000)]),
+        revert: not_enough_liquidity(id),
+    };
+    let (card, run, chain) = run_v4(v4_dead_rules(&key, quote, Some(5_000))).await;
+    let v = only(&card).valued().unwrap();
+    assert_eq!(v.exit_status, "partially_fillable");
+    assert_eq!(v.fill_caveat, Some("other_pools_not_searched"));
+    assert!(v.illiquid_reason.is_none());
+    assert_eq!(v.realizable_raw, 777);
+    let fill = v.fillable_amount_raw.unwrap();
+    assert!(
+        fill <= cap && cap - fill <= 1_000_000_000 / 4096 + 1,
+        "fill {fill}"
+    );
+    assert_eq!(v.unfillable_amount_raw, Some(1_000_000_000 - fill));
+    assert!(v.fill_search_calls >= 1 && v.fill_search_calls <= 12);
+    assert_eq!(v.unrealized_status, "lower_bound");
+    assert!(v.unrealized_lower_bound.is_some());
+    // 1 PositionManager key + 1 full quote + 1 liquidity + the search calls.
+    assert_eq!(run.eth_calls, 3 + v.fill_search_calls);
+    assert!(chain.eth_calls().len() <= 3 + 12);
+    let t = view(&card).totals();
+    assert_eq!((t.valued, t.partially_fillable, t.illiquid), (0, 1, 0));
+    assert_eq!(t.realizable_lower_bound_raw_by_unit["eth"], 777);
+}
+
+#[tokio::test]
+async fn v4_pool_not_initialized_and_unknown_revert_selector_are_recorded() {
+    let key = v4_key();
+    let (card, _, _) = run_v4(v4_dead_rules(
+        &key,
+        Ans::RevertData(wrapped(&selector("PoolNotInitialized()"))),
+        Some(0),
+    ))
+    .await;
+    let p = only(&card);
+    assert_eq!(
+        p.unvalued_reason(),
+        Some(EvmUnvaluedReason::PoolNotInitialized)
+    );
+    assert_eq!(p.revert_selector, Some(selector("PoolNotInitialized()")));
+    assert_eq!((p.pool, p.pool_id), (Some(PM_RH), Some(key.pool_id())));
+    assert_eq!(p.venue, Some(SwapVenue::UniswapV4));
+
+    // An unknown wrapped revert: quote_reverted + the raw selector, no liquidity read.
+    let (card, _, chain) = run_v4(v4_dead_rules(
+        &key,
+        Ans::RevertData(wrapped(&[0xde, 0xad, 0xbe, 0xef, 0, 1])),
+        Some(0),
+    ))
+    .await;
+    let p = only(&card);
+    assert_eq!(p.unvalued_reason(), Some(EvmUnvaluedReason::QuoteReverted));
+    assert_eq!(p.revert_selector, Some([0xde, 0xad, 0xbe, 0xef]));
+    assert_eq!((p.pool, p.pool_id), (Some(PM_RH), Some(key.pool_id())));
+    assert!(
+        chain
+            .eth_calls()
+            .iter()
+            .all(|c| c.0 != format!("{:#x}", state_view_rh()))
+    );
+    let t = view(&card).totals();
+    assert_eq!(t.unvalued_by_reason["quote_reverted"], 1);
+
+    // A revert without any data on v4 is not "no liquidity": quote_reverted, no selector.
+    let (card, _, _) = run_v4(v4_dead_rules(&key, Ans::Revert, Some(0))).await;
+    let p = only(&card);
+    assert_eq!(p.unvalued_reason(), Some(EvmUnvaluedReason::QuoteReverted));
+    assert_eq!(p.revert_selector, None);
+}
+
+fn v3_dead_chain(liq: Option<Ans>, quote: Ans) -> (Vec<Rule>, EvmExtractionConfig, Address) {
+    let weth = ROBINHOOD.wrapped_native;
+    let cfg = cfg_with(ROBINHOOD, &[(SwapVenue::UniswapV3, POOL)]);
+    let quoter = address!("33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7");
+    let (t0, t1) = if TOKEN < weth {
+        (TOKEN, weth)
+    } else {
+        (weth, TOKEN)
+    };
+    let mut rules = vec![
+        rule(POOL, &sel_hex("token0()"), ok(words(&[addr_word(t0)]))),
+        rule(POOL, &sel_hex("token1()"), ok(words(&[addr_word(t1)]))),
+        rule(POOL, &sel_hex("fee()"), ok(words(&[word(3000)]))),
+        rule(quoter, "0x", quote),
+    ];
+    if let Some(l) = liq {
+        rules.push(rule(POOL, &sel_hex("liquidity()"), l));
+    }
+    (rules, cfg, quoter)
+}
+
+fn v3_tx() -> RawEvmTransaction {
+    buy(
+        ROBINHOOD,
+        W,
+        1,
+        POOL,
+        Kind::V3,
+        ROBINHOOD.wrapped_native,
+        ETH / 2,
+        1_000_000_000,
+        None,
+    )
+}
+
+#[tokio::test]
+async fn v3_family_empty_revert_with_zero_liquidity_is_illiquid_and_with_liquidity_partial() {
+    // No revert data + pool.liquidity() == 0: illiquid.
+    let (rules, cfg, _) = v3_dead_chain(Some(ok(words(&[word(0)]))), Ans::Revert);
+    let chain = Chain::start(rules, vec![]).await;
+    let mut cards = vec![card(&cfg, W, &[v3_tx()])];
+    value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    let v = only(&cards[0]).valued().unwrap();
+    assert_eq!(v.exit_status, "illiquid");
+    assert_eq!(v.realizable_raw, 0);
+    assert_eq!(v.pool, POOL);
+    assert_eq!(v.pool_id, None);
+    assert_eq!(v.revert_selector, None);
+
+    // Liquidity > 0 but the quoter fails every amount: partially fillable
+    // with a lower bound of 0 after the bounded search.
+    let (rules, cfg, quoter) = v3_dead_chain(Some(ok(words(&[word(9)]))), Ans::Revert);
+    let chain = Chain::start(rules, vec![]).await;
+    let mut cards = vec![card(&cfg, W, &[v3_tx()])];
+    let run = value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    let v = only(&cards[0]).valued().unwrap();
+    assert_eq!(v.exit_status, "partially_fillable");
+    assert_eq!(v.realizable_raw, 0);
+    assert_eq!(v.fillable_amount_raw, Some(0));
+    assert_eq!(v.unfillable_amount_raw, Some(1_000_000_000));
+    assert_eq!(v.fill_search_calls, 12);
+    let quoter_calls = chain
+        .eth_calls()
+        .iter()
+        .filter(|c| c.0 == format!("{quoter:#x}"))
+        .count();
+    assert_eq!(quoter_calls, 1 + 12);
+    assert_eq!(run.eth_calls, 3 + 1 + 1 + 12);
+
+    // A v3 revert WITH data (e.g. Error(string)) is not an empty range:
+    // quote_reverted with the selector, no liquidity read.
+    let (rules, cfg, _) = v3_dead_chain(
+        Some(ok(words(&[word(0)]))),
+        Ans::RevertData(hex0x(&[0x08, 0xc3, 0x79, 0xa0, 0, 0])),
+    );
+    let chain = Chain::start(rules, vec![]).await;
+    let mut cards = vec![card(&cfg, W, &[v3_tx()])];
+    value(&mut cards, &chain, &cfg, &EvmValuationOptions::default()).await;
+    let p = only(&cards[0]);
+    assert_eq!(p.unvalued_reason(), Some(EvmUnvaluedReason::QuoteReverted));
+    assert_eq!(p.revert_selector, Some([0x08, 0xc3, 0x79, 0xa0]));
+    assert_eq!((p.venue, p.pool), (Some(SwapVenue::UniswapV3), Some(POOL)));
+    assert!(
+        chain
+            .eth_calls()
+            .iter()
+            .all(|c| !c.1.starts_with("0x1a686502"))
+    );
+}
+
+#[tokio::test]
+async fn dead_pool_plan_counts_include_the_liquidity_read_and_bound_the_search() {
+    let key = v4_key();
+    let id = key.pool_id();
+    let cfg = cfg_with(ROBINHOOD, &[]);
+    // Plan: PM key + full quote + probe + liquidity read = 4; the search is
+    // not planned, it only spends slack. Budget = blockNumber + exactly the plan.
+    let quote = Ans::Cap {
+        word_idx: 7,
+        cap: 300_000_000,
+        ok: words(&[word(777), word(150_000)]),
+        revert: not_enough_liquidity(id),
+    };
+    let chain = Chain::start(v4_dead_rules(&key, quote.clone(), Some(5_000)), vec![]).await;
+    let mut cards = vec![card(&cfg, W, &[v4_tx(id, W, 1)])];
+    let run = apply_evm_open_valuation(
+        &mut cards,
+        &chain.rpc_budget(ROBINHOOD, Some(5)),
+        &cfg,
+        &AnalysisWindow::none(AS_OF),
+        &EvmValuationOptions::default(),
+    )
+    .await;
+    assert_eq!((run.planned_calls, run.budget_left), (4, Some(4)));
+    let v = only(&cards[0]).valued().unwrap();
+    assert_eq!(v.exit_status, "partially_fillable");
+    assert_eq!(v.fill_search_calls, 0, "no slack: the search is skipped");
+    assert_eq!(v.realizable_raw, 0);
+    assert_eq!(v.fillable_amount_raw, Some(0));
+    assert!(chain.server.received_requests().await.unwrap().len() <= 5);
+
+    // With slack the search runs, bounded by 12 and by the slack.
+    let chain = Chain::start(v4_dead_rules(&key, quote, Some(5_000)), vec![]).await;
+    let mut cards = vec![card(&cfg, W, &[v4_tx(id, W, 1)])];
+    let run = apply_evm_open_valuation(
+        &mut cards,
+        &chain.rpc_budget(ROBINHOOD, Some(8)),
+        &cfg,
+        &AnalysisWindow::none(AS_OF),
+        &EvmValuationOptions::default(),
+    )
+    .await;
+    assert_eq!((run.planned_calls, run.budget_left), (4, Some(7)));
+    let v = only(&cards[0]).valued().unwrap();
+    assert_eq!(v.fill_search_calls, 3, "slack of 3 calls");
+    assert!(chain.server.received_requests().await.unwrap().len() <= 8);
 }

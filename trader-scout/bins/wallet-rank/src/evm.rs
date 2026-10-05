@@ -2,15 +2,13 @@
 //! `wallet-stats` (`collect_evm_stats`), then the shared rank engine. Secrets
 //! (RPC URL, explorer key) never reach any output.
 
-use std::process::ExitCode;
-
 use alloy_primitives::Address;
-use scout_app::{WriteOutcome, write_lines_to_stdout};
+use scout_app::ChainRun;
 use scout_core::{AddressBytes, ChainKey, WalletKey};
 use scout_engine::{AnalysisWindow, RankPolicy, ScanStop, rank_solana_wallets};
 
 use crate::output::{self, RunMetaInput, SummaryInput};
-use crate::{Args, limit_text, price_wallets, rate_limited_text};
+use crate::{Args, RankRun, limit_text, price_wallets, rate_limited_text};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_evm(
@@ -22,7 +20,7 @@ pub(crate) fn run_evm(
     window: &AnalysisWindow,
     duplicates: usize,
     upstream_complete: bool,
-) -> ExitCode {
+) -> RankRun {
     let addrs: Vec<Address> = all
         .iter()
         .filter_map(|w| match &w.address {
@@ -50,15 +48,15 @@ pub(crate) fn run_evm(
         Ok(r) => r,
         Err(scout_app::EvmStatsError::Usage(m)) => {
             eprintln!("{m}");
-            return ExitCode::from(2);
+            return ChainRun::failed(2, m).into();
         }
         Err(scout_app::EvmStatsError::Config(m)) => {
             eprintln!("{m}");
-            return ExitCode::from(4);
+            return ChainRun::failed(4, m).into();
         }
         Err(scout_app::EvmStatsError::Budget(m)) => {
             eprintln!("{m}");
-            return ExitCode::from(3);
+            return ChainRun::failed(3, m).into();
         }
     };
     for w in &run.warnings {
@@ -193,7 +191,7 @@ pub(crate) fn run_evm(
             Ok(l) => l,
             Err(message) => {
                 eprintln!("wallet-rank: could not render output: {message}");
-                return ExitCode::from(4);
+                return ChainRun::failed(4, format!("could not render output: {message}")).into();
             }
         }
     } else {
@@ -207,27 +205,45 @@ pub(crate) fn run_evm(
         .map(|l| scrub(&l))
         .collect()
     };
-    let outcome = write_lines_to_stdout(lines);
-    if stats.cancelled {
-        return ExitCode::from(130);
-    }
-    if matches!(outcome, WriteOutcome::PipeClosed) {
-        return ExitCode::from(141);
-    }
-    match stats.stop {
-        Some(ScanStop::BudgetExhausted { .. }) => return ExitCode::from(3),
+    let status = match stats.stop {
+        Some(ScanStop::BudgetExhausted { .. }) => 3,
         Some(ScanStop::RateLimited { .. }) => {
-            return ExitCode::from(if stats.any_data() { 3 } else { 4 });
+            if stats.any_data() {
+                3
+            } else {
+                4
+            }
         }
-        None => {}
+        None if stats.all_failed() => {
+            if stats.all_failed_for_budget() {
+                3
+            } else {
+                4
+            }
+        }
+        None if incomplete => 3,
+        None => 0,
+    };
+    let mut reasons: Vec<String> = stats
+        .incomplete_reasons()
+        .iter()
+        .map(|r| scrub(r))
+        .collect();
+    reasons.extend(price_reasons);
+    RankRun {
+        run: ChainRun {
+            lines,
+            status,
+            cancelled: stats.cancelled,
+            requests_made,
+            failure: None,
+            reasons,
+        },
+        prices_made: pricing.requests_made,
+        pricing_line: pricing.policy.is_some().then_some(pricing_line),
+        secrets: run.secrets.clone(),
+        stats: Some(stats),
     }
-    if stats.all_failed() {
-        return ExitCode::from(if stats.all_failed_for_budget() { 3 } else { 4 });
-    }
-    if incomplete {
-        return ExitCode::from(3);
-    }
-    ExitCode::SUCCESS
 }
 
 fn print_diagnostics(

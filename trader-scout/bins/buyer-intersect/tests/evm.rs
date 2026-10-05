@@ -265,8 +265,9 @@ async fn refusals_have_the_documented_exit_codes() {
     let s = rpc().await;
     let mixed = format!("robinhood:{AIDEN}\nsolana:AB48pUATr4vEsxdAp54X9pvqyae2whMR2B52rEuJpump\n");
     let o = run(env_of(&s), &[], mixed).await;
+    // Tokens are chain-scoped: one token per chain can never reach K=2.
     assert_eq!(o.code, 2, "{}", o.stderr);
-    assert!(o.stderr.contains("mixed Solana and EVM"));
+    assert!(o.stderr.contains("no chain has at least"), "{}", o.stderr);
     assert_eq!(
         s.received_requests().await.unwrap().len(),
         0,

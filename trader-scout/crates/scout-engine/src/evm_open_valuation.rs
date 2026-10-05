@@ -28,14 +28,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use alloy_primitives::{Address, B256, U256};
 use scout_core::Money;
 use scout_dex_evm::{
-    QuoterFamily, SwapVenue, V2Fee, V4_INITIALIZE_TOPIC0, V4PoolKey, aerodrome_amount_out_calldata,
-    decode_amount_out, decode_reserves, decode_v4_initialize, decode_v4_pool_keys, pinned_quoter,
-    pinned_slipstream_quoter, pinned_v4_position_manager, price_impact_bps, selector,
-    v2_amount_out, v2_fee_for_factory, v2_reserves_calldata, v3_quote_calldata,
-    v4_pool_keys_calldata, v4_quote_calldata,
+    QuoterFamily, QuoterRevert, SwapVenue, V2Fee, V4_INITIALIZE_TOPIC0, V4PoolKey,
+    aerodrome_amount_out_calldata, decode_amount_out, decode_liquidity, decode_quoter_revert,
+    decode_reserves, decode_v4_initialize, decode_v4_pool_keys, pinned_quoter,
+    pinned_slipstream_quoter, pinned_v4_position_manager, pinned_v4_state_view, price_impact_bps,
+    selector, v2_amount_out, v2_fee_for_factory, v2_reserves_calldata, v3_liquidity_calldata,
+    v3_quote_calldata, v4_liquidity_calldata, v4_pool_keys_calldata, v4_quote_calldata,
 };
 use scout_pricing::{PriceLabel, PriceSource, QuoteAsset};
-use scout_providers::{EvmRpcClient, EvmSourceError, LogFilter};
+use scout_providers::{EthCallOutcome, EvmRpcClient, EvmSourceError, LogFilter};
 
 use crate::analysis_window::AnalysisWindow;
 use crate::chain_display::{ChainDisplay, evm_key};
@@ -49,6 +50,22 @@ pub const EVM_OPEN_VALUATION_VERSION: &str = "evm-open-valuation/1 (ADR-019 EVM 
 
 /// The label of a valued EVM position.
 pub const LABEL_REALIZABLE_ONCHAIN_QUOTE: &str = "realizable_onchain_quote";
+/// `ExitStatus::Exact`: the whole open amount was quoted.
+pub const EXIT_STATUS_EXACT: &str = "exact";
+/// The last pool has no in-range liquidity (confirmed by a liquidity read):
+/// the realizable value is a lower bound of 0.
+pub const EXIT_STATUS_ILLIQUID: &str = "illiquid";
+/// The last pool has liquidity but the whole amount cannot be filled: the
+/// realizable value is the lower bound of the largest fillable amount found.
+pub const EXIT_STATUS_PARTIALLY_FILLABLE: &str = "partially_fillable";
+/// Reason of an illiquid position.
+pub const ILLIQUID_REASON_NO_LIQUIDITY: &str = "no_liquidity_in_last_pool";
+/// Caveat of a non-exact exit: only the last-traded pool was asked.
+pub const CAVEAT_OTHER_POOLS_NOT_SEARCHED: &str = "other_pools_not_searched";
+/// Unrealized status of a lower-bound exit.
+pub const UNREALIZED_STATUS_LOWER_BOUND: &str = "lower_bound";
+/// Max quote calls of one partial-fill search.
+pub const MAX_FILL_SEARCH_CALLS: u64 = 12;
 /// Extra label: a transfer tax was suspected, the quote does not model it.
 pub const LABEL_TRANSFER_TAX_NOT_MODELLED: &str = "transfer_tax_not_modelled";
 
@@ -78,8 +95,11 @@ pub enum EvmUnvaluedReason {
     PoolIdentityUnknown,
     /// The pool's other asset is neither native/wrapped native nor a pinned quote token.
     QuoteAssetUnsupported,
-    /// The quoter / pool call reverted.
+    /// The quoter / pool call reverted (the raw selector, when any, is
+    /// recorded on the position).
     QuoteReverted,
+    /// The quoter reverted with `PoolNotInitialized()`.
+    PoolNotInitialized,
     /// The answer was not a well-formed ABI word set.
     QuoteResponseInvalid,
     StateFetchFailed,
@@ -100,6 +120,7 @@ impl EvmUnvaluedReason {
             Self::PoolIdentityUnknown => "pool_identity_unknown",
             Self::QuoteAssetUnsupported => "quote_asset_unsupported",
             Self::QuoteReverted => "quote_reverted",
+            Self::PoolNotInitialized => "pool_not_initialized",
             Self::QuoteResponseInvalid => "quote_response_invalid",
             Self::StateFetchFailed => "state_fetch_failed",
             Self::RequestBudgetExhausted => "request_budget_exhausted",
@@ -143,6 +164,25 @@ pub struct EvmValuedPosition {
     pub usd_unpriced_reason: Option<String>,
     pub usd_unrealized: Option<Money>,
     pub usd_unrealized_reason: Option<String>,
+    /// `exact`, `illiquid` or `partially_fillable`. For the last two
+    /// `realizable_raw` is a LOWER BOUND (0 / the largest fillable amount's
+    /// output), never an exact value; no probe, no USD, no exact unrealized.
+    pub exit_status: &'static str,
+    /// `no_liquidity_in_last_pool` for an illiquid position.
+    pub illiquid_reason: Option<&'static str>,
+    /// `other_pools_not_searched` for a non-exact exit.
+    pub fill_caveat: Option<&'static str>,
+    /// Largest amount the search found fillable (partially fillable only).
+    pub fillable_amount_raw: Option<u128>,
+    /// `open amount - fillable amount` (non-exact exits).
+    pub unfillable_amount_raw: Option<u128>,
+    /// Quote calls spent on the partial-fill search.
+    pub fill_search_calls: u64,
+    /// `lower-bound value - known remaining basis` of a non-exact exit
+    /// (status `lower_bound`); `unrealized_pnl` stays `None`.
+    pub unrealized_lower_bound: Option<Money>,
+    /// 4-byte selector of the quoter revert that led to a non-exact exit.
+    pub revert_selector: Option<[u8; 4]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +196,14 @@ pub struct EvmPositionValuation {
     pub token: Address,
     pub open_amount_raw: u128,
     pub outcome: EvmValuationOutcome,
+    /// The last-traded venue / pool / v4 pool id of the position, recorded
+    /// for unvalued and illiquid positions too so users can inspect them.
+    pub venue: Option<SwapVenue>,
+    pub pool: Option<Address>,
+    pub pool_id: Option<B256>,
+    /// Raw 4-byte selector of the quoter revert behind an unvalued
+    /// `quote_reverted` / `pool_not_initialized` (or a non-exact exit).
+    pub revert_selector: Option<[u8; 4]>,
 }
 
 impl EvmPositionValuation {
@@ -180,9 +228,18 @@ impl EvmPositionValuation {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EvmOpenValuationTotals {
     pub positions: u64,
+    /// Positions with an EXACT whole-amount quote.
     pub valued: u64,
     pub unvalued: u64,
-    /// Unit label (`eth`, `usdg`, ...) -> Σ realizable raw.
+    /// Positions whose last pool has no liquidity (lower bound 0).
+    pub illiquid: u64,
+    /// Positions only partly fillable in the last pool (lower bound).
+    pub partially_fillable: u64,
+    /// Unit label -> Σ lower-bound realizable raw of non-exact exits.
+    pub realizable_lower_bound_raw_by_unit: BTreeMap<&'static str, u128>,
+    /// Unit label -> Σ lower-bound unrealized (`Money`-scaled) of non-exact exits.
+    pub unrealized_lower_bound_scaled_by_unit: BTreeMap<&'static str, i128>,
+    /// Unit label (`eth`, `usdg`, ...) -> Σ realizable raw (exact only).
     pub realizable_raw_by_unit: BTreeMap<&'static str, u128>,
     /// Unit label -> Σ known unrealized (`Money`-scaled).
     pub unrealized_known_scaled_by_unit: BTreeMap<&'static str, i128>,
@@ -202,6 +259,22 @@ impl EvmOpenValuationTotals {
         self.positions = self.positions.saturating_add(o.positions);
         self.valued = self.valued.saturating_add(o.valued);
         self.unvalued = self.unvalued.saturating_add(o.unvalued);
+        self.illiquid = self.illiquid.saturating_add(o.illiquid);
+        self.partially_fillable = self.partially_fillable.saturating_add(o.partially_fillable);
+        for (k, v) in &o.realizable_lower_bound_raw_by_unit {
+            let e = self
+                .realizable_lower_bound_raw_by_unit
+                .entry(k)
+                .or_insert(0);
+            *e = e.saturating_add(*v);
+        }
+        for (k, v) in &o.unrealized_lower_bound_scaled_by_unit {
+            let e = self
+                .unrealized_lower_bound_scaled_by_unit
+                .entry(k)
+                .or_insert(0);
+            *e = e.saturating_add(*v);
+        }
         for (k, v) in &o.realizable_raw_by_unit {
             let e = self.realizable_raw_by_unit.entry(k).or_insert(0);
             *e = e.saturating_add(*v);
@@ -247,6 +320,24 @@ impl EvmOpenValuationView {
                 EvmValuationOutcome::Unvalued { reason } => {
                     t.unvalued += 1;
                     *t.unvalued_by_reason.entry(reason.label()).or_insert(0) += 1;
+                }
+                EvmValuationOutcome::Valued(v) if v.exit_status != EXIT_STATUS_EXACT => {
+                    // A lower bound: never mixed into the exact sums.
+                    if v.exit_status == EXIT_STATUS_ILLIQUID {
+                        t.illiquid += 1;
+                    } else {
+                        t.partially_fillable += 1;
+                    }
+                    let u = quote_unit_label(v.quote_unit);
+                    let e = t.realizable_lower_bound_raw_by_unit.entry(u).or_insert(0);
+                    *e = e.saturating_add(v.realizable_raw);
+                    if let Some(m) = v.unrealized_lower_bound {
+                        let e = t
+                            .unrealized_lower_bound_scaled_by_unit
+                            .entry(u)
+                            .or_insert(0);
+                        *e = e.saturating_add(m.scaled_units());
+                    }
                 }
                 EvmValuationOutcome::Valued(v) => {
                     t.valued += 1;
@@ -313,6 +404,14 @@ impl EvmOpenValuationView {
             let EvmValuationOutcome::Valued(v) = &mut p.outcome else {
                 continue;
             };
+            if v.exit_status != EXIT_STATUS_EXACT {
+                // A lower bound is not priced as if it were exact.
+                v.usd = None;
+                v.usd_unpriced_reason = Some("lower_bound_not_priced".to_string());
+                v.usd_unrealized = None;
+                v.usd_unrealized_reason = Some("lower_bound_not_priced".to_string());
+                continue;
+            }
             v.usd = None;
             v.usd_unpriced_reason = None;
             v.usd_unrealized = None;
@@ -483,6 +582,15 @@ enum Plan {
 
 enum QErr {
     Reason(EvmUnvaluedReason),
+    /// The quoter reverted; what its data says.
+    Reverted(QuoterRevert),
+}
+
+/// A cached `eth_call` answer.
+#[derive(Clone)]
+enum CallOut {
+    Returned(Vec<u8>),
+    Reverted(Option<Vec<u8>>),
 }
 
 struct Valuer<'a> {
@@ -492,13 +600,18 @@ struct Valuer<'a> {
     block: u64,
     block_hex: String,
     run: &'a mut EvmOpenValuationRun,
-    calls: BTreeMap<(Address, String), Option<Vec<u8>>>,
+    calls: BTreeMap<(Address, String), CallOut>,
     idents: BTreeMap<Address, Option<PoolIdent>>,
     keys: BTreeMap<B256, Option<V4PoolKey>>,
     key_lookups: usize,
     /// Fallback log requests still allowed (run cap, further limited to the
     /// budget slack the plan left: the fallback never burns planned calls).
     fallback_logs_left: u64,
+    /// Partial-fill search calls still allowed in the run (`None` =
+    /// unlimited); like the fallback, limited to the budget slack of the plan.
+    search_calls_left: Option<u64>,
+    /// Selector of the quoter revert of the position being valued.
+    last_revert: Option<[u8; 4]>,
     /// A call hit the budget limit at run time (beyond the plan, e.g. retries).
     runtime_exhausted: bool,
 }
@@ -552,13 +665,25 @@ impl Valuer<'_> {
         to: Address,
         data: String,
     ) -> Result<Option<Vec<u8>>, EvmUnvaluedReason> {
+        Ok(match self.call_full(to, data).await? {
+            CallOut::Returned(b) => Some(b),
+            CallOut::Reverted(_) => None,
+        })
+    }
+
+    /// Like [`Self::call`], keeping the revert data.
+    async fn call_full(&mut self, to: Address, data: String) -> Result<CallOut, EvmUnvaluedReason> {
         if let Some(hit) = self.calls.get(&(to, data.clone())) {
             self.run.cache_hits += 1;
             return Ok(hit.clone());
         }
         self.run.eth_calls += 1;
-        match self.rpc.eth_call(to, &data, &self.block_hex).await {
+        match self.rpc.eth_call_detailed(to, &data, &self.block_hex).await {
             Ok(r) => {
+                let r = match r {
+                    EthCallOutcome::Returned(b) => CallOut::Returned(b),
+                    EthCallOutcome::Reverted { data } => CallOut::Reverted(data),
+                };
                 if self.calls.len() < MAX_CACHED_CALLS {
                     self.calls.insert((to, data), r.clone());
                 }
@@ -815,11 +940,14 @@ impl Valuer<'_> {
                     .ok_or(QErr::Reason(R::MathFailure));
             }
         };
-        let ans = self.call(to, data).await.map_err(QErr::Reason)?;
-        let Some(bytes) = ans else {
-            return Err(QErr::Reason(R::QuoteReverted));
-        };
-        decode_amount_out(&bytes, words).ok_or(QErr::Reason(R::QuoteResponseInvalid))
+        match self.call_full(to, data).await.map_err(QErr::Reason)? {
+            CallOut::Reverted(d) => Err(QErr::Reverted(decode_quoter_revert(
+                d.as_deref().unwrap_or_default(),
+            ))),
+            CallOut::Returned(bytes) => {
+                decode_amount_out(&bytes, words).ok_or(QErr::Reason(R::QuoteResponseInvalid))
+            }
+        }
     }
 
     /// Build the plan of one position; returns it with the label facts.
@@ -964,6 +1092,16 @@ impl Valuer<'_> {
                 1
             }
         };
+        // The liquidity read that confirms a dead pool after a revert (counted
+        // for every position: the plan is an upper bound). The bounded
+        // partial-fill search is NOT counted: it only spends budget slack.
+        let liq_v4 = |me: &Self, sim: &mut PlanSim, pool_id: B256| -> u64 {
+            pinned_v4_state_view(me.cfg.profile.chain_id)
+                .map_or(0, |sv| call(me, sim, sv, v4_liquidity_calldata(pool_id)))
+        };
+        let liq_v3 = |me: &Self, sim: &mut PlanSim| -> u64 {
+            call(me, sim, last.pool, v3_liquidity_calldata())
+        };
         match last.venue {
             SwapVenue::FourMemeV1 | SwapVenue::FourMemeV2 => 0,
             SwapVenue::UniswapV4 => {
@@ -995,7 +1133,7 @@ impl Valuer<'_> {
                         if probe > 0 {
                             c += call(self, sim, quoter, v4_quote_calldata(key, zfo, probe));
                         }
-                        c
+                        c + liq_v4(self, sim, pool_id)
                     }
                     None => {
                         if sim.keys.insert(pool_id)
@@ -1003,7 +1141,7 @@ impl Valuer<'_> {
                         {
                             c += 1;
                         }
-                        c + probes(sim, pool_id)
+                        c + probes(sim, pool_id) + liq_v4(self, sim, pool_id)
                     }
                 }
             }
@@ -1052,7 +1190,7 @@ impl Valuer<'_> {
                                 v3_quote_calldata(family, token, other, U256::from(probe), sel),
                             );
                         }
-                        c
+                        c + liq_v3(self, sim)
                     }
                     None => {
                         if sim.pools.insert(last.pool) {
@@ -1065,7 +1203,7 @@ impl Valuer<'_> {
                                 c += call(self, sim, last.pool, sel_data(sg));
                             }
                         }
-                        c + probes(sim, last.pool.into_word())
+                        c + probes(sim, last.pool.into_word()) + liq_v3(self, sim)
                     }
                 }
             }
@@ -1115,14 +1253,157 @@ impl Valuer<'_> {
         info: &crate::EvmOpenVenueInfo,
         basis: &Basis,
     ) -> EvmPositionValuation {
+        self.last_revert = None;
         let outcome = match self.value_inner(info, basis).await {
             Ok(v) => EvmValuationOutcome::Valued(Box::new(v)),
             Err(reason) => EvmValuationOutcome::Unvalued { reason },
         };
-        EvmPositionValuation {
-            token: info.token,
-            open_amount_raw: info.open_amount_raw,
-            outcome,
+        let mut p = position(info, outcome);
+        p.revert_selector = self.last_revert.take();
+        p
+    }
+
+    /// The position of a quote that came back reverted: `illiquid` after a
+    /// liquidity read of 0, `partially_fillable` after a bounded search when
+    /// the pool has liquidity; an unvalued reason otherwise.
+    #[allow(clippy::too_many_arguments)]
+    async fn on_revert(
+        &mut self,
+        info: &crate::EvmOpenVenueInfo,
+        last: &crate::EvmLastVenue,
+        plan: &Plan,
+        facts: &Facts,
+        basis: &Basis,
+        kind: QuoterRevert,
+    ) -> Result<EvmValuedPosition, EvmUnvaluedReason> {
+        use EvmUnvaluedReason as R;
+        self.last_revert = kind.raw_selector();
+        // Which liquidity read confirms a dead pool for this revert shape.
+        let read = match (plan, kind) {
+            (_, QuoterRevert::PoolNotInitialized) => return Err(R::PoolNotInitialized),
+            (Plan::V4 { key, .. }, QuoterRevert::NotEnoughLiquidity(_)) => {
+                pinned_v4_state_view(self.cfg.profile.chain_id)
+                    .map(|sv| (sv, v4_liquidity_calldata(key.pool_id())))
+            }
+            (Plan::V3 { .. }, QuoterRevert::NoData) => Some((last.pool, v3_liquidity_calldata())),
+            _ => None,
+        };
+        let Some((to, data)) = read else {
+            return Err(R::QuoteReverted);
+        };
+        let liquidity = match self.call_full(to, data).await {
+            Ok(CallOut::Returned(b)) => decode_liquidity(&b),
+            Ok(CallOut::Reverted(_)) => None,
+            Err(r) if r == R::RequestBudgetExhausted => return Err(r),
+            Err(_) => None,
+        };
+        let Some(liquidity) = liquidity else {
+            return Err(R::QuoteReverted);
+        };
+        let amount = info.open_amount_raw;
+        let mut v = self.base_position(info, last, plan, facts);
+        v.fill_caveat = Some(CAVEAT_OTHER_POOLS_NOT_SEARCHED);
+        v.revert_selector = kind.raw_selector();
+        if liquidity == 0 {
+            v.exit_status = EXIT_STATUS_ILLIQUID;
+            v.illiquid_reason = Some(ILLIQUID_REASON_NO_LIQUIDITY);
+            v.realizable_raw = 0;
+            v.fillable_amount_raw = None;
+            v.unfillable_amount_raw = Some(amount);
+        } else {
+            let (fillable, out, calls) = self.search_fillable(plan, amount).await;
+            v.exit_status = EXIT_STATUS_PARTIALLY_FILLABLE;
+            v.realizable_raw = out;
+            v.fillable_amount_raw = Some(fillable);
+            v.unfillable_amount_raw = Some(amount.saturating_sub(fillable));
+            v.fill_search_calls = calls;
+        }
+        let (pnl, status) = basis.unrealized(facts.unit, v.realizable_raw);
+        v.unrealized_pnl = None;
+        v.unrealized_lower_bound = pnl;
+        v.unrealized_status = if pnl.is_some() {
+            UNREALIZED_STATUS_LOWER_BOUND
+        } else {
+            status
+        };
+        Ok(v)
+    }
+
+    /// Bisect the largest fillable amount below `amount` (known unfillable):
+    /// at most [`MAX_FILL_SEARCH_CALLS`] quote calls, further limited to the
+    /// run's budget slack. Returns `(fillable, output, calls)`; a failed
+    /// (non-revert) call ends the search with the best answer so far.
+    async fn search_fillable(&mut self, plan: &Plan, amount: u128) -> (u128, u128, u64) {
+        let (mut lo, mut lo_out, mut hi) = (0u128, 0u128, amount);
+        let mut calls = 0u64;
+        while calls < MAX_FILL_SEARCH_CALLS {
+            let mid = lo.saturating_add(hi.saturating_sub(lo).div_euclid(2));
+            if mid <= lo || mid >= hi {
+                break;
+            }
+            if let Some(left) = self.search_calls_left.as_mut() {
+                if *left == 0 {
+                    break;
+                }
+                *left -= 1;
+            }
+            calls += 1;
+            match self.quote(plan, U256::from(mid)).await {
+                Ok(o) => match u128::try_from(o) {
+                    Ok(o) => (lo, lo_out) = (mid, o),
+                    Err(_) => break,
+                },
+                Err(QErr::Reverted(_)) => hi = mid,
+                Err(QErr::Reason(_)) => break,
+            }
+        }
+        (lo, lo_out, calls)
+    }
+
+    /// The exact-valued skeleton of a position; callers adjust it.
+    fn base_position(
+        &self,
+        info: &crate::EvmOpenVenueInfo,
+        last: &crate::EvmLastVenue,
+        plan: &Plan,
+        facts: &Facts,
+    ) -> EvmValuedPosition {
+        let (method, quoter_source) = match plan {
+            Plan::V3 { source, .. } => ("quoter_v2", *source),
+            Plan::V4 { source, .. } => ("v4_quoter", *source),
+            Plan::V2 { .. } => ("v2_reserves_constant_product", "not_applicable"),
+            Plan::Aero { .. } => ("aerodrome_get_amount_out", "not_applicable"),
+        };
+        EvmValuedPosition {
+            venue: last.venue,
+            pool: last.pool,
+            pool_id: last.pool_id,
+            label: LABEL_REALIZABLE_ONCHAIN_QUOTE,
+            method,
+            quoter: facts.quoter,
+            quoter_source,
+            state_block: self.block,
+            quote_unit: facts.unit,
+            quote_token: facts.quote_token,
+            realizable_raw: 0,
+            probe_amount_raw: None,
+            probe_out_raw: None,
+            price_impact_bps: None,
+            transfer_tax_not_modelled: info.transfer_tax_seen,
+            unrealized_pnl: None,
+            unrealized_status: "unknown_basis",
+            usd: None,
+            usd_unpriced_reason: None,
+            usd_unrealized: None,
+            usd_unrealized_reason: None,
+            exit_status: EXIT_STATUS_EXACT,
+            illiquid_reason: None,
+            fill_caveat: None,
+            fillable_amount_raw: None,
+            unfillable_amount_raw: None,
+            fill_search_calls: 0,
+            unrealized_lower_bound: None,
+            revert_selector: None,
         }
     }
 
@@ -1134,11 +1415,21 @@ impl Valuer<'_> {
         use EvmUnvaluedReason as R;
         let last = info.last.ok_or(R::NoVenueObserved)?;
         let (plan, quoter, unit, quote_token) = self.plan(info.token, &last).await?;
+        let facts = Facts {
+            quoter,
+            unit,
+            quote_token,
+        };
         let amount = U256::from(info.open_amount_raw);
-        let out = self
-            .quote(&plan, amount)
-            .await
-            .map_err(|QErr::Reason(r)| r)?;
+        let out = match self.quote(&plan, amount).await {
+            Ok(o) => o,
+            Err(QErr::Reason(r)) => return Err(r),
+            Err(QErr::Reverted(kind)) => {
+                return self
+                    .on_revert(info, &last, &plan, &facts, basis, kind)
+                    .await;
+            }
+        };
         let realizable_raw = u128::try_from(out).map_err(|_| R::MathFailure)?;
         // Marginal probe: a thousandth of the position (best effort).
         let probe_amt = info.open_amount_raw.div_euclid(1000);
@@ -1150,36 +1441,35 @@ impl Valuer<'_> {
         }
         let impact = probe_out
             .and_then(|po| price_impact_bps(amount, out, U256::from(probe_amt), U256::from(po)));
-        let (method, quoter_source) = match &plan {
-            Plan::V3 { source, .. } => ("quoter_v2", *source),
-            Plan::V4 { source, .. } => ("v4_quoter", *source),
-            Plan::V2 { .. } => ("v2_reserves_constant_product", "not_applicable"),
-            Plan::Aero { .. } => ("aerodrome_get_amount_out", "not_applicable"),
-        };
         let (unrealized_pnl, unrealized_status) = basis.unrealized(unit, realizable_raw);
-        Ok(EvmValuedPosition {
-            venue: last.venue,
-            pool: last.pool,
-            pool_id: last.pool_id,
-            label: LABEL_REALIZABLE_ONCHAIN_QUOTE,
-            method,
-            quoter,
-            quoter_source,
-            state_block: self.block,
-            quote_unit: unit,
-            quote_token,
-            realizable_raw,
-            probe_amount_raw: (probe_amt > 0).then_some(probe_amt),
-            probe_out_raw: probe_out,
-            price_impact_bps: impact,
-            transfer_tax_not_modelled: info.transfer_tax_seen,
-            unrealized_pnl,
-            unrealized_status,
-            usd: None,
-            usd_unpriced_reason: None,
-            usd_unrealized: None,
-            usd_unrealized_reason: None,
-        })
+        let mut v = self.base_position(info, &last, &plan, &facts);
+        v.realizable_raw = realizable_raw;
+        v.probe_amount_raw = (probe_amt > 0).then_some(probe_amt);
+        v.probe_out_raw = probe_out;
+        v.price_impact_bps = impact;
+        v.unrealized_pnl = unrealized_pnl;
+        v.unrealized_status = unrealized_status;
+        Ok(v)
+    }
+}
+
+/// Facts of a plan the position record needs.
+struct Facts {
+    quoter: Option<Address>,
+    unit: QuoteUnit,
+    quote_token: Option<Address>,
+}
+
+/// An unvalued/valued position record carrying the last venue facts.
+fn position(info: &crate::EvmOpenVenueInfo, outcome: EvmValuationOutcome) -> EvmPositionValuation {
+    EvmPositionValuation {
+        token: info.token,
+        open_amount_raw: info.open_amount_raw,
+        outcome,
+        venue: info.last.map(|l| l.venue),
+        pool: info.last.map(|l| l.pool),
+        pool_id: info.last.and_then(|l| l.pool_id),
+        revert_selector: None,
     }
 }
 
@@ -1247,11 +1537,7 @@ fn unvalued_view(
         state_block: block,
         positions: infos
             .iter()
-            .map(|i| EvmPositionValuation {
-                token: i.token,
-                open_amount_raw: i.open_amount_raw,
-                outcome: EvmValuationOutcome::Unvalued { reason },
-            })
+            .map(|i| position(i, EvmValuationOutcome::Unvalued { reason }))
             .collect(),
     }
 }
@@ -1326,6 +1612,8 @@ pub async fn apply_evm_open_valuation(
             keys: BTreeMap::new(),
             key_lookups: 0,
             fallback_logs_left: opts.max_fallback_log_requests,
+            search_calls_left: None,
+            last_revert: None,
             runtime_exhausted: false,
         });
         // Cost plan: admit positions in order while their (cache-aware)
@@ -1367,6 +1655,7 @@ pub async fn apply_evm_open_valuation(
             // The fallback only spends what the plan left over.
             if let Some(l) = left {
                 val.fallback_logs_left = val.fallback_logs_left.min(l.saturating_sub(total));
+                val.search_calls_left = Some(l.saturating_sub(total));
             }
         }
         for (ji, (i, infos, lots)) in jobs.iter().enumerate() {
@@ -1381,13 +1670,12 @@ pub async fn apply_evm_open_valuation(
                             .copied()
                             .unwrap_or(true);
                         positions.push(if !admitted || val.runtime_exhausted {
-                            EvmPositionValuation {
-                                token: info.token,
-                                open_amount_raw: info.open_amount_raw,
-                                outcome: EvmValuationOutcome::Unvalued {
+                            position(
+                                info,
+                                EvmValuationOutcome::Unvalued {
                                     reason: EvmUnvaluedReason::RequestBudgetExhausted,
                                 },
-                            }
+                            )
                         } else {
                             val.value_one(info, &basis).await
                         });

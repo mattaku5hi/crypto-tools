@@ -15,6 +15,7 @@ mod config;
 mod evm_run;
 mod evm_source;
 mod input;
+mod multichain;
 mod output;
 mod price_source;
 mod time;
@@ -37,6 +38,11 @@ pub use input::{
     IdentityKind, IdentityRecord, InputError, InputFormat, ParsedInput, UpstreamInfo,
     chain_profile_name, parse_input, parse_jsonl_with_upstream, resolve_chain,
     resolve_token_assets, resolve_wallet_keys,
+};
+pub use multichain::{
+    ChainGroup, ChainRun, DEFAULT_CHAIN_CONCURRENCY, MAX_CHAIN_CONCURRENCY, aggregate_exit,
+    chain_name, chain_status_text, display_of_chain, parse_records, partition_by_chain,
+    record_kind, render_records, run_chains_bounded, unscanned_cards,
 };
 pub use output::{
     DecodeEvidenceDto, EvmOpenPositionDto, EvmOpenValuationMetaDto, EvmOpenValuationTotalsDto,
