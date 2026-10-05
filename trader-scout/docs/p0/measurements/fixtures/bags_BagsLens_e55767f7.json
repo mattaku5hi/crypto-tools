@@ -1,0 +1,227 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "factory",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "FACTORY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IBagsFactory"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "claimableOf",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "user",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getTokenState",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "state",
+        "type": "tuple",
+        "internalType": "struct IBagsLens.TokenState",
+        "components": [
+          {
+            "name": "exists",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "migrated",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "curve",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "feeShare",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "poolId",
+            "type": "bytes32",
+            "internalType": "PoolId"
+          },
+          {
+            "name": "thresholdQuote",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "realQuoteReserves",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "realTokenReserves",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "virtualTokenReserves",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "virtualQuoteReserves",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceQuotePerToken",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "bondingProgressPct",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalRaised",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getTokenStates",
+    "inputs": [
+      {
+        "name": "tokens",
+        "type": "address[]",
+        "internalType": "address[]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "states",
+        "type": "tuple[]",
+        "internalType": "struct IBagsLens.TokenState[]",
+        "components": [
+          {
+            "name": "exists",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "migrated",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "curve",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "feeShare",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "poolId",
+            "type": "bytes32",
+            "internalType": "PoolId"
+          },
+          {
+            "name": "thresholdQuote",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "realQuoteReserves",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "realTokenReserves",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "virtualTokenReserves",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "virtualQuoteReserves",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "priceQuotePerToken",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "bondingProgressPct",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalRaised",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "error",
+    "name": "BagsLens_ZeroAddressFactory",
+    "inputs": []
+  }
+]
