@@ -85,7 +85,7 @@ buyer-intersect \
 | `--entity-map path` | Explicit mapping address→entity; отдельные provenance и grouping label |
 | `--include-holdings` | Дополнительный snapshot остатка; не меняет определение исторической покупки |
 
-Меньше двух distinct input tokens — usage error для задачи пересечений. K>N — usage error. Default `any` значит «купил хотя бы K из списка», не «любое число >0».
+Меньше двух distinct input tokens — usage error для задачи пересечений, кроме `--min-token-hits 1` (один токен — список всех его трейдеров). K>N — usage error. Default `any` значит «купил хотя бы K из списка», не «любое число >0».
 
 Результат: wallet/group identity, network(s), hit_count, N, matched AssetKeys, first qualifying buys с tx evidence, buy counts, spend при наличии цены, holdings по запросу, quality. Сортировка: hit_count desc, canonical wallet/group key asc. Дополнительные sort options допустимы только с документированной missing-values policy.
 

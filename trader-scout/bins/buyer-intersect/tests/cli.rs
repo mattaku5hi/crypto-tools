@@ -58,6 +58,11 @@ fn buyer_intersect_single_token_is_exit_2() {
     let (code, _stdout, stderr) = run_with_stdin(bin, &["--input", "-"], input);
     assert_eq!(code, 2, "stderr: {stderr}");
     assert!(stderr.contains("at least 2"));
+    // K = 1: one token is a valid query (here refused later, exit 4: no RPC)
+    let (code, _stdout, stderr) =
+        run_with_stdin(bin, &["--input", "-", "--min-token-hits", "1"], input);
+    assert_eq!(code, 4, "stderr: {stderr}");
+    assert!(!stderr.contains("at least 2"), "{stderr}");
 }
 
 #[test]

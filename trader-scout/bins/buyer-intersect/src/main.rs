@@ -318,10 +318,14 @@ fn main() -> ExitCode {
         }
     };
 
-    if parsed.records.len() < 2 {
+    if parsed.records.len() < 2 && args.min_token_hits >= 2 {
         // CLI.md §3: "Меньше двух distinct input tokens — usage error
-        // для задачи пересечений."
-        eprintln!("buyer-intersect: at least 2 distinct input tokens are required");
+        // для задачи пересечений." With `--min-token-hits 1` one token is a
+        // valid query (every trader of that token).
+        eprintln!(
+            "buyer-intersect: at least 2 distinct input tokens are required (or \
+             --min-token-hits 1 to list one token's traders)"
+        );
         return ExitCode::from(2);
     }
 
