@@ -573,7 +573,7 @@ fn run_solana(
         Ok(provider) => provider,
         Err(err) => return provider_error_exit(&err, Some(api_key)),
     };
-    let result = rt.block_on(run_solana_trade_intersect(
+    let scan = run_solana_trade_intersect(
         &provider,
         input_tokens,
         args.min_token_hits,
@@ -584,7 +584,23 @@ fn run_solana(
             slices,
         },
         CancellationToken::new(),
-    ));
+    );
+    // Progress heartbeat (a long Solana scan is otherwise silent until done).
+    let result = rt.block_on(async {
+        tokio::pin!(scan);
+        let every = std::time::Duration::from_secs(60);
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        loop {
+            tokio::select! {
+                r = &mut scan => break r,
+                _ = tick.tick() => eprintln!(
+                    "buyer-intersect: progress: {} s elapsed, {} request(s) made (solana)",
+                    started.elapsed().as_secs(),
+                    provider.total_requests_made()
+                ),
+            }
+        }
+    });
     let requests_made = provider.total_requests_made();
     let report = match result {
         Ok(report) => report,
