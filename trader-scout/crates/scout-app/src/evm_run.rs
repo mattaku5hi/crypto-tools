@@ -115,6 +115,30 @@ impl EvmSetup {
         v
     }
 
+    /// Print a [`progress_line`] through `notice` every [`PROGRESS_INTERVAL`]
+    /// until the guard is dropped. `extra` adds requests made outside the
+    /// main client (explorer). Must be called inside a Tokio runtime.
+    #[must_use]
+    pub fn spawn_progress(
+        &self,
+        notice: &LimiterNotice,
+        extra: Option<Arc<dyn Fn() -> u64 + Send + Sync>>,
+    ) -> ProgressGuard {
+        let rpc = self.rpc.clone();
+        let limiters = self.limiters.clone();
+        let notice = Arc::clone(notice);
+        let started = tokio::time::Instant::now();
+        ProgressGuard(tokio::spawn(async move {
+            let mut tick = tokio::time::interval_at(started + PROGRESS_INTERVAL, PROGRESS_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let requests = rpc.total_requests_made() + extra.as_ref().map_or(0, |f| f());
+                notice(progress_line(started.elapsed(), requests, &limiters));
+            }
+        }))
+    }
+
     /// One stderr line per endpoint: initial/final rate, halvings, waits.
     #[must_use]
     pub fn rate_limit_report(&self) -> Vec<String> {
@@ -145,17 +169,70 @@ fn fmt_rate(milli: u64) -> String {
     )
 }
 
+/// Stderr text of a limiter rate change: a halving (`new < old`) or the
+/// restore of the initial rate after quiet time (`new > old`).
+fn rate_change_text(label: &str, cause: &str, old: u64, new: u64) -> String {
+    if new > old {
+        format!(
+            "{label}: no 429 for a while; client rate restored {}/s -> {}/s",
+            fmt_rate(old),
+            fmt_rate(new)
+        )
+    } else {
+        format!(
+            "{label}: {cause}; client rate halved {}/s -> {}/s (grows back by 1/{} of the \
+             initial rate every {} s without 429)",
+            fmt_rate(old),
+            fmt_rate(new),
+            scout_rpc::RECOVER_DIVISOR,
+            scout_rpc::RECOVER_STEP.as_secs()
+        )
+    }
+}
+
 /// Human line of one limiter's counters (never contains a URL).
 #[must_use]
 pub fn rate_limit_line(label: &str, st: &RateLimiterStats) -> String {
     format!(
-        "{label}: rate {}/s -> {}/s ({} halving(s) after 429 without Retry-After), {} request(s) \
-         paced, {} ms spent waiting for tokens",
+        "{label}: rate {}/s -> {}/s ({} halving(s) after 429 without Retry-After, {} recovery \
+         step(s)), {} request(s) paced, {} ms spent waiting for tokens",
         fmt_rate(st.initial_rate_milli),
         fmt_rate(st.rate_milli),
         st.halvings,
+        st.recoveries,
         st.acquired,
         st.waited_ms
+    )
+}
+
+/// Interval of the stderr progress heartbeat of a long EVM run.
+pub const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Aborts the progress heartbeat task when dropped.
+#[derive(Debug)]
+pub struct ProgressGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for ProgressGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// URL-free heartbeat line: requests so far and the current rate per
+/// endpoint, so a slow run (paced after 429s) never looks hung.
+fn progress_line(
+    elapsed: std::time::Duration,
+    requests: u64,
+    limiters: &[(String, Arc<RateLimiter>)],
+) -> String {
+    let rates: Vec<String> = limiters
+        .iter()
+        .map(|(label, l)| format!("{label} {}/s", fmt_rate(l.stats().rate_milli)))
+        .collect();
+    format!(
+        "progress: {} s elapsed, {requests} request(s) made; current rate: {}",
+        elapsed.as_secs(),
+        rates.join(", ")
     )
 }
 
@@ -223,11 +300,11 @@ pub fn make_limiter(
     let hook_label = label.to_string();
     let notify = Arc::clone(on_halve);
     let hook: HalvingHook = Arc::new(move |old, new| {
-        notify(format!(
-            "{hook_label}: provider answered 429 without Retry-After; client rate halved \
-             {}/s -> {}/s for the rest of the run",
-            fmt_rate(old),
-            fmt_rate(new)
+        notify(rate_change_text(
+            &hook_label,
+            "provider answered 429 without Retry-After",
+            old,
+            new,
         ));
     });
     let mut cu_opt = net.rpc_cu_per_sec;
@@ -676,6 +753,11 @@ pub async fn collect_evm_stats(
         ScanLimits::default(),
     );
     let resolver = NativeLegResolver::new(setup.rpc.clone(), NativeLegPolicy::default());
+    let explorer_requests = bs_limiter.clone().map(|l| {
+        let f: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(move || l.stats().acquired);
+        f
+    });
+    let _progress = setup.spawn_progress(notice, explorer_requests);
     let result = run_evm_wallet_stats(
         &setup.cfg,
         &EvmStatsSources {
@@ -788,11 +870,11 @@ fn build_blockscout(
     let bs_label2 = label.to_string();
     let limiter = Arc::new(RateLimiter::new(bs_rps, bs_rps).with_halving_hook(Arc::new(
         move |old, new| {
-            bs_notice(format!(
-                "{bs_label2}: 429/rate limit answer; client rate halved {}/s -> {}/s for the \
-                 rest of the run",
-                fmt_rate(old),
-                fmt_rate(new)
+            bs_notice(rate_change_text(
+                &bs_label2,
+                "429/rate limit answer",
+                old,
+                new,
             ));
         },
     )));
@@ -805,6 +887,25 @@ fn build_blockscout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_change_and_progress_texts_are_url_free_and_distinguish_restore() {
+        let down = rate_change_text("keyed rpc", "429", 250_000, 125_000);
+        assert!(down.contains("halved 250.000/s -> 125.000/s"), "{down}");
+        assert!(down.contains("grows back by 1/8"), "{down}");
+        let up = rate_change_text("keyed rpc", "429", 7_812, 250_000);
+        assert!(up.contains("restored 7.812/s -> 250.000/s"), "{up}");
+        let l = Arc::new(RateLimiter::new(250, 250));
+        let line = progress_line(
+            std::time::Duration::from_secs(120),
+            42,
+            &[("keyed rpc".to_string(), l)],
+        );
+        assert_eq!(
+            line,
+            "progress: 120 s elapsed, 42 request(s) made; current rate: keyed rpc 250.000/s"
+        );
+    }
 
     fn key(family: ChainFamily, id: Option<u64>) -> ChainKey {
         ChainKey {

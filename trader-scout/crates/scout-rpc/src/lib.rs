@@ -33,6 +33,6 @@ pub use client::{
 pub use endpoint::RpcEndpoint;
 pub use jsonrpc::{JsonRpcEnvelopeError, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 pub use ratelimit::{
-    DEFAULT_MAX_WAITERS, HalvingHook, MIN_RATE_MILLI, RateLimiter, RateLimiterSaturated,
-    RateLimiterStats,
+    DEFAULT_MAX_WAITERS, HalvingHook, MIN_RATE_MILLI, RECOVER_DIVISOR, RECOVER_STEP, RateLimiter,
+    RateLimiterSaturated, RateLimiterStats,
 };

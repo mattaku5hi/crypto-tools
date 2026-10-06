@@ -13,9 +13,12 @@
 //! - AIMD-style back-off: [`RateLimiter::on_rate_limited`] halves the rate
 //!   (floor [`MIN_RATE_MILLI`]) when a provider answers 429 without
 //!   `Retry-After`; halvings are debounced to one per second so a burst of
-//!   concurrent 429s counts once. The rate never grows back within a run
-//!   (a run is short; the conservative choice avoids oscillating into the
-//!   same quota wall).
+//!   concurrent 429s counts once. After [`RECOVER_STEP`] without a 429 the
+//!   rate grows back additively by 1/[`RECOVER_DIVISOR`] of the initial rate
+//!   per step, up to the initial rate (a burst of 429s must not leave a long
+//!   run crawling at the floor for hours; live 2026-10-05: 250 -> 7.8 CU/s
+//!   made one `eth_getBlockReceipts` wait over a minute). A single sleep is
+//!   capped at one step so a recovered rate takes effect promptly.
 //! - Time comes from `tokio::time` so tests run with paused time.
 
 use std::fmt;
@@ -30,6 +33,10 @@ pub const MIN_RATE_MILLI: u64 = 100;
 /// Default bound of simultaneously waiting callers.
 pub const DEFAULT_MAX_WAITERS: usize = 4_096;
 const HALVE_DEBOUNCE: Duration = Duration::from_secs(1);
+/// Quiet time (no 429) after which the rate grows by one recovery step.
+pub const RECOVER_STEP: Duration = Duration::from_secs(10);
+/// One recovery step adds `initial / RECOVER_DIVISOR` to the rate.
+pub const RECOVER_DIVISOR: u64 = 8;
 
 /// More callers are waiting for the limiter than its configured bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,13 +62,17 @@ pub struct RateLimiterStats {
     pub initial_rate_milli: u64,
     pub rate_milli: u64,
     pub halvings: u64,
+    /// Recovery steps taken after halvings.
+    pub recoveries: u64,
     /// Granted acquisitions.
     pub acquired: u64,
     /// Total time callers slept waiting for tokens.
     pub waited_ms: u64,
 }
 
-/// Called as `(old_rate_milli, new_rate_milli)` after each halving.
+/// Called as `(old_rate_milli, new_rate_milli)` after each halving
+/// (`new < old`) and once when recovery restores the initial rate
+/// (`new > old`).
 pub type HalvingHook = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
 #[derive(Debug)]
@@ -71,6 +82,11 @@ struct State {
     last: Instant,
     rate_milli: u64,
     last_halved: Option<Instant>,
+    /// Start of the current quiet period counted towards recovery.
+    recover_from: Instant,
+    /// Lowest rate since the last full recovery (reported as `old` in the
+    /// restore notice).
+    lowest_milli: u64,
 }
 
 /// Token-bucket limiter, see the module docs.
@@ -82,6 +98,7 @@ pub struct RateLimiter {
     burst_micro: i128,
     initial_rate_milli: u64,
     halvings: AtomicU64,
+    recoveries: AtomicU64,
     acquired: AtomicU64,
     waited_ms: AtomicU64,
     hook: Option<HalvingHook>,
@@ -121,6 +138,8 @@ impl RateLimiter {
                 last: Instant::now(),
                 rate_milli,
                 last_halved: None,
+                recover_from: Instant::now(),
+                lowest_milli: rate_milli,
             }),
             turn: tokio::sync::Mutex::new(()),
             waiters: AtomicUsize::new(0),
@@ -128,6 +147,7 @@ impl RateLimiter {
             burst_micro,
             initial_rate_milli: rate_milli,
             halvings: AtomicU64::new(0),
+            recoveries: AtomicU64::new(0),
             acquired: AtomicU64::new(0),
             waited_ms: AtomicU64::new(0),
             hook: None,
@@ -155,18 +175,53 @@ impl RateLimiter {
             initial_rate_milli: self.initial_rate_milli,
             rate_milli,
             halvings: self.halvings.load(Ordering::Acquire),
+            recoveries: self.recoveries.load(Ordering::Acquire),
             acquired: self.acquired.load(Ordering::Acquire),
             waited_ms: self.waited_ms.load(Ordering::Acquire),
         }
     }
 
-    fn refill(&self, s: &mut State) {
+    /// Accrue tokens since the last call, then apply any recovery steps that
+    /// became due. Returns `Some((lowest, initial))` when this call restored
+    /// the initial rate (the caller reports it outside the lock).
+    fn refill(&self, s: &mut State) -> Option<(u64, u64)> {
         let now = Instant::now();
         let elapsed_us = now.saturating_duration_since(s.last).as_micros();
         s.last = now;
         let add =
             i128::try_from(div(elapsed_us * u128::from(s.rate_milli), 1_000)).unwrap_or(i128::MAX);
         s.tokens_micro = s.tokens_micro.saturating_add(add).min(self.burst_micro);
+        if s.rate_milli >= self.initial_rate_milli {
+            return None;
+        }
+        let quiet = now.saturating_duration_since(s.recover_from);
+        let steps = div(quiet.as_millis(), RECOVER_STEP.as_millis());
+        if steps == 0 {
+            return None;
+        }
+        let step = self
+            .initial_rate_milli
+            .checked_div(RECOVER_DIVISOR)
+            .unwrap_or(0)
+            .max(1);
+        let missing = self.initial_rate_milli - s.rate_milli;
+        let needed = missing.div_ceil(step);
+        let steps64 = u64::try_from(steps).unwrap_or(u64::MAX).min(needed);
+        s.rate_milli = s
+            .rate_milli
+            .saturating_add(step.saturating_mul(steps64))
+            .min(self.initial_rate_milli);
+        s.recover_from = u32::try_from(steps)
+            .ok()
+            .and_then(|n| RECOVER_STEP.checked_mul(n))
+            .and_then(|d| s.recover_from.checked_add(d))
+            .unwrap_or(now);
+        self.recoveries.fetch_add(steps64, Ordering::AcqRel);
+        (s.rate_milli == self.initial_rate_milli).then(|| {
+            let lowest = s.lowest_milli;
+            s.lowest_milli = self.initial_rate_milli;
+            (lowest, self.initial_rate_milli)
+        })
     }
 
     /// Wait until `cost_units` tokens are available and take them. A cost
@@ -189,13 +244,13 @@ impl RateLimiter {
         // FIFO: one caller at a time sleeps for its tokens.
         let _turn = self.turn.lock().await;
         loop {
-            let wait = {
+            let (wait, restored) = {
                 let Ok(mut s) = self.state.lock() else {
                     // Poisoned: never block the run on a broken limiter.
                     break;
                 };
-                self.refill(&mut s);
-                if s.tokens_micro >= need_tokens {
+                let restored = self.refill(&mut s);
+                let wait = if s.tokens_micro >= need_tokens {
                     s.tokens_micro = s.tokens_micro.saturating_sub(cost);
                     None
                 } else {
@@ -204,11 +259,18 @@ impl RateLimiter {
                         need * 1_000 + u128::from(s.rate_milli) - 1,
                         u128::from(s.rate_milli),
                     );
-                    Some(Duration::from_micros(
-                        u64::try_from(us.max(1)).unwrap_or(u64::MAX),
-                    ))
-                }
+                    // Capped: re-check after a recovery step instead of
+                    // sleeping out a wait computed at a floor rate.
+                    Some(
+                        Duration::from_micros(u64::try_from(us.max(1)).unwrap_or(u64::MAX))
+                            .min(RECOVER_STEP),
+                    )
+                };
+                (wait, restored)
             };
+            if let (Some((old, new)), Some(h)) = (restored, &self.hook) {
+                h(old, new);
+            }
             match wait {
                 None => break,
                 Some(d) => {
@@ -233,6 +295,8 @@ impl RateLimiter {
             let now = Instant::now();
             s.tokens_micro = 0;
             s.last = now;
+            // Any 429 (debounced or not) restarts the quiet period.
+            s.recover_from = now;
             if s.last_halved
                 .is_some_and(|t| now.saturating_duration_since(t) < HALVE_DEBOUNCE)
             {
@@ -245,6 +309,7 @@ impl RateLimiter {
             }
             s.rate_milli = new;
             s.last_halved = Some(now);
+            s.lowest_milli = s.lowest_milli.min(new);
             (old, new)
         };
         self.halvings.fetch_add(1, Ordering::AcqRel);
@@ -350,6 +415,56 @@ mod tests {
         l.acquire(1).await.unwrap();
         let el = Instant::now() - t0;
         assert!(el >= Duration::from_millis(250) && el < Duration::from_millis(300));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_recovers_additively_after_quiet_time_and_reports_restore() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        let l = RateLimiter::new(80, 80).with_halving_hook(Arc::new(move |a, b| {
+            if let Ok(mut v) = s2.lock() {
+                v.push((a, b));
+            }
+        }));
+        for _ in 0..4 {
+            l.on_rate_limited();
+            tokio::time::advance(Duration::from_millis(1_100)).await;
+        }
+        // 80 -> 5 units/s; a 429 inside the quiet period restarts it
+        assert_eq!(l.stats().rate_milli, 5_000);
+        tokio::time::advance(RECOVER_STEP - Duration::from_millis(1_200)).await;
+        l.on_rate_limited(); // debounced? no: >1 s since the last halving
+        assert_eq!(l.stats().rate_milli, 2_500);
+        tokio::time::advance(RECOVER_STEP / 2).await;
+        l.acquire(1).await.unwrap();
+        assert_eq!(l.stats().rate_milli, 2_500, "quiet period not over yet");
+        // three steps of 80/8 = 10 units/s each, capped at 80
+        tokio::time::advance(RECOVER_STEP * 3).await;
+        l.acquire(1).await.unwrap();
+        assert_eq!(l.stats().rate_milli, 32_500);
+        tokio::time::advance(RECOVER_STEP * 100).await;
+        l.acquire(1).await.unwrap();
+        let st = l.stats();
+        assert_eq!(st.rate_milli, 80_000);
+        assert_eq!(st.recoveries, 8);
+        assert_eq!(seen.lock().unwrap().last(), Some(&(2_500, 80_000)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn floor_rate_wait_is_rechecked_after_each_recovery_step() {
+        // At the 0.1/s floor a 1-unit token would take 10 s; a 100-unit
+        // bucket refill at the floor would take ~17 min. Recovery shortens it.
+        let l = RateLimiter::new(100, 100);
+        l.acquire(100).await.unwrap();
+        for _ in 0..12 {
+            l.on_rate_limited();
+            tokio::time::advance(Duration::from_millis(1_100)).await;
+        }
+        assert_eq!(l.stats().rate_milli, MIN_RATE_MILLI);
+        let t0 = Instant::now();
+        l.acquire(100).await.unwrap();
+        let el = Instant::now() - t0;
+        assert!(el < Duration::from_secs(60), "{el:?}");
     }
 
     #[tokio::test(start_paused = true)]

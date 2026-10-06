@@ -16,6 +16,7 @@ scout-rpc.workspace = true
 scout-providers.workspace = true
 scout-api.workspace = true
 alloy-primitives.workspace = true
+tokio.workspace = true
 tokio-util.workspace = true
 scout-sdk = { workspace = true, features = ["full"] }
 clap.workspace = true
@@ -28,5 +29,5 @@ thiserror.workspace = true
 
 [dev-dependencies]
 scout-dex-evm.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 wiremock.workspace = true

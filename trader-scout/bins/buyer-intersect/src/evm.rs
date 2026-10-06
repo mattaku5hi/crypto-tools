@@ -103,6 +103,10 @@ pub(crate) fn run_evm(
     // Native legs are not needed for sides; say so in the scope.
     info.trace = "not used (sides need no native leg)".to_string();
     info.archive_state = "not used (sides need no native leg)".to_string();
+    let _progress = {
+        let _rt = rt.enter();
+        setup.spawn_progress(&notice, None)
+    };
     let mut report = match rt.block_on(run_evm_buyer_intersect(
         &setup.cfg,
         &scanner,
