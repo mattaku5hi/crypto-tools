@@ -233,8 +233,16 @@ pub struct EvmTxExtraction {
     /// `Some` only when the wallet paid the fee (`wallet == tx.from`).
     pub fee: Option<EvmFee>,
     pub outcome: EvmTxOutcome,
-    /// Swap-shaped logs at non-gated emitters (never evidence, counted).
+    /// Swap-shaped logs at non-gated emitters that may hide a trade of the
+    /// wallet (never evidence, counted; a coverage gap): the emitter moves a
+    /// token the wallet traded in this tx (or the scanned token), moves no
+    /// token at all, or the tx was rejected before its flows were known.
     pub ungated_swap_logs: u32,
+    /// Swap-shaped logs at non-gated emitters that only move tokens the
+    /// wallet has no non-quote delta in (route hops such as WETH/USDG or an
+    /// intermediate token): they cannot hide this wallet's trade of another
+    /// token, so they are counted here and not as a coverage gap.
+    pub ungated_hop_swap_logs: u32,
     /// ERC-721-shaped `Transfer` logs (Uniswap v4 PositionManager NFTs,
     /// other NFTs): not fungible flows, counted and never used.
     pub nft_transfer_logs: u32,
@@ -351,12 +359,14 @@ pub fn extract_evm_trade(
     let gated = std::cell::Cell::new(0u32);
     let lp_account_other = std::cell::Cell::new(false);
     let lp_recipient_other = std::cell::Cell::new(false);
+    let hops = std::cell::Cell::new(0u32);
     let done = |outcome: EvmTxOutcome, ungated_swap_logs: u32| EvmTxExtraction {
         tx_hash: tx.hash,
         wallet: w,
         fee: paid_fee,
         outcome,
         ungated_swap_logs,
+        ungated_hop_swap_logs: hops.get(),
         nft_transfer_logs: nft,
         gated_swap_logs: gated.get(),
         launchpad_account_other: lp_account_other.get(),
@@ -381,6 +391,7 @@ pub fn extract_evm_trade(
     // WETH implementations that also emit the mint/burn Transfer.
     let mut weth_mint_burn: BTreeSet<(bool, Address, U256)> = BTreeSet::new();
     let mut swaps = Vec::new();
+    let mut ungated_emitters: Vec<Address> = Vec::new();
 
     for log in &tx.logs {
         // ERC-721 mint/burn/transfer (e.g. Uniswap v4 PositionManager
@@ -408,7 +419,10 @@ pub fn extract_evm_trade(
                 gated.set(gated.get().saturating_add(1));
                 swaps.push(v);
             }
-            GateOutcome::UngatedEmitter { .. } => ungated += 1,
+            GateOutcome::UngatedEmitter { .. } => {
+                ungated += 1;
+                ungated_emitters.push(log.address);
+            }
             GateOutcome::Malformed(m) => return no(NoTradeReason::MalformedLog(m), ungated),
             GateOutcome::NotSwap => {}
         }
@@ -489,6 +503,23 @@ pub fn extract_evm_trade(
     if flows.native != I256::ZERO {
         quotes.push((QuoteAsset::Native, flows.native));
     }
+    // Ungated emitters that move none of the wallet's traded tokens (nor the
+    // scanned one) are route hops, not a coverage gap. An emitter that moves
+    // no token in this tx stays a gap (nothing shows what it traded).
+    let relevant: BTreeSet<Address> = traded.iter().map(|(t, _)| *t).chain(token_filter).collect();
+    let hop_count = ungated_emitters
+        .iter()
+        .filter(|e| {
+            let mut moved = transfers
+                .iter()
+                .filter(|t| t.from == **e || t.to == **e)
+                .peekable();
+            moved.peek().is_some() && moved.all(|t| !relevant.contains(&t.token))
+        })
+        .count();
+    let hop_count = u32::try_from(hop_count).unwrap_or(u32::MAX);
+    hops.set(hop_count);
+    let ungated = ungated.saturating_sub(hop_count);
     let (token, token_delta) = match traded.as_slice() {
         [] => return no(NoTradeReason::NoTradedToken, ungated),
         [one] => *one,
@@ -621,6 +652,9 @@ pub struct EvmExtractionSummary {
     pub unknown_consideration: u64,
     pub no_trade: BTreeMap<String, u64>,
     pub ungated_swap_logs: u64,
+    /// Ungated swap logs classified as route hops (see
+    /// [`EvmTxExtraction::ungated_hop_swap_logs`]).
+    pub ungated_hop_swap_logs: u64,
     /// Booked trades whose launchpad event names an account other than
     /// `tx.from` (router/bot): informational (ADR-020 amendment 8).
     pub launchpad_account_is_router: u64,
@@ -667,6 +701,7 @@ pub fn extract_evm_trades(
         let e = extract_evm_trade(tx, cfg, wallet, token_filter);
         summary.transactions += 1;
         summary.ungated_swap_logs += u64::from(e.ungated_swap_logs);
+        summary.ungated_hop_swap_logs += u64::from(e.ungated_hop_swap_logs);
         summary.nft_transfer_logs += u64::from(e.nft_transfer_logs);
         summary.launchpad_recipient_other += u64::from(e.launchpad_recipient_other);
         match &e.outcome {
@@ -930,6 +965,43 @@ mod tests {
         t.internal_transfers = Some(vec![]);
         let e = extract_evm_trade(&t, &cfg(), None, None);
         assert_eq!(reason(&e), &NoTradeReason::NoQuoteLeg);
+    }
+
+    #[test]
+    fn ungated_route_hops_are_not_a_coverage_gap() {
+        let hop = Address::repeat_byte(0x77);
+        let router = Address::repeat_byte(0x66);
+        let inter = Address::repeat_byte(0x55);
+        let base = vec![
+            transfer(TOKEN, PM, W, 100),
+            transfer(weth(), W, PM, 5),
+            v4_swap(PM),
+        ];
+        // a WETH/USDC hop and an intermediate-token hop through unverified
+        // pools between the router and the pools: the wallet's TOKEN trade
+        // is evidenced by the gated PoolManager
+        let mut hops = base.clone();
+        hops.extend([
+            transfer(weth(), router, hop, 3),
+            transfer(USDC, hop, router, 9),
+            v4_swap(hop),
+            transfer(inter, hop, router, 4),
+            v4_swap(hop),
+        ]);
+        let e = extract_evm_trade(&tx(hops), &cfg(), None, None);
+        assert_eq!(trade(&e).token, TOKEN);
+        assert_eq!((e.ungated_swap_logs, e.ungated_hop_swap_logs), (0, 2));
+        // the unverified pool moves the traded token: a gap
+        let mut gap = base.clone();
+        gap.extend([transfer(TOKEN, hop, router, 1), v4_swap(hop)]);
+        let e = extract_evm_trade(&tx(gap), &cfg(), None, None);
+        assert_eq!((e.ungated_swap_logs, e.ungated_hop_swap_logs), (1, 0));
+        // ... or the scanned token (token filter), even when the signer's
+        // own delta is another token
+        let mut scanned = base.clone();
+        scanned.extend([transfer(inter, hop, router, 1), v4_swap(hop)]);
+        let e = extract_evm_trade(&tx(scanned), &cfg(), None, Some(inter));
+        assert_eq!((e.ungated_swap_logs, e.ungated_hop_swap_logs), (1, 0));
     }
 
     #[test]

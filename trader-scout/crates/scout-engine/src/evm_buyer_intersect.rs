@@ -81,6 +81,9 @@ pub struct EvmTokenScanSummary {
     /// Swap-shaped logs at non-gated emitters in the token's transactions.
     /// COVERAGE GAP (an unverified venue traded the token).
     pub ungated_swap_logs: u64,
+    /// Swap-shaped logs at non-gated emitters that moved neither the token
+    /// nor another token the signer traded (route hops): not a gap.
+    pub ungated_hop_swap_logs: u64,
     /// v2/v3 emitters of this token's transactions admitted as pools of a
     /// pinned factory (chain `eth_call`s, see `pool_admission`).
     pub pools_admitted: u64,
@@ -234,6 +237,7 @@ pub async fn run_evm_buyer_intersect(
             qualified_wallets: 0,
             idl_only_trades: 0,
             ungated_swap_logs: 0,
+            ungated_hop_swap_logs: 0,
             pools_admitted: 0,
             pools_refused: 0,
             log_splits: 0,
@@ -305,6 +309,7 @@ pub async fn run_evm_buyer_intersect(
                 s.transactions_scanned = Some(u64::try_from(txs.len()).unwrap_or(u64::MAX));
                 s.log_splits = out.log_splits;
                 s.ungated_swap_logs = summary.ungated_swap_logs;
+                s.ungated_hop_swap_logs = summary.ungated_hop_swap_logs;
                 let mut buyers: BTreeSet<Address> = BTreeSet::new();
                 let mut sellers: BTreeSet<Address> = BTreeSet::new();
                 for e in &extractions {

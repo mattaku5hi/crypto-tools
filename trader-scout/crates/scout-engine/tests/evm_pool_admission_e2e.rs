@@ -4,7 +4,9 @@
 //! `0x8803c117...` inside the token's transactions) with the pool's metadata
 //! served by an `eth_call` handler (as `evm-capture --swaps` records it).
 //! Before pool admission existed this run counted the v3 swap as a swap-shaped
-//! log outside the verified venue set and exited 3.
+//! log outside the verified venue set and exited 3. Both pools are WETH/USDG
+//! route hops (router `0x6aa80d…`) that never move PWPLT: since P3.18 an
+//! unadmitted hop is `ungated_hop_swap_logs`, not a coverage gap.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -99,13 +101,15 @@ async fn run(serve_pool_metadata: bool) -> scout_engine::EvmBuyerIntersectReport
 }
 
 #[tokio::test]
-async fn an_admitted_v3_pool_is_no_longer_a_coverage_gap_but_the_v2_pair_still_is() {
+async fn admitted_and_hop_pools_are_not_coverage_gaps() {
     let before = run(false).await;
     let t0 = &before.per_token[0];
     assert!(matches!(t0.status, TokenScanStatus::Ok));
-    // Nobody vouches for the pools: both swap logs are outside the gate.
+    // Nobody vouches for the pools: both swap logs are outside the gate, but
+    // both pools only move WETH/USDG (route hops), so neither is a gap.
     assert_eq!((t0.pools_admitted, t0.pools_refused), (0, 2));
-    assert_eq!(t0.ungated_swap_logs, 2);
+    assert_eq!((t0.ungated_swap_logs, t0.ungated_hop_swap_logs), (0, 2));
+    assert!(!before.is_coverage_incomplete());
 
     let after = run(true).await;
     let t = &after.per_token[0];
@@ -121,15 +125,11 @@ async fn an_admitted_v3_pool_is_no_longer_a_coverage_gap_but_the_v2_pair_still_i
     // The v3 pool reproduces from the pinned factory and init-code hash.
     assert_eq!(t.pools_admitted, 1);
     // The v2-shape pair is looked up too (Robinhood pins a v2 factory) but the
-    // handler serves no metadata for it: refused on chain, still a gap.
-    assert_eq!(t.ungated_swap_logs, 1);
+    // handler serves no metadata for it: refused on chain, a hop.
+    assert_eq!((t.ungated_swap_logs, t.ungated_hop_swap_logs), (0, 1));
     assert_eq!(t.pools_refused, 1);
-    assert!(after.is_coverage_incomplete());
     assert!(
-        after
-            .incomplete_reasons()
-            .iter()
-            .any(|r| r.contains("1 swap-shaped log(s)")),
+        !after.is_coverage_incomplete(),
         "{:?}",
         after.incomplete_reasons()
     );

@@ -352,6 +352,7 @@ fn jsonl_lines(
             "qualified_wallets": t.transactions_scanned.map(|_| t.qualified_wallets),
             "idl_only_trades": t.transactions_scanned.map(|_| t.idl_only_trades),
             "ungated_swap_logs": t.transactions_scanned.map(|_| t.ungated_swap_logs),
+            "ungated_hop_swap_logs": t.transactions_scanned.map(|_| t.ungated_hop_swap_logs),
             "log_splits": t.log_splits,
             "extraction": t.extraction.as_ref().map(|e| json!({
                 "transactions": e.transactions, "trades": e.trades,
@@ -434,7 +435,7 @@ fn print_diagnostics(
             TokenScanStatus::Ok => "ok".to_string(),
         };
         eprintln!(
-            "  token {:#x}: status={status} transfer_logs={:?} txs_scanned={:?} buyers={} sellers={} wallets={} idl_only_trades={} ungated_swap_logs={}",
+            "  token {:#x}: status={status} transfer_logs={:?} txs_scanned={:?} buyers={} sellers={} wallets={} idl_only_trades={} ungated_swap_logs={} ungated_hop_swap_logs={}",
             t.token,
             t.transfer_logs,
             t.transactions_scanned,
@@ -442,7 +443,8 @@ fn print_diagnostics(
             t.qualified_sellers,
             t.qualified_wallets,
             t.idl_only_trades,
-            t.ungated_swap_logs
+            t.ungated_swap_logs,
+            t.ungated_hop_swap_logs
         );
     }
     if let Some(ScanStop::BudgetExhausted { limit }) = report.stop {
