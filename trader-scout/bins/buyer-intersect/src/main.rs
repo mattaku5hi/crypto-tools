@@ -158,6 +158,13 @@ struct Args {
     )]
     evm_max_txs_per_token: u64,
 
+    /// EVM only: how token scans find the token's transactions. `auto`:
+    /// `eth_getLogs`, or — when the keyed RPC caps the log range (Alchemy
+    /// free: 10 blocks) and no logs endpoint is set — the token's transfers
+    /// via `alchemy_getAssetTransfers`. `logs`: always `eth_getLogs`.
+    #[arg(long, default_value = "auto", value_parser = ["auto", "logs"])]
+    evm_token_listing: String,
+
     /// Transactions per provider page (`limit`, 1..=1000; Solana/Helius
     /// only). `--max-pages-per-token` counts PAGES, so the per-token
     /// transaction budget is `max-pages-per-token * page-limit`. Pages above

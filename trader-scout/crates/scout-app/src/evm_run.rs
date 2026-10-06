@@ -23,9 +23,8 @@ use scout_sdk::evm::EvmChainProfile;
 use tokio_util::sync::CancellationToken;
 
 use crate::evm_source::{
-    ALCHEMY_DEFAULT_CU_PER_SEC, BSC_PUBLIC_LOGS_RPC, BSC_PUBLIC_LOGS_SPAN, EvmNetOptions,
-    EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS, ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env,
-    logs_rpc_env_name,
+    ALCHEMY_DEFAULT_CU_PER_SEC, EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS,
+    ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env, logs_rpc_env_name,
 };
 
 /// Which chain family an input set belongs to.
@@ -98,6 +97,13 @@ pub struct EvmSetup {
     /// Block span the endpoint that serves `eth_getLogs` is known to cap
     /// (`None` = no cap known). Drives the up-front cost estimate.
     pub logs_span_cap: Option<u64>,
+    /// Token scans should list transfers via `alchemy_getAssetTransfers`
+    /// (keyed Alchemy with a capped `eth_getLogs`, no logs endpoint).
+    pub token_listing_via_transfers: bool,
+    /// The probed `eth_getLogs` span cap of the keyed RPC when token scans
+    /// were switched to the transfers listing (used if a caller forces
+    /// `eth_getLogs` anyway, for the up-front cost estimate).
+    pub capped_logs_span: Option<u64>,
     /// Endpoint classes, never URLs (echoed in scope / `run_meta`).
     pub logs_source: String,
     pub state_source: String,
@@ -398,6 +404,8 @@ pub async fn setup_evm(
     let mut limiters = vec![(main_label.clone(), main_limiter)];
     let mut logs_secrets: Vec<String> = Vec::new();
     let mut logs_span_cap: Option<u64> = None;
+    let mut token_listing_via_transfers = false;
+    let mut capped_logs_span: Option<u64> = None;
     let state_source = if main_public {
         format!("public {} rpc (keyless)", profile.name)
     } else {
@@ -460,28 +468,25 @@ pub async fn setup_evm(
                     ),
                 ))
             }
-            Ok(Some(span)) if span <= 10 && profile.name == "bsc" => {
+            Ok(Some(span)) if span <= 10 => {
+                // Alchemy free caps eth_getLogs at 10 blocks and no keyless
+                // archive logs endpoint exists for this chain (the BSC
+                // publicnode RPC asks a personal token for old blocks):
+                // token scans list the token's transfers through
+                // alchemy_getAssetTransfers instead.
                 warnings.push(format!(
-                    "the keyed RPC caps eth_getLogs at {span} block(s) per request: using the \
-                     keyless public BSC RPC for eth_getLogs ONLY in {BSC_PUBLIC_LOGS_SPAN}-block \
-                     windows (receipts, state, balances stay on the keyed RPC); set {} to choose \
-                     another logs endpoint",
-                    logs_var.unwrap_or("SCOUT_BSC_LOGS_RPC_URL")
+                    "the keyed RPC caps eth_getLogs at {span} block(s) per request: token scans \
+                     list transfers via alchemy_getAssetTransfers (contract filter) instead of \
+                     eth_getLogs; set {} to an uncapped logs endpoint to use eth_getLogs",
+                    logs_var.unwrap_or("SCOUT_<CHAIN>_LOGS_RPC_URL")
                 ));
-                let public = env(PUBLIC_RPC_OVERRIDE_ENV)
-                    .filter(|u| !u.trim().is_empty())
-                    .unwrap_or_else(|| BSC_PUBLIC_LOGS_RPC.to_string());
-                let real_public = env(PUBLIC_RPC_OVERRIDE_ENV).is_none_or(|u| u.trim().is_empty());
-                logs_span_cap = Some(BSC_PUBLIC_LOGS_SPAN);
-                Some((
-                    EvmRpcUrl::new(public, false),
-                    real_public,
-                    format!(
-                        "public {} rpc (auto: keyed rpc caps eth_getLogs at {span} block(s); \
-                         {BSC_PUBLIC_LOGS_SPAN}-block windows)",
-                        profile.name
-                    ),
-                ))
+                token_listing_via_transfers = true;
+                capped_logs_span = Some(span);
+                logs_source = format!(
+                    "alchemy_getAssetTransfers token listing on the keyed rpc (eth_getLogs capped \
+                     at {span} block(s))"
+                );
+                None
             }
             Ok(Some(span)) => {
                 logs_span_cap = Some(span);
@@ -514,10 +519,7 @@ pub async fn setup_evm(
         .and_then(&env)
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|s| *s > 0);
-    let routed_bsc_public = logs_target
-        .as_ref()
-        .is_some_and(|(_, _, label)| label.starts_with("public bsc rpc"));
-    if let Some(span) = span_env.or(routed_bsc_public.then_some(BSC_PUBLIC_LOGS_SPAN)) {
+    if let Some(span) = span_env.filter(|_| logs_target.is_some()) {
         rpc = rpc.with_logs_max_span(span);
         logs_span_cap = Some(span);
     }
@@ -579,6 +581,8 @@ pub async fn setup_evm(
         info,
         warnings,
         logs_span_cap,
+        token_listing_via_transfers,
+        capped_logs_span,
         logs_source,
         state_source,
         logs_secrets,
@@ -1051,13 +1055,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capped_keyed_bsc_rpc_routes_logs_to_the_public_endpoint_in_5000_block_windows() {
+    async fn capped_keyed_bsc_rpc_lists_token_transfers_instead_of_logs() {
         let keyed = endpoint_of(&scout_sdk::evm::BSC, capped()).await;
-        let public = endpoint_of(&scout_sdk::evm::BSC, ok(json!([]))).await;
-        let (k, p) = (keyed.uri(), public.uri());
+        let k = keyed.uri();
         let env = move |name: &str| match name {
             "SCOUT_BSC_RPC_URL" => Some(format!("{k}/v2/{KEYED_SECRET}")),
-            PUBLIC_RPC_OVERRIDE_ENV => Some(p.clone()),
             _ => None,
         };
         let bsc = ChainKey {
@@ -1077,26 +1079,16 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(setup.token_listing_via_transfers);
+        assert_eq!(setup.logs_span_cap, None, "no up-front getLogs refusal");
         assert!(
-            setup.logs_source.contains("5000-block windows"),
+            setup.logs_source.contains("alchemy_getAssetTransfers"),
             "{}",
             setup.logs_source
         );
-        assert_eq!(setup.logs_span_cap, Some(BSC_PUBLIC_LOGS_SPAN));
         assert!(setup.warnings.iter().all(|w| !w.contains(KEYED_SECRET)));
-        let r = setup
-            .rpc
-            .get_logs(&scout_providers::LogFilter::default(), 0, 12_000)
-            .await
-            .unwrap();
-        // cut up front: 0-4999, 5000-9999, 10000-12000, no failed attempt
-        assert_eq!((r.requests, r.splits), (3, 0), "{r:?}");
-        let mp = methods(&public).await;
-        assert_eq!(
-            mp.iter().filter(|m| *m == "eth_getLogs").count(),
-            3,
-            "{mp:?}"
-        );
+        // one limiter: no second (public) endpoint
+        assert_eq!(setup.rate_limit_report().len(), 1);
     }
 
     #[tokio::test]

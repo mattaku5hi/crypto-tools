@@ -68,7 +68,10 @@ async fn run_in(rpc: &MockServer, window: [&'static str; 4], extra: &[&str]) -> 
     let url = format!("{}/v2/{SECRET}", rpc.uri());
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new(BIN);
+        // The capped-eth_getLogs path (`auto` would list transfers via
+        // alchemy_getAssetTransfers, which the fixture did not record).
         cmd.args(["--input", "-", "--rpc-rps", "5000", "--min-token-hits", "1"])
+            .args(["--evm-token-listing", "logs"])
             .args(window)
             .args(extra)
             .env_remove("SCOUT_ROBINHOOD_RPC_URL")

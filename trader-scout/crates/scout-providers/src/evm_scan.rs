@@ -358,13 +358,41 @@ pub struct EvmHistoryScanner {
     rpc: EvmRpcClient,
     chain: ChainKey,
     limits: ScanLimits,
+    /// Token scans list transfers through `alchemy_getAssetTransfers`
+    /// (contract filter) instead of `eth_getLogs`, at most this many pages.
+    token_lister: Option<(AlchemyTransfersSource, u32)>,
 }
 
 impl EvmHistoryScanner {
     /// `chain` should come from `EvmRpcClient::preflight`.
     #[must_use]
     pub fn new(rpc: EvmRpcClient, chain: ChainKey, limits: ScanLimits) -> Self {
-        Self { rpc, chain, limits }
+        Self {
+            rpc,
+            chain,
+            limits,
+            token_lister: None,
+        }
+    }
+
+    /// Token scans list the token's transfers via `alchemy_getAssetTransfers`
+    /// (`contractAddresses`, ≤ `max_pages` pages of 1,000 rows) instead of a
+    /// window-wide `eth_getLogs` — for providers that cap the log range
+    /// (Alchemy free: 10 blocks). Receipts then follow [`ReceiptMode`].
+    #[must_use]
+    pub fn with_token_transfers_listing(
+        mut self,
+        source: AlchemyTransfersSource,
+        max_pages: u32,
+    ) -> Self {
+        self.token_lister = Some((source, max_pages.max(1)));
+        self
+    }
+
+    /// `true` when token scans use the transfers listing.
+    #[must_use]
+    pub fn lists_tokens_via_transfers(&self) -> bool {
+        self.token_lister.is_some()
     }
 
     #[must_use]
@@ -406,6 +434,24 @@ impl EvmHistoryScanner {
         from_block: u64,
         to_block: u64,
     ) -> Result<TokenScanOutput, EvmSourceError> {
+        if let Some((lister, max_pages)) = &self.token_lister {
+            let listing = lister
+                .list_token(token, from_block, to_block, *max_pages)
+                .await?;
+            if !listing.complete || listing.transactions.len() > self.limits.max_transactions {
+                // Incomplete listing or over the bound: no receipt request.
+                return Err(EvmSourceError::TooManyTransactions {
+                    cap: self.limits.max_transactions,
+                });
+            }
+            let transactions = self.transactions_of(&listing.transactions).await?;
+            return Ok(TokenScanOutput {
+                transactions,
+                transfer_logs: listing.transfer_rows,
+                log_requests: listing.requests,
+                log_splits: 0,
+            });
+        }
         let filter = LogFilter {
             addresses: vec![token],
             topics: [Some(vec![TRANSFER_TOPIC0]), None, None, None],
@@ -475,6 +521,68 @@ impl EvmHistoryScanner {
             log_requests,
             log_splits,
         })
+    }
+
+    /// Receipts + transactions of `(block, hash)` pairs (a transfers
+    /// listing): per [`ReceiptMode`], a block with at least
+    /// `block_receipts_min_txs` wanted transactions is fetched whole, the
+    /// others one receipt each; a receipt must sit in the listed block.
+    async fn transactions_of(
+        &self,
+        wanted: &[(u64, B256)],
+    ) -> Result<Vec<RawEvmTransaction>, EvmSourceError> {
+        let mut per_block: BTreeMap<u64, Vec<B256>> = BTreeMap::new();
+        for (b, h) in wanted {
+            per_block.entry(*b).or_default().push(*h);
+        }
+        let mut blocks: Vec<u64> = Vec::new();
+        let mut singles: Vec<(u64, B256)> = Vec::new();
+        for (b, hs) in &per_block {
+            let whole = match self.limits.receipt_mode {
+                ReceiptMode::BlockReceipts => true,
+                ReceiptMode::PerTransaction => false,
+                ReceiptMode::Auto => hs.len() >= self.limits.block_receipts_min_txs,
+            };
+            if whole {
+                blocks.push(*b);
+            } else {
+                singles.extend(hs.iter().map(|h| (*b, *h)));
+            }
+        }
+        let want: HashSet<B256> = wanted.iter().map(|(_, h)| *h).collect();
+        let mut needed: Vec<EvmReceiptInfo> = Vec::with_capacity(want.len());
+        for (_, rs) in self.rpc.receipts_by_blocks(&blocks).await? {
+            needed.extend(rs.into_iter().filter(|r| want.contains(&r.tx_hash)));
+        }
+        let single_hashes: Vec<B256> = singles.iter().map(|(_, h)| *h).collect();
+        for ((b, h), r) in singles
+            .iter()
+            .zip(self.rpc.receipts_by_hashes(&single_hashes).await?)
+        {
+            if r.block_number != *b || r.tx_hash != *h {
+                return Err(malformed(
+                    "eth_getTransactionReceipt",
+                    format!(
+                        "receipt of {h:#x} is at block {}, the transfers listing said block {b}",
+                        r.block_number
+                    ),
+                ));
+            }
+            needed.push(r);
+        }
+        if needed.len() != want.len() {
+            return Err(malformed(
+                "eth_getBlockReceipts",
+                format!(
+                    "{} of {} listed transactions have no receipt in their block",
+                    want.len() - needed.len().min(want.len()),
+                    want.len()
+                ),
+            ));
+        }
+        needed.sort_by_key(|r| (r.block_number, r.transaction_index));
+        let hashes: Vec<B256> = needed.iter().map(|r| r.tx_hash).collect();
+        self.build(&hashes, None, Some(needed), None).await
     }
 
     /// Receipts + transactions of the transactions at `(block, index)`
@@ -1264,6 +1372,71 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("the log said block 7 index 1"), "{err}");
+    }
+
+    /// [`Chain`] that also answers `alchemy_getAssetTransfers` (contract
+    /// filter): rows of tx 0xa1 (block `b7`) twice and tx 0xa2 (block 5).
+    struct ListedChain {
+        b7: &'static str,
+    }
+    impl Respond for ListedChain {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            if body["method"] != "alchemy_getAssetTransfers" {
+                return Chain.respond(req);
+            }
+            assert_eq!(body["params"][0]["contractAddresses"][0], TOKEN);
+            let row = |h: B256, b: &str, n: u32| {
+                json!({"hash": format!("{h:#x}"), "blockNum": b, "category": "erc20",
+                    "from": WALLET, "to": OTHER, "uniqueId": format!("{h:#x}:log:{n}"),
+                    "rawContract": {"address": TOKEN, "value": "0x1"},
+                    "metadata": {"blockTimestamp": "2026-10-06T00:00:00.000Z"}})
+            };
+            let result = json!({"transfers": [
+                row(h(0xa2), "0x5", 0), row(h(0xa1), self.b7, 3), row(h(0xa1), self.b7, 4)
+            ]});
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"jsonrpc":"2.0","id":1,"result":result}))
+        }
+    }
+
+    #[tokio::test]
+    async fn token_scan_via_transfers_listing_uses_no_logs_and_checks_blocks() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ListedChain { b7: "0x7" })
+            .mount(&s)
+            .await;
+        let sc = scanner(&s, ScanLimits::default()).await;
+        let lister = AlchemyTransfersSource::new(sc.rpc().clone(), crate::AlchemyConfig::default());
+        let sc = sc.with_token_transfers_listing(lister, 5);
+        let out = sc.scan_token(TOKEN.parse().unwrap(), 0, 10).await.unwrap();
+        let got: Vec<_> = out.transactions.iter().map(|t| t.hash).collect();
+        assert_eq!(got, vec![h(0xa2), h(0xa1)], "canonical order, deduplicated");
+        assert_eq!((out.transfer_logs, out.log_requests), (3, 1));
+        let m = methods(&s).await;
+        assert!(!m.iter().any(|x| x == "eth_getLogs"), "{m:?}");
+        assert_eq!(
+            m.iter()
+                .filter(|x| *x == "eth_getTransactionReceipt")
+                .count(),
+            2
+        );
+        // a receipt outside the listed block is refused
+        let s2 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ListedChain { b7: "0x9" })
+            .mount(&s2)
+            .await;
+        let sc = scanner(&s2, ScanLimits::default()).await;
+        let lister = AlchemyTransfersSource::new(sc.rpc().clone(), crate::AlchemyConfig::default());
+        let err = sc
+            .with_token_transfers_listing(lister, 5)
+            .scan_token(TOKEN.parse().unwrap(), 0, 10)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the transfers listing said block 9"), "{err}");
     }
 
     #[tokio::test]

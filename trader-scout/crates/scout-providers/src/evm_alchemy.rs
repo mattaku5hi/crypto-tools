@@ -113,20 +113,37 @@ pub struct AlchemyTransfersSource {
     internal_cap: Arc<AtomicU8>,
 }
 
-/// Direction of a stream.
+/// Address filter of a stream.
 #[derive(Debug, Clone, Copy)]
 enum Dir {
     From,
     To,
+    /// `contractAddresses: [token]` (every transfer of one token).
+    Contract,
 }
 
 impl Dir {
-    const fn key(self) -> &'static str {
+    fn filter(self, address: Address) -> (&'static str, Value) {
+        let a = format!("{address:#x}");
         match self {
-            Self::From => "fromAddress",
-            Self::To => "toAddress",
+            Self::From => ("fromAddress", Value::String(a)),
+            Self::To => ("toAddress", Value::String(a)),
+            Self::Contract => ("contractAddresses", json!([a])),
         }
     }
+}
+
+/// Every ERC-20 transfer of one token over a block range (token-centric
+/// listing without `eth_getLogs`, for range-capped providers).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AlchemyTokenListing {
+    /// Distinct `(block, tx hash)` of the transfers, ascending.
+    pub transactions: Vec<(u64, B256)>,
+    /// Transfer rows seen (zero-value ones included).
+    pub transfer_rows: usize,
+    /// `false`: the page bound was hit with a `pageKey` left.
+    pub complete: bool,
+    pub requests: u32,
 }
 
 /// `true` for the JSON-RPC "category/method not supported" family.
@@ -198,6 +215,7 @@ impl AlchemyTransfersSource {
     }
 
     /// One bounded paginated stream. Returns `(rows, complete, requests)`.
+    #[allow(clippy::too_many_arguments)]
     async fn stream(
         &self,
         wallet: Address,
@@ -206,15 +224,17 @@ impl AlchemyTransfersSource {
         exclude_zero: bool,
         from_block: u64,
         to_block: u64,
+        max_pages: u32,
     ) -> Result<(Vec<AlchemyTransfer>, bool, u32), EvmSourceError> {
         let mut rows = Vec::new();
         let mut page_key: Option<String> = None;
         let mut requests = 0u32;
-        for _ in 0..self.cfg.max_pages.max(1) {
+        let (filter_key, filter_value) = dir.filter(wallet);
+        for _ in 0..max_pages.max(1) {
             let mut p = json!({
                 "fromBlock": format!("{from_block:#x}"),
                 "toBlock": format!("{to_block:#x}"),
-                dir.key(): format!("{wallet:#x}"),
+                filter_key: filter_value.clone(),
                 "category": categories,
                 "withMetadata": true,
                 "excludeZeroValue": exclude_zero,
@@ -271,6 +291,7 @@ impl AlchemyTransfersSource {
                     exclude_zero,
                     from_block,
                     to_block,
+                    self.cfg.max_pages,
                 )
                 .await?;
             requests = requests.saturating_add(n);
@@ -288,7 +309,15 @@ impl AlchemyTransfersSource {
             let mut unsupported = false;
             for dir in [Dir::From, Dir::To] {
                 match self
-                    .stream(wallet, dir, &["internal"], true, from_block, to_block)
+                    .stream(
+                        wallet,
+                        dir,
+                        &["internal"],
+                        true,
+                        from_block,
+                        to_block,
+                        self.cfg.max_pages,
+                    )
                     .await
                 {
                     Ok((rows, done, n)) => {
@@ -316,6 +345,45 @@ impl AlchemyTransfersSource {
             internal,
             transfers_complete: complete,
             internal_complete,
+            requests,
+        })
+    }
+}
+
+impl AlchemyTransfersSource {
+    /// Every ERC-20 transfer of `token` over `[from_block, to_block]`
+    /// (`contractAddresses` filter, zero-value rows included), at most
+    /// `max_pages` pages of 1,000 rows. About 150 CU per page on Alchemy.
+    ///
+    /// # Errors
+    /// Provider failures (budget, transport) and malformed rows.
+    pub async fn list_token(
+        &self,
+        token: Address,
+        from_block: u64,
+        to_block: u64,
+        max_pages: u32,
+    ) -> Result<AlchemyTokenListing, EvmSourceError> {
+        let (rows, complete, requests) = self
+            .stream(
+                token,
+                Dir::Contract,
+                &["erc20"],
+                false,
+                from_block,
+                to_block,
+                max_pages,
+            )
+            .await?;
+        let transfer_rows = rows.len();
+        let mut transactions: Vec<(u64, B256)> =
+            rows.iter().map(|t| (t.block_number, t.hash)).collect();
+        transactions.sort_unstable();
+        transactions.dedup();
+        Ok(AlchemyTokenListing {
+            transactions,
+            transfer_rows,
+            complete,
             requests,
         })
     }

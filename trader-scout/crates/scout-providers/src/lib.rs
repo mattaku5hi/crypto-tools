@@ -30,7 +30,7 @@ mod unconfigured;
 pub use accounts::{AccountRead, AccountsRead, GET_MULTIPLE_ACCOUNTS_MAX, MAX_ACCOUNT_DATA_BYTES};
 pub use evm_alchemy::{
     ALCHEMY_COVERAGE_NOTE, ALCHEMY_LISTING_KIND, AlchemyCategory, AlchemyConfig, AlchemyListing,
-    AlchemyTransfer, AlchemyTransfersSource,
+    AlchemyTokenListing, AlchemyTransfer, AlchemyTransfersSource,
 };
 pub use evm_blockscout::{
     BlockscoutApiKey, BlockscoutEvmConfig, BlockscoutEvmSource, BlockscoutInternal,

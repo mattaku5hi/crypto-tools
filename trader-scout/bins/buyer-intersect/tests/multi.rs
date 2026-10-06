@@ -145,18 +145,27 @@ async fn run(env: Vec<(&'static str, String)>, extra: &[&str], input: String) ->
     let extra: Vec<String> = extra.iter().map(|s| (*s).to_string()).collect();
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new(BIN);
-        cmd.args(["--input", "-", "--rpc-rps", "5000"])
-            .args(WINDOW)
-            .args(&extra)
-            .env_remove("SCOUT_ROBINHOOD_RPC_URL")
-            .env_remove("SCOUT_BASE_RPC_URL")
-            .env_remove("SCOUT_BASE_LOGS_RPC_URL")
-            .env_remove("SCOUT_EVM_PUBLIC_RPC_URL")
-            .env_remove("SCOUT_HELIUS_API_KEY")
-            .env_remove("SCOUT_BUYER_INTERSECT_ENDPOINT")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        // Base replay fixture: the capped-eth_getLogs path (`auto` would list
+        // transfers via alchemy_getAssetTransfers, not recorded).
+        cmd.args([
+            "--input",
+            "-",
+            "--rpc-rps",
+            "5000",
+            "--evm-token-listing",
+            "logs",
+        ])
+        .args(WINDOW)
+        .args(&extra)
+        .env_remove("SCOUT_ROBINHOOD_RPC_URL")
+        .env_remove("SCOUT_BASE_RPC_URL")
+        .env_remove("SCOUT_BASE_LOGS_RPC_URL")
+        .env_remove("SCOUT_EVM_PUBLIC_RPC_URL")
+        .env_remove("SCOUT_HELIUS_API_KEY")
+        .env_remove("SCOUT_BUYER_INTERSECT_ENDPOINT")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
         for (k, v) in env {
             cmd.env(k, v);
         }

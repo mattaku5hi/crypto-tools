@@ -72,9 +72,37 @@ pub(crate) fn run_evm(
             ..ScanLimits::default()
         },
     );
+    // Range-capped keyed Alchemy without a logs endpoint: list each token's
+    // transfers via alchemy_getAssetTransfers (rows per tx are ~2-3, so the
+    // page bound follows the transaction bound).
+    let use_transfers = setup.token_listing_via_transfers && args.evm_token_listing == "auto";
+    let scanner = if use_transfers {
+        let pages = u32::try_from(
+            args.evm_max_txs_per_token
+                .saturating_mul(4)
+                .checked_div(1_000)
+                .unwrap_or(0),
+        )
+        .unwrap_or(u32::MAX)
+        .max(20);
+        scanner.with_token_transfers_listing(
+            scout_providers::AlchemyTransfersSource::new(
+                setup.rpc.clone(),
+                scout_providers::AlchemyConfig::default(),
+            ),
+            pages,
+        )
+    } else {
+        scanner
+    };
     // Up-front cost estimate for a range-capped logs endpoint (never burn the
     // whole budget on a scan that cannot finish).
-    if setup.logs_span_cap.is_some() {
+    let logs_span_cap = if use_transfers {
+        None
+    } else {
+        setup.logs_span_cap.or(setup.capped_logs_span)
+    };
+    if logs_span_cap.is_some() {
         let (since, until) = match window.bounds() {
             Some((s, u)) => (u64::try_from(s).ok(), u64::try_from(u).ok()),
             None => (None, None),
@@ -90,7 +118,7 @@ pub(crate) fn run_evm(
         let hint = scout_app::logs_rpc_env_name(setup.profile.name)
             .unwrap_or("SCOUT_<CHAIN>_LOGS_RPC_URL");
         if let Err(m) = scout_app::check_log_scan_feasible(
-            setup.logs_span_cap,
+            logs_span_cap,
             blocks,
             tokens.len(),
             args.max_requests,
@@ -101,7 +129,11 @@ pub(crate) fn run_evm(
         }
     }
     let mut info = setup.info.clone();
-    info.history_source = "eth_getLogs token scan (RPC) + receipts".to_string();
+    info.history_source = if scanner.lists_tokens_via_transfers() {
+        "alchemy_getAssetTransfers token listing (contract filter) + receipts".to_string()
+    } else {
+        "eth_getLogs token scan (RPC) + receipts".to_string()
+    };
     info.listing_kind = "token_logs".to_string();
     // Native legs are not needed for sides; say so in the scope.
     info.trace = "not used (sides need no native leg)".to_string();
