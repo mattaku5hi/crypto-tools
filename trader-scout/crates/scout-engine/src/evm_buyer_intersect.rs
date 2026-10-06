@@ -35,7 +35,7 @@ use crate::evm_trade_extraction::{
     EvmExtractionConfig, EvmExtractionSummary, EvmTxOutcome, TradeSide, extract_evm_trades,
 };
 use crate::evm_wallet_stats::EvmRunInfo;
-use crate::pool_admission::{DEFAULT_MAX_POOL_LOOKUPS, learn_pools};
+use crate::pool_admission::{DEFAULT_MAX_POOL_LOOKUPS, learn_pools_for_token};
 use crate::solana_buyer_intersect::{
     ScanFailureKind, ScanStop, SideFilter, TokenScanStatus, classify_provider_error,
     sanitize_provider_text,
@@ -210,7 +210,6 @@ pub async fn run_evm_buyer_intersect(
     // Pools admitted for one token stay admitted for the next (one gate per
     // run), and the lookup cap is per run.
     let mut run_cfg = cfg.clone();
-    let mut lookups_left = DEFAULT_MAX_POOL_LOOKUPS;
     let mut per_token: Vec<EvmTokenScanSummary> = Vec::with_capacity(input_tokens.len());
     let mut hits: BTreeMap<WalletKey, BTreeMap<AssetKey, EvmTokenSideHits>> = BTreeMap::new();
     let mut stop: Option<ScanStop> = None;
@@ -278,28 +277,33 @@ pub async fn run_evm_buyer_intersect(
                 } else {
                     txs.clone()
                 };
-                let admission =
-                    match learn_pools(&mut run_cfg.gate, scanner.rpc(), &in_window, lookups_left)
-                        .await
-                    {
-                        Ok(a) => a,
-                        Err(e) => {
-                            let kind = match &e {
-                                EvmSourceError::Provider(p) => classify_provider_error(p),
-                                _ => ScanFailureKind::Other,
-                            };
-                            if let Some(s) = kind.stop() {
-                                stop = Some(s);
-                            }
-                            per_token.push(blank(TokenScanStatus::Failed {
-                                kind,
-                                message: sanitize_provider_text(&format!("pool admission: {e}")),
-                            }));
-                            continue;
+                // Per-token bound over the token's own pools only (hops are
+                // not gaps, amendment 10).
+                let admission = match learn_pools_for_token(
+                    &mut run_cfg.gate,
+                    scanner.rpc(),
+                    &in_window,
+                    token,
+                    DEFAULT_MAX_POOL_LOOKUPS,
+                )
+                .await
+                {
+                    Ok(a) => a,
+                    Err(e) => {
+                        let kind = match &e {
+                            EvmSourceError::Provider(p) => classify_provider_error(p),
+                            _ => ScanFailureKind::Other,
+                        };
+                        if let Some(s) = kind.stop() {
+                            stop = Some(s);
                         }
-                    };
-                lookups_left =
-                    lookups_left.saturating_sub(usize::try_from(admission.lookups).unwrap_or(0));
+                        per_token.push(blank(TokenScanStatus::Failed {
+                            kind,
+                            message: sanitize_provider_text(&format!("pool admission: {e}")),
+                        }));
+                        continue;
+                    }
+                };
                 let (extractions, summary) =
                     extract_evm_trades(&in_window, &run_cfg, None, Some(token));
                 let mut s = blank(TokenScanStatus::Ok);

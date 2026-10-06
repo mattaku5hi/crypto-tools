@@ -171,6 +171,54 @@ pub async fn learn_pools(
     max_lookups: usize,
 ) -> Result<PoolAdmissionReport, EvmSourceError> {
     let pending = gate.pending_pool_emitters(txs.iter().flat_map(|t| &t.logs));
+    learn_emitters(gate, rpc, pending, max_lookups).await
+}
+
+/// [`learn_pools`] for a token scan: only emitters that MOVE `token` in the
+/// same transaction (by its ERC-20 `Transfer` logs) are looked up, most
+/// frequent first. Other swap emitters are route hops (ADR-020 amendment 10)
+/// and need no admission; looking them up first could spend the bound before
+/// the token's own pools on a busy token (live 2026-10-06: a BSC token with
+/// hundreds of hop pools ended with its main pools never looked up).
+///
+/// # Errors
+/// As [`learn_pools`].
+pub async fn learn_pools_for_token(
+    gate: &mut SwapVenueGate,
+    rpc: &EvmRpcClient,
+    txs: &[RawEvmTransaction],
+    token: Address,
+    max_lookups: usize,
+) -> Result<PoolAdmissionReport, EvmSourceError> {
+    let mut relevant: Vec<&scout_core::RawEvmLog> = Vec::new();
+    let mut freq: BTreeMap<Address, usize> = BTreeMap::new();
+    for tx in txs {
+        let movers: std::collections::BTreeSet<Address> = tx
+            .logs
+            .iter()
+            .filter(|l| {
+                l.address == token
+                    && l.topics.len() == 3
+                    && l.topics.first() == Some(&scout_evm::TRANSFER_TOPIC0)
+            })
+            .flat_map(|l| l.topics.iter().skip(1).map(|t| Address::from_word(*t)))
+            .collect();
+        for l in tx.logs.iter().filter(|l| movers.contains(&l.address)) {
+            relevant.push(l);
+            *freq.entry(l.address).or_insert(0) += 1;
+        }
+    }
+    let mut pending = gate.pending_pool_emitters(relevant);
+    pending.sort_by(|a, b| freq.get(&b.1).cmp(&freq.get(&a.1)).then_with(|| a.cmp(b)));
+    learn_emitters(gate, rpc, pending, max_lookups).await
+}
+
+async fn learn_emitters(
+    gate: &mut SwapVenueGate,
+    rpc: &EvmRpcClient,
+    pending: Vec<(SwapVenue, Address)>,
+    max_lookups: usize,
+) -> Result<PoolAdmissionReport, EvmSourceError> {
     let mut report = PoolAdmissionReport::default();
     for (n, (venue, emitter)) in pending.into_iter().enumerate() {
         if n >= max_lookups {
@@ -337,6 +385,75 @@ mod tests {
                 b["params"][0]["data"].as_str().unwrap()[..10].to_string()
             })
             .collect()
+    }
+
+    fn token_transfer(token: Address, from: Address, to: Address) -> RawEvmLog {
+        RawEvmLog {
+            address: token,
+            topics: vec![scout_evm::TRANSFER_TOPIC0, from.into_word(), to.into_word()],
+            data: Bytes::from(vec![0u8; 32]),
+            block_number: 1,
+            transaction_index: 0,
+            log_index: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn token_scan_admission_looks_up_only_the_tokens_pools_most_frequent_first() {
+        let token = Address::repeat_byte(0x77);
+        let w = Address::repeat_byte(0xaa);
+        let real =
+            v3_pool_address_create2(RH_FACTORY, T0, T1, 500, UNISWAP_V3_CANONICAL_INIT_CODE_HASH);
+        let fork = Address::repeat_byte(0xf0); // moves the token once
+        let hop = Address::repeat_byte(0xe0); // never moves the token
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Node {
+                pools: vec![
+                    (real, RH_FACTORY, Some(500)),
+                    (fork, Address::repeat_byte(0xfa), Some(500)),
+                ],
+                record: None,
+            })
+            .mount(&s)
+            .await;
+        let client = rpc(&s, ROBINHOOD, None).await;
+        let txs = vec![
+            tx_with(vec![
+                token_transfer(token, fork, w),
+                swap(fork, V3_SWAP_TOPIC0, 160),
+                swap(hop, V3_SWAP_TOPIC0, 160),
+            ]),
+            tx_with(vec![
+                token_transfer(token, real, w),
+                swap(real, V3_SWAP_TOPIC0, 160),
+            ]),
+            tx_with(vec![
+                token_transfer(token, w, real),
+                swap(real, V3_SWAP_TOPIC0, 160),
+            ]),
+        ];
+        // bound 1: the token's most frequent pool (real, 2 txs) goes first
+        let mut gate = SwapVenueGate::new(ROBINHOOD.chain_id);
+        let r = learn_pools_for_token(&mut gate, &client, &txs, token, 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            (r.lookups, r.admitted, r.refused.len(), r.deferred),
+            (1, 1, 0, 1)
+        );
+        // unbounded: fork is looked up and refused; the hop is never asked
+        let r = learn_pools_for_token(&mut gate, &client, &txs, token, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            (r.lookups, r.admitted, r.refused.len(), r.deferred),
+            (1, 0, 1, 0)
+        );
+        assert!(
+            gate.pending_pool_emitters(txs.iter().flat_map(|t| &t.logs))
+                .contains(&(SwapVenue::UniswapV3, hop))
+        );
     }
 
     #[tokio::test]

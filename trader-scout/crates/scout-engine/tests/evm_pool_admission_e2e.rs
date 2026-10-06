@@ -105,9 +105,9 @@ async fn admitted_and_hop_pools_are_not_coverage_gaps() {
     let before = run(false).await;
     let t0 = &before.per_token[0];
     assert!(matches!(t0.status, TokenScanStatus::Ok));
-    // Nobody vouches for the pools: both swap logs are outside the gate, but
-    // both pools only move WETH/USDG (route hops), so neither is a gap.
-    assert_eq!((t0.pools_admitted, t0.pools_refused), (0, 2));
+    // Both pools only move WETH/USDG (route hops): a token scan does not even
+    // look them up (A10), and neither is a gap.
+    assert_eq!((t0.pools_admitted, t0.pools_refused), (0, 0));
     assert_eq!((t0.ungated_swap_logs, t0.ungated_hop_swap_logs), (0, 2));
     assert!(!before.is_coverage_incomplete());
 
@@ -122,12 +122,10 @@ async fn admitted_and_hop_pools_are_not_coverage_gaps() {
         t.qualified_sellers,
         t.extraction.as_ref().map(|e| e.trades)
     );
-    // The v3 pool reproduces from the pinned factory and init-code hash.
-    assert_eq!(t.pools_admitted, 1);
-    // The v2-shape pair is looked up too (Robinhood pins a v2 factory) but the
-    // handler serves no metadata for it: refused on chain, a hop.
-    assert_eq!((t.ungated_swap_logs, t.ungated_hop_swap_logs), (0, 1));
-    assert_eq!(t.pools_refused, 1);
+    // Served metadata changes nothing: hop pools are never looked up in a
+    // token scan (admission itself is covered in pool_admission.rs).
+    assert_eq!((t.pools_admitted, t.pools_refused), (0, 0));
+    assert_eq!((t.ungated_swap_logs, t.ungated_hop_swap_logs), (0, 2));
     assert!(
         !after.is_coverage_incomplete(),
         "{:?}",
