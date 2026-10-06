@@ -104,6 +104,26 @@ pub(crate) fn parse_log(v: &Value) -> Result<RawEvmLog, EvmSourceError> {
     })
 }
 
+/// `(block, transaction index) -> transactionHash` of the logs that carry a
+/// parseable hash (lenient: a log without one is simply absent, and the
+/// caller falls back to block receipts for it).
+pub(crate) fn log_tx_hashes(v: &Value) -> Vec<((u64, u64), B256)> {
+    const W: &str = "log";
+    v.as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter(|i| i.get("removed").and_then(Value::as_bool) != Some(true))
+                .filter_map(|i| {
+                    let h = b256(i.get("transactionHash")?, W).ok()?;
+                    let b = quantity_u64(i.get("blockNumber")?, W).ok()?;
+                    let t = quantity_u64(i.get("transactionIndex")?, W).ok()?;
+                    Some(((b, t), h))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn parse_logs(v: &Value) -> Result<Vec<RawEvmLog>, EvmSourceError> {
     let arr = v
         .as_array()

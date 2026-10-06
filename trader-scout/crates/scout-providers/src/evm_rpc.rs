@@ -154,6 +154,10 @@ pub struct LogsResult {
     pub requests: u32,
     /// Range halvings performed.
     pub splits: u32,
+    /// `(block, transaction index) -> hash` from the logs' `transactionHash`
+    /// (may be incomplete; lets token scans fetch isolated receipts one by
+    /// one instead of whole blocks).
+    pub tx_hashes: std::collections::BTreeMap<(u64, u64), B256>,
 }
 
 /// Bounded recorder of raw JSON-RPC exchanges (golden-fixture capture).
@@ -745,6 +749,8 @@ impl EvmRpcClient {
     ) -> Result<LogsResult, EvmSourceError> {
         let mut stack = vec![(from, to)];
         let mut out: Vec<scout_core::RawEvmLog> = Vec::new();
+        let mut tx_hashes: std::collections::BTreeMap<(u64, u64), B256> =
+            std::collections::BTreeMap::new();
         let (mut requests, mut splits) = (0u32, 0u32);
         let mut attempts = 0u32;
         // Provider-announced maximum span (blocks) once a range error showed
@@ -780,6 +786,7 @@ impl EvmRpcClient {
                     }
                     requests += 1;
                     out.extend(logs);
+                    tx_hashes.extend(crate::evm_wire::log_tx_hashes(&v));
                 }
                 Err(EvmSourceError::Provider(e)) if is_range_or_cap_error(&e) => {
                     if a == b {
@@ -831,6 +838,7 @@ impl EvmRpcClient {
             logs: out,
             requests,
             splits,
+            tx_hashes,
         })
     }
 

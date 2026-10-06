@@ -413,8 +413,8 @@ impl EvmHistoryScanner {
         let logs = self.rpc.get_logs(&filter, from_block, to_block).await?;
         // The topic filter also matches ERC-721 `Transfer`; assembly keeps
         // all logs of the tx and extraction rejects malformed ones.
-        // RawEvmLog does not carry the tx hash; (block, index) is resolved to
-        // hashes through block receipts.
+        // RawEvmLog does not carry the tx hash; the logs' `transactionHash`
+        // (when present) lets isolated transactions skip block receipts.
         let seen: BTreeSet<(u64, u64)> = logs
             .logs
             .iter()
@@ -426,7 +426,7 @@ impl EvmHistoryScanner {
                 cap: self.limits.max_transactions,
             });
         }
-        let transactions = self.transactions_at(&seen).await?;
+        let transactions = self.transactions_at(&seen, &logs.tx_hashes).await?;
         Ok(TokenScanOutput {
             transactions,
             transfer_logs: logs.logs.len(),
@@ -449,12 +449,14 @@ impl EvmHistoryScanner {
     ) -> Result<SwapScanOutput, EvmSourceError> {
         let max_txs = max_txs.min(self.limits.max_transactions);
         let mut seen: BTreeSet<(u64, u64)> = BTreeSet::new();
+        let mut tx_hashes: BTreeMap<(u64, u64), B256> = BTreeMap::new();
         let (mut swap_logs, mut log_requests, mut log_splits) = (0usize, 0u32, 0u32);
         for f in filters {
             let logs = self.rpc.get_logs(f, from_block, to_block).await?;
             swap_logs = swap_logs.saturating_add(logs.logs.len());
             log_requests = log_requests.saturating_add(logs.requests);
             log_splits = log_splits.saturating_add(logs.splits);
+            tx_hashes.extend(logs.tx_hashes.iter().map(|(k, h)| (*k, *h)));
             seen.extend(
                 logs.logs
                     .iter()
@@ -465,7 +467,7 @@ impl EvmHistoryScanner {
         while seen.len() > max_txs {
             seen.pop_first();
         }
-        let transactions = self.transactions_at(&seen).await?;
+        let transactions = self.transactions_at(&seen, &tx_hashes).await?;
         Ok(SwapScanOutput {
             transactions,
             swap_logs,
@@ -476,23 +478,59 @@ impl EvmHistoryScanner {
     }
 
     /// Receipts + transactions of the transactions at `(block, index)`
-    /// positions, canonical order.
+    /// positions, canonical order. Receipts follow [`ReceiptMode`]: in
+    /// `Auto`, a block with fewer than `block_receipts_min_txs` wanted
+    /// transactions whose hashes are all known (`hashes`, from the logs) is
+    /// fetched one `eth_getTransactionReceipt` each (15 CU vs 500 CU for
+    /// `eth_getBlockReceipts` on Alchemy; most token-scan blocks hold one
+    /// wanted transaction). A per-hash receipt must sit at the wanted
+    /// position, else the scan fails (reorg / provider inconsistency).
     async fn transactions_at(
         &self,
         seen: &BTreeSet<(u64, u64)>,
+        hashes: &BTreeMap<(u64, u64), B256>,
     ) -> Result<Vec<RawEvmTransaction>, EvmSourceError> {
-        let blocks: Vec<u64> = seen
-            .iter()
-            .map(|(b, _)| *b)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let receipts = self.rpc.receipts_by_blocks(&blocks).await?;
+        let mut per_block: BTreeMap<u64, Vec<(u64, u64)>> = BTreeMap::new();
+        for key in seen {
+            per_block.entry(key.0).or_default().push(*key);
+        }
+        let mut blocks: Vec<u64> = Vec::new();
+        let mut singles: Vec<((u64, u64), B256)> = Vec::new();
+        for (b, keys) in &per_block {
+            let all_hashed = keys.iter().all(|k| hashes.contains_key(k));
+            let whole = match self.limits.receipt_mode {
+                ReceiptMode::BlockReceipts => true,
+                ReceiptMode::PerTransaction => !all_hashed,
+                ReceiptMode::Auto => {
+                    !all_hashed || keys.len() >= self.limits.block_receipts_min_txs
+                }
+            };
+            if whole {
+                blocks.push(*b);
+            } else {
+                singles.extend(keys.iter().filter_map(|k| hashes.get(k).map(|h| (*k, *h))));
+            }
+        }
         let mut receipt_by_pos: HashMap<(u64, u64), EvmReceiptInfo> = HashMap::new();
-        for (_, rs) in receipts {
+        for (_, rs) in self.rpc.receipts_by_blocks(&blocks).await? {
             for r in rs {
                 receipt_by_pos.insert((r.block_number, r.transaction_index), r);
             }
+        }
+        let single_hashes: Vec<B256> = singles.iter().map(|(_, h)| *h).collect();
+        let single_receipts = self.rpc.receipts_by_hashes(&single_hashes).await?;
+        for ((key, h), r) in singles.iter().zip(single_receipts) {
+            if (r.block_number, r.transaction_index) != *key || r.tx_hash != *h {
+                return Err(malformed(
+                    "eth_getTransactionReceipt",
+                    format!(
+                        "receipt of {h:#x} is at block {} index {}, the log said block {} \
+                         index {}",
+                        r.block_number, r.transaction_index, key.0, key.1
+                    ),
+                ));
+            }
+            receipt_by_pos.insert(*key, r);
         }
         // Keep only the receipts of the wanted transactions (whole-block
         // receipts are dropped here, bounding memory).
@@ -1151,6 +1189,81 @@ mod tests {
         );
         assert_eq!(t.internal_transfers, None);
         assert_eq!(t.chain, ROBINHOOD.verified_chain_key());
+    }
+
+    /// [`Chain`] whose logs carry `transactionHash`: block 7's log names
+    /// `hash7`, block 5's log has none.
+    struct HashedChain {
+        hash7: B256,
+    }
+    impl Respond for HashedChain {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            if body["method"] != "eth_getLogs" {
+                return Chain.respond(req);
+            }
+            let t = format!("{TRANSFER_TOPIC0:#x}");
+            let result = json!([
+                {"address":TOKEN,"topics":[t],"data":"0x","blockNumber":"0x7",
+                 "transactionIndex":"0x1","logIndex":"0x3",
+                 "transactionHash":format!("{:#x}", self.hash7)},
+                {"address":TOKEN,"topics":[t],"data":"0x","blockNumber":"0x5",
+                 "transactionIndex":"0x0","logIndex":"0x0"}
+            ]);
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"jsonrpc":"2.0","id":1,"result":result}))
+        }
+    }
+
+    #[tokio::test]
+    async fn token_scan_fetches_isolated_hashed_transactions_one_by_one() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(HashedChain { hash7: h(0xa1) })
+            .mount(&s)
+            .await;
+        let sc = scanner(&s, ScanLimits::default()).await;
+        let out = sc.scan_token(TOKEN.parse().unwrap(), 0, 10).await.unwrap();
+        let got: Vec<_> = out.transactions.iter().map(|t| t.hash).collect();
+        assert_eq!(got, vec![h(0xa2), h(0xa1)]);
+        let m = methods(&s).await;
+        let n = |x: &str| m.iter().filter(|y| *y == x).count();
+        // block 7 (hash known, 1 wanted tx): 15-CU receipt; block 5 (no hash
+        // in the log): block receipts
+        assert_eq!(n("eth_getTransactionReceipt"), 1);
+        assert_eq!(n("eth_getBlockReceipts"), 1);
+        // BlockReceipts mode keeps the old behaviour
+        let s2 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(HashedChain { hash7: h(0xa1) })
+            .mount(&s2)
+            .await;
+        let limits = ScanLimits {
+            receipt_mode: ReceiptMode::BlockReceipts,
+            ..ScanLimits::default()
+        };
+        let sc = scanner(&s2, limits).await;
+        sc.scan_token(TOKEN.parse().unwrap(), 0, 10).await.unwrap();
+        let m = methods(&s2).await;
+        assert_eq!(m.iter().filter(|y| *y == "eth_getBlockReceipts").count(), 2);
+        assert!(!m.iter().any(|y| y == "eth_getTransactionReceipt"));
+    }
+
+    #[tokio::test]
+    async fn token_scan_rejects_a_receipt_away_from_the_logged_position() {
+        let s = MockServer::start().await;
+        // the log at block 7 index 1 names a hash whose receipt is at block 8
+        Mock::given(method("POST"))
+            .respond_with(HashedChain { hash7: h(0xee) })
+            .mount(&s)
+            .await;
+        let sc = scanner(&s, ScanLimits::default()).await;
+        let err = sc
+            .scan_token(TOKEN.parse().unwrap(), 0, 10)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the log said block 7 index 1"), "{err}");
     }
 
     #[tokio::test]

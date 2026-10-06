@@ -235,9 +235,14 @@ async fn capped_keyed_rpc_sends_logs_to_the_public_endpoint_and_keeps_the_rest()
     // keyed: one probe, no window logs; public: the real log scan
     assert_eq!(count(&keyed, "eth_getLogs").await, 1);
     assert!(count(&public, "eth_getLogs").await >= 2);
-    // receipts stay on the keyed endpoint
-    assert!(count(&keyed, "eth_getBlockReceipts").await > 0);
+    // receipts (per block or per transaction) stay on the keyed endpoint
+    assert!(
+        count(&keyed, "eth_getBlockReceipts").await
+            + count(&keyed, "eth_getTransactionReceipt").await
+            > 0
+    );
     assert_eq!(count(&public, "eth_getBlockReceipts").await, 0);
+    assert_eq!(count(&public, "eth_getTransactionReceipt").await, 0);
     assert!(o.stderr.contains("eth_getLogs ONLY"), "{}", o.stderr);
     assert!(
         o.stderr
