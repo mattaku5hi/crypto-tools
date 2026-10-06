@@ -22,6 +22,13 @@ EVM `eth_getLogs` 60, `eth_getTransactionReceipt` 20, `eth_getBlockReceipts` **2
 of block receipts is the throughput weight; billed it costs 20 CU. On the free tier throughput (500 CU/s)
 is the binding limit, which is why the BSC full-lifetime scan took hours while using little quota.
 
+## Owner corrections (2026-10-06)
+
+- Chainstack pay-as-you-go is offered only to "authorized teams"; no free tier for our use → dropped.
+- QuickNode's free plan is a one-month trial, then a subscription → dropped.
+- Remaining no-subscription options: Alchemy (free + PAYG) and dRPC (free). Decision: dRPC free plan as an
+  automatic fallback for every chain (`SCOUT_<CHAIN>_FALLBACK_RPC_URL`, task A7).
+
 ## Our measured workloads, priced
 
 - **Solana, one full transaction read.** Helius batch: 0.1 credit → the free 1M credits ≈ 10M tx/month
