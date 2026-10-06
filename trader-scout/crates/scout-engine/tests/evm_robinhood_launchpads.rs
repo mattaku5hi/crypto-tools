@@ -996,6 +996,7 @@ mod synthetic {
             block_number: 1,
             transaction_index: 0,
             gas_price: None,
+            input_selector: None,
         }
     }
 

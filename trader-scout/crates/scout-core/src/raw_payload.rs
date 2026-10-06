@@ -57,6 +57,11 @@ pub enum NativeSource {
     /// Archive balance difference of the wallet around the block
     /// (`native_balance_diff` holds the data).
     BalanceDiff,
+    /// [`Self::BalanceDiff`] over a block where the wallet also sent
+    /// native-neutral companion transactions (a plain ERC-20 `approve` with
+    /// zero value, or a failed transaction); their fees are added back too
+    /// (ADR-020 amendment 9).
+    BalanceDiffApproveCompanion,
 }
 
 impl NativeSource {
@@ -67,6 +72,7 @@ impl NativeSource {
             Self::Explorer => "explorer_internal",
             Self::AlchemyInternal => "alchemy_internal",
             Self::BalanceDiff => "balance_diff",
+            Self::BalanceDiffApproveCompanion => "balance_diff_approve_companion",
         }
     }
 }

@@ -12,7 +12,15 @@
 //!    the receipts of the block prove `W` is touched by no other transaction
 //!    of that block (not `from`/`to` of another one, in no other
 //!    transaction's log topics, emitter of none). The exact movement is that
-//!    difference with the fee added back (`NativeSource::BalanceDiff`);
+//!    difference with the fee added back (`NativeSource::BalanceDiff`).
+//!    ADR-020 amendment 9: the wallet's OWN other transactions of the block
+//!    are allowed when each is native-neutral — failed (value reverted, no
+//!    logs), or a plain ERC-20 `approve` (`eth_getTransactionByHash`: value
+//!    0, selector `0x095ea7b3`; receipt: exactly one `Approval` log emitted
+//!    by the called token with the wallet as owner). Their fees are added
+//!    back as well (`NativeSource::BalanceDiffApproveCompanion`). Live
+//!    2026-10-06: bots send `approve` + sell in one block, which left every
+//!    such sell Unknown;
 //! c. otherwise the leg stays **unobserved** (the trade keeps an Unknown
 //!    consideration, never a number).
 //!
@@ -32,9 +40,11 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use alloy_primitives::{Address, B256, I256, U256};
+use alloy_primitives::{Address, B256, I256, U256, b256};
 use futures::stream::{self, StreamExt};
-use scout_core::{InternalTransfer, NativeBalanceDiff, NativeSource, RawEvmTransaction};
+use scout_core::{
+    EvmTxStatus, InternalTransfer, NativeBalanceDiff, NativeSource, RawEvmTransaction,
+};
 use serde_json::Value;
 use tokio::sync::OnceCell;
 
@@ -241,6 +251,12 @@ pub fn parse_call_tree(root: &Value) -> Result<Vec<InternalTransfer>, TraceParse
     Ok(out)
 }
 
+/// ERC-20 `approve(address,uint256)`.
+const APPROVE_SELECTOR: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
+/// ERC-20 `Approval(address,address,uint256)`.
+const APPROVAL_TOPIC0: B256 =
+    b256!("8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925");
+
 /// A resolved transaction's data, applied to the transaction afterwards.
 struct Resolution {
     outcome: NativeLegOutcome,
@@ -321,17 +337,24 @@ impl NativeLegResolver {
         self.rpc.block_receipts_shared(block).await
     }
 
-    /// Is `account` touched by any transaction of the block other than `hash`?
+    /// Is `account` touched by any transaction of the block other than
+    /// `hash`, apart from its own receipt-level native-neutral companions
+    /// (returned; see [`Self::companion_shaped`])?
     fn wallet_alone(
         receipts: &[EvmReceiptInfo],
         hash: B256,
         account: Address,
-    ) -> Result<(), &'static str> {
+    ) -> Result<Vec<&EvmReceiptInfo>, &'static str> {
         let topic = account.into_word();
         let mut own = 0usize;
+        let mut companions = Vec::new();
         for r in receipts {
             if r.tx_hash == hash {
                 own += 1;
+                continue;
+            }
+            if r.from == Some(account) && Self::companion_shaped(r, account) {
+                companions.push(r);
                 continue;
             }
             if r.from == Some(account) || r.to == Some(account) {
@@ -345,9 +368,39 @@ impl NativeLegResolver {
             }
         }
         if own == 1 {
-            Ok(())
+            Ok(companions)
         } else {
             Err("tx_not_in_block_receipts")
+        }
+    }
+
+    /// Receipt-level shape of a native-neutral own transaction: failed with
+    /// no logs, or successful with exactly one `Approval(account, _, _)` log
+    /// emitted by the called contract. A successful one must still pass the
+    /// transaction check (value 0, `approve` selector) in [`Self::balance_diff`].
+    fn companion_shaped(r: &EvmReceiptInfo, account: Address) -> bool {
+        let Some(token) = r.to.filter(|t| *t != account) else {
+            return false;
+        };
+        match r.status {
+            EvmTxStatus::Failed => r.logs.is_empty(),
+            EvmTxStatus::Success => {
+                matches!(r.logs.as_slice(), [l] if l.address == token
+                    && l.topics.len() == 3
+                    && l.topics.first() == Some(&APPROVAL_TOPIC0)
+                    && l.topics.get(1) == Some(&account.into_word()))
+            }
+        }
+    }
+
+    /// Fee of a companion from its receipt (same L1-fee rule as
+    /// [`Self::fee_of`]).
+    fn receipt_fee(&self, r: &EvmReceiptInfo) -> Option<U256> {
+        let base = U256::from(r.gas_used).checked_mul(r.effective_gas_price?)?;
+        match (r.l1_fee, self.rpc.profile().l1_fee_separate) {
+            (Some(l1), _) => base.checked_add(l1),
+            (None, true) => None,
+            (None, false) => Some(base),
         }
     }
 
@@ -370,11 +423,42 @@ impl NativeLegResolver {
                 ))));
             }
         };
-        if let Err(why) = Self::wallet_alone(&receipts, tx.hash, tx.from) {
-            return Ok(Resolution::unobserved(Unobserved::WalletNotAlone(why)));
-        }
-        let Some(fee) = self.fee_of(tx) else {
+        let companions = match Self::wallet_alone(&receipts, tx.hash, tx.from) {
+            Ok(c) => c,
+            Err(why) => return Ok(Resolution::unobserved(Unobserved::WalletNotAlone(why))),
+        };
+        let Some(mut fee) = self.fee_of(tx) else {
             return Ok(Resolution::unobserved(Unobserved::FeeUnknown));
+        };
+        for c in &companions {
+            if c.status == EvmTxStatus::Success {
+                let info = match self.rpc.transaction_by_hash(c.tx_hash).await {
+                    Ok(i) => i,
+                    Err(e) if e.is_budget_exhausted() => return Err(e),
+                    Err(e) => {
+                        return Ok(Resolution::unobserved(Unobserved::ArchiveFailed(sanitize(
+                            &e,
+                        ))));
+                    }
+                };
+                if info.from != tx.from
+                    || info.value != U256::ZERO
+                    || info.input_selector != Some(APPROVE_SELECTOR)
+                {
+                    return Ok(Resolution::unobserved(Unobserved::WalletNotAlone(
+                        "companion_not_plain_approve",
+                    )));
+                }
+            }
+            let Some(f) = self.receipt_fee(c).and_then(|f| fee.checked_add(f)) else {
+                return Ok(Resolution::unobserved(Unobserved::FeeUnknown));
+            };
+            fee = f;
+        }
+        let source = if companions.is_empty() {
+            NativeSource::BalanceDiff
+        } else {
+            NativeSource::BalanceDiffApproveCompanion
         };
         let before_block = tx.block_number.saturating_sub(1);
         let (before, after) = match (
@@ -402,7 +486,7 @@ impl NativeLegResolver {
             )));
         };
         Ok(Resolution {
-            outcome: NativeLegOutcome::Observed(NativeSource::BalanceDiff),
+            outcome: NativeLegOutcome::Observed(source),
             internal_transfers: None,
             diff: Some(NativeBalanceDiff {
                 account: tx.from,
@@ -508,6 +592,9 @@ impl NativeLegResolver {
                 }
                 if let Some(d) = r.diff {
                     tx.native_balance_diff = Some(d);
+                    if let NativeLegOutcome::Observed(s) = r.outcome {
+                        tx.native_source = Some(s);
+                    }
                 }
                 outcomes.insert(tx.hash, r.outcome);
             }
@@ -522,7 +609,7 @@ impl NativeLegResolver {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::address;
-    use scout_core::EvmTxStatus;
+
     use scout_evm::ROBINHOOD;
     use scout_rpc::{RpcClient, RpcEndpoint};
     use serde_json::json;
@@ -791,6 +878,121 @@ mod tests {
                 "never a partial number"
             );
         }
+    }
+
+    const TOKEN: Address = address!("00000000000000000000000000000000000000d4");
+
+    /// [`Node`] that also answers `eth_getTransactionByHash` with `tx`.
+    struct CompanionNode {
+        node: Node,
+        tx: Value,
+    }
+
+    impl Respond for CompanionNode {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            if body["method"] == "eth_getTransactionByHash" {
+                return ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc":"2.0","id":1,"result":self.tx.clone()}));
+            }
+            self.node.respond(req)
+        }
+    }
+
+    /// Receipt of W's `approve` on TOKEN at block 5 index 0 (`ok = false`:
+    /// failed, no logs). Fee 50 * 2 = 100.
+    fn approve_receipt(ok: bool) -> Value {
+        let logs = if ok {
+            vec![
+                json!({"address": a(TOKEN), "topics": [format!("{APPROVAL_TOPIC0:#x}"),
+                format!("{:#x}", W.into_word()), format!("{:#x}", ROUTER.into_word())],
+                "data": "0x01", "blockNumber": "0x5", "transactionIndex": "0x0", "logIndex": "0x0"}),
+            ]
+        } else {
+            vec![]
+        };
+        json!({"transactionHash": format!("{:#x}", B256::repeat_byte(7)),
+            "blockNumber": "0x5", "transactionIndex": "0x0",
+            "status": if ok { "0x1" } else { "0x0" }, "gasUsed": "0x32", "effectiveGasPrice": "0x2",
+            "from": a(W), "to": a(TOKEN), "logs": logs})
+    }
+
+    fn approve_tx(value: &str, input: &str) -> Value {
+        json!({"hash": format!("{:#x}", B256::repeat_byte(7)), "from": a(W), "to": a(TOKEN),
+            "value": value, "blockNumber": "0x5", "transactionIndex": "0x0", "input": input})
+    }
+
+    async fn resolve_with_companion(
+        companion: Value,
+        tx_json: Value,
+    ) -> (NativeLegRun, RawEvmTransaction) {
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(CompanionNode {
+                node: Node {
+                    trace: None,
+                    balances: Some((1_000, 995)),
+                    block_receipts: json!([companion, receipt(1, 5, 1, W, ROUTER, None)]),
+                },
+                tx: tx_json,
+            })
+            .mount(&s)
+            .await;
+        let r = resolver(&s, NativeLegPolicy::default()).await;
+        let mut txs = vec![tx(1, 5, W)];
+        let run = r.resolve_many(&mut txs, &[0]).await.unwrap();
+        (run, txs.remove(0))
+    }
+
+    #[tokio::test]
+    async fn approve_companion_in_the_same_block_adds_both_fees_back() {
+        let approve = "0x095ea7b3000000000000000000000000000000000000000000000000000000000000000b";
+        for ok in [true, false] {
+            let (run, t) =
+                resolve_with_companion(approve_receipt(ok), approve_tx("0x0", approve)).await;
+            assert_eq!(
+                run.outcomes[&t.hash],
+                NativeLegOutcome::Observed(NativeSource::BalanceDiffApproveCompanion),
+                "ok={ok}"
+            );
+            assert_eq!(
+                t.native_source,
+                Some(NativeSource::BalanceDiffApproveCompanion)
+            );
+            // own fee 200 + companion fee 100
+            assert_eq!(
+                t.native_balance_diff.unwrap().net_excl_fee,
+                I256::try_from(995i64 - 1_000 + 200 + 100).unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn companion_that_is_not_a_plain_zero_value_approve_is_refused() {
+        let approve = "0x095ea7b3000000000000000000000000000000000000000000000000000000000000000b";
+        let transfer = "0xa9059cbb000000000000000000000000000000000000000000000000000000000000000b";
+        for tx_json in [
+            approve_tx("0x1", approve),
+            approve_tx("0x0", transfer),
+            approve_tx("0x0", "0x"),
+        ] {
+            let (run, t) = resolve_with_companion(approve_receipt(true), tx_json).await;
+            assert_eq!(
+                run.outcomes[&t.hash],
+                NativeLegOutcome::Unobserved(Unobserved::WalletNotAlone(
+                    "companion_not_plain_approve"
+                ))
+            );
+            assert!(t.native_balance_diff.is_none());
+        }
+        // an own transaction with any other receipt shape is not a companion
+        let mut other = approve_receipt(true);
+        other["logs"][0]["address"] = json!(a(ROUTER));
+        let (run, t) = resolve_with_companion(other, approve_tx("0x0", approve)).await;
+        assert_eq!(
+            run.outcomes[&t.hash],
+            NativeLegOutcome::Unobserved(Unobserved::WalletNotAlone("other_tx_from_or_to"))
+        );
     }
 
     #[tokio::test]

@@ -561,7 +561,10 @@ pub fn extract_evm_trade(
         }
     };
     let native_status = if balance_diff.is_some() {
-        NativeLegStatus::Observed(NativeSource::BalanceDiff)
+        NativeLegStatus::Observed(match tx.native_source {
+            Some(s @ NativeSource::BalanceDiffApproveCompanion) => s,
+            _ => NativeSource::BalanceDiff,
+        })
     } else if internals_observed {
         NativeLegStatus::Observed(tx.native_source.unwrap_or(NativeSource::Explorer))
     } else {

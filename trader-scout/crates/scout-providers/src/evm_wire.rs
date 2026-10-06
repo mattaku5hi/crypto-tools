@@ -150,6 +150,8 @@ pub struct EvmTxInfo {
     pub transaction_index: u64,
     /// Legacy `gasPrice` (fallback when a receipt has no `effectiveGasPrice`).
     pub gas_price: Option<U256>,
+    /// First four bytes of `input` (`None` when absent or shorter).
+    pub input_selector: Option<[u8; 4]>,
 }
 
 pub(crate) fn parse_tx(v: &Value) -> Result<EvmTxInfo, EvmSourceError> {
@@ -164,6 +166,10 @@ pub(crate) fn parse_tx(v: &Value) -> Result<EvmTxInfo, EvmSourceError> {
         gas_price: opt_field(v, "gasPrice")
             .map(|g| quantity_u256(g, W))
             .transpose()?,
+        input_selector: opt_field(v, "input")
+            .map(|i| bytes(i, W))
+            .transpose()?
+            .and_then(|b| b.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok())),
     })
 }
 
