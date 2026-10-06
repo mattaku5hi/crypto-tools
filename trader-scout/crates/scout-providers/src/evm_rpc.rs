@@ -802,6 +802,19 @@ impl EvmRpcClient {
                     out.extend(logs);
                     tx_hashes.extend(crate::evm_wire::log_tx_hashes(&v));
                 }
+                // A window the node cannot serve in time (timeout, truncated
+                // body) after the client's retries: halve it like a range
+                // error (Alchemy PAYG has no range cap, but a busy token's
+                // multi-million-block window times out server side).
+                Err(EvmSourceError::Provider(ProviderError::Transport(e))) if a < b => {
+                    if splits >= self.cfg.max_splits {
+                        return Err(EvmSourceError::Provider(ProviderError::Transport(e)));
+                    }
+                    splits += 1;
+                    let mid = a + ((b - a) >> 1);
+                    stack.push((mid + 1, b));
+                    stack.push((a, mid));
+                }
                 Err(EvmSourceError::Provider(e)) if is_range_or_cap_error(&e) => {
                     if a == b {
                         return Err(EvmSourceError::RangeUnresolvable {
@@ -1567,6 +1580,38 @@ mod tests {
                 .unwrap();
             assert_eq!(r.splits, 1, "{msg}");
         }
+    }
+
+    /// A window the node does not answer in time (timeout after the client's
+    /// retries) is halved like a range error, down to windows it answers.
+    #[tokio::test]
+    async fn timed_out_windows_are_halved() {
+        struct Slow;
+        impl wiremock::Respond for Slow {
+            fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                let f = &body["params"][0];
+                let hex = |k: &str| u64::from_str_radix(&f[k].as_str().unwrap()[2..], 16).unwrap();
+                let (a, b) = (hex("fromBlock"), hex("toBlock"));
+                let r = ok(json!([log_json(a, 0)]));
+                if b - a + 1 > 250 {
+                    r.set_delay(std::time::Duration::from_millis(800))
+                } else {
+                    r
+                }
+            }
+        }
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Slow)
+            .mount(&s)
+            .await;
+        let rpc = RpcClient::new(RpcEndpoint::new(s.uri()), 200, 1).unwrap();
+        let c = EvmRpcClient::new(rpc, ROBINHOOD);
+        let out = c.get_logs(&LogFilter::default(), 0, 999).await.unwrap();
+        // 1000 -> 500 + 500 -> 4 x 250 answered
+        assert_eq!((out.splits, out.requests), (3, 4), "{out:?}");
+        assert_eq!(out.logs.len(), 4);
     }
 
     /// Robinhood public RPC, topic-only query: -32602 with the announced

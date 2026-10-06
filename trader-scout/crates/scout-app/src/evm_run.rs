@@ -23,8 +23,9 @@ use scout_sdk::evm::EvmChainProfile;
 use tokio_util::sync::CancellationToken;
 
 use crate::evm_source::{
-    ALCHEMY_DEFAULT_CU_PER_SEC, ALCHEMY_PAYG_CU_PER_SEC, EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS,
-    PUBLIC_RPC_RPS, ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env, logs_rpc_env_name,
+    ALCHEMY_DEFAULT_CU_PER_SEC, ALCHEMY_PAYG_CU_PER_SEC, ALCHEMY_PAYG_LOGS_SPAN, EvmNetOptions,
+    EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS, ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env,
+    logs_rpc_env_name,
 };
 
 /// Which chain family an input set belongs to.
@@ -471,11 +472,9 @@ pub async fn setup_evm(
     } else {
         None
     };
-    if use_payg_limiter(
-        url.is_alchemy(),
-        probe.as_ref().map(|p| p.as_ref().ok()),
-        net,
-    ) {
+    let probe_ok = probe.as_ref().map(|p| p.as_ref().ok());
+    let payg_detected = use_payg_limiter(url.is_alchemy(), probe_ok, &EvmNetOptions::default());
+    if use_payg_limiter(url.is_alchemy(), probe_ok, net) {
         let cu = u64::from(ALCHEMY_PAYG_CU_PER_SEC);
         main_limiter.retune(cu, cu);
         // The block-receipts threshold stays on the throughput weights: a BSC
@@ -573,7 +572,10 @@ pub async fn setup_evm(
         .and_then(&env)
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|s| *s > 0);
-    if let Some(span) = span_env.filter(|_| logs_target.is_some()) {
+    // Alchemy PAYG: no range cap, but cut windows to a size the node answers
+    // in time on busy tokens (the user's SCOUT_<CHAIN>_LOGS_MAX_SPAN wins).
+    let payg_span = (logs_target.is_none() && payg_detected).then_some(ALCHEMY_PAYG_LOGS_SPAN);
+    if let Some(span) = span_env.filter(|_| logs_target.is_some()).or(payg_span) {
         rpc = rpc.with_logs_max_span(span);
         logs_span_cap = Some(span);
     }

@@ -47,6 +47,11 @@ pub const ALCHEMY_DEFAULT_CU_PER_SEC: u32 = 250;
 /// 10,000 CU/s (pricing page, 2026-10-06); half leaves headroom.
 pub const ALCHEMY_PAYG_CU_PER_SEC: u32 = 5_000;
 
+/// `eth_getLogs` window on Alchemy PAYG (no range cap there, but a busy
+/// token's multi-million-block window times out server side): ~half a day of
+/// BSC, ~3 h of Robinhood, ~2 days of Base.
+pub const ALCHEMY_PAYG_LOGS_SPAN: u64 = 100_000;
+
 /// `true` when the URL's host is an Alchemy endpoint (`*.g.alchemy.com`).
 /// Looks at the host only, never at the key.
 #[must_use]
