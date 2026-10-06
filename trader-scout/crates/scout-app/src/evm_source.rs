@@ -42,6 +42,11 @@ pub const PUBLIC_RPC_RPS: u32 = 5;
 /// 300 CU/s; 250 leaves headroom).
 pub const ALCHEMY_DEFAULT_CU_PER_SEC: u32 = 250;
 
+/// Default compute-unit rate once an Alchemy endpoint is detected on Pay As
+/// You Go (its `eth_getLogs` is not range capped). PAYG throughput starts at
+/// 10,000 CU/s (pricing page, 2026-10-06); half leaves headroom.
+pub const ALCHEMY_PAYG_CU_PER_SEC: u32 = 5_000;
+
 /// `true` when the URL's host is an Alchemy endpoint (`*.g.alchemy.com`).
 /// Looks at the host only, never at the key.
 #[must_use]

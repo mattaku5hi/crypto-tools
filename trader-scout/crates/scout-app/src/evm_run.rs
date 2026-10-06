@@ -23,8 +23,8 @@ use scout_sdk::evm::EvmChainProfile;
 use tokio_util::sync::CancellationToken;
 
 use crate::evm_source::{
-    ALCHEMY_DEFAULT_CU_PER_SEC, EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS,
-    ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env, logs_rpc_env_name,
+    ALCHEMY_DEFAULT_CU_PER_SEC, ALCHEMY_PAYG_CU_PER_SEC, EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS,
+    PUBLIC_RPC_RPS, ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env, logs_rpc_env_name,
 };
 
 /// Which chain family an input set belongs to.
@@ -351,6 +351,20 @@ pub fn make_limiter(
     )
 }
 
+/// Retune the main limiter to [`ALCHEMY_PAYG_CU_PER_SEC`]? Only for an
+/// Alchemy endpoint whose range probe answered without a cap (`Some(Some(None))`
+/// = probe ran and succeeded uncapped) and when the user set no rate.
+fn use_payg_limiter(
+    alchemy: bool,
+    probe: Option<Option<&Option<u64>>>,
+    net: &EvmNetOptions,
+) -> bool {
+    alchemy
+        && matches!(probe, Some(Some(None)))
+        && net.rpc_cu_per_sec.is_none()
+        && net.rpc_rps.is_none()
+}
+
 /// Stderr reporter of limiter halvings (the CLIs pass `eprintln`).
 pub type LimiterNotice = Arc<dyn Fn(String) + Send + Sync>;
 
@@ -398,7 +412,7 @@ pub async fn setup_evm(
     };
     let (main_limiter, main_cost) =
         make_limiter(net, main_public, url.is_alchemy(), &main_label, notice);
-    let block_receipts_min_txs =
+    let mut block_receipts_min_txs =
         main_cost.map_or(ScanLimits::default().block_receipts_min_txs, |cost| {
             let (block, tx) = (
                 cost("eth_getBlockReceipts"),
@@ -417,7 +431,7 @@ pub async fn setup_evm(
         ..scout_providers::EvmRpcConfig::default()
     };
     let mut rpc = EvmRpcClient::with_config(rpc, profile, cfg_rpc);
-    let mut limiters = vec![(main_label.clone(), main_limiter)];
+    let mut limiters = vec![(main_label.clone(), Arc::clone(&main_limiter))];
     let mut logs_secrets: Vec<String> = Vec::new();
     let mut logs_span_cap: Option<u64> = None;
     let mut token_listing_via_transfers = false;
@@ -449,6 +463,28 @@ pub async fn setup_evm(
         .and_then(&env)
         .filter(|v| !v.trim().is_empty())
         .map(|v| EvmRpcUrl::new(v.trim().to_string(), true));
+    // One range probe serves two purposes: eth_getLogs routing (token scans)
+    // and Alchemy plan detection (an uncapped range = Pay As You Go), which
+    // also matters for wallet scans.
+    let probe = if url.from_env && ((needs_logs && logs_url.is_none()) || url.is_alchemy()) {
+        Some(rpc.probe_logs_span().await)
+    } else {
+        None
+    };
+    if use_payg_limiter(
+        url.is_alchemy(),
+        probe.as_ref().map(|p| p.as_ref().ok()),
+        net,
+    ) {
+        let cu = u64::from(ALCHEMY_PAYG_CU_PER_SEC);
+        main_limiter.retune(cu, cu);
+        // Throughput is no longer the binding limit: back to the default.
+        block_receipts_min_txs = ScanLimits::default().block_receipts_min_txs;
+        notice(format!(
+            "limiter: alchemy pay-as-you-go detected (eth_getLogs not range capped) \u{2192} \
+             cu-per-sec {ALCHEMY_PAYG_CU_PER_SEC} (override with --rpc-rps/--rpc-cu-per-sec)"
+        ));
+    }
     // Per-method routing of eth_getLogs.
     let logs_target: Option<(EvmRpcUrl, bool, String)> = if !needs_logs {
         // Wallet scans list through the indexer and never call eth_getLogs:
@@ -460,9 +496,9 @@ pub async fn setup_evm(
             logs_var.unwrap_or("SCOUT_<CHAIN>_LOGS_RPC_URL")
         );
         Some((u, false, label))
-    } else if url.from_env {
-        // Detect a range-capped main endpoint (Alchemy free: 10 blocks).
-        match rpc.probe_logs_span().await {
+    } else if let Some(probe) = probe {
+        // A range-capped main endpoint (Alchemy free: 10 blocks).
+        match probe {
             Ok(Some(span)) if span <= 10 && profile.name == "robinhood" => {
                 warnings.push(format!(
                     "the keyed RPC caps eth_getLogs at {span} block(s) per request: using the \
@@ -1111,6 +1147,32 @@ mod tests {
         assert_eq!(setup.rate_limit_report().len(), 1);
     }
 
+    #[test]
+    fn payg_limiter_only_for_uncapped_alchemy_without_user_rates() {
+        let none = EvmNetOptions::default();
+        let uncapped: Option<u64> = None;
+        let capped = Some(10u64);
+        assert!(use_payg_limiter(true, Some(Some(&uncapped)), &none));
+        assert!(
+            !use_payg_limiter(true, Some(Some(&capped)), &none),
+            "free tier"
+        );
+        assert!(!use_payg_limiter(true, Some(None), &none), "probe failed");
+        assert!(!use_payg_limiter(true, None, &none), "no probe");
+        assert!(
+            !use_payg_limiter(false, Some(Some(&uncapped)), &none),
+            "not alchemy"
+        );
+        let user = EvmNetOptions {
+            rpc_rps: None,
+            rpc_cu_per_sec: Some(300),
+        };
+        assert!(
+            !use_payg_limiter(true, Some(Some(&uncapped)), &user),
+            "user rate wins"
+        );
+    }
+
     #[tokio::test]
     async fn block_receipts_threshold_follows_the_compute_unit_costs() {
         let keyed = endpoint(ok(json!([]))).await;
@@ -1135,8 +1197,8 @@ mod tests {
         )
         .await
         .unwrap();
-        // 500 CU per block vs 15 CU per receipt
-        assert_eq!(setup.block_receipts_min_txs, 34);
+        // throughput weights: 500 CU per block vs 20 CU per receipt
+        assert_eq!(setup.block_receipts_min_txs, 25);
         let setup = setup_evm(
             &robinhood(),
             false,

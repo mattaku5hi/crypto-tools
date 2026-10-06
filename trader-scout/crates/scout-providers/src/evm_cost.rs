@@ -1,9 +1,10 @@
 //! Approximate per-method cost weights for client-side rate limiting
 //! (`--rpc-cu-per-sec`), in Alchemy compute units.
 //!
-//! APPROXIMATE: the numbers follow Alchemy's published compute-unit table as
-//! remembered by the authors; they are not measured in this repository and a
-//! provider may change them. They only matter when CU weighting is switched
+//! The numbers are Alchemy's THROUGHPUT weights (the published compute-unit
+//! table, fetched 2026-10-06): what counts against the CU/s limit. Billing can
+//! differ — `eth_getBlockReceipts` is billed 20 CU but weighs 500 against
+//! throughput. A provider may change them; they are not measured here. They only matter when CU weighting is switched
 //! on explicitly (`--rpc-cu-per-sec N`); the default limiter counts one unit
 //! per request. Other providers price methods differently - use the plain
 //! `--rpc-rps` limiter for them. Unknown methods cost
@@ -12,7 +13,7 @@
 /// Alchemy Enhanced API method listing transfers by address.
 pub const ALCHEMY_TRANSFERS_METHOD: &str = "alchemy_getAssetTransfers";
 /// Approximate weight of one `alchemy_getAssetTransfers` page.
-pub const ALCHEMY_TRANSFERS_CU: u64 = 150;
+pub const ALCHEMY_TRANSFERS_CU: u64 = 120;
 
 /// Weight of a method that is not in the table.
 pub const DEFAULT_METHOD_CU: u64 = 50;
@@ -24,10 +25,11 @@ pub fn approx_method_cu(method: &str) -> u64 {
         "eth_chainId" => 1,
         "eth_blockNumber" => 10,
         "eth_getBlockByNumber" => 16,
-        "eth_getBalance" => 19,
-        "eth_getTransactionByHash" | "eth_getTransactionReceipt" => 15,
+        "eth_getBalance" | "eth_getTransactionReceipt" => 20,
+        "eth_getTransactionByHash" => 15,
         "eth_call" => 26,
-        "eth_getLogs" => 75,
+        "eth_getLogs" => 60,
+        // throughput weight; billed 20 CU
         "eth_getBlockReceipts" => 500,
         // Enhanced API, one page of up to 1,000 transfers (approximate).
         ALCHEMY_TRANSFERS_METHOD => ALCHEMY_TRANSFERS_CU,
@@ -48,6 +50,6 @@ mod tests {
         }
         assert!(approx_method_cu("eth_getBlockReceipts") > approx_method_cu("eth_getLogs"));
         assert_eq!(approx_method_cu("nope"), DEFAULT_METHOD_CU);
-        assert_eq!(approx_method_cu(ALCHEMY_TRANSFERS_METHOD), 150);
+        assert_eq!(approx_method_cu(ALCHEMY_TRANSFERS_METHOD), 120);
     }
 }

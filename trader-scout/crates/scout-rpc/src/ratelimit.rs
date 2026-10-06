@@ -87,6 +87,8 @@ struct State {
     /// Lowest rate since the last full recovery (reported as `old` in the
     /// restore notice).
     lowest_milli: u64,
+    /// Bucket size (micro-units); see [`RateLimiter::retune`].
+    burst_micro: i128,
 }
 
 /// Token-bucket limiter, see the module docs.
@@ -95,8 +97,7 @@ pub struct RateLimiter {
     turn: tokio::sync::Mutex<()>,
     waiters: AtomicUsize,
     max_waiters: usize,
-    burst_micro: i128,
-    initial_rate_milli: u64,
+    initial_rate_milli: AtomicU64,
     halvings: AtomicU64,
     recoveries: AtomicU64,
     acquired: AtomicU64,
@@ -140,12 +141,12 @@ impl RateLimiter {
                 last_halved: None,
                 recover_from: Instant::now(),
                 lowest_milli: rate_milli,
+                burst_micro,
             }),
             turn: tokio::sync::Mutex::new(()),
             waiters: AtomicUsize::new(0),
             max_waiters: DEFAULT_MAX_WAITERS,
-            burst_micro,
-            initial_rate_milli: rate_milli,
+            initial_rate_milli: AtomicU64::new(rate_milli),
             halvings: AtomicU64::new(0),
             recoveries: AtomicU64::new(0),
             acquired: AtomicU64::new(0),
@@ -161,6 +162,23 @@ impl RateLimiter {
         self
     }
 
+    /// Set a new sustained rate and bucket size (e.g. once the provider's
+    /// plan is known). Resets the recovery target to the new rate; the bucket
+    /// starts full at the new size.
+    pub fn retune(&self, units_per_sec: u64, burst_units: u64) {
+        let rate_milli = units_per_sec.max(1).saturating_mul(1_000);
+        let burst_micro = i128::from(burst_units.max(1)) * 1_000_000;
+        if let Ok(mut s) = self.state.lock() {
+            s.rate_milli = rate_milli;
+            s.lowest_milli = rate_milli;
+            s.burst_micro = burst_micro;
+            s.tokens_micro = burst_micro;
+            s.last = Instant::now();
+            s.recover_from = Instant::now();
+        }
+        self.initial_rate_milli.store(rate_milli, Ordering::Release);
+    }
+
     /// Report each halving (the CLIs print it on stderr).
     #[must_use]
     pub fn with_halving_hook(mut self, hook: HalvingHook) -> Self {
@@ -172,7 +190,7 @@ impl RateLimiter {
     pub fn stats(&self) -> RateLimiterStats {
         let rate_milli = self.state.lock().map_or(0, |s| s.rate_milli);
         RateLimiterStats {
-            initial_rate_milli: self.initial_rate_milli,
+            initial_rate_milli: self.initial_rate_milli.load(Ordering::Acquire),
             rate_milli,
             halvings: self.halvings.load(Ordering::Acquire),
             recoveries: self.recoveries.load(Ordering::Acquire),
@@ -190,8 +208,8 @@ impl RateLimiter {
         s.last = now;
         let add =
             i128::try_from(div(elapsed_us * u128::from(s.rate_milli), 1_000)).unwrap_or(i128::MAX);
-        s.tokens_micro = s.tokens_micro.saturating_add(add).min(self.burst_micro);
-        if s.rate_milli >= self.initial_rate_milli {
+        s.tokens_micro = s.tokens_micro.saturating_add(add).min(s.burst_micro);
+        if s.rate_milli >= self.initial_rate_milli.load(Ordering::Acquire) {
             return None;
         }
         let quiet = now.saturating_duration_since(s.recover_from);
@@ -201,26 +219,27 @@ impl RateLimiter {
         }
         let step = self
             .initial_rate_milli
+            .load(Ordering::Acquire)
             .checked_div(RECOVER_DIVISOR)
             .unwrap_or(0)
             .max(1);
-        let missing = self.initial_rate_milli - s.rate_milli;
+        let missing = self.initial_rate_milli.load(Ordering::Acquire) - s.rate_milli;
         let needed = missing.div_ceil(step);
         let steps64 = u64::try_from(steps).unwrap_or(u64::MAX).min(needed);
         s.rate_milli = s
             .rate_milli
             .saturating_add(step.saturating_mul(steps64))
-            .min(self.initial_rate_milli);
+            .min(self.initial_rate_milli.load(Ordering::Acquire));
         s.recover_from = u32::try_from(steps)
             .ok()
             .and_then(|n| RECOVER_STEP.checked_mul(n))
             .and_then(|d| s.recover_from.checked_add(d))
             .unwrap_or(now);
         self.recoveries.fetch_add(steps64, Ordering::AcqRel);
-        (s.rate_milli == self.initial_rate_milli).then(|| {
+        (s.rate_milli == self.initial_rate_milli.load(Ordering::Acquire)).then(|| {
             let lowest = s.lowest_milli;
-            s.lowest_milli = self.initial_rate_milli;
-            (lowest, self.initial_rate_milli)
+            s.lowest_milli = self.initial_rate_milli.load(Ordering::Acquire);
+            (lowest, self.initial_rate_milli.load(Ordering::Acquire))
         })
     }
 
@@ -240,7 +259,6 @@ impl RateLimiter {
         }
         let _waiting = WaiterGuard(&self.waiters);
         let cost = i128::from(cost_units.max(1)) * 1_000_000;
-        let need_tokens = cost.min(self.burst_micro);
         // FIFO: one caller at a time sleeps for its tokens.
         let _turn = self.turn.lock().await;
         loop {
@@ -250,6 +268,7 @@ impl RateLimiter {
                     break;
                 };
                 let restored = self.refill(&mut s);
+                let need_tokens = cost.min(s.burst_micro);
                 let wait = if s.tokens_micro >= need_tokens {
                     s.tokens_micro = s.tokens_micro.saturating_sub(cost);
                     None
@@ -465,6 +484,29 @@ mod tests {
         l.acquire(100).await.unwrap();
         let el = Instant::now() - t0;
         assert!(el < Duration::from_secs(60), "{el:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retune_changes_rate_bucket_and_recovery_target() {
+        let l = RateLimiter::new(250, 250);
+        l.on_rate_limited();
+        l.retune(5_000, 5_000);
+        let st = l.stats();
+        assert_eq!(
+            (st.initial_rate_milli, st.rate_milli),
+            (5_000_000, 5_000_000)
+        );
+        // the bucket starts full at the new size: 5,000 units at once
+        let t0 = Instant::now();
+        l.acquire(5_000).await.unwrap();
+        assert!(Instant::now() - t0 < Duration::from_millis(1));
+        // then 5,000 units/s: 500 more take 100 ms
+        l.acquire(500).await.unwrap();
+        let el = Instant::now() - t0;
+        assert!(
+            el >= Duration::from_millis(100) && el < Duration::from_millis(120),
+            "{el:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
