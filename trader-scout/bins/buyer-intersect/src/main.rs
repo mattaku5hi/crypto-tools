@@ -147,6 +147,17 @@ struct Args {
     )]
     max_pages_per_token: u32,
 
+    /// EVM only: hard bound of distinct transactions assembled per token
+    /// (receipts + transactions are fetched for each; a token above it fails
+    /// with `too many transactions` before any receipt request). Raise it for
+    /// full-lifetime scans of busy launch tokens (memory grows with it).
+    #[arg(
+        long,
+        default_value_t = 20_000,
+        value_parser = clap::value_parser!(u64).range(1..=1_000_000)
+    )]
+    evm_max_txs_per_token: u64,
+
     /// Transactions per provider page (`limit`, 1..=1000; Solana/Helius
     /// only). `--max-pages-per-token` counts PAGES, so the per-token
     /// transaction budget is `max-pages-per-token * page-limit`. Pages above

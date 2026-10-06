@@ -67,7 +67,10 @@ pub(crate) fn run_evm(
     let scanner = EvmHistoryScanner::new(
         setup.rpc.clone(),
         setup.chain.clone(),
-        ScanLimits::default(),
+        ScanLimits {
+            max_transactions: usize::try_from(args.evm_max_txs_per_token).unwrap_or(usize::MAX),
+            ..ScanLimits::default()
+        },
     );
     // Up-front cost estimate for a range-capped logs endpoint (never burn the
     // whole budget on a scan that cannot finish).
