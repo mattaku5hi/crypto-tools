@@ -599,6 +599,14 @@ impl EvmRpcClient {
         self
     }
 
+    /// Raise (or lower) the per-call log accumulation bound
+    /// ([`EvmRpcConfig::max_logs`]), e.g. for full-lifetime scans of busy tokens.
+    #[must_use]
+    pub fn with_max_logs(mut self, max_logs: usize) -> Self {
+        self.cfg.max_logs = max_logs.max(1);
+        self
+    }
+
     /// Cut every `eth_getLogs` window to at most `span` blocks up front
     /// (see [`EvmRpcConfig::logs_max_span`]).
     #[must_use]

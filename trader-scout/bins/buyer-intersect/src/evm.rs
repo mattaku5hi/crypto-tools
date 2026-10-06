@@ -64,8 +64,13 @@ pub(crate) fn run_evm(
         }
         o
     };
+    // A token's Transfer logs run ~2-4 per transaction: the log bound follows
+    // the transaction bound (never below the default).
+    let max_logs = usize::try_from(args.evm_max_txs_per_token.saturating_mul(4))
+        .unwrap_or(usize::MAX)
+        .max(200_000);
     let scanner = EvmHistoryScanner::new(
-        setup.rpc.clone(),
+        setup.rpc.clone().with_max_logs(max_logs),
         setup.chain.clone(),
         ScanLimits {
             max_transactions: usize::try_from(args.evm_max_txs_per_token).unwrap_or(usize::MAX),
