@@ -77,11 +77,26 @@ sell transactions:
   `amount0` is ~3 % above the WETH out — pool/hook fee before the router). Sells of 0.07–0.25 ETH make the
   +0.338 ETH plausible.
 
-## 5. Open items
+## 5. Unverified emitters were route hops (P3.18, ADR-020 amendment 10)
 
-- `0x6effbf…`: 33 swap logs at 9 refused emitters (among them v3 pool `0xddcbba…`, the `0x117cc2…`/WETH
-  pool the Pons router uses) — identify the factory/venue and decide admission.
+The 33 swap logs at 9 refused emitters on `0x6effbf…` were all route hops (WETH/USDG, WETH/`0x117cc2…`,
+USDG/`0x117cc2…`) at pools of 7 factories outside the pinned set — PancakeSwap-v3-topic `0x0ec554…`,
+`0xece6ec…`; Uniswap-v3-topic `0x16494a…`, `0x1ac9db…`, `0xe0c4ce…`, `0xf03875…`, `0xaa5865…` (`factory()`
+of each emitter, live). None moved the token. A further 35 swaps in the same transactions are at pools of
+the pinned Uniswap v3 factory (admitted at run time; `evm-capture` token mode does not run admission).
+After amendment 10: `buyer-intersect` exit 0 with `ungated_hop_swap_logs = 33`, same 59 wallets;
+`wallet-stats` `0xfaf8fa…` complete, `0x86e038…` 1 real gap (pool `0x8df767…` of `0x16494a…` trades its
+token `0x020bfc…`).
+
+`evm-capture` (P3.19): logs auto-routed to the public RPC and `--receipts auto` — the same token capture
+49 s instead of > 8 min.
+
+## 6. Open items
+
+- Identify the 7 fork factories (the Robinhood Blockscout UI/API sits behind a Cloudflare challenge; the
+  PRO API has no `contract` module). Admission needs the ADR-015/017 standard (pinned factory, init-code
+  hash or registry record, fixture-verified swaps); live impact so far: 1 real gap in 12 wallets.
 - Blockscout Robinhood internals "not yet processed": re-check later; with them, sells would not need
   the 500-CU block receipts.
-- Hooked v4 pools (Pons hook fee) are not modelled separately; the ledger uses the wallet's own deltas,
-  so PnL is unaffected, only venue-level evidence.
+- Hooked v4 pools (Pons hook fee ~3 % between the v4 `amount0` and the router's WETH out) are not
+  modelled separately; the ledger uses the wallet's own deltas, so PnL is unaffected.
