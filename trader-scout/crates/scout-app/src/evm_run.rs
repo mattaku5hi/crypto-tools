@@ -104,6 +104,12 @@ pub struct EvmSetup {
     /// were switched to the transfers listing (used if a caller forces
     /// `eth_getLogs` anyway, for the up-front cost estimate).
     pub capped_logs_span: Option<u64>,
+    /// `ReceiptMode::Auto` threshold for this endpoint: on a compute-unit
+    /// metered provider a whole block's receipts pay off only when at least
+    /// `cost(eth_getBlockReceipts) / cost(eth_getTransactionReceipt)` wanted
+    /// transactions share the block (Alchemy: 500 / 15 → 34); otherwise the
+    /// default.
+    pub block_receipts_min_txs: usize,
     /// Endpoint classes, never URLs (echoed in scope / `run_meta`).
     pub logs_source: String,
     pub state_source: String,
@@ -392,6 +398,16 @@ pub async fn setup_evm(
     };
     let (main_limiter, main_cost) =
         make_limiter(net, main_public, url.is_alchemy(), &main_label, notice);
+    let block_receipts_min_txs =
+        main_cost.map_or(ScanLimits::default().block_receipts_min_txs, |cost| {
+            let (block, tx) = (
+                cost("eth_getBlockReceipts"),
+                cost("eth_getTransactionReceipt").max(1),
+            );
+            usize::try_from(block.div_ceil(tx))
+                .unwrap_or(usize::MAX)
+                .max(ScanLimits::default().block_receipts_min_txs)
+        });
     let rpc = RpcClient::new(RpcEndpoint::new(url.expose_for_transport()), 30_000, 3)
         .map_err(|e| EvmSetupError::Config(url.redact(&e.to_string())))?
         .with_max_total_requests(max_requests)
@@ -583,6 +599,7 @@ pub async fn setup_evm(
         logs_span_cap,
         token_listing_via_transfers,
         capped_logs_span,
+        block_receipts_min_txs,
         logs_source,
         state_source,
         logs_secrets,
@@ -791,7 +808,10 @@ pub async fn collect_evm_stats(
     let scanner = EvmHistoryScanner::new(
         setup.rpc.clone(),
         setup.chain.clone(),
-        ScanLimits::default(),
+        ScanLimits {
+            block_receipts_min_txs: setup.block_receipts_min_txs,
+            ..ScanLimits::default()
+        },
     );
     let resolver = NativeLegResolver::new(setup.rpc.clone(), NativeLegPolicy::default());
     let explorer_requests = bs_limiter.clone().map(|l| {
@@ -1089,6 +1109,50 @@ mod tests {
         assert!(setup.warnings.iter().all(|w| !w.contains(KEYED_SECRET)));
         // one limiter: no second (public) endpoint
         assert_eq!(setup.rate_limit_report().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn block_receipts_threshold_follows_the_compute_unit_costs() {
+        let keyed = endpoint(ok(json!([]))).await;
+        let k = keyed.uri();
+        let env = move |name: &str| match name {
+            "SCOUT_ROBINHOOD_RPC_URL" => Some(format!("{k}/v2/{KEYED_SECRET}")),
+            _ => None,
+        };
+        let cu = EvmNetOptions {
+            rpc_rps: None,
+            rpc_cu_per_sec: Some(250),
+        };
+        let setup = setup_evm(
+            &robinhood(),
+            false,
+            Some(100),
+            4,
+            &cu,
+            &silent(),
+            true,
+            env.clone(),
+        )
+        .await
+        .unwrap();
+        // 500 CU per block vs 15 CU per receipt
+        assert_eq!(setup.block_receipts_min_txs, 34);
+        let setup = setup_evm(
+            &robinhood(),
+            false,
+            Some(100),
+            4,
+            &EvmNetOptions::default(),
+            &silent(),
+            true,
+            env,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            setup.block_receipts_min_txs,
+            ScanLimits::default().block_receipts_min_txs
+        );
     }
 
     #[tokio::test]

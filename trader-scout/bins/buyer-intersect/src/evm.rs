@@ -69,6 +69,7 @@ pub(crate) fn run_evm(
         setup.chain.clone(),
         ScanLimits {
             max_transactions: usize::try_from(args.evm_max_txs_per_token).unwrap_or(usize::MAX),
+            block_receipts_min_txs: setup.block_receipts_min_txs,
             ..ScanLimits::default()
         },
     );
