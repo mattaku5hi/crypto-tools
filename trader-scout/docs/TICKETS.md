@@ -152,7 +152,7 @@ Priority 1 — batch utilities (find smart money among buyers/sellers of the own
 | A1 | Live run over the owner's token list (mixed Solana + BSC, multi-chain) | todo | A4 for long BSC windows | `buyer-intersect` → `wallet-rank` (7–30 d window) → `wallet-stats`; fixes as found |
 | A2 | Live end-to-end pipeline on Base and BSC | todo | | so far only Robinhood (2026-10-06) and Solana ran end to end |
 | A3 | Out-of-sample check in `wallet-rank` (discovery window vs a disjoint validation window) | todo | | `docs/p0/cohort-definitions.md` requires it |
-| A4 | A log source for BSC token scans beyond the Alchemy free 10-block cap | todo | | public endpoints with wider `eth_getLogs` ranges, or PAYG; measure |
+| A4 | A log source for BSC token scans beyond the Alchemy free 10-block cap | done (offline), live pending | | Probed 2026-10-06 (token-address filter): `bsc-rpc.publicnode.com` 5,000 blocks ok / 50,000 HTTP 403; bnbchain + defibit dataseed `limit exceeded`; 1rpc 50-block cap; meowrpc unsupported; drpc 429; ankr needs a key. Keyed Alchemy BSC capped at 10 → `eth_getLogs` auto-routed to publicnode in 5,000-block windows cut up front (`EvmRpcConfig::logs_max_span`); `SCOUT_<CHAIN>_LOGS_MAX_SPAN` presets the span of a custom logs endpoint. `buyer-intersect --max-pages-per-token` bound raised to 2,000 (a Solana launch token reaches ~100k tx in its first hours). |
 | A5 | Fixes from A1/A2 | todo | A1, A2 | |
 | B0 | Dev tracker measurements: launch/migration volumes per chain and launchpad; ATH source (own swaps vs external API, e.g. Codex) | todo | | before any schema |
 | B1 | PostgreSQL schema of facts (launches, migrations, ATH, cursors, delivery hashes) | todo | B0 | `sqlx` migrations |

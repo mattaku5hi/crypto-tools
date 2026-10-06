@@ -91,6 +91,11 @@ pub struct EvmRpcConfig {
     /// Hard cap on `eth_getLogs` requests (attempts, failed ones included) of
     /// ONE `get_logs` call; `None` = only the split limit applies.
     pub max_log_requests: Option<u32>,
+    /// Known maximum block span of the `eth_getLogs` endpoint: windows are
+    /// cut to it up front (endpoints that answer an oversized range with a
+    /// bare HTTP 403 instead of a range error, e.g. the BSC publicnode RPC
+    /// at 5,000 blocks). `None` = discovered adaptively from range errors.
+    pub logs_max_span: Option<u64>,
 }
 
 impl Default for EvmRpcConfig {
@@ -101,6 +106,7 @@ impl Default for EvmRpcConfig {
             max_splits: 100_000,
             timestamp_cache_cap: 65_536,
             max_log_requests: None,
+            logs_max_span: None,
         }
     }
 }
@@ -593,6 +599,14 @@ impl EvmRpcClient {
         self
     }
 
+    /// Cut every `eth_getLogs` window to at most `span` blocks up front
+    /// (see [`EvmRpcConfig::logs_max_span`]).
+    #[must_use]
+    pub fn with_logs_max_span(mut self, span: u64) -> Self {
+        self.cfg.logs_max_span = Some(span.max(1));
+        self
+    }
+
     /// A clone sharing every cache and the request budget, with a smaller
     /// `eth_getLogs` split limit (bounded point lookups, e.g. a v4 `Initialize`).
     #[must_use]
@@ -755,7 +769,7 @@ impl EvmRpcClient {
         let mut attempts = 0u32;
         // Provider-announced maximum span (blocks) once a range error showed
         // one: later windows are cut to it up front instead of failing again.
-        let mut span_cap: Option<u64> = None;
+        let mut span_cap: Option<u64> = self.cfg.logs_max_span;
         while let Some((a, b)) = stack.pop() {
             if a > b {
                 continue;

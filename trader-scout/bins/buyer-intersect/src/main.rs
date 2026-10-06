@@ -143,7 +143,7 @@ struct Args {
     #[arg(
         long,
         default_value_t = 10,
-        value_parser = clap::value_parser!(u32).range(1..=200)
+        value_parser = clap::value_parser!(u32).range(1..=2000)
     )]
     max_pages_per_token: u32,
 

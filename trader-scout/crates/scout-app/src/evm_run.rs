@@ -23,8 +23,9 @@ use scout_sdk::evm::EvmChainProfile;
 use tokio_util::sync::CancellationToken;
 
 use crate::evm_source::{
-    ALCHEMY_DEFAULT_CU_PER_SEC, EvmNetOptions, EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS,
-    ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env, logs_rpc_env_name,
+    ALCHEMY_DEFAULT_CU_PER_SEC, BSC_PUBLIC_LOGS_RPC, BSC_PUBLIC_LOGS_SPAN, EvmNetOptions,
+    EvmRpcUrl, KEYED_RPC_RPS, PUBLIC_RPC_RPS, ROBINHOOD_PUBLIC_RPC, evm_rpc_url_from_env,
+    logs_rpc_env_name,
 };
 
 /// Which chain family an input set belongs to.
@@ -459,6 +460,29 @@ pub async fn setup_evm(
                     ),
                 ))
             }
+            Ok(Some(span)) if span <= 10 && profile.name == "bsc" => {
+                warnings.push(format!(
+                    "the keyed RPC caps eth_getLogs at {span} block(s) per request: using the \
+                     keyless public BSC RPC for eth_getLogs ONLY in {BSC_PUBLIC_LOGS_SPAN}-block \
+                     windows (receipts, state, balances stay on the keyed RPC); set {} to choose \
+                     another logs endpoint",
+                    logs_var.unwrap_or("SCOUT_BSC_LOGS_RPC_URL")
+                ));
+                let public = env(PUBLIC_RPC_OVERRIDE_ENV)
+                    .filter(|u| !u.trim().is_empty())
+                    .unwrap_or_else(|| BSC_PUBLIC_LOGS_RPC.to_string());
+                let real_public = env(PUBLIC_RPC_OVERRIDE_ENV).is_none_or(|u| u.trim().is_empty());
+                logs_span_cap = Some(BSC_PUBLIC_LOGS_SPAN);
+                Some((
+                    EvmRpcUrl::new(public, false),
+                    real_public,
+                    format!(
+                        "public {} rpc (auto: keyed rpc caps eth_getLogs at {span} block(s); \
+                         {BSC_PUBLIC_LOGS_SPAN}-block windows)",
+                        profile.name
+                    ),
+                ))
+            }
             Ok(Some(span)) => {
                 logs_span_cap = Some(span);
                 warnings.push(format!(
@@ -484,6 +508,19 @@ pub async fn setup_evm(
     } else {
         None
     };
+    // A known span of the logs endpoint: the BSC public fallback, or the
+    // user's SCOUT_<CHAIN>_LOGS_MAX_SPAN for a custom endpoint.
+    let span_env = crate::evm_source::logs_max_span_env_name(profile.name)
+        .and_then(&env)
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0);
+    let routed_bsc_public = logs_target
+        .as_ref()
+        .is_some_and(|(_, _, label)| label.starts_with("public bsc rpc"));
+    if let Some(span) = span_env.or(routed_bsc_public.then_some(BSC_PUBLIC_LOGS_SPAN)) {
+        rpc = rpc.with_logs_max_span(span);
+        logs_span_cap = Some(span);
+    }
     if let Some((lu, public, label)) = logs_target {
         let (l, cost) = make_limiter(net, public, lu.is_alchemy(), &label, notice);
         let logs_rpc = RpcClient::new(RpcEndpoint::new(lu.expose_for_transport()), 30_000, 3)
@@ -955,16 +992,31 @@ mod tests {
 
     /// A chain-identity-correct Robinhood endpoint; `logs` answers eth_getLogs.
     async fn endpoint(logs: ResponseTemplate) -> MockServer {
+        endpoint_of(&ROBINHOOD, logs).await
+    }
+
+    /// A chain-identity-correct endpoint of `profile`.
+    async fn endpoint_of(
+        profile: &scout_sdk::evm::EvmChainProfile,
+        logs: ResponseTemplate,
+    ) -> MockServer {
         let s = MockServer::start().await;
-        on(&s, "eth_chainId", ok(json!("0x1237"))).await;
+        on(
+            &s,
+            "eth_chainId",
+            ok(json!(format!("{:#x}", profile.chain_id))),
+        )
+        .await;
         on(
             &s,
             "eth_getBlockByNumber",
-            ok(json!({"hash": format!("{:#x}", ROBINHOOD.genesis_hash), "timestamp": "0x0"})),
+            ok(json!({"hash": format!("{:#x}", profile.genesis_hash), "timestamp": "0x0"})),
         )
         .await;
         on(&s, "eth_blockNumber", ok(json!("0x1000"))).await;
-        on(&s, "eth_call", ok(json!(format!("0x{:064x}", 6)))).await;
+        // decimals of the pinned quote tokens (USDG/USDC 6, BSC pegs 18)
+        let decimals = profile.quote_assets.first().map_or(6, |q| q.decimals);
+        on(&s, "eth_call", ok(json!(format!("0x{decimals:064x}")))).await;
         on(&s, "eth_getBalance", ok(json!("0x1"))).await;
         on(&s, "eth_getLogs", logs).await;
         s
@@ -996,6 +1048,87 @@ mod tests {
             network_id: NetworkId::EvmChainId(4663),
             genesis_identity: scout_core::GenesisIdentity::Unverified,
         }
+    }
+
+    #[tokio::test]
+    async fn capped_keyed_bsc_rpc_routes_logs_to_the_public_endpoint_in_5000_block_windows() {
+        let keyed = endpoint_of(&scout_sdk::evm::BSC, capped()).await;
+        let public = endpoint_of(&scout_sdk::evm::BSC, ok(json!([]))).await;
+        let (k, p) = (keyed.uri(), public.uri());
+        let env = move |name: &str| match name {
+            "SCOUT_BSC_RPC_URL" => Some(format!("{k}/v2/{KEYED_SECRET}")),
+            PUBLIC_RPC_OVERRIDE_ENV => Some(p.clone()),
+            _ => None,
+        };
+        let bsc = ChainKey {
+            family: ChainFamily::Evm,
+            network_id: NetworkId::EvmChainId(56),
+            genesis_identity: scout_core::GenesisIdentity::Unverified,
+        };
+        let setup = setup_evm(
+            &bsc,
+            false,
+            Some(100),
+            4,
+            &EvmNetOptions::default(),
+            &silent(),
+            true,
+            env,
+        )
+        .await
+        .unwrap();
+        assert!(
+            setup.logs_source.contains("5000-block windows"),
+            "{}",
+            setup.logs_source
+        );
+        assert_eq!(setup.logs_span_cap, Some(BSC_PUBLIC_LOGS_SPAN));
+        assert!(setup.warnings.iter().all(|w| !w.contains(KEYED_SECRET)));
+        let r = setup
+            .rpc
+            .get_logs(&scout_providers::LogFilter::default(), 0, 12_000)
+            .await
+            .unwrap();
+        // cut up front: 0-4999, 5000-9999, 10000-12000, no failed attempt
+        assert_eq!((r.requests, r.splits), (3, 0), "{r:?}");
+        let mp = methods(&public).await;
+        assert_eq!(
+            mp.iter().filter(|m| *m == "eth_getLogs").count(),
+            3,
+            "{mp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn logs_max_span_env_cuts_windows_of_a_custom_logs_endpoint() {
+        let keyed = endpoint(ok(json!([]))).await;
+        let logs = endpoint(ok(json!([]))).await;
+        let (k, l) = (keyed.uri(), logs.uri());
+        let env = move |name: &str| match name {
+            "SCOUT_ROBINHOOD_RPC_URL" => Some(format!("{k}/v2/{KEYED_SECRET}")),
+            "SCOUT_ROBINHOOD_LOGS_RPC_URL" => Some(l.clone()),
+            "SCOUT_ROBINHOOD_LOGS_MAX_SPAN" => Some("1000".to_string()),
+            _ => None,
+        };
+        let setup = setup_evm(
+            &robinhood(),
+            false,
+            Some(100),
+            4,
+            &EvmNetOptions::default(),
+            &silent(),
+            true,
+            env,
+        )
+        .await
+        .unwrap();
+        assert_eq!(setup.logs_span_cap, Some(1_000));
+        let r = setup
+            .rpc
+            .get_logs(&scout_providers::LogFilter::default(), 0, 2_499)
+            .await
+            .unwrap();
+        assert_eq!((r.requests, r.splits), (3, 0), "{r:?}");
     }
 
     #[tokio::test]

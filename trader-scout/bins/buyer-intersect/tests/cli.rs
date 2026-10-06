@@ -162,7 +162,7 @@ fn buyer_intersect_max_pages_per_token_range_is_validated_exit_2() {
     let bin = env!("CARGO_BIN_EXE_buyer-intersect");
     let input = "solana:AB48pUATr4vEsxdAp54X9pvqyae2whMR2B52rEuJpump\n\
                  solana:NkpbN7shUNdkvt24F33oai9Cf9rXDzJ4E8Sx2mNpump\n";
-    for bad in ["0", "201", "abc", "-1"] {
+    for bad in ["0", "2001", "abc", "-1"] {
         let (code, _out, stderr) = run_with_stdin(
             bin,
             &["--input", "-", &format!("--max-pages-per-token={bad}")],

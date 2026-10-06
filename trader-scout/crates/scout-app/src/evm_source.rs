@@ -85,6 +85,27 @@ pub const BLOCKSCOUT_KEY_ENV: &str = "SCOUT_BLOCKSCOUT_API_KEY";
 /// measured, research doc section 3).
 pub const ROBINHOOD_PUBLIC_RPC: &str = "https://rpc.mainnet.chain.robinhood.com";
 
+/// Keyless BSC endpoint used for `eth_getLogs` only when the keyed RPC caps
+/// the range (Alchemy free: 10 blocks). Measured 2026-10-06: a token-address
+/// filter over 5,000 blocks answers, 50,000 blocks get HTTP 403; other public
+/// BSC endpoints refused `eth_getLogs` (limit exceeded / 50-block cap /
+/// unsupported / key required).
+pub const BSC_PUBLIC_LOGS_RPC: &str = "https://bsc-rpc.publicnode.com";
+/// Block span of [`BSC_PUBLIC_LOGS_RPC`] `eth_getLogs` windows.
+pub const BSC_PUBLIC_LOGS_SPAN: u64 = 5_000;
+
+/// Env var with a known maximum `eth_getLogs` block span of a chain's logs
+/// endpoint (`SCOUT_<CHAIN>_LOGS_MAX_SPAN`).
+#[must_use]
+pub fn logs_max_span_env_name(chain: &str) -> Option<&'static str> {
+    match chain {
+        "robinhood" => Some("SCOUT_ROBINHOOD_LOGS_MAX_SPAN"),
+        "base" => Some("SCOUT_BASE_LOGS_MAX_SPAN"),
+        "bsc" => Some("SCOUT_BSC_LOGS_MAX_SPAN"),
+        _ => None,
+    }
+}
+
 /// An RPC URL that never prints.
 #[derive(Clone)]
 pub struct EvmRpcUrl {
