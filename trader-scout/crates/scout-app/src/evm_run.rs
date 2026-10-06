@@ -412,7 +412,7 @@ pub async fn setup_evm(
     };
     let (main_limiter, main_cost) =
         make_limiter(net, main_public, url.is_alchemy(), &main_label, notice);
-    let mut block_receipts_min_txs =
+    let block_receipts_min_txs =
         main_cost.map_or(ScanLimits::default().block_receipts_min_txs, |cost| {
             let (block, tx) = (
                 cost("eth_getBlockReceipts"),
@@ -478,8 +478,10 @@ pub async fn setup_evm(
     ) {
         let cu = u64::from(ALCHEMY_PAYG_CU_PER_SEC);
         main_limiter.retune(cu, cu);
-        // Throughput is no longer the binding limit: back to the default.
-        block_receipts_min_txs = ScanLimits::default().block_receipts_min_txs;
+        // The block-receipts threshold stays on the throughput weights: a BSC
+        // block's receipts are megabytes and weigh 500 CU against the limit
+        // (10 blocks/s at 5,000 CU/s) vs 20 CU per single receipt (live
+        // 2026-10-06: threshold 4 made a PAYG token scan bandwidth-bound).
         notice(format!(
             "limiter: alchemy pay-as-you-go detected (eth_getLogs not range capped) \u{2192} \
              cu-per-sec {ALCHEMY_PAYG_CU_PER_SEC} (override with --rpc-rps/--rpc-cu-per-sec)"
