@@ -6,7 +6,7 @@
 
 Три binaries: `buyer-intersect`, `wallet-rank`, `wallet-stats`. Файл задается `--input path`; stdin — `--input -` или отсутствие `--input` при pipe. Если stdin — TTY и вход не указан, показать понятное usage/error вместо неопределенного ожидания ввода.
 
-Входные форматы: `lines`, `csv`, `jsonl`; `--input-format auto` определяет документированный формат, не делает неявное symbol resolution. Token input — contract/mint address, не тикер. Wallet input — public address. Комментарии/пустые строки разрешены в lines; structured formats парсятся строго. Повторные canonical identities дедуплицируются, count duplicates выводится в stderr/manifest. Неверная строка по умолчанию прекращает запуск до платного сканирования, с номером строки и причиной.
+Входные форматы: `lines`, `csv`, `jsonl`; `--input-format auto` определяет документированный формат, не делает неявное symbol resolution. Token input — contract/mint address, не тикер. Wallet input — public address. Комментарии (`# …` и `// …`)/пустые строки разрешены в lines; structured formats парсятся строго. Повторные canonical identities дедуплицируются, count duplicates выводится в stderr/manifest. Неверная строка по умолчанию прекращает запуск до платного сканирования, с номером строки и причиной.
 
 Иллюстрация lines, placeholders надо заменить настоящими адресами:
 

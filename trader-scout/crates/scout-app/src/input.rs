@@ -143,7 +143,8 @@ fn parse_lines<R: BufRead>(
             reason: "could not read line".to_string(),
         })?;
         let trimmed = raw.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        // `# …` and `// …` comment lines (owner lists use `// sol`, `// bnb`).
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
             continue;
         }
 
@@ -733,7 +734,7 @@ mod tests {
 
     #[test]
     fn comments_and_blank_lines_are_skipped() {
-        let input = "# comment\n\n0x1111111111111111111111111111111111111111\n";
+        let input = "# comment\n\n//sol\n// bnb\n0x1111111111111111111111111111111111111111\n";
         let parsed = parse_input(input.as_bytes(), InputFormat::Lines, None).unwrap();
         assert_eq!(parsed.records.len(), 1);
     }
