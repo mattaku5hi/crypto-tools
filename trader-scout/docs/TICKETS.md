@@ -142,3 +142,23 @@ vendor from marketing claims alone — this is exactly the failure mode P0.1 exi
 - [x] MC.5 Exit aggregation (4 only if every scanned chain failed, else 3 if any chain is not clean) with per-chain reasons; tests with Solana + Base + Robinhood replay servers (order, per-chain meta, USD cross-chain order at engine level, native-quote exclusion, missing key, aggregation).
 - [ ] MC.6 Per-chain failure paths that return before the scan (preflight/budget) report `requests_made=0`; surface the setup-phase request count.
 - [ ] MC.7 Per-chain windows (one `--since/--until` applies to all chains; fixtures of different chains are recorded in different windows, so a cross-chain run with real data on every chain needs a shared recording window).
+
+## Revised plan (owner, 2026-10-06)
+
+Priority 1 — batch utilities (find smart money among buyers/sellers of the owner's token list). Priority 2 — the 24/7 dev tracker (`docs/DEV-TRACKER.md`); the service tracks devs only, not traders.
+
+| ID | Task | Status | Depends | Notes |
+|---|---|---|---|---|
+| A1 | Live run over the owner's token list (mixed Solana + BSC, multi-chain) | todo | A4 for long BSC windows | `buyer-intersect` → `wallet-rank` (7–30 d window) → `wallet-stats`; fixes as found |
+| A2 | Live end-to-end pipeline on Base and BSC | todo | | so far only Robinhood (2026-10-06) and Solana ran end to end |
+| A3 | Out-of-sample check in `wallet-rank` (discovery window vs a disjoint validation window) | todo | | `docs/p0/cohort-definitions.md` requires it |
+| A4 | A log source for BSC token scans beyond the Alchemy free 10-block cap | todo | | public endpoints with wider `eth_getLogs` ranges, or PAYG; measure |
+| A5 | Fixes from A1/A2 | todo | A1, A2 | |
+| B0 | Dev tracker measurements: launch/migration volumes per chain and launchpad; ATH source (own swaps vs external API, e.g. Codex) | todo | | before any schema |
+| B1 | PostgreSQL schema of facts (launches, migrations, ATH, cursors, delivery hashes) | todo | B0 | `sqlx` migrations |
+| B2 | Launch/migration ingestion: Solana pump.fun, Robinhood Pons/Bags, BSC four.meme, Base (Zora/Clanker for top-runners; other launchpads checked for a curve) | todo | B1 | |
+| B3 | ATH per launch | todo | B0, B2 | |
+| B4 | Category engine (`top-runners`, `top-migr`, `win-streak`) from a TOML config re-read every cycle | todo | B2, B3 | defaults in DEV-TRACKER §2 (min_launches 3, pending window 3 d) |
+| B5 | Daemon: incremental cycles (events 15–60 min, categories 1–2 h, ATH hourly/daily) | todo | B4 | |
+| B6 | Container image, docker-compose with PostgreSQL, Kubernetes manifests | todo | B5 | |
+| B7 | JSON export compatible with BasedBot / Axiom / GMGN wallet-tracker import; Telegram bot delivery only on change | todo | B4 | import formats researched and pinned with samples first |
