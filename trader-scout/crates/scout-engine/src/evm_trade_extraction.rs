@@ -55,6 +55,12 @@ pub struct EvmExtractionConfig {
     pub profile: EvmChainProfile,
     pub quote_tokens: Vec<EvmQuoteToken>,
     pub gate: SwapVenueGate,
+    /// `buyer-intersect` mode: only the trade SIDE matters (ADR-014), so
+    /// transactions may be assembled from receipts without their native
+    /// `value`; a trade with no visible quote leg is kept with
+    /// [`UnknownConsideration::NotFetched`] instead of being rejected.
+    /// Never set for ledgers (PnL needs the amounts).
+    pub sides_only: bool,
 }
 
 impl EvmExtractionConfig {
@@ -64,6 +70,7 @@ impl EvmExtractionConfig {
             profile,
             quote_tokens: Vec::new(),
             gate,
+            sides_only: false,
         }
     }
 
@@ -132,6 +139,10 @@ impl NativeLegStatus {
 pub enum UnknownConsideration {
     /// Native inflow could only arrive via an unobserved internal transfer.
     NativeLegNotObserved,
+    /// Sides-only scan ([`EvmExtractionConfig::sides_only`]): the
+    /// transaction's native `value` was not fetched, so a trade without a
+    /// visible quote leg keeps its side and an unknown amount.
+    NotFetched,
 }
 
 /// Quote amount of the trade in raw units of `quote` (wei for native).
@@ -606,7 +617,16 @@ pub fn extract_evm_trade(
         [] => {
             // A sell whose native proceeds could only be an unobserved
             // internal transfer: keep the trade, consideration Unknown.
-            if side == TradeSide::Sell && !internals_observed {
+            if cfg.sides_only {
+                done(
+                    EvmTxOutcome::Trade(Box::new(mk(
+                        QuoteAsset::Native,
+                        Consideration::Unknown(UnknownConsideration::NotFetched),
+                        NativeLegStatus::LogsAndValueOnly,
+                    ))),
+                    ungated,
+                )
+            } else if side == TradeSide::Sell && !internals_observed {
                 done(
                     EvmTxOutcome::Trade(Box::new(mk(
                         QuoteAsset::Native,
@@ -965,6 +985,26 @@ mod tests {
         t.internal_transfers = Some(vec![]);
         let e = extract_evm_trade(&t, &cfg(), None, None);
         assert_eq!(reason(&e), &NoTradeReason::NoQuoteLeg);
+    }
+
+    #[test]
+    fn sides_only_keeps_a_buy_without_a_visible_quote_leg() {
+        // token in at the gated PoolManager, no quote leg visible (the native
+        // value was not fetched in a receipt-only scan)
+        let t = tx(vec![transfer(TOKEN, PM, W, 100), v4_swap(PM)]);
+        assert_eq!(
+            reason(&extract_evm_trade(&t, &cfg(), None, None)),
+            &NoTradeReason::NoQuoteLeg
+        );
+        let mut sides = cfg();
+        sides.sides_only = true;
+        let e = extract_evm_trade(&t, &sides, None, None);
+        let tr = trade(&e);
+        assert_eq!(tr.side, TradeSide::Buy);
+        assert_eq!(
+            tr.consideration,
+            Consideration::Unknown(UnknownConsideration::NotFetched)
+        );
     }
 
     #[test]

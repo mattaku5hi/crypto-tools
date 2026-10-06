@@ -45,6 +45,10 @@ pub struct ScanLimits {
     /// `ReceiptMode::Auto`: blocks with at least this many needed
     /// transactions are fetched with `eth_getBlockReceipts`.
     pub block_receipts_min_txs: usize,
+    /// Assemble transactions from their receipts (sender, recipient, fee)
+    /// without `eth_getTransactionByHash`; native `value` is then unknown
+    /// (set to 0) — only for sides-only consumers (`buyer-intersect`).
+    pub receipt_only_transactions: bool,
 }
 
 impl Default for ScanLimits {
@@ -53,6 +57,7 @@ impl Default for ScanLimits {
             max_transactions: 20_000,
             receipt_mode: ReceiptMode::Auto,
             block_receipts_min_txs: 4,
+            receipt_only_transactions: false,
         }
     }
 }
@@ -835,11 +840,17 @@ impl EvmHistoryScanner {
     ) -> Result<Vec<RawEvmTransaction>, EvmSourceError> {
         let describe = |h: &B256| listing.and_then(|l| l.described.get(h));
         // 1. Transactions: only hashes no explorer row describes cost a call.
-        let undescribed: Vec<B256> = hashes
-            .iter()
-            .filter(|h| describe(h).is_none())
-            .copied()
-            .collect();
+        // Receipt-only mode: no transaction lookups at all (see below).
+        let undescribed: Vec<B256> = if self.limits.receipt_only_transactions {
+            Vec::new()
+        } else {
+            hashes
+                .iter()
+                .filter(|h| describe(h).is_none())
+                .copied()
+                .collect()
+        };
+
         let mut cores: HashMap<B256, TxCore> = HashMap::with_capacity(hashes.len());
         for t in self.rpc.transactions_by_hashes(&undescribed).await? {
             cores.insert(
@@ -979,6 +990,46 @@ impl EvmHistoryScanner {
                     gas_price: t.gas_price,
                 },
             );
+        }
+        // 4. Receipt-only mode: every remaining transaction from its receipt
+        // (sender, recipient, position; `value` unknown = 0, sides-only use);
+        // a receipt without `from` falls back to the RPC transaction.
+        if self.limits.receipt_only_transactions {
+            let mut need: Vec<B256> = Vec::new();
+            for h in hashes {
+                if cores.contains_key(h) {
+                    continue;
+                }
+                match receipts.get(h) {
+                    Some(r) if r.from.is_some() => {
+                        cores.insert(
+                            *h,
+                            TxCore {
+                                from: r.from.unwrap_or(Address::ZERO),
+                                to: r.to,
+                                value: U256::ZERO,
+                                block_number: r.block_number,
+                                index: Some(r.transaction_index),
+                                gas_price: None,
+                            },
+                        );
+                    }
+                    _ => need.push(*h),
+                }
+            }
+            for t in self.rpc.transactions_by_hashes(&need).await? {
+                cores.insert(
+                    t.hash,
+                    TxCore {
+                        from: t.from,
+                        to: t.to,
+                        value: t.value,
+                        block_number: t.block_number,
+                        index: Some(t.transaction_index),
+                        gas_price: t.gas_price,
+                    },
+                );
+            }
         }
         let blocks: Vec<u64> = cores
             .values()
@@ -1355,6 +1406,52 @@ mod tests {
         let m = methods(&s2).await;
         assert_eq!(m.iter().filter(|y| *y == "eth_getBlockReceipts").count(), 2);
         assert!(!m.iter().any(|y| y == "eth_getTransactionReceipt"));
+    }
+
+    #[tokio::test]
+    async fn receipt_only_mode_skips_transaction_lookups_when_receipts_name_the_sender() {
+        let run = |receipt_only: bool| async move {
+            let s = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(HashedChain { hash7: h(0xa1) })
+                .mount(&s)
+                .await;
+            let limits = ScanLimits {
+                receipt_only_transactions: receipt_only,
+                ..ScanLimits::default()
+            };
+            let out = scanner(&s, limits)
+                .await
+                .scan_token(TOKEN.parse().unwrap(), 0, 10)
+                .await
+                .unwrap();
+            let m = methods(&s).await;
+            (
+                out,
+                m.iter()
+                    .filter(|x| *x == "eth_getTransactionByHash")
+                    .count(),
+            )
+        };
+        let (full, full_lookups) = run(false).await;
+        let (lean, lean_lookups) = run(true).await;
+        assert_eq!(full_lookups, 2);
+        // block 7's per-tx receipt names the sender; block 5's block receipt
+        // does not (no `from`): one fallback lookup
+        assert_eq!(lean_lookups, 1);
+        let senders =
+            |o: &TokenScanOutput| o.transactions.iter().map(|t| t.from).collect::<Vec<_>>();
+        assert_eq!(senders(&full), senders(&lean));
+        let a1 = lean
+            .transactions
+            .iter()
+            .find(|t| t.hash == h(0xa1))
+            .unwrap();
+        assert_eq!(
+            a1.value,
+            U256::ZERO,
+            "value not fetched in receipt-only mode"
+        );
     }
 
     #[tokio::test]

@@ -75,6 +75,8 @@ pub(crate) fn run_evm(
         ScanLimits {
             max_transactions: usize::try_from(args.evm_max_txs_per_token).unwrap_or(usize::MAX),
             block_receipts_min_txs: setup.block_receipts_min_txs,
+            // Sides only (ADR-014): no eth_getTransactionByHash per tx.
+            receipt_only_transactions: true,
             ..ScanLimits::default()
         },
     );
@@ -148,8 +150,10 @@ pub(crate) fn run_evm(
         let _rt = rt.enter();
         setup.spawn_progress(&notice, None)
     };
+    let mut sides_cfg = setup.cfg.clone();
+    sides_cfg.sides_only = true;
     let mut report = match rt.block_on(run_evm_buyer_intersect(
-        &setup.cfg,
+        &sides_cfg,
         &scanner,
         tokens,
         args.min_token_hits,

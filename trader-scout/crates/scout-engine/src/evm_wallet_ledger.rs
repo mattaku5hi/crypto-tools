@@ -268,7 +268,9 @@ impl Builder {
         }
 
         match t.consideration {
-            Consideration::Unknown(UnknownConsideration::NativeLegNotObserved) => {
+            Consideration::Unknown(
+                UnknownConsideration::NativeLegNotObserved | UnknownConsideration::NotFetched,
+            ) => {
                 self.counts.native_leg_not_observed += 1;
                 self.book_unknown(
                     mint,
