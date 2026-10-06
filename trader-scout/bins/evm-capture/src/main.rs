@@ -45,7 +45,10 @@
 //! 429 without `Retry-After`, up to 8 attempts per request with exponential
 //! backoff / `Retry-After`, and the optional `SCOUT_<CHAIN>_LOGS_RPC_URL`
 //! endpoint for `eth_getLogs` only (receipts and `eth_call` stay on the main
-//! RPC). A 429 backs off and continues; only an exhausted `--max-requests`
+//! RPC). Like the CLIs, a Robinhood capture on a keyed Alchemy URL (10-block
+//! `eth_getLogs` cap) sends `eth_getLogs` to the public Robinhood RPC when no
+//! logs URL is set. Receipts default to `--receipts auto` (per transaction
+//! for blocks with few wanted transactions, P3.16). A 429 backs off and continues; only an exhausted `--max-requests`
 //! budget or a provider that keeps refusing after every attempt (or asks for
 //! a wait over 60 s) stops the capture, which is then written as
 //! `incomplete` (exit 3). A `rate limit:` line per endpoint is printed at the
@@ -130,6 +133,9 @@ impl ChainArg {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ReceiptsArg {
+    /// Per block: `eth_getBlockReceipts` when several wanted transactions
+    /// share it, else one `eth_getTransactionReceipt` each.
+    Auto,
     /// One `eth_getBlockReceipts` per block.
     Block,
     /// One `eth_getTransactionReceipt` per transaction.
@@ -230,7 +236,7 @@ struct Args {
     #[arg(long, default_value = "SCOUT_BLOCKSCOUT_API_KEY")]
     blockscout_key_env: String,
 
-    #[arg(long, value_enum, default_value = "block")]
+    #[arg(long, value_enum, default_value = "auto")]
     receipts: ReceiptsArg,
 
     /// Max transactions assembled (hard bound).
@@ -353,7 +359,14 @@ fn main() -> ExitCode {
     let logs_url = logs_rpc_env_name(args.chain.profile().name)
         .and_then(|var| std::env::var(var).ok())
         .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
+        .filter(|v| !v.is_empty())
+        .or_else(|| auto_logs_url(args.chain.profile().name, &url));
+    if logs_url.as_deref() == Some(ROBINHOOD_PUBLIC_RPC) {
+        eprintln!(
+            "evm-capture: eth_getLogs -> public robinhood rpc (keyed Alchemy caps eth_getLogs at \
+             10 blocks); receipts and eth_call stay on the keyed rpc"
+        );
+    }
     if let Some(l) = &logs_url {
         secrets.0.extend(url_secrets(l));
     }
@@ -447,6 +460,14 @@ enum Completion {
 struct Endpoints<'a> {
     main: &'a str,
     logs: Option<&'a str>,
+}
+
+/// The CLIs' auto-routing: a keyed Alchemy Robinhood URL (10-block
+/// `eth_getLogs` cap on the free tier) sends `eth_getLogs` to the public
+/// Robinhood RPC.
+fn auto_logs_url(chain: &str, main: &str) -> Option<String> {
+    (chain == "robinhood" && scout_app::is_alchemy_url(main))
+        .then(|| ROBINHOOD_PUBLIC_RPC.to_string())
 }
 
 /// Known keyless endpoints: capped at the public rate like the CLIs' own
@@ -790,6 +811,7 @@ async fn scan(
         ScanLimits {
             max_transactions: args.max_txs,
             receipt_mode: match args.receipts {
+                ReceiptsArg::Auto => ReceiptMode::Auto,
                 ReceiptsArg::Block => ReceiptMode::BlockReceipts,
                 ReceiptsArg::Tx => ReceiptMode::PerTransaction,
             },
@@ -1278,6 +1300,17 @@ fn write_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyed_alchemy_robinhood_routes_logs_to_the_public_rpc_only() {
+        let alchemy = "https://robinhood-mainnet.g.alchemy.com/v2/KEY";
+        assert_eq!(
+            auto_logs_url("robinhood", alchemy).as_deref(),
+            Some(ROBINHOOD_PUBLIC_RPC)
+        );
+        assert_eq!(auto_logs_url("base", alchemy), None);
+        assert_eq!(auto_logs_url("robinhood", "http://127.0.0.1:8545"), None);
+    }
 
     #[test]
     fn the_summary_is_not_truncated_but_notices_are() {

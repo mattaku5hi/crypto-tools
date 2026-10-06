@@ -66,6 +66,16 @@ fn topic_addr(a: &str) -> String {
     format!("0x000000000000000000000000{}", a.trim_start_matches("0x"))
 }
 
+fn receipt(h: &str) -> Value {
+    json!({"transactionHash": h, "blockNumber":"0x7",
+        "transactionIndex":"0x1","status":"0x1","gasUsed":"0x64","effectiveGasPrice":"0x2",
+        "logs":[
+          {"address": TOKEN, "topics":[TRANSFER, topic_addr(WALLET), topic_addr(PM)], "data": word(100),
+           "blockNumber":"0x7","transactionIndex":"0x1","logIndex":"0x0"},
+          {"address": PM, "topics":[V4_SWAP, word(1), topic_addr(PM)], "data": format!("0x{}", "00".repeat(192)),
+           "blockNumber":"0x7","transactionIndex":"0x1","logIndex":"0x1"}]})
+}
+
 /// Chain: block 7 holds one tx (hash 0xa1..) with a token Transfer into the
 /// PoolManager and a v4 Swap at the gated PoolManager.
 struct Chain {
@@ -87,13 +97,9 @@ impl Respond for Chain {
                 json!([{"address": TOKEN, "topics":[TRANSFER, topic_addr(WALLET), topic_addr(PM)],
                 "data": word(100), "blockNumber":"0x7","transactionIndex":"0x1","logIndex":"0x0"}])
             }
-            "eth_getBlockReceipts" => json!([{"transactionHash": h, "blockNumber":"0x7",
-                "transactionIndex":"0x1","status":"0x1","gasUsed":"0x64","effectiveGasPrice":"0x2",
-                "logs":[
-                  {"address": TOKEN, "topics":[TRANSFER, topic_addr(WALLET), topic_addr(PM)], "data": word(100),
-                   "blockNumber":"0x7","transactionIndex":"0x1","logIndex":"0x0"},
-                  {"address": PM, "topics":[V4_SWAP, word(1), topic_addr(PM)], "data": format!("0x{}", "00".repeat(192)),
-                   "blockNumber":"0x7","transactionIndex":"0x1","logIndex":"0x1"}]}]),
+            "eth_getBlockReceipts" => json!([receipt(&h)]),
+            // `--receipts auto` (default): the block's only tx, one by one.
+            "eth_getTransactionReceipt" => receipt(&h),
             "eth_getTransactionByHash" => {
                 json!({"hash": h, "from": WALLET, "to": PM, "value":"0x0",
                 "blockNumber":"0x7","transactionIndex":"0x1"})
