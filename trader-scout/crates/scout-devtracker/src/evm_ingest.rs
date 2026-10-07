@@ -8,7 +8,9 @@
 //! signature): Flap `TokenCreated.creator`, four.meme `TokenCreate.creator`,
 //! Pons `TokenLaunched` topic 3 (`originalDeployer`), Zora `CoinCreatedV4` /
 //! `CreatorCoinCreated` topic 2 (`payoutRecipient`), Zora `TrendCoinCreated`
-//! topic 1 (`caller`), Clanker v4 `TokenCreated` topic 2 (`tokenAdmin`).
+//! topic 1 (`caller`), Clanker v4 `TokenCreated` topic 2 (`tokenAdmin`), Robinhood Doppler `Create`
+//! (no creator field): `tx.from`, or the smart account of the `UserOperationEvent` when the
+//! transaction went to an ERC-4337 EntryPoint (one receipt per launch).
 
 use std::collections::BTreeMap;
 
@@ -21,7 +23,7 @@ use scout_dex_evm::{
     FOURMEME_TOKEN_CREATE_TOPIC0, decode_flap_launched_to_dex, decode_flap_token_created,
     decode_fourmeme_token_create,
 };
-use scout_providers::{EvmRpcClient, EvmSourceError, LogFilter};
+use scout_providers::{EvmReceiptInfo, EvmRpcClient, EvmSourceError, LogFilter};
 
 /// Flap Portal on Robinhood Chain (Bitquery's Flap.sh API docs).
 pub const FLAP_PORTAL_ROBINHOOD: Address = address!("26605f322f7ff986f381bb9a6e3f5dab0beaeb09");
@@ -43,6 +45,23 @@ pub const CLANKER_V4: Address = address!("E85A59c628F7d27878ACeB4bf3b35733630083
 /// migrations, 2026-10-07; ≈ 4/day, matching Codex's migrated list).
 pub const FOURMEME_LIQUIDITY_ADDED_TOPIC0: B256 =
     b256!("c18aa71171b358b706fe3dd345299685ba21a5316c66ffa9e319268b033c44b0");
+/// Doppler Airlock on Robinhood (Bitquery; 2026-10-07 measurements addendum).
+pub const DOPPLER_AIRLOCK_ROBINHOOD: Address = address!("eb7c034704ef8dcd2d32324c1545f62fb4ad0862");
+/// Doppler `Create(address asset, address indexed numeraire, address
+/// initializer, address poolOrHook)` — no creator field.
+pub const DOPPLER_CREATE_TOPIC0: B256 =
+    b256!("68ff1cfcdcf76864161555fc0de1878d8f83ec6949bf351df74d8a4a1a2679ab");
+/// ERC-4337 EntryPoints v0.7 and v0.6: a create sent through them is signed by
+/// a bundler; the creator is the smart account of its `UserOperationEvent`.
+pub const ENTRY_POINTS: [Address; 2] = [
+    address!("0000000071727De22E5E9d8BAf0edAc6f37da032"),
+    address!("5FF137D4b0FDCD49DcA30c7CF57E578a026d2789"),
+];
+/// `UserOperationEvent(bytes32 indexed userOpHash, address indexed sender,
+/// address indexed paymaster, uint256 nonce, bool success, uint256
+/// actualGasCost, uint256 actualGasUsed)`.
+pub const USER_OPERATION_EVENT_TOPIC0: B256 =
+    b256!("49628fd1471006c1482da88028e9ce4dbb080b815c9b0344d39e5a8e6ec1419f");
 /// `TokenLaunched(address,address,address,address,uint256,uint256)`.
 pub const PONS_TOKEN_LAUNCHED_TOPIC0: B256 =
     b256!("8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607");
@@ -93,6 +112,9 @@ pub struct EvmSource {
     pub emitters: &'static [Address],
     pub topic0: B256,
     pub decode: FactDecoder,
+    /// The event names no creator: it is read from the transaction receipt
+    /// ([`creator_from_receipt`]).
+    pub creator_from_tx: bool,
 }
 
 fn topic_address(log: &RawEvmLog, i: usize) -> Option<Address> {
@@ -132,6 +154,37 @@ fn flap_migration(log: &RawEvmLog) -> Option<DecodedFact> {
             timestamp: None,
         }),
         _ => None,
+    }
+}
+
+fn doppler_launch(log: &RawEvmLog) -> Option<DecodedFact> {
+    (log.data.len() == 3 * 32 && log.topics.len() == 2).then_some(())?;
+    Some(DecodedFact {
+        token: data_address(log, 0)?,
+        party: None,
+        timestamp: None,
+    })
+}
+
+/// The creator behind a launch event at `log_index` of a transaction: the
+/// smart account of the first `UserOperationEvent` after that log when the
+/// transaction went to an ERC-4337 EntryPoint (each user operation's event
+/// follows its own execution), else the transaction's `from`.
+#[must_use]
+pub fn creator_from_receipt(receipt: &EvmReceiptInfo, log_index: u64) -> Option<Address> {
+    if receipt.to.is_some_and(|t| ENTRY_POINTS.contains(&t)) {
+        receipt
+            .logs
+            .iter()
+            .filter(|l| {
+                ENTRY_POINTS.contains(&l.address)
+                    && l.topics.first() == Some(&USER_OPERATION_EVENT_TOPIC0)
+                    && l.log_index > log_index
+            })
+            .min_by_key(|l| l.log_index)
+            .and_then(|l| topic_address(l, 2))
+    } else {
+        receipt.from
     }
 }
 
@@ -207,6 +260,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[FLAP_PORTAL_BSC],
         topic0: FLAP_TOKEN_CREATED_TOPIC0,
         decode: flap_launch,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "bsc:flap:migration",
@@ -216,6 +270,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[FLAP_PORTAL_BSC],
         topic0: FLAP_LAUNCHED_TO_DEX_TOPIC0,
         decode: flap_migration,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "bsc:fourmeme:launch",
@@ -225,6 +280,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &FOURMEME_MANAGERS,
         topic0: FOURMEME_TOKEN_CREATE_TOPIC0,
         decode: fourmeme_launch,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "bsc:fourmeme:migration",
@@ -234,6 +290,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &FOURMEME_MANAGERS,
         topic0: FOURMEME_LIQUIDITY_ADDED_TOPIC0,
         decode: fourmeme_migration,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "robinhood:pons:launch",
@@ -243,6 +300,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[PONS_FACTORY],
         topic0: PONS_TOKEN_LAUNCHED_TOPIC0,
         decode: pons_launch,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "robinhood:pons:migration",
@@ -252,6 +310,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[PONS_FACTORY],
         topic0: PONS_POOL_GRADUATED_TOPIC0,
         decode: pons_migration,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "robinhood:flap:launch",
@@ -261,6 +320,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[FLAP_PORTAL_ROBINHOOD],
         topic0: FLAP_TOKEN_CREATED_TOPIC0,
         decode: flap_launch,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "robinhood:flap:migration",
@@ -270,6 +330,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[FLAP_PORTAL_ROBINHOOD],
         topic0: FLAP_LAUNCHED_TO_DEX_TOPIC0,
         decode: flap_migration,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "base:zora:coin",
@@ -279,6 +340,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[ZORA_FACTORY],
         topic0: ZORA_COIN_CREATED_V4_TOPIC0,
         decode: zora_coin,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "base:zora:creator-coin",
@@ -288,6 +350,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[ZORA_FACTORY],
         topic0: ZORA_CREATOR_COIN_CREATED_TOPIC0,
         decode: zora_coin,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "base:zora:trend-coin",
@@ -297,6 +360,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[ZORA_FACTORY],
         topic0: ZORA_TREND_COIN_CREATED_TOPIC0,
         decode: zora_trend,
+        creator_from_tx: false,
     },
     EvmSource {
         key: "base:clanker:launch",
@@ -306,6 +370,17 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[CLANKER_V4],
         topic0: CLANKER_V4_TOKEN_CREATED_TOPIC0,
         decode: clanker_launch,
+        creator_from_tx: false,
+    },
+    EvmSource {
+        key: "robinhood:doppler:launch",
+        chain: "robinhood",
+        launchpad: "doppler",
+        kind: FactKind::Launch,
+        emitters: &[DOPPLER_AIRLOCK_ROBINHOOD],
+        topic0: DOPPLER_CREATE_TOPIC0,
+        decode: doppler_launch,
+        creator_from_tx: true,
     },
 ];
 
@@ -484,14 +559,34 @@ pub async fn ingest_range(
     let block_i64 = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
     report.inserted = match src.kind {
         FactKind::Launch => {
+            // creators named only by the transaction (Doppler): one receipt each
+            let mut from_tx: BTreeMap<(u64, u64), Address> = BTreeMap::new();
+            if src.creator_from_tx {
+                let mut wanted: Vec<(&RawEvmLog, B256)> = Vec::new();
+                for (l, _) in decoded.iter().filter(|(_, f)| f.party.is_none()) {
+                    if let Some(h) = out.tx_hashes.get(&(l.block_number, l.transaction_index)) {
+                        wanted.push((l, *h));
+                    }
+                }
+                let hashes: Vec<B256> = wanted.iter().map(|(_, h)| *h).collect();
+                let receipts = rpc.receipts_by_hashes(&hashes).await?;
+                for ((l, _), r) in wanted.iter().zip(&receipts) {
+                    if let Some(c) = creator_from_receipt(r, l.log_index) {
+                        from_tx.insert((l.block_number, l.log_index), c);
+                    }
+                }
+            }
             let rows: Vec<Launch> = decoded
                 .iter()
                 .filter_map(|(l, f)| {
+                    let creator = f
+                        .party
+                        .or_else(|| from_tx.get(&(l.block_number, l.log_index)).copied())?;
                     Some(Launch {
                         chain: src.chain.to_string(),
                         token: format!("{:#x}", f.token),
                         launchpad: src.launchpad.to_string(),
-                        creator: format!("{:#x}", f.party?),
+                        creator: format!("{creator:#x}"),
                         created_block: block_i64(l.block_number),
                         created_at: time_of(l.block_number, f.timestamp),
                         tx_hash: hash_of(l),
@@ -526,6 +621,57 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn doppler_creator_is_the_sender_or_the_user_operation_account() {
+        let word = |a: Address| B256::left_padding_from(a.as_slice());
+        let log = |address: Address, topics: Vec<B256>, log_index: u64| RawEvmLog {
+            address,
+            topics,
+            data: alloy_primitives::Bytes::new(),
+            block_number: 1,
+            transaction_index: 0,
+            log_index,
+        };
+        let uop = |sender: Address, i: u64| {
+            log(
+                ENTRY_POINTS[0],
+                vec![
+                    USER_OPERATION_EVENT_TOPIC0,
+                    B256::ZERO,
+                    word(sender),
+                    B256::ZERO,
+                ],
+                i,
+            )
+        };
+        let (eoa, bundler, alice, bob) = (
+            address!("1111111111111111111111111111111111111111"),
+            address!("2222222222222222222222222222222222222222"),
+            address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        let receipt = |to: Address, logs: Vec<RawEvmLog>| EvmReceiptInfo {
+            tx_hash: B256::ZERO,
+            block_number: 1,
+            transaction_index: 0,
+            status: scout_core::EvmTxStatus::Success,
+            gas_used: 0,
+            effective_gas_price: None,
+            l1_fee: None,
+            logs,
+            from: Some(bundler),
+            to: Some(to),
+        };
+        let mut direct = receipt(DOPPLER_AIRLOCK_ROBINHOOD, vec![]);
+        direct.from = Some(eoa);
+        assert_eq!(creator_from_receipt(&direct, 3), Some(eoa));
+        // a bundle of two user operations: each create belongs to the next event
+        let bundle = receipt(ENTRY_POINTS[0], vec![uop(alice, 5), uop(bob, 9)]);
+        assert_eq!(creator_from_receipt(&bundle, 2), Some(alice));
+        assert_eq!(creator_from_receipt(&bundle, 7), Some(bob));
+        assert_eq!(creator_from_receipt(&bundle, 12), None, "never the bundler");
+    }
 
     #[test]
     fn fourmeme_graduation_names_the_base_token() {
@@ -564,6 +710,14 @@ mod tests {
     fn every_source_topic_is_the_keccak_of_its_signature() {
         let k = |s: &str| alloy_primitives::keccak256(s.as_bytes());
         let pk = "(address,address,uint24,int24,address)";
+        assert_eq!(
+            DOPPLER_CREATE_TOPIC0,
+            k("Create(address,address,address,address)")
+        );
+        assert_eq!(
+            USER_OPERATION_EVENT_TOPIC0,
+            k("UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)")
+        );
         assert_eq!(
             FOURMEME_LIQUIDITY_ADDED_TOPIC0,
             k("LiquidityAdded(address,uint256,address,uint256)")

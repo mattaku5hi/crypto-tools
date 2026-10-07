@@ -286,3 +286,24 @@ async fn batch_inserts_span_several_statements() {
         7_000
     );
 }
+
+#[tokio::test]
+async fn ath_candidates_skip_one_off_creators_without_a_curve() {
+    let Some(db) = db().await else { return };
+    let chain = format!("ath-{}", std::process::id());
+    let zora = |token: &str, creator: &str| Launch {
+        launchpad: "zora".into(),
+        ..launch(&chain, token, creator, 1_000)
+    };
+    db.insert_launches(&[
+        zora("once", "z1"),
+        zora("a", "z3"),
+        zora("b", "z3"),
+        zora("c", "z3"),
+    ])
+    .await
+    .unwrap();
+    let mut got = db.ath_candidates(&chain, 2_000, 10).await.unwrap();
+    got.sort();
+    assert_eq!(got, ["a", "b", "c"], "a one-off creator cannot have 3 runners");
+}

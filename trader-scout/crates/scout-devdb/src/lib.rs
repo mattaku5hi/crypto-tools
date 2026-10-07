@@ -83,7 +83,12 @@ pub struct AddressKind {
 /// Launchpads without a bonding curve (no migration rate; owner decision
 /// 2026-10-06). Kept in sync with the config's `launchpads_without_migration`
 /// default.
-pub const NO_CURVE_LAUNCHPADS: &[&str] = &["zora", "clanker"];
+pub const NO_CURVE_LAUNCHPADS: &[&str] = &["zora", "clanker", "doppler"];
+
+/// Launches a creator needs before its tokens on launchpads without a curve
+/// get ATH observations: top-runners needs ≥ 3 runners (owner defaults), and
+/// most such creators launch once (Zora, one day: 231 of 2,863 launches).
+pub const ATH_MIN_CREATOR_LAUNCHES: i64 = 3;
 
 /// Launchpads whose creator field is the caller (`msg.sender`), so a contract
 /// there may be a shared intermediary (ADR-021 amendment 1). Pons is listed
@@ -598,7 +603,8 @@ impl DevDb {
     }
 
     /// Tokens of `chain` whose ATH observation is missing or stale: migrated
-    /// tokens and every token of a launchpad in `no_curve` (no migration),
+    /// tokens and the tokens of launchpads without a curve whose creator has
+    /// at least [`ATH_MIN_CREATOR_LAUNCHES`] launches,
     /// refreshed by age — < 2 days every 12 h, < 7 days daily, < 30 days
     /// weekly, older every 90 days (a year of tokens stays within Codex's free
     /// 10k requests/month: ≈ 4.8k steady, ≈ 3.7k more for the backfill
@@ -617,7 +623,11 @@ impl DevDb {
             "SELECT l.token FROM launches l
              LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
              LEFT JOIN ath a ON a.chain = l.chain AND a.token = l.token
-             WHERE l.chain = $1 AND (m.token IS NOT NULL OR l.launchpad = ANY($4))
+             WHERE l.chain = $1
+               AND (m.token IS NOT NULL
+                    OR (l.launchpad = ANY($4)
+                        AND (SELECT count(*) FROM launches x
+                             WHERE x.chain = l.chain AND x.creator = l.creator) >= $5))
                AND (a.observed_at IS NULL OR a.observed_at < $2 - CASE
                     WHEN $2 - l.created_at < 172800 THEN 43200
                     WHEN $2 - l.created_at < 604800 THEN 86400
@@ -630,6 +640,7 @@ impl DevDb {
         .bind(now)
         .bind(limit)
         .bind(NO_CURVE_LAUNCHPADS)
+        .bind(ATH_MIN_CREATOR_LAUNCHES)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|r| r.get("token")).collect())
