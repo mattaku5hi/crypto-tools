@@ -23,6 +23,7 @@ members = [
     "crates/scout-engine",
     "crates/scout-sdk",
     "crates/scout-app",
+    "crates/scout-devdb",
 ]
 
 [workspace.package]
@@ -52,6 +53,7 @@ integer_division = "warn"
 [workspace.dependencies]
 # internal crates
 scout-core = { path = "crates/scout-core" }
+scout-devdb = { path = "crates/scout-devdb" }
 scout-scan = { path = "crates/scout-scan" }
 scout-rpc = { path = "crates/scout-rpc" }
 scout-evm = { path = "crates/scout-evm" }
@@ -76,6 +78,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 tokio-util = "0.7"
 futures = "0.3"
