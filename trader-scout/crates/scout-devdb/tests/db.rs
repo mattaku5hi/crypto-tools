@@ -213,3 +213,39 @@ async fn dev_identity_follows_the_creator_kind() {
     );
     assert_eq!(devs["u1"], "unknown", "kind not checked yet");
 }
+
+#[tokio::test]
+async fn batch_inserts_span_several_statements() {
+    let Some(db) = db().await else { return };
+    let chain = format!("batch-{}", std::process::id());
+    let rows: Vec<Launch> = (0..12_345)
+        .map(|i| launch(&chain, &format!("t{i}"), &format!("d{}", i % 100), i))
+        .collect();
+    assert_eq!(db.insert_launches(&rows).await.unwrap(), 12_345);
+    let mut again = rows.clone();
+    again.push(launch(&chain, "new", "d0", 99_999));
+    assert_eq!(
+        db.insert_launches(&again).await.unwrap(),
+        1,
+        "only the new row"
+    );
+    let migs: Vec<Migration> = (0..7_000)
+        .map(|i| Migration {
+            chain: chain.clone(),
+            token: format!("t{i}"),
+            launchpad: "flap".into(),
+            migrated_block: i,
+            migrated_at: i,
+            tx_hash: format!("0xm{i}"),
+            pool: (i % 2 == 0).then(|| format!("0xp{i}")),
+            source: "test".into(),
+        })
+        .collect();
+    assert_eq!(db.insert_migrations(&migs).await.unwrap(), 7_000);
+    let rows = db.dev_launches(Some(&chain), 0).await.unwrap();
+    assert_eq!(rows.len(), 12_346);
+    assert_eq!(
+        rows.iter().filter(|r| r.migrated_at.is_some()).count(),
+        7_000
+    );
+}

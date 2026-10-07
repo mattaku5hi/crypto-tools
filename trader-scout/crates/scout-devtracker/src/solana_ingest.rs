@@ -180,14 +180,39 @@ pub async fn ingest_solana_source(
         None => now.saturating_sub(start_secs_back),
     };
     let to = now.saturating_sub(settle_secs);
+    if from >= to {
+        return Ok(SolanaIngestReport {
+            from,
+            to,
+            ..SolanaIngestReport::default()
+        });
+    }
+    let (mut report, newest_seen) = scan_window(db, provider, src, from, to).await?;
+    report.from = from;
+    report.to = to;
+    let next = if report.truncated {
+        newest_seen.unwrap_or(from).clamp(from, to)
+    } else {
+        to
+    };
+    db.set_cursor(src.key, &next.to_string(), now).await?;
+    Ok(report)
+}
+
+/// Read, decode and store `[from, to)` of one source (no cursor change);
+/// returns the report and the newest block time seen.
+async fn scan_window(
+    db: &DevDb,
+    provider: &dyn HistoryProvider,
+    src: &SolanaSource,
+    from: i64,
+    to: i64,
+) -> Result<(SolanaIngestReport, Option<i64>), SolanaIngestError> {
     let mut report = SolanaIngestReport {
         from,
         to,
         ..SolanaIngestReport::default()
     };
-    if from >= to {
-        return Ok(report);
-    }
     let task = ScanTask {
         request: ScanRequest::WalletActivity {
             wallet: wallet(src.address)?,
@@ -222,13 +247,49 @@ pub async fn ingest_solana_source(
     }
     report.inserted += db.insert_launches(&launches).await?;
     report.inserted += db.insert_migrations(&migrations).await?;
-    let next = if report.truncated {
-        newest_seen.unwrap_or(from).clamp(from, to)
-    } else {
-        to
-    };
-    db.set_cursor(src.key, &next.to_string(), now).await?;
-    Ok(report)
+    Ok((report, newest_seen))
+}
+
+const DAY: i64 = 86_400;
+
+/// Cursor key marking one backfilled UTC day of a source.
+#[must_use]
+pub fn backfill_day_key(src: &SolanaSource, day_start: i64) -> String {
+    format!("backfill:{}:{day_start}", src.key)
+}
+
+/// UTC day starts of the backfill window `[now − days, today)`, newest first.
+#[must_use]
+pub fn backfill_days(now: i64, days: i64) -> Vec<i64> {
+    let today = now.div_euclid(DAY).saturating_mul(DAY);
+    (1..=days.max(0))
+        .map(|i| today.saturating_sub(i.saturating_mul(DAY)))
+        .collect()
+}
+
+/// Backfill one UTC day of one source. `Ok(None)` = already done. A day is
+/// marked done only when read completely; a day cut by the page budget is
+/// returned with `truncated` and read again next time (idempotent inserts).
+///
+/// # Errors
+/// Provider or database failure (the day stays not done).
+pub async fn backfill_solana_day(
+    db: &DevDb,
+    provider: &dyn HistoryProvider,
+    src: &SolanaSource,
+    day_start: i64,
+    now: i64,
+) -> Result<Option<SolanaIngestReport>, SolanaIngestError> {
+    let key = backfill_day_key(src, day_start);
+    if db.cursor(&key).await?.is_some() {
+        return Ok(None);
+    }
+    let (report, _) =
+        scan_window(db, provider, src, day_start, day_start.saturating_add(DAY)).await?;
+    if !report.truncated {
+        db.set_cursor(&key, "done", now).await?;
+    }
+    Ok(Some(report))
 }
 
 #[cfg(test)]
@@ -338,6 +399,15 @@ mod tests {
             false,
         );
         assert_eq!(facts_of(&t, SolanaFact::Launch, "k"), (vec![], vec![], 0));
+    }
+
+    #[test]
+    fn backfill_days_are_whole_utc_days_newest_first() {
+        let now = 1_791_400_000; // 2026-10-07T19:06Z
+        let d = backfill_days(now, 3);
+        assert_eq!(d, [1_791_244_800, 1_791_158_400, 1_791_072_000]);
+        assert!(d.iter().all(|x| x % 86_400 == 0));
+        assert!(backfill_days(now, 0).is_empty());
     }
 
     #[test]

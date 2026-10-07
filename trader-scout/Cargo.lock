@@ -1414,6 +1414,7 @@ name = "dev-tracker"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "futures",
  "scout-app",
  "scout-core",
  "scout-devdb",

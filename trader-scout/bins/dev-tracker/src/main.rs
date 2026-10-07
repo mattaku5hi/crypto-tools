@@ -6,6 +6,8 @@
 //! the config every cycle. Secrets (database URL, RPC URLs, API keys, bot token)
 //! come from the environment and are never printed.
 
+mod backfill;
+
 use std::collections::BTreeSet;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -101,6 +103,9 @@ enum Cmd {
         #[arg(long, default_value = DEFAULT_CONFIG)]
         config: String,
     },
+    /// One-year history (B8): EVM logs on the keyed provider, EVM identity on
+    /// the free fallback endpoint, Solana by whole days, then ATH. Resumable.
+    Backfill(backfill::BackfillArgs),
 }
 
 fn now() -> i64 {
@@ -199,6 +204,7 @@ async fn ingest_chain(db: &DevDb, chain: &str, o: &IngestOpts) -> Result<(), Str
     let id = scout_devtracker::identity::enrich_identities(
         db,
         &setup.rpc,
+        None,
         chain,
         o.max_new_creators,
         o.max_signer_lookups,
@@ -617,6 +623,10 @@ async fn run(args: Args) -> Result<(), String> {
                 "dev-tracker: files in {:?}; {n} changed list(s) sent",
                 cfg.delivery.out_dir
             );
+        }
+        Cmd::Backfill(a) => {
+            db.migrate().await.map_err(|e| e.to_string())?;
+            backfill::run_backfill(&db, &a).await?;
         }
         Cmd::Run { config } => {
             db.migrate().await.map_err(|e| e.to_string())?;

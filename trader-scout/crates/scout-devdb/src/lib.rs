@@ -27,6 +27,9 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("../migrations/0003_delivery_members.sql")),
 ];
 
+/// Rows per `INSERT … SELECT FROM UNNEST` statement.
+const INSERT_CHUNK: usize = 5_000;
+
 /// A token launch (one per token; `creator` is the launchpad's own creator field).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
@@ -169,19 +172,24 @@ impl DevDb {
     pub async fn insert_launches(&self, rows: &[Launch]) -> Result<u64, DevDbError> {
         let mut tx = self.pool.begin().await?;
         let mut n = 0;
-        for r in rows {
+        // one statement per chunk (arrays via UNNEST): a backfill writes tens
+        // of millions of rows
+        for c in rows.chunks(INSERT_CHUNK) {
+            let col = |f: fn(&Launch) -> &String| c.iter().map(f).cloned().collect::<Vec<String>>();
             n += sqlx::query(
                 "INSERT INTO launches (chain, token, launchpad, creator, created_block, created_at, tx_hash, source)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (chain, token) DO NOTHING",
+                 SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[],
+                                      $6::bigint[], $7::text[], $8::text[])
+                 ON CONFLICT (chain, token) DO NOTHING",
             )
-            .bind(&r.chain)
-            .bind(&r.token)
-            .bind(&r.launchpad)
-            .bind(&r.creator)
-            .bind(r.created_block)
-            .bind(r.created_at)
-            .bind(&r.tx_hash)
-            .bind(&r.source)
+            .bind(col(|r| &r.chain))
+            .bind(col(|r| &r.token))
+            .bind(col(|r| &r.launchpad))
+            .bind(col(|r| &r.creator))
+            .bind(c.iter().map(|r| r.created_block).collect::<Vec<i64>>())
+            .bind(c.iter().map(|r| r.created_at).collect::<Vec<i64>>())
+            .bind(col(|r| &r.tx_hash))
+            .bind(col(|r| &r.source))
             .execute(&mut *tx)
             .await?
             .rows_affected();
@@ -197,19 +205,23 @@ impl DevDb {
     pub async fn insert_migrations(&self, rows: &[Migration]) -> Result<u64, DevDbError> {
         let mut tx = self.pool.begin().await?;
         let mut n = 0;
-        for r in rows {
+        for c in rows.chunks(INSERT_CHUNK) {
+            let col =
+                |f: fn(&Migration) -> &String| c.iter().map(f).cloned().collect::<Vec<String>>();
             n += sqlx::query(
                 "INSERT INTO migrations (chain, token, launchpad, migrated_block, migrated_at, tx_hash, pool, source)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (chain, token) DO NOTHING",
+                 SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::bigint[], $5::bigint[],
+                                      $6::text[], $7::text[], $8::text[])
+                 ON CONFLICT (chain, token) DO NOTHING",
             )
-            .bind(&r.chain)
-            .bind(&r.token)
-            .bind(&r.launchpad)
-            .bind(r.migrated_block)
-            .bind(r.migrated_at)
-            .bind(&r.tx_hash)
-            .bind(&r.pool)
-            .bind(&r.source)
+            .bind(col(|r| &r.chain))
+            .bind(col(|r| &r.token))
+            .bind(col(|r| &r.launchpad))
+            .bind(c.iter().map(|r| r.migrated_block).collect::<Vec<i64>>())
+            .bind(c.iter().map(|r| r.migrated_at).collect::<Vec<i64>>())
+            .bind(col(|r| &r.tx_hash))
+            .bind(c.iter().map(|r| r.pool.clone()).collect::<Vec<Option<String>>>())
+            .bind(col(|r| &r.source))
             .execute(&mut *tx)
             .await?
             .rows_affected();

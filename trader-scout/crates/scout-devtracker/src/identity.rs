@@ -50,24 +50,46 @@ async fn is_contract(rpc: &EvmRpcClient, address: &str) -> Result<bool, EvmSourc
     Ok(v.as_str().is_some_and(|c| c.len() > 2))
 }
 
-async fn signer_of(rpc: &EvmRpcClient, tx_hash: &str) -> Result<Option<String>, EvmSourceError> {
+/// The signer of a launch transaction. A provider answering `null` (dRPC does
+/// for some known transactions) is asked again through `retry` (Alchemy);
+/// still unknown → `None` (the launch stays unresolved and is retried later).
+async fn signer_of(
+    rpc: &EvmRpcClient,
+    retry: Option<&EvmRpcClient>,
+    tx_hash: &str,
+) -> Result<Option<String>, EvmSourceError> {
     let Ok(h) = tx_hash.parse::<B256>() else {
         return Ok(None);
     };
-    Ok(Some(format!(
-        "{:#x}",
-        rpc.transaction_by_hash(h).await?.from
-    )))
+    let first = match rpc.transaction_by_hash(h).await {
+        Ok(tx) => return Ok(Some(format!("{:#x}", tx.from))),
+        Err(EvmSourceError::NotFound { .. }) => None,
+        Err(e) => Some(e),
+    };
+    if let Some(e) = first {
+        return Err(e);
+    }
+    match retry {
+        Some(r) => match r.transaction_by_hash(h).await {
+            Ok(tx) => Ok(Some(format!("{:#x}", tx.from))),
+            Err(EvmSourceError::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        },
+        None => Ok(None),
+    }
 }
 
 /// Classify up to `max_creators` new creators of `chain`, then resolve up to
 /// `max_signers` signers of launches through shared intermediaries.
+/// `retry` serves transaction lookups `rpc` answers with `null` (the backfill
+/// runs `rpc` on dRPC and retries on Alchemy).
 ///
 /// # Errors
 /// RPC (budget, transport) or database failure; facts written so far stay.
 pub async fn enrich_identities(
     db: &DevDb,
     rpc: &EvmRpcClient,
+    retry: Option<&EvmRpcClient>,
     chain: &str,
     max_creators: i64,
     max_signers: i64,
@@ -96,7 +118,7 @@ pub async fn enrich_identities(
             report.contracts += 1;
             let sample = db.launches_of(chain, &address, OWNER_SAMPLES).await?;
             let signers: Vec<Result<Option<String>, EvmSourceError>> = stream::iter(sample)
-                .map(|(_, h)| async move { signer_of(rpc, &h).await })
+                .map(|(_, h)| async move { signer_of(rpc, retry, &h).await })
                 .buffered(concurrency)
                 .collect()
                 .await;
@@ -120,7 +142,7 @@ pub async fn enrich_identities(
         .shared_launches_without_signer(chain, max_signers)
         .await?;
     let resolved: Vec<Result<(String, Option<String>), EvmSourceError>> = stream::iter(pending)
-        .map(|(token, h)| async move { signer_of(rpc, &h).await.map(|s| (token, s)) })
+        .map(|(token, h)| async move { signer_of(rpc, retry, &h).await.map(|s| (token, s)) })
         .buffered(concurrency)
         .collect()
         .await;

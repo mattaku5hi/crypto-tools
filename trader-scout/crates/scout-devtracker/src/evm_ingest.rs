@@ -365,6 +365,74 @@ pub async fn ingest_source(
         None => start_block,
     };
     let to = head.saturating_sub(confirmations);
+    if from > to {
+        return Ok(IngestReport {
+            from_block: from,
+            to_block: to,
+            ..IngestReport::default()
+        });
+    }
+    let report = ingest_range(db, rpc, src, from, to).await?;
+    db.set_cursor(src.key, &to.to_string(), now).await?;
+    Ok(report)
+}
+
+/// Cursor key of a source's backfill: the lowest block already backfilled.
+#[must_use]
+pub fn backfill_key(src: &EvmSource) -> String {
+    format!("backfill:{}", src.key)
+}
+
+/// One backfill step of a source: the `step` blocks below its backfill cursor
+/// (first call: below the forward cursor, i.e. where live data starts), never
+/// below `floor`. `Ok(None)` when the source is backfilled down to `floor`.
+/// Facts are idempotent, so the overlap with live data is harmless.
+///
+/// # Errors
+/// RPC or database failure (the backfill cursor moves only after the facts
+/// are stored, so a stopped backfill resumes where it left off).
+pub async fn backfill_step(
+    db: &DevDb,
+    rpc: &EvmRpcClient,
+    src: &EvmSource,
+    floor: u64,
+    step: u64,
+    head: u64,
+    now: i64,
+) -> Result<Option<IngestReport>, IngestError> {
+    let key = backfill_key(src);
+    let parse = |c: String| {
+        c.parse::<u64>()
+            .map_err(|_| IngestError::BadCursor(key.clone()))
+    };
+    let top = match db.cursor(&key).await? {
+        Some(c) => parse(c)?,
+        None => match db.cursor(src.key).await? {
+            Some(c) => parse(c)?.saturating_add(1),
+            None => head,
+        },
+    };
+    if top <= floor {
+        return Ok(None);
+    }
+    let from = top.saturating_sub(step.max(1)).max(floor);
+    let report = ingest_range(db, rpc, src, from, top.saturating_sub(1)).await?;
+    db.set_cursor(&key, &from.to_string(), now).await?;
+    Ok(Some(report))
+}
+
+/// Fetch, decode and store one source's facts in blocks `from..=to` (no
+/// cursor change).
+///
+/// # Errors
+/// RPC or database failure.
+pub async fn ingest_range(
+    db: &DevDb,
+    rpc: &EvmRpcClient,
+    src: &EvmSource,
+    from: u64,
+    to: u64,
+) -> Result<IngestReport, IngestError> {
     let mut report = IngestReport {
         from_block: from,
         to_block: to,
@@ -450,7 +518,6 @@ pub async fn ingest_source(
             db.insert_migrations(&rows).await?
         }
     };
-    db.set_cursor(src.key, &to.to_string(), now).await?;
     Ok(report)
 }
 

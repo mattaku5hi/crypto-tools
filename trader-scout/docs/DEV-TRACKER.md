@@ -143,3 +143,24 @@ the lists fill only as time passes; with it they are complete from the first day
 
 **Launch:** Friday evening (owner's internet is unstable until then), monitored over the weekend. Then
 `deploy/db-dump.sh` → server → `deploy/db-restore.sh` → `dev-tracker run` (section 5).
+
+### Prep results (2026-10-07, evening)
+
+- `dev-tracker backfill` implemented (EVM logs backwards with a cursor per source, identity batches with a retry
+  client, Solana by whole UTC days in parallel with a done-marker per day, ATH until the queue is empty) and
+  smoke-tested: Robinhood logs over 1 day = 44 requests; Solana 1 day = 54,042 create txs in 117 s + 1,812
+  migrator txs in 3 s, 59 Helius requests, peak RSS 87 MB → one year ≈ 2–3 h at 6 days in parallel.
+- Batch inserts (`INSERT … SELECT FROM UNNEST`, 5,000 rows/statement): ≈ 40k rows/s → 32M rows ≈ 15 min.
+- **dRPC free cannot do the identity backfill:** `eth_getTransactionByHash` / receipts return `null` for launch
+  transactions a few hours old (fresh ones resolve; Alchemy resolves all 5 of 5 sampled), and it answers 429 from
+  10 concurrent requests (300 requests at concurrency 10: 122 null, 178 × 429, 0 found).
+- Measured one day for the identity volume: BSC 1,693 creators (807 with ≥ 2 launches), 3,243 launches through
+  shared intermediaries (8 migrated); Robinhood 2,932 creators (224 repeat), 270 shared launches (2 migrated).
+  A full-year identity pass on Alchemy ≈ 6M calls ≈ $30–60.
+- Cheaper path verified: a dev's launches through an intermediary are found in their own history with one
+  `alchemy_getAssetTransfers(fromAddress = dev, toAddress = intermediary, category external, zero values
+  included)` — 6/6 sampled launch transactions found. Option under the owner's decision: resolve signers of
+  migrated shared launches only, then each such dev's other launches via that call (BSC); classify only creators
+  with ≥ 2 launches, 4 owner samples instead of 8 → ≈ 0.5M calls ≈ $5. Devs with no migration in the year stay
+  unattributed behind intermediaries; they cannot qualify (top-migr / win-streak need migrations; a curve token
+  reaches a runner's ATH only after graduating).
