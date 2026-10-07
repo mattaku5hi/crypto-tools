@@ -40,6 +40,7 @@ ath_requests_per_chain = 20      # Codex, 200 tokens each (free tier: 10k/month)
 solana_max_pages = 200           # Helius pages of ≤ 1000 txs per source and pass
 max_new_creators = 2000          # EVM creators classified per chain and pass
 max_signer_lookups = 5000        # launch signers resolved per chain and pass
+max_dev_histories = 500          # candidate devs whose history is fetched per chain and pass
 since_days = 365                 # launches loaded for the derivation
 
 [delivery]

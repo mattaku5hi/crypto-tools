@@ -82,3 +82,23 @@ lookup per launch through a shared intermediary (live first pass: ≈ 13k reques
 - **Backfill** is not done by default: one year of creates is ≈ 19M txs (≈ 1.9M credits), more than the free
   plan's month. Forward ingestion fills the window as time passes; a deeper first pass (90 days of migrations
   ≈ 20k credits, creates of qualifying creators only) waits for the owner's decision on credits.
+
+## Amendment 3 (2026-10-07) — which launches get a signer lookup (owner decision: option B)
+
+Measured on one day: BSC 3,243 launches through shared intermediaries (8 migrated), Robinhood 270 (2 migrated);
+BSC 1,693 creators (807 with ≥ 2 launches), Robinhood 2,932 (224). Resolving every signer and classifying every
+creator for a year would cost ≈ 6M Alchemy calls (≈ $30–60); dRPC free cannot serve it (it answers `null` for
+launch transactions older than a few hours).
+
+- A signer is looked up for every migrated launch through an intermediary (any age) and every launch younger than
+  7 days (`identity::RECENT_SIGNER_WINDOW`), so new launches are always attributed; on Robinhood
+  (`resolves_every_signer`) for all of them.
+- A dev with a migrated launch through an intermediary is a candidate; its transactions to every shared
+  intermediary of the chain are listed once (`alchemy_getAssetTransfers`, top-level calls, zero values included;
+  6/6 sampled launches found) and matched to launches by hash (`launches_by_tx` index, table `dev_histories`).
+  This runs in every cycle, so a dev who becomes a candidate later (an old launch migrating) gets its history then.
+- A launch through an intermediary whose signer is still unknown belongs to no dev (excluded from the derivation,
+  never one pseudo-dev per contract). Such a dev has no migration in the window, so it cannot qualify (top-migr and
+  win-streak need migrations; a curve token reaches a runner's ATH only after graduating).
+- Only creators with ≥ 2 launches are classified (a single launch is its creator's own); 4 owner samples, not 8.
+- Expected one-year identity cost ≈ 0.5M calls ≈ $5; steady state cheaper than before.

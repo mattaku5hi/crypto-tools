@@ -62,6 +62,9 @@ enum Cmd {
         /// Signers of launches through shared intermediaries resolved per chain and pass.
         #[arg(long, default_value_t = 5_000)]
         max_signer_lookups: i64,
+        /// Candidate devs whose history through intermediaries is fetched per chain and pass.
+        #[arg(long, default_value_t = 500)]
+        max_histories: i64,
         /// Codex requests (200 tokens each) per chain and pass for ATH.
         #[arg(long, default_value_t = 20)]
         ath_requests: usize,
@@ -132,6 +135,7 @@ struct IngestOpts {
     max_requests: Option<u64>,
     max_new_creators: i64,
     max_signer_lookups: i64,
+    max_histories: i64,
     ath_requests: usize,
     solana_max_pages: u32,
     solana_settle_secs: i64,
@@ -146,6 +150,7 @@ impl IngestOpts {
             max_requests: None,
             max_new_creators: s.max_new_creators,
             max_signer_lookups: s.max_signer_lookups,
+            max_histories: s.max_dev_histories,
             ath_requests: s.ath_requests_per_chain,
             solana_max_pages: s.solana_max_pages,
             solana_settle_secs: 60,
@@ -206,15 +211,24 @@ async fn ingest_chain(db: &DevDb, chain: &str, o: &IngestOpts) -> Result<(), Str
         &setup.rpc,
         None,
         chain,
-        o.max_new_creators,
-        o.max_signer_lookups,
+        scout_devtracker::identity::IdentityBudget {
+            max_creators: o.max_new_creators,
+            max_signers: o.max_signer_lookups,
+            max_histories: o.max_histories,
+        },
         now(),
     )
     .await
     .map_err(|e| format!("{chain}: identity: {}", setup_scrub(&setup, &e.to_string())))?;
     eprintln!(
-        "dev-tracker: {chain}: identities: {} creator(s) checked, {} contract(s) ({} single-owner, {} shared), {} signer(s) resolved",
-        id.creators_checked, id.contracts, id.single_owner, id.shared, id.signers_resolved
+        "dev-tracker: {chain}: identities: {} creator(s) checked, {} contract(s) ({} single-owner, {} shared), {} signer(s) resolved, {} dev histories → {} launches",
+        id.creators_checked,
+        id.contracts,
+        id.single_owner,
+        id.shared,
+        id.signers_resolved,
+        id.histories_fetched,
+        id.launches_from_histories
     );
     observe_ath(db, chain, o.ath_requests).await?;
     for line in setup.rate_limit_report() {
@@ -257,6 +271,7 @@ async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<(), String> {
     let provider = scout_providers::HeliusProvider::new(&key, 60_000, 3)
         .map_err(|e| scrub(e.to_string()))?
         .with_status_filter(scout_providers::StatusFilter::Succeeded)
+        .with_skip_undecodable()
         .with_page_limit(1_000)
         .with_max_pages(
             std::num::NonZeroU32::new(o.solana_max_pages.max(1))
@@ -288,6 +303,16 @@ async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<(), String> {
         "dev-tracker: solana: requests_made={}",
         provider.total_requests_made()
     );
+    if let Some(skipped) = provider.skipped_undecodable().filter(|s| s.count() > 0) {
+        // coverage gap, reported (never silent): these transactions were left out
+        eprintln!(
+            "dev-tracker: solana: {} undecodable transaction(s) skipped",
+            skipped.count()
+        );
+        for (sig, err) in skipped.kept().iter().take(5) {
+            eprintln!("dev-tracker: solana:   skipped {sig}: {err}");
+        }
+    }
     Ok(())
 }
 
@@ -554,6 +579,7 @@ async fn run(args: Args) -> Result<(), String> {
             max_requests,
             max_new_creators,
             max_signer_lookups,
+            max_histories,
             ath_requests,
             solana_max_pages,
             solana_settle_secs,
@@ -565,6 +591,7 @@ async fn run(args: Args) -> Result<(), String> {
                 max_requests,
                 max_new_creators,
                 max_signer_lookups,
+                max_histories,
                 ath_requests,
                 solana_max_pages,
                 solana_settle_secs,

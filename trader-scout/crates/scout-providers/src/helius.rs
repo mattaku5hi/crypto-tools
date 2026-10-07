@@ -259,6 +259,45 @@ pub struct HeliusProvider {
     /// Explicit `with_max_response_bytes` value; wins over the cap derived
     /// from `page_limit` regardless of builder call order.
     explicit_max_response_bytes: Option<usize>,
+    /// Lenient mode (`with_skip_undecodable`): transactions that do not
+    /// decode are counted here and left out instead of failing the page.
+    skipped: Option<std::sync::Arc<SkippedTransactions>>,
+}
+
+/// Transactions a lenient scan left out because they did not decode — a
+/// reported coverage gap (AGENTS.md invariant 18), never a silent one.
+#[derive(Debug, Default)]
+pub struct SkippedTransactions {
+    count: std::sync::atomic::AtomicU64,
+    /// First [`MAX_SKIPPED_KEPT`] signatures with the decode error.
+    kept: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+/// Skipped transactions whose signature and error are kept for the report.
+pub const MAX_SKIPPED_KEPT: usize = 50;
+
+impl SkippedTransactions {
+    fn record(&self, signature: String, error: String) {
+        self.count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut kept) = self.kept.lock()
+            && kept.len() < MAX_SKIPPED_KEPT
+        {
+            kept.push((signature, error));
+        }
+    }
+
+    /// Transactions skipped so far.
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// `(signature, decode error)` of the first skipped transactions.
+    #[must_use]
+    pub fn kept(&self) -> Vec<(String, String)> {
+        self.kept.lock().map(|k| k.clone()).unwrap_or_default()
+    }
 }
 
 /// Per-page transaction count requested by default (`limit`).
@@ -495,6 +534,7 @@ impl HeliusProvider {
             stop_before_block_time: None,
             options: HeliusRequestOptions::default(),
             explicit_max_response_bytes: None,
+            skipped: None,
         })
     }
 
@@ -506,6 +546,23 @@ impl HeliusProvider {
     pub fn with_max_pages(mut self, max_pages: NonZeroU32) -> Self {
         self.max_pages = max_pages;
         self
+    }
+
+    /// Lenient decoding: a transaction that does not decode is left out of the
+    /// scan and recorded in [`HeliusProvider::skipped_undecodable`] instead of
+    /// failing its whole page (default: strict). For consumers that read only
+    /// part of a transaction (the dev tracker reads instructions), so one
+    /// unusual balance layout cannot stall a source forever.
+    #[must_use]
+    pub fn with_skip_undecodable(mut self) -> Self {
+        self.skipped = Some(std::sync::Arc::default());
+        self
+    }
+
+    /// What lenient decoding left out so far (`None` in strict mode).
+    #[must_use]
+    pub fn skipped_undecodable(&self) -> Option<&SkippedTransactions> {
+        self.skipped.as_deref()
     }
 
     /// Sets the per-response body cap in bytes (default
@@ -1347,11 +1404,32 @@ impl HeliusProvider {
             .call("getTransactionsForAddress", params)
             .await?;
 
-        let transactions = result
-            .data
-            .into_iter()
-            .map(decode_full_transaction_record)
-            .collect::<Result<Vec<_>, _>>()?;
+        let transactions = match &self.skipped {
+            None => result
+                .data
+                .into_iter()
+                .map(decode_full_transaction_record)
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(skipped) => result
+                .data
+                .into_iter()
+                .filter_map(|record| {
+                    let signature = record
+                        .transaction
+                        .signatures
+                        .first()
+                        .cloned()
+                        .unwrap_or_default();
+                    match decode_full_transaction_record(record) {
+                        Ok(tx) => Some(tx),
+                        Err(e) => {
+                            skipped.record(signature, e.to_string());
+                            None
+                        }
+                    }
+                })
+                .collect(),
+        };
         Ok((transactions, result.pagination_token))
     }
 }
@@ -1847,6 +1925,64 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn lenient_scan_skips_and_records_an_undecodable_transaction() {
+        let good = full_mode_body(None)["result"]["data"][0].clone();
+        let mut bad = good.clone();
+        bad["meta"]["preTokenBalances"] = json!([{
+            "accountIndex": 9_999,
+            "mint": "So11111111111111111111111111111111111111112",
+            "uiTokenAmount": {"amount": "1", "decimals": 9}
+        }]);
+        let sig = bad["transaction"]["signatures"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": 1, "result": {"data": [bad, good]}
+            })))
+            .mount(&server)
+            .await;
+        let task = || ScanTask {
+            request: ScanRequest::WalletActivity {
+                wallet: parse_solana_wallet("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")
+                    .unwrap(),
+            },
+            description: "lenient".to_string(),
+        };
+        let strict =
+            HeliusProvider::new_with_endpoint(scout_rpc::RpcEndpoint::new(server.uri()), 5_000, 1)
+                .unwrap();
+        let first = strict
+            .scan(task(), CancellationToken::new())
+            .next()
+            .await
+            .unwrap();
+        assert!(first.is_err(), "strict mode fails the page");
+        assert!(strict.skipped_undecodable().is_none());
+
+        let lenient =
+            HeliusProvider::new_with_endpoint(scout_rpc::RpcEndpoint::new(server.uri()), 5_000, 1)
+                .unwrap()
+                .with_skip_undecodable();
+        let mut stream = lenient.scan(task(), CancellationToken::new());
+        let mut count = 0;
+        while let Some(envelope) = stream.next().await {
+            assert!(envelope.is_ok());
+            count += 1;
+        }
+        drop(stream);
+        assert_eq!(count, 1, "the decodable transaction still arrives");
+        let skipped = lenient.skipped_undecodable().unwrap();
+        assert_eq!(skipped.count(), 1);
+        let kept = skipped.kept();
+        assert_eq!(kept[0].0, sig);
+        assert!(kept[0].1.contains("accountIndex"), "{}", kept[0].1);
     }
 
     #[tokio::test]

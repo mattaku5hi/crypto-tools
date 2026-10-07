@@ -3,9 +3,10 @@
 //! - EVM launches / migrations: `eth_getLogs` backwards from where live data
 //!   starts, `--evm-step-blocks` per step, on the keyed provider (Alchemy);
 //!   each source has its own backfill cursor, so a stopped run resumes.
-//! - EVM dev identity: the regular enrichment in batches until nothing is left,
-//!   on the free fallback endpoint (dRPC) with the keyed one (Alchemy) as its
-//!   automatic fallback and as the retry for `null` transaction answers.
+//! - EVM dev identity: the regular enrichment (ADR-021 amendment 3: migrated
+//!   and recent launches, then candidate devs' own histories) in batches until
+//!   nothing is left, on the keyed provider (dRPC free answers `null` for older
+//!   transactions; `--identity-via-fallback` keeps the option).
 //! - Solana: whole UTC days, `--solana-concurrency` at a time, each day marked
 //!   done once read completely.
 //! - ATH: Codex until the candidate queue is empty or `--ath-requests` is spent.
@@ -35,12 +36,14 @@ pub struct BackfillArgs {
     /// EVM blocks per `eth_getLogs` step (the cursor moves after each).
     #[arg(long, default_value_t = 200_000)]
     evm_step_blocks: u64,
-    /// Requests per second on the free fallback endpoint (dRPC) for identity.
-    #[arg(long, default_value_t = 50)]
-    drpc_rps: u32,
-    /// Resolve identities on the keyed endpoint (Alchemy, billed) instead.
+    /// Resolve identities on the free fallback endpoint (dRPC) instead of the
+    /// keyed one. Measured 2026-10-07: dRPC free answers `null` for launch
+    /// transactions older than a few hours, so this is off by default.
     #[arg(long)]
-    identity_via_keyed: bool,
+    identity_via_fallback: bool,
+    /// Requests per second on the fallback endpoint with `--identity-via-fallback`.
+    #[arg(long, default_value_t = 10)]
+    fallback_rps: u32,
     /// Creators classified and signers resolved per identity batch.
     #[arg(long, default_value_t = 20_000)]
     identity_batch: i64,
@@ -197,11 +200,11 @@ async fn backfill_evm_chain(db: &DevDb, chain: &str, a: &BackfillArgs) -> Result
         }
     }
     if a.has("identity") {
-        let free = if a.identity_via_keyed {
+        let free = if !a.identity_via_fallback {
             None
         } else {
             let net = scout_app::EvmNetOptions {
-                rpc_rps: Some(a.drpc_rps),
+                rpc_rps: Some(a.fallback_rps),
                 ..scout_app::EvmNetOptions::default()
             };
             Some(
@@ -231,8 +234,11 @@ async fn backfill_evm_chain(db: &DevDb, chain: &str, a: &BackfillArgs) -> Result
                 rpc,
                 retry,
                 chain,
-                a.identity_batch,
-                a.identity_batch,
+                scout_devtracker::identity::IdentityBudget {
+                    max_creators: a.identity_batch,
+                    max_signers: a.identity_batch,
+                    max_histories: a.identity_batch,
+                },
                 now(),
             )
             .await
@@ -240,15 +246,17 @@ async fn backfill_evm_chain(db: &DevDb, chain: &str, a: &BackfillArgs) -> Result
             total.0 += r.creators_checked;
             total.1 += r.signers_resolved;
             eprintln!(
-                "dev-tracker: backfill {chain} identity: +{} creator(s), +{} signer(s) (total {} / {}, {} requests, {:.0?})",
+                "dev-tracker: backfill {chain} identity: +{} creator(s), +{} signer(s), +{} dev histories → {} launches (total {} / {}, {} requests, {:.0?})",
                 r.creators_checked,
                 r.signers_resolved,
+                r.histories_fetched,
+                r.launches_from_histories,
                 total.0,
                 total.1,
                 rpc.total_requests_made(),
                 started.elapsed()
             );
-            if r.creators_checked == 0 && r.signers_resolved == 0 {
+            if r.creators_checked == 0 && r.signers_resolved == 0 && r.histories_fetched == 0 {
                 break;
             }
         }
@@ -273,6 +281,7 @@ async fn backfill_solana(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
     let provider = scout_providers::HeliusProvider::new(&key, 120_000, 4)
         .map_err(|e| scrub(e.to_string()))?
         .with_status_filter(scout_providers::StatusFilter::Succeeded)
+        .with_skip_undecodable()
         .with_page_limit(1_000)
         .with_max_pages(
             std::num::NonZeroU32::new(a.solana_max_pages.max(1))
@@ -331,6 +340,16 @@ async fn backfill_solana(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
         "dev-tracker: backfill solana: requests_made={}",
         provider.total_requests_made()
     );
+    if let Some(skipped) = provider.skipped_undecodable().filter(|s| s.count() > 0) {
+        // coverage gap, reported (never silent): these transactions were left out
+        eprintln!(
+            "dev-tracker: backfill solana: {} undecodable transaction(s) skipped",
+            skipped.count()
+        );
+        for (sig, err) in skipped.kept().iter().take(5) {
+            eprintln!("dev-tracker: backfill solana:   skipped {sig}: {err}");
+        }
+    }
     if failed > 0 {
         return Err(format!("{failed} day(s) not completed"));
     }

@@ -70,6 +70,8 @@ pub struct ScheduleConfig {
     pub max_new_creators: i64,
     /// Signers of launches through shared intermediaries resolved per chain and pass.
     pub max_signer_lookups: i64,
+    /// Candidate devs whose history through intermediaries is fetched per chain and pass.
+    pub max_dev_histories: i64,
     /// Launches older than this many days are not loaded for the derivation.
     pub since_days: i64,
 }
@@ -87,6 +89,7 @@ impl Default for ScheduleConfig {
             solana_max_pages: 200,
             max_new_creators: 2_000,
             max_signer_lookups: 5_000,
+            max_dev_histories: 500,
             since_days: 365,
         }
     }

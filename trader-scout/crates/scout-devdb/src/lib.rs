@@ -25,6 +25,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_facts.sql")),
     (2, include_str!("../migrations/0002_dev_identity.sql")),
     (3, include_str!("../migrations/0003_delivery_members.sql")),
+    (4, include_str!("../migrations/0004_dev_histories.sql")),
 ];
 
 /// Rows per `INSERT … SELECT FROM UNNEST` statement.
@@ -336,6 +337,10 @@ impl DevDb {
              LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
              LEFT JOIN ath a ON a.chain = l.chain AND a.token = l.token
              WHERE ($1::text IS NULL OR l.chain = $1) AND l.created_at >= $2
+               -- launches through a shared intermediary whose signer is not
+               -- known yet belong to no dev (never one pseudo-dev per contract)
+               AND NOT (l.launchpad = ANY($3) AND COALESCE(k.is_contract, false)
+                        AND k.owner IS NULL AND l.signer IS NULL)
              ORDER BY 1, 2, l.created_at, l.token",
         )
         .bind(chain)
@@ -382,7 +387,7 @@ impl DevDb {
             "SELECT l.creator FROM launches l
              LEFT JOIN address_kinds k ON k.chain = l.chain AND k.address = l.creator
              WHERE l.chain = $1 AND k.address IS NULL AND l.launchpad = ANY($3)
-             GROUP BY l.creator ORDER BY count(*) DESC LIMIT $2",
+             GROUP BY l.creator HAVING count(*) >= 2 ORDER BY count(*) DESC LIMIT $2",
         )
         .bind(chain)
         .bind(limit)
@@ -450,12 +455,15 @@ impl DevDb {
         &self,
         chain: &str,
         limit: i64,
+        recent_since: i64,
     ) -> Result<Vec<(String, String)>, DevDbError> {
         let rows = sqlx::query(
             "SELECT l.token, l.tx_hash FROM launches l
              JOIN address_kinds k ON k.chain = l.chain AND k.address = l.creator
              WHERE l.chain = $1 AND k.is_contract AND k.owner IS NULL AND l.signer IS NULL
                AND l.launchpad = ANY($3)
+               AND (l.created_at >= $4
+                    OR EXISTS (SELECT 1 FROM migrations m WHERE m.chain = l.chain AND m.token = l.token))
              ORDER BY EXISTS (SELECT 1 FROM migrations m
                               WHERE m.chain = l.chain AND m.token = l.token) DESC,
                       l.created_at DESC
@@ -464,12 +472,110 @@ impl DevDb {
         .bind(chain)
         .bind(limit)
         .bind(SIGNER_RESOLVED_LAUNCHPADS)
+        .bind(recent_since)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
             .map(|r| (r.get("token"), r.get("tx_hash")))
             .collect())
+    }
+
+    /// Devs whose history through intermediaries is not fetched yet: signers
+    /// of migrated launches through shared intermediaries, at most `limit`.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn history_candidates(
+        &self,
+        chain: &str,
+        limit: i64,
+    ) -> Result<Vec<String>, DevDbError> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT l.signer FROM launches l
+             JOIN address_kinds k ON k.chain = l.chain AND k.address = l.creator
+             JOIN migrations m ON m.chain = l.chain AND m.token = l.token
+             WHERE l.chain = $1 AND k.is_contract AND k.owner IS NULL AND l.signer IS NOT NULL
+               AND l.launchpad = ANY($3)
+               AND NOT EXISTS (SELECT 1 FROM dev_histories h WHERE h.chain = l.chain AND h.dev = l.signer)
+             LIMIT $2",
+        )
+        .bind(chain)
+        .bind(limit)
+        .bind(SIGNER_RESOLVED_LAUNCHPADS)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.get("signer")).collect())
+    }
+
+    /// Shared intermediaries of `chain` (contract creators without a single
+    /// owner).
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn shared_intermediaries(&self, chain: &str) -> Result<Vec<String>, DevDbError> {
+        let rows = sqlx::query(
+            "SELECT k.address FROM address_kinds k
+             WHERE k.chain = $1 AND k.is_contract AND k.owner IS NULL
+               AND EXISTS (SELECT 1 FROM launches l WHERE l.chain = k.chain
+                           AND l.creator = k.address AND l.launchpad = ANY($2))
+             ORDER BY k.address",
+        )
+        .bind(chain)
+        .bind(SIGNER_RESOLVED_LAUNCHPADS)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.get("address")).collect())
+    }
+
+    /// Attribute the launches created by `intermediary` in `tx_hashes` to
+    /// `signer` (only those still unresolved). Returns the rows changed.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn set_signer_by_txs(
+        &self,
+        chain: &str,
+        intermediary: &str,
+        tx_hashes: &[String],
+        signer: &str,
+    ) -> Result<u64, DevDbError> {
+        Ok(sqlx::query(
+            "UPDATE launches SET signer = $4
+             WHERE chain = $1 AND creator = $2 AND tx_hash = ANY($3) AND signer IS NULL",
+        )
+        .bind(chain)
+        .bind(intermediary)
+        .bind(tx_hashes)
+        .bind(signer)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
+    /// Record that a dev's history was fetched.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn mark_history_fetched(
+        &self,
+        chain: &str,
+        dev: &str,
+        launches: i32,
+        now: i64,
+    ) -> Result<(), DevDbError> {
+        sqlx::query(
+            "INSERT INTO dev_histories (chain, dev, launches, fetched_at) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (chain, dev) DO UPDATE SET launches = EXCLUDED.launches,
+                fetched_at = EXCLUDED.fetched_at",
+        )
+        .bind(chain)
+        .bind(dev)
+        .bind(launches)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Record the signer (tx.from) of a launch.

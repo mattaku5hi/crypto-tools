@@ -9,9 +9,21 @@
 //! launch through a shared intermediary — only on launchpads whose creator
 //! field is the caller (`scout_devdb::SIGNER_RESOLVED_LAUNCHPADS`).
 //!
-//! Cost per pass: one `eth_getCode` per new creator, up to [`OWNER_SAMPLES`]
-//! transaction lookups per new contract creator, one lookup per launch through
-//! a shared intermediary.
+//! Which launches get a signer lookup (ADR-021 amendment 3, owner decision
+//! 2026-10-07): every migrated launch through an intermediary, and every
+//! launch younger than [`RECENT_SIGNER_WINDOW`] (so new launches are always
+//! attributed); on chains with few such launches ([`resolves_every_signer`])
+//! all of them. An older non-migrated launch is attributed only through its
+//! dev's own history: once a dev has a migrated launch through an intermediary
+//! (it can qualify), its transactions to every intermediary are listed once
+//! (`alchemy_getAssetTransfers`, [`history_supported`]) and matched by hash.
+//! A dev without any migration stays unattributed; it cannot qualify.
+//!
+//! Only creators with at least two launches are classified (a single launch
+//! is its creator's own). Cost per pass: one `eth_getCode` per new repeat
+//! creator, up to [`OWNER_SAMPLES`] lookups per new contract creator, one
+//! lookup per queued launch, ≈ one `alchemy_getAssetTransfers` per
+//! intermediary and new candidate dev.
 
 use std::collections::BTreeSet;
 
@@ -22,7 +34,23 @@ use scout_providers::{EvmRpcClient, EvmSourceError};
 use serde_json::json;
 
 /// Launches sampled to decide whether a contract creator has one owner.
-pub const OWNER_SAMPLES: i64 = 8;
+pub const OWNER_SAMPLES: i64 = 4;
+
+/// Launches younger than this always get a signer lookup.
+pub const RECENT_SIGNER_WINDOW: i64 = 7 * 86_400;
+
+/// Chains whose launches through intermediaries are few enough to resolve
+/// every signer (Robinhood: ≈ 270/day).
+#[must_use]
+pub fn resolves_every_signer(chain: &str) -> bool {
+    chain == "robinhood"
+}
+
+/// Chains where `alchemy_getAssetTransfers` lists a dev's transactions.
+#[must_use]
+pub fn history_supported(chain: &str) -> bool {
+    chain == "bsc"
+}
 
 /// Failure of an enrichment pass.
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +61,17 @@ pub enum IdentityError {
     Db(#[from] DevDbError),
 }
 
+/// Per-pass limits of [`enrich_identities`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdentityBudget {
+    /// New repeat creators classified.
+    pub max_creators: i64,
+    /// Queued launch signers looked up.
+    pub max_signers: i64,
+    /// Candidate devs whose history is fetched (0 = none).
+    pub max_histories: i64,
+}
+
 /// What one pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IdentityReport {
@@ -41,6 +80,8 @@ pub struct IdentityReport {
     pub single_owner: usize,
     pub shared: usize,
     pub signers_resolved: usize,
+    pub histories_fetched: usize,
+    pub launches_from_histories: u64,
 }
 
 async fn is_contract(rpc: &EvmRpcClient, address: &str) -> Result<bool, EvmSourceError> {
@@ -91,10 +132,14 @@ pub async fn enrich_identities(
     rpc: &EvmRpcClient,
     retry: Option<&EvmRpcClient>,
     chain: &str,
-    max_creators: i64,
-    max_signers: i64,
+    budget: IdentityBudget,
     now: i64,
 ) -> Result<IdentityReport, IdentityError> {
+    let IdentityBudget {
+        max_creators,
+        max_signers,
+        max_histories,
+    } = budget;
     let mut report = IdentityReport::default();
     let concurrency = rpc.config().concurrency.max(1);
     let creators = db.creators_without_kind(chain, max_creators).await?;
@@ -138,8 +183,13 @@ pub async fn enrich_identities(
         }
         db.set_address_kind(&kind).await?;
     }
+    let recent_since = if resolves_every_signer(chain) {
+        i64::MIN
+    } else {
+        now.saturating_sub(RECENT_SIGNER_WINDOW)
+    };
     let pending = db
-        .shared_launches_without_signer(chain, max_signers)
+        .shared_launches_without_signer(chain, max_signers, recent_since)
         .await?;
     let resolved: Vec<Result<(String, Option<String>), EvmSourceError>> = stream::iter(pending)
         .map(|(token, h)| async move { signer_of(rpc, retry, &h).await.map(|s| (token, s)) })
@@ -153,5 +203,78 @@ pub async fn enrich_identities(
             report.signers_resolved += 1;
         }
     }
+    if history_supported(chain) && max_histories > 0 {
+        let devs = db.history_candidates(chain, max_histories).await?;
+        if !devs.is_empty() {
+            let intermediaries = db.shared_intermediaries(chain).await?;
+            for dev in devs {
+                let mut attributed = 0u64;
+                for inter in &intermediaries {
+                    let hashes = transactions_to(rpc, &dev, inter).await?;
+                    if !hashes.is_empty() {
+                        attributed += db.set_signer_by_txs(chain, inter, &hashes, &dev).await?;
+                    }
+                }
+                db.mark_history_fetched(
+                    chain,
+                    &dev,
+                    i32::try_from(attributed).unwrap_or(i32::MAX),
+                    now,
+                )
+                .await?;
+                report.histories_fetched += 1;
+                report.launches_from_histories += attributed;
+            }
+        }
+    }
     Ok(report)
+}
+
+/// Pages of `alchemy_getAssetTransfers` per (dev, intermediary) listing.
+const MAX_TRANSFER_PAGES: usize = 50;
+
+/// Hashes of every transaction `from` sent to `to` (top-level calls,
+/// zero-value ones included), via `alchemy_getAssetTransfers`.
+async fn transactions_to(
+    rpc: &EvmRpcClient,
+    from: &str,
+    to: &str,
+) -> Result<Vec<String>, EvmSourceError> {
+    let mut out = Vec::new();
+    let mut page_key: Option<String> = None;
+    for _ in 0..MAX_TRANSFER_PAGES {
+        let mut params = json!({
+            "fromBlock": "0x0",
+            "toBlock": "latest",
+            "fromAddress": from,
+            "toAddress": to,
+            "category": ["external"],
+            "excludeZeroValue": false,
+            "withMetadata": false,
+            "maxCount": "0x3e8",
+        });
+        if let (Some(k), Some(obj)) = (&page_key, params.as_object_mut()) {
+            obj.insert("pageKey".into(), json!(k));
+        }
+        let v = rpc
+            .call_raw("alchemy_getAssetTransfers", json!([params]))
+            .await?;
+        if let Some(ts) = v.get("transfers").and_then(serde_json::Value::as_array) {
+            out.extend(
+                ts.iter()
+                    .filter_map(|t| t.get("hash").and_then(serde_json::Value::as_str))
+                    .map(str::to_ascii_lowercase),
+            );
+        }
+        page_key = v
+            .get("pageKey")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from);
+        if page_key.is_none() {
+            break;
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
 }

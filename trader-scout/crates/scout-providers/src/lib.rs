@@ -57,7 +57,8 @@ pub use evm_wire::{EvmReceiptInfo, EvmTxInfo};
 pub use fixture::{Fixture, FixtureProvenance, FixtureProvider};
 pub use helius::{
     DEFAULT_PAGE_LIMIT, HeliusProvider, HeliusRequestOptions, MAX_DERIVED_RESPONSE_BYTES,
-    MAX_PAGE_LIMIT, ScanOrder, StatusFilter, TokenAccountsFilter,
+    MAX_PAGE_LIMIT, MAX_SKIPPED_KEPT, ScanOrder, SkippedTransactions, StatusFilter,
+    TokenAccountsFilter,
 };
 pub use scout_api::{
     CapabilityStatus, HistoryProvider, ProviderError, ScanEnvelope, ScanPlan, ScanRequest,

@@ -144,7 +144,12 @@ async fn dev_identity_follows_the_creator_kind() {
         sampled: 8,
         checked_at: 1,
     };
-    assert_eq!(db.creators_without_kind(&chain, 10).await.unwrap().len(), 4);
+    // single-launch creators are their own dev: never classified
+    assert_eq!(
+        db.creators_without_kind(&chain, 10).await.unwrap().len(),
+        2,
+        "bot + shared"
+    );
     db.set_address_kind(&kind("eoa", false, None))
         .await
         .unwrap();
@@ -154,12 +159,14 @@ async fn dev_identity_follows_the_creator_kind() {
     db.set_address_kind(&kind("shared", true, None))
         .await
         .unwrap();
-    assert_eq!(
-        db.creators_without_kind(&chain, 10).await.unwrap(),
-        vec!["unknown".to_string()]
+    assert!(
+        db.creators_without_kind(&chain, 10)
+            .await
+            .unwrap()
+            .is_empty()
     );
     let queue: Vec<String> = db
-        .shared_launches_without_signer(&chain, 10)
+        .shared_launches_without_signer(&chain, 10, 0)
         .await
         .unwrap()
         .into_iter()
@@ -180,21 +187,54 @@ async fn dev_identity_follows_the_creator_kind() {
     .await
     .unwrap();
     let queue: Vec<String> = db
-        .shared_launches_without_signer(&chain, 10)
+        .shared_launches_without_signer(&chain, 10, 0)
         .await
         .unwrap()
         .into_iter()
         .map(|(t, _)| t)
         .collect();
     assert_eq!(queue, ["s1", "s2"]);
+    // old non-migrated launches are left to the dev histories
+    let queue: Vec<String> = db
+        .shared_launches_without_signer(&chain, 10, i64::MAX)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    assert_eq!(queue, ["s1"]);
     db.set_launch_signer(&chain, "s1", "alice").await.unwrap();
     assert_eq!(
-        db.shared_launches_without_signer(&chain, 10)
+        db.shared_launches_without_signer(&chain, 10, 0)
             .await
             .unwrap()
             .len(),
         1
     );
+    let unresolved: Vec<String> = db
+        .dev_launches(Some(&chain), 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.token)
+        .collect();
+    assert!(
+        !unresolved.contains(&"s2".to_string()),
+        "an unresolved launch through an intermediary belongs to no dev"
+    );
+    // alice migrated through the intermediary → her history attributes s2
+    assert_eq!(db.history_candidates(&chain, 10).await.unwrap(), ["alice"]);
+    assert_eq!(db.shared_intermediaries(&chain).await.unwrap(), ["shared"]);
+    assert_eq!(
+        db.set_signer_by_txs(&chain, "shared", &["0xs2".into(), "0xnone".into()], "alice")
+            .await
+            .unwrap(),
+        1
+    );
+    db.mark_history_fetched(&chain, "alice", 1, 3)
+        .await
+        .unwrap();
+    assert!(db.history_candidates(&chain, 10).await.unwrap().is_empty());
     let devs: std::collections::BTreeMap<String, String> = db
         .dev_launches(Some(&chain), 0)
         .await
@@ -207,10 +247,7 @@ async fn dev_identity_follows_the_creator_kind() {
     assert_eq!(devs["b1"], "bot");
     assert_eq!(devs["b2"], "bot");
     assert_eq!(devs["s1"], "alice");
-    assert_eq!(
-        devs["s2"], "contract:shared",
-        "unresolved signer is never merged"
-    );
+    assert_eq!(devs["s2"], "alice", "attributed from her history");
     assert_eq!(devs["u1"], "unknown", "kind not checked yet");
 }
 
