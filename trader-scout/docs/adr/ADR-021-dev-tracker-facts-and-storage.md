@@ -49,3 +49,21 @@ ADR-012/015 (pump.fun programs).
 - A launchpad whose creator field cannot be trusted (e.g. a factory that is the `msg.sender` for
   everyone) must be mapped to the real creator before its launches count; each launchpad's
   creator rule is documented next to its decoder.
+
+## Amendment 1 (2026-10-07) — the dev behind a launch
+
+Live (one day of EVM launches, 33k rows): most of the busiest "creators" on BSC and Robinhood are
+contracts. Sampling 8 launch signers per contract shows two kinds: shared intermediaries (a different
+`tx.from` per launch: Flap VaultPortal `0x90497450…`, launcher services `0xf2e2f0ae…` (BSC),
+`0x0e1651ae…` (Robinhood, filling Pons' `originalDeployer`)) and single-operator bots (one signer for
+every launch, e.g. `0x563b2841…` signed by `0x7485fbfd…` on both chains). On Base almost every Zora
+creator is a smart wallet whose transaction signer is a shared ERC-4337 bundler.
+
+Rule (`scout_devdb::SIGNER_RESOLVED_LAUNCHPADS` = flap, fourmeme, pons — launchpads whose creator field
+is or can be the caller): a contract creator with several signers is a shared intermediary and each
+launch's signer is the dev (`contract:<addr>` until resolved, never merged with real users). A
+single-owner contract stays its own dev (its signer may be a relayer/bundler shared by many users, so it
+is never merged into it). EOAs and every other launchpad (Zora `payoutRecipient`, Clanker `tokenAdmin`)
+keep the creator field. Residual risk: a Pons/Flap dev on a smart wallet is resolved to its bundler.
+Cost: one `eth_getCode` per new creator on those launchpads, ≤ 8 lookups per new contract creator, one
+lookup per launch through a shared intermediary (live first pass: ≈ 13k requests for one day, all chains).

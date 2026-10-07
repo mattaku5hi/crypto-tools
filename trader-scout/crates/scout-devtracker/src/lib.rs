@@ -5,6 +5,9 @@
 //! verdicts, so a config edit takes effect on the next cycle without a rescan.
 //! All arithmetic is integer: money in USD cents, rates in basis points.
 
+pub mod evm_ingest;
+pub mod identity;
+
 use std::collections::BTreeMap;
 
 use scout_devdb::DevLaunchRow;

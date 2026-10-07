@@ -12,6 +12,13 @@ workspace = true
 
 [dependencies]
 scout-devdb.workspace = true
+scout-api.workspace = true
+scout-core.workspace = true
+scout-dex-evm.workspace = true
+scout-providers.workspace = true
+alloy-primitives.workspace = true
+futures.workspace = true
+serde_json.workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true

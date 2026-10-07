@@ -1366,6 +1366,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dev-tracker"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "scout-app",
+ "scout-core",
+ "scout-devdb",
+ "scout-devtracker",
+ "scout-sdk",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "digest"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3436,8 +3450,15 @@ dependencies = [
 name = "scout-devtracker"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "futures",
+ "scout-api",
+ "scout-core",
  "scout-devdb",
+ "scout-dex-evm",
+ "scout-providers",
  "serde",
+ "serde_json",
  "thiserror",
  "toml",
 ]

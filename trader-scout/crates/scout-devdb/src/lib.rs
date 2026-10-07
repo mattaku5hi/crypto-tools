@@ -21,7 +21,10 @@ pub enum DevDbError {
 /// `schema_migrations` (sqlx's own migrator is not used: its macro feature
 /// pulls a second native SQLite into the workspace, which already links one
 /// through `rusqlite`).
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_facts.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_facts.sql")),
+    (2, include_str!("../migrations/0002_dev_identity.sql")),
+];
 
 /// A token launch (one per token; `creator` is the launchpad's own creator field).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,8 +63,33 @@ pub struct AthObservation {
     pub observed_at: i64,
 }
 
-/// One launch of a creator with what is known about its outcome — the input
-/// of the category derivation.
+/// What is known about a creator address (ADR-021 amendment 1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressKind {
+    pub chain: String,
+    pub address: String,
+    pub is_contract: bool,
+    /// Contracts: the single signer of every sampled launch (`None` = shared).
+    pub owner: Option<String>,
+    pub sampled: i32,
+    pub checked_at: i64,
+}
+
+/// Launchpads whose creator field is the caller (`msg.sender`), so a contract
+/// there may be a shared intermediary (ADR-021 amendment 1). Pons is listed
+/// although its field is named `originalDeployer`: live, a launcher-service
+/// contract fills it for many signers. Zora (`payoutRecipient`, mostly smart
+/// wallets whose tx signer is a shared ERC-4337 bundler) and Clanker
+/// (`tokenAdmin`) keep their creator field as the dev.
+pub const SIGNER_RESOLVED_LAUNCHPADS: &[&str] = &["flap", "fourmeme", "pons"];
+
+/// One launch of a dev with what is known about its outcome — the input of
+/// the category derivation. `creator` is the resolved DEV (ADR-021
+/// amendment 1): the creator field, except on [`SIGNER_RESOLVED_LAUNCHPADS`]
+/// where a contract creator with several signers (a shared intermediary) is
+/// replaced by each launch's signer (`contract:<addr>` while unresolved). A
+/// single-owner contract stays its own dev (its signer may be a relayer or
+/// bundler shared by many users, so it is never merged into it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DevLaunchRow {
     pub chain: String,
@@ -260,16 +288,22 @@ impl DevDb {
         since: i64,
     ) -> Result<Vec<DevLaunchRow>, DevDbError> {
         let rows = sqlx::query(
-            "SELECT l.chain, l.creator, l.token, l.launchpad, l.created_at,
+            "SELECT l.chain,
+                    CASE WHEN l.launchpad = ANY($3) AND k.is_contract AND k.owner IS NULL
+                         THEN COALESCE(l.signer, 'contract:' || l.creator)
+                         ELSE l.creator END AS creator,
+                    l.token, l.launchpad, l.created_at,
                     m.migrated_at, a.ath_fdv_cents
              FROM launches l
+             LEFT JOIN address_kinds k ON k.chain = l.chain AND k.address = l.creator
              LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
              LEFT JOIN ath a ON a.chain = l.chain AND a.token = l.token
              WHERE ($1::text IS NULL OR l.chain = $1) AND l.created_at >= $2
-             ORDER BY l.chain, l.creator, l.created_at, l.token",
+             ORDER BY 1, 2, l.created_at, l.token",
         )
         .bind(chain)
         .bind(since)
+        .bind(SIGNER_RESOLVED_LAUNCHPADS)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
@@ -284,6 +318,125 @@ impl DevDb {
                 ath_fdv_cents: r.get("ath_fdv_cents"),
             })
             .collect())
+    }
+
+    /// Creator addresses on [`SIGNER_RESOLVED_LAUNCHPADS`] of `chain` with no
+    /// recorded kind yet (most launches first), at most `limit`.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn creators_without_kind(
+        &self,
+        chain: &str,
+        limit: i64,
+    ) -> Result<Vec<String>, DevDbError> {
+        let rows = sqlx::query(
+            "SELECT l.creator FROM launches l
+             LEFT JOIN address_kinds k ON k.chain = l.chain AND k.address = l.creator
+             WHERE l.chain = $1 AND k.address IS NULL AND l.launchpad = ANY($3)
+             GROUP BY l.creator ORDER BY count(*) DESC LIMIT $2",
+        )
+        .bind(chain)
+        .bind(limit)
+        .bind(SIGNER_RESOLVED_LAUNCHPADS)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.get("creator")).collect())
+    }
+
+    /// Record (replace) what is known about an address.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn set_address_kind(&self, k: &AddressKind) -> Result<(), DevDbError> {
+        sqlx::query(
+            "INSERT INTO address_kinds (chain, address, is_contract, owner, sampled, checked_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (chain, address) DO UPDATE SET is_contract = EXCLUDED.is_contract,
+                owner = EXCLUDED.owner, sampled = EXCLUDED.sampled, checked_at = EXCLUDED.checked_at",
+        )
+        .bind(&k.chain)
+        .bind(&k.address)
+        .bind(k.is_contract)
+        .bind(&k.owner)
+        .bind(k.sampled)
+        .bind(k.checked_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Up to `n` `(token, tx_hash)` launches of `creator` on `chain` (newest first).
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn launches_of(
+        &self,
+        chain: &str,
+        creator: &str,
+        n: i64,
+    ) -> Result<Vec<(String, String)>, DevDbError> {
+        let rows = sqlx::query(
+            "SELECT token, tx_hash FROM launches WHERE chain = $1 AND creator = $2
+             ORDER BY created_at DESC LIMIT $3",
+        )
+        .bind(chain)
+        .bind(creator)
+        .bind(n)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get("token"), r.get("tx_hash")))
+            .collect())
+    }
+
+    /// Launches through shared intermediaries (contract creators without a
+    /// single owner) whose signer is unresolved: `(token, tx_hash)`, newest
+    /// first, at most `limit`.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn shared_launches_without_signer(
+        &self,
+        chain: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, String)>, DevDbError> {
+        let rows = sqlx::query(
+            "SELECT l.token, l.tx_hash FROM launches l
+             JOIN address_kinds k ON k.chain = l.chain AND k.address = l.creator
+             WHERE l.chain = $1 AND k.is_contract AND k.owner IS NULL AND l.signer IS NULL
+               AND l.launchpad = ANY($3)
+             ORDER BY l.created_at DESC LIMIT $2",
+        )
+        .bind(chain)
+        .bind(limit)
+        .bind(SIGNER_RESOLVED_LAUNCHPADS)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get("token"), r.get("tx_hash")))
+            .collect())
+    }
+
+    /// Record the signer (tx.from) of a launch.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn set_launch_signer(
+        &self,
+        chain: &str,
+        token: &str,
+        signer: &str,
+    ) -> Result<(), DevDbError> {
+        sqlx::query("UPDATE launches SET signer = $3 WHERE chain = $1 AND token = $2")
+            .bind(chain)
+            .bind(token)
+            .bind(signer)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Content hash of the last delivered export of a category/format.

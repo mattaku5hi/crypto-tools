@@ -1,0 +1,21 @@
+[package]
+name = "dev-tracker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Dev tracker CLI: schema migration, one ingestion pass, category derivation (docs/DEV-TRACKER.md)"
+
+[lints]
+workspace = true
+
+[dependencies]
+scout-app.workspace = true
+scout-core.workspace = true
+scout-sdk = { workspace = true, features = ["full"] }
+scout-devdb.workspace = true
+scout-devtracker.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
