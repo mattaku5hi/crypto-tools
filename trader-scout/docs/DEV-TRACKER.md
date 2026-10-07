@@ -55,18 +55,26 @@ excluded); both raw counts are stored, never only the ratio.
   streak, migrations, rate (then the newest last launch). Label: `TR m5/40 s1 r3` (category, migrated /
   resolved, current streak, runners); emoji 🚀 top-runners, 🎓 top-migr, 🔥 win-streak. Creators still behind
   an unresolved shared intermediary (`contract:…`) are not wallets and are never exported.
-- **Formats (pinned 2026-10-07):**
+- **Formats (pinned 2026-10-07 from the owner's own exports):**
   - `gmgn` — JSON array of `{"address", "name", "emoji"}` (GMGN docs, "Wallets Import Export",
     https://docs.gmgn.ai/index/wallets-import-export).
-  - `axiom` — JSON array of `{"trackedWalletAddress", "name", "emoji", "alertsOn"}`, all four required
-    (Axiom's docs only say "import"; field names from third-party guides and shared exports — to confirm with
-    a real Axiom export).
-  - `basedbot` — text, one wallet per line `address  emoji  name` (BasedBot plain-text import, per the
-    open-source converter `ariefzzz5421/wallet-tracker-transfer`; BasedBot's docs are not publicly
-    readable). BasedBot also reads GMGN JSON.
+  - `axiom` — JSON array shaped like an Axiom wallet-tracker export: `trackedWalletAddress`, `name`, `emoji`,
+    `createdAt` (ISO), `alertsOnToast` false, `alertsOnBubble` / `alertsOnFeed` / `alertsOnTransfer` true,
+    `toastOnTransfer` false, `groupNames` `["Devs", "<category>"]`, `sound` "", `transferAudio` "",
+    `highlightColor` null (the third-party guides' `alertsOn` field does not exist).
+  - `basedbot` — text, one wallet per line, tab-separated `address⇥emoji⇥name⇥group` (group `Devs`), as in a
+    BasedBot wallet-tracker export; chains may be mixed in one list.
 - **Only on change:** a list is sent when its SET of wallets differs from the last delivered one (sha256 of
-  the sorted addresses per category, chain and format in `deliveries`); label changes alone do not trigger
-  a send. A list never delivered is not sent while empty. A failed send is retried next cycle.
+  the sorted addresses per category, chain and format in `deliveries`, with the wallets themselves for the
+  next diff); label changes alone do not trigger a send. A list never delivered is not sent while empty. A
+  failed send is retried next cycle.
+- **Message:** one album per changed list with every changed format, files named
+  `<category>_<chain>_<UTC yyyy-mm-ddThh-mmZ>_<format>.<ext>`; the caption is the change report — category,
+  chain, time, wallet count with `(+added / −dropped)`, then `+ wallet m5/6 83% · streak 3 · runners 1 (0 big)`
+  for each addition and `− wallet <reason>` for each drop (the first rule it now fails: `rate 60% < 80%`,
+  `streak broken (1 < 3)`, `moved to top-migr`, `inactive 400 d`, `ranked below the top 500`, `no launch in the
+  last 365 days`). Overflow beyond the caption limit follows as messages. `dev-tracker export --test` sends the
+  largest list once, marked as a test, without recording it.
 - **Channel:** Telegram `sendDocument` to `SCOUT_TELEGRAM_CHAT_ID` with `SCOUT_TELEGRAM_BOT_TOKEN`
   (`delivery.telegram = true`); the current files are also written to `delivery.out_dir`.
 

@@ -102,12 +102,25 @@ async fn facts_are_idempotent_and_joined_for_the_derivation() {
 
     let cat = format!("{chain}:top-migr");
     assert_eq!(db.last_delivery(&cat, "gmgn").await.unwrap(), None);
-    db.record_delivery(&cat, "gmgn", "h1", 1).await.unwrap();
-    db.record_delivery(&cat, "gmgn", "h2", 2).await.unwrap();
+    db.record_delivery(&cat, "gmgn", "h1", &["a".into()], 1)
+        .await
+        .unwrap();
+    db.record_delivery(&cat, "gmgn", "h2", &["a".into(), "b".into()], 2)
+        .await
+        .unwrap();
     assert_eq!(
         db.last_delivery(&cat, "gmgn").await.unwrap().as_deref(),
         Some("h2")
     );
+    let d = db
+        .deliveries()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|d| d.category == cat)
+        .unwrap();
+    assert_eq!(d.members, ["a", "b"]);
+    assert_eq!(d.delivered_at, 2);
 }
 
 #[tokio::test]

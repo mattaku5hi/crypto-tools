@@ -24,6 +24,7 @@ pub enum DevDbError {
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_facts.sql")),
     (2, include_str!("../migrations/0002_dev_identity.sql")),
+    (3, include_str!("../migrations/0003_delivery_members.sql")),
 ];
 
 /// A token launch (one per token; `creator` is the launchpad's own creator field).
@@ -532,7 +533,7 @@ impl DevDb {
         Ok(row.map(|r| r.get::<String, _>("content_hash")))
     }
 
-    /// Record a delivered export.
+    /// Record a delivered export and its wallets (for the next diff).
     ///
     /// # Errors
     /// Database failure.
@@ -541,19 +542,55 @@ impl DevDb {
         category: &str,
         format: &str,
         content_hash: &str,
+        members: &[String],
         now: i64,
     ) -> Result<(), DevDbError> {
         sqlx::query(
-            "INSERT INTO deliveries (category, format, content_hash, delivered_at) VALUES ($1, $2, $3, $4)
+            "INSERT INTO deliveries (category, format, content_hash, delivered_at, members)
+             VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (category, format) DO UPDATE SET content_hash = EXCLUDED.content_hash,
-                delivered_at = EXCLUDED.delivered_at",
+                delivered_at = EXCLUDED.delivered_at, members = EXCLUDED.members",
         )
         .bind(category)
         .bind(format)
         .bind(content_hash)
         .bind(now)
+        .bind(members)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
+
+    /// Every last delivery: (category key, format, content hash, wallets).
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn deliveries(&self) -> Result<Vec<Delivery>, DevDbError> {
+        let rows = sqlx::query(
+            "SELECT category, format, content_hash, members, delivered_at FROM deliveries",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| Delivery {
+                category: r.get("category"),
+                format: r.get("format"),
+                content_hash: r.get("content_hash"),
+                members: r.get("members"),
+                delivered_at: r.get("delivered_at"),
+            })
+            .collect())
+    }
+}
+
+/// The last delivered version of one list in one format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivery {
+    /// `top-migr:solana`.
+    pub category: String,
+    pub format: String,
+    pub content_hash: String,
+    pub members: Vec<String>,
+    pub delivered_at: i64,
 }

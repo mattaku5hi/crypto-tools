@@ -387,7 +387,9 @@ pub struct DeriveTotals {
 }
 
 /// Derive from the database one creator at a time (constant memory in the
-/// number of launches): only category members are kept unless `keep_all`.
+/// number of launches): only category members are kept unless `keep_all`,
+/// plus the `watch`ed `(chain, creator)` pairs (members of the last delivered
+/// lists, so a dropped wallet's reason can be reported).
 ///
 /// # Errors
 /// Database failure.
@@ -397,6 +399,7 @@ pub async fn derive_from_db(
     now: i64,
     cfg: &DevTrackerConfig,
     keep_all: bool,
+    watch: &std::collections::BTreeSet<(String, String)>,
 ) -> Result<(Vec<DevVerdict>, DeriveTotals), scout_devdb::DevDbError> {
     let mut out = Vec::new();
     let mut totals = DeriveTotals::default();
@@ -408,7 +411,8 @@ pub async fn derive_from_db(
             if !v.categories.is_empty() {
                 totals.members += 1;
             }
-            if keep_all || !v.categories.is_empty() {
+            let watched = || watch.contains(&(v.stats.chain.clone(), v.stats.creator.clone()));
+            if keep_all || !v.categories.is_empty() || watched() {
                 out.push(v);
             }
         }

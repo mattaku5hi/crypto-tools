@@ -6,14 +6,15 @@
 //! the config every cycle. Secrets (database URL, RPC URLs, API keys, bot token)
 //! come from the environment and are never printed.
 
+use std::collections::BTreeSet;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use scout_devdb::DevDb;
+use scout_devdb::{Delivery, DevDb};
 use scout_devtracker::evm_ingest::{EVM_SOURCES, ingest_source};
-use scout_devtracker::export::{Format, render};
+use scout_devtracker::export::{ExportFile, Format, change_report, render};
 use scout_devtracker::solana_ingest::{SOLANA_SOURCES, ingest_solana_source};
 use scout_devtracker::telegram::Telegram;
 use scout_devtracker::{Category, DevTrackerConfig, DevVerdict, derive_from_db};
@@ -88,6 +89,10 @@ enum Cmd {
         config: String,
         #[arg(long)]
         send: bool,
+        /// Send the largest list once, marked as a test; nothing is recorded,
+        /// so the real first delivery still happens.
+        #[arg(long)]
+        test: bool,
     },
     /// The daemon: ingestion every `schedule.ingest_every_minutes`, derivation
     /// and delivery every `schedule.derive_every_minutes`; the config is
@@ -280,15 +285,29 @@ async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<(), String> {
     Ok(())
 }
 
+/// Members of the last delivered lists as `(chain, creator)` (their verdicts
+/// are kept so a dropped wallet's reason can be reported).
+fn watch_set(deliveries: &[Delivery]) -> BTreeSet<(String, String)> {
+    deliveries
+        .iter()
+        .filter_map(|d| {
+            let chain = d.category.split_once(':')?.1.to_string();
+            Some(d.members.iter().map(move |m| (chain.clone(), m.clone())))
+        })
+        .flatten()
+        .collect()
+}
+
 async fn derive(
     db: &DevDb,
     cfg: &DevTrackerConfig,
     since_days: i64,
     keep_all: bool,
+    watch: &BTreeSet<(String, String)>,
 ) -> Result<Vec<DevVerdict>, String> {
     let t = now();
     let since = t.saturating_sub(since_days.saturating_mul(86_400));
-    let (verdicts, totals) = derive_from_db(db, since, t, cfg, keep_all)
+    let (verdicts, totals) = derive_from_db(db, since, t, cfg, keep_all, watch)
         .await
         .map_err(|e| e.to_string())?;
     eprintln!(
@@ -308,66 +327,120 @@ fn telegram_from_env() -> Option<Telegram> {
     Telegram::new(&token, &chat).ok()
 }
 
-/// Render every file, write it to `out_dir`, and send the lists whose wallets
-/// changed since the last delivery. A list never delivered is not sent while
-/// empty. Returns the number of files sent.
+/// Render every file and write it to `out_dir`; with a bot, send each list
+/// whose wallets changed since its last delivery as one album (the changed
+/// formats, timestamped names) captioned with the change report. A list never
+/// delivered is not sent while empty. `test` sends only the largest list,
+/// marked as a test, and records nothing. Returns the number of lists sent.
 async fn export(
     db: &DevDb,
     cfg: &DevTrackerConfig,
     verdicts: &[DevVerdict],
+    deliveries: &[Delivery],
     telegram: Option<&Telegram>,
+    test: bool,
 ) -> Result<usize, String> {
     let d = &cfg.delivery;
+    let t = now();
     if !d.out_dir.is_empty() {
         std::fs::create_dir_all(&d.out_dir).map_err(|e| format!("{}: {e}", d.out_dir))?;
     }
-    let mut sent = 0usize;
+    let last = |key: &str, format: &str| {
+        deliveries
+            .iter()
+            .find(|x| x.category == key && x.format == format)
+    };
+    // (files of one list, formats to send)
+    let mut lists: Vec<(Vec<ExportFile>, Vec<usize>)> = Vec::new();
     for chain in &d.chains {
         for category in Category::ALL {
-            for f in d.formats.iter().filter_map(|f| Format::parse(f)) {
-                let file = render(verdicts, category, chain, f, d.max_wallets_per_file);
-                if !d.out_dir.is_empty() {
+            let files: Vec<ExportFile> = d
+                .formats
+                .iter()
+                .filter_map(|f| Format::parse(f))
+                .map(|f| render(verdicts, category, chain, f, d.max_wallets_per_file, t))
+                .collect();
+            if !d.out_dir.is_empty() {
+                for file in &files {
                     let path = std::path::Path::new(&d.out_dir).join(&file.file_name);
                     let tmp = path.with_extension("tmp");
                     std::fs::write(&tmp, &file.content)
                         .and_then(|()| std::fs::rename(&tmp, &path))
                         .map_err(|e| format!("{}: {e}", path.display()))?;
                 }
-                let Some(tg) = telegram else {
-                    continue;
-                };
-                let key = file.delivery_key();
-                let last = db
-                    .last_delivery(&key, f.name())
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let changed = last.as_deref() != Some(file.members_hash.as_str());
-                if !changed || (last.is_none() && file.wallets == 0) {
-                    continue;
-                }
-                let caption = format!(
-                    "{} · {chain} · {}: {} wallet(s)",
-                    category.label(),
-                    f.name(),
-                    file.wallets
-                );
-                match tg
-                    .send_document(&file.file_name, file.content.clone(), &caption)
-                    .await
-                {
-                    Ok(()) => {
-                        db.record_delivery(&key, f.name(), &file.members_hash, now())
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        sent += 1;
-                        // Bot API: ~1 message/s per chat
-                        tokio::time::sleep(Duration::from_millis(1_100)).await;
-                    }
-                    // retried next cycle (nothing recorded)
-                    Err(e) => eprintln!("dev-tracker: {}: {e}", file.file_name),
-                }
+            }
+            let changed: Vec<usize> = files
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| match last(&f.delivery_key(), f.format.name()) {
+                    Some(prev) => prev.content_hash != f.members_hash,
+                    None => !f.members.is_empty(),
+                })
+                .map(|(i, _)| i)
+                .collect();
+            lists.push((files, changed));
+        }
+    }
+    let Some(tg) = telegram else {
+        return Ok(0);
+    };
+    if test {
+        // the largest list, every format
+        lists.sort_by_key(|(files, _)| {
+            std::cmp::Reverse(files.first().map_or(0, |f| f.members.len()))
+        });
+        lists.truncate(1);
+        for (files, changed) in &mut lists {
+            *changed = (0..files.len()).collect();
+        }
+    }
+    let mut sent = 0usize;
+    for (files, changed) in &lists {
+        let Some(&first) = changed.first() else {
+            continue;
+        };
+        let Some(head) = files.get(first) else {
+            continue;
+        };
+        let prev = changed
+            .iter()
+            .filter_map(|&i| files.get(i))
+            .find_map(|f| last(&f.delivery_key(), f.format.name()))
+            .map(|x| x.members.as_slice());
+        let parts = change_report(head, prev, verdicts, cfg, t, d.max_wallets_per_file, test);
+        let album: Vec<(String, Vec<u8>)> = changed
+            .iter()
+            .filter_map(|&i| files.get(i))
+            .map(|f| (f.timestamped_name(t), f.content.clone()))
+            .collect();
+        let caption = parts.first().cloned().unwrap_or_default();
+        if let Err(e) = tg.send_album(album, &caption).await {
+            // retried next cycle (nothing recorded)
+            eprintln!("dev-tracker: {}: {e}", head.delivery_key());
+            continue;
+        }
+        for p in parts.iter().skip(1) {
+            tokio::time::sleep(Duration::from_millis(1_100)).await;
+            if let Err(e) = tg.send_message(p).await {
+                eprintln!("dev-tracker: {}: report: {e}", head.delivery_key());
             }
         }
+        if !test {
+            for f in changed.iter().filter_map(|&i| files.get(i)) {
+                db.record_delivery(
+                    &f.delivery_key(),
+                    f.format.name(),
+                    &f.members_hash,
+                    &f.members,
+                    t,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        sent += 1;
+        // Bot API: about one message per second per chat
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
     }
     Ok(sent)
 }
@@ -395,7 +468,14 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
             next_ingest = now().saturating_add(minutes(s.ingest_every_minutes));
         }
         if now() >= next_derive {
-            match derive(db, &cfg, s.since_days, false).await {
+            let deliveries = match db.deliveries().await {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("dev-tracker: deliveries not readable: {e}");
+                    Vec::new()
+                }
+            };
+            match derive(db, &cfg, s.since_days, false, &watch_set(&deliveries)).await {
                 Ok(v) => {
                     let tg = if cfg.delivery.telegram {
                         telegram_from_env()
@@ -407,7 +487,7 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
                             "dev-tracker: telegram skipped ({TELEGRAM_TOKEN_ENV} / {TELEGRAM_CHAT_ENV} not set)"
                         );
                     }
-                    match export(db, &cfg, &v, tg.as_ref()).await {
+                    match export(db, &cfg, &v, &deliveries, tg.as_ref(), false).await {
                         Ok(n) => eprintln!("dev-tracker: export: {n} changed list(s) sent"),
                         Err(e) => eprintln!("dev-tracker: export failed: {e}"),
                     }
@@ -493,7 +573,7 @@ async fn run(args: Args) -> Result<(), String> {
             all,
         } => {
             let cfg = read_config(&config)?;
-            let verdicts = derive(&db, &cfg, since_days, all).await?;
+            let verdicts = derive(&db, &cfg, since_days, all, &BTreeSet::new()).await?;
             for v in &verdicts {
                 if !all && v.categories.is_empty() {
                     continue;
@@ -513,18 +593,26 @@ async fn run(args: Args) -> Result<(), String> {
                 );
             }
         }
-        Cmd::Export { config, send } => {
+        Cmd::Export { config, send, test } => {
             db.migrate().await.map_err(|e| e.to_string())?;
             let cfg = read_config(&config)?;
-            let verdicts = derive(&db, &cfg, cfg.schedule.since_days, false).await?;
-            let tg = if send {
+            let deliveries = db.deliveries().await.map_err(|e| e.to_string())?;
+            let verdicts = derive(
+                &db,
+                &cfg,
+                cfg.schedule.since_days,
+                false,
+                &watch_set(&deliveries),
+            )
+            .await?;
+            let tg = if send || test {
                 Some(telegram_from_env().ok_or_else(|| {
-                    format!("--send needs {TELEGRAM_TOKEN_ENV} and {TELEGRAM_CHAT_ENV}")
+                    format!("--send/--test need {TELEGRAM_TOKEN_ENV} and {TELEGRAM_CHAT_ENV}")
                 })?)
             } else {
                 None
             };
-            let n = export(&db, &cfg, &verdicts, tg.as_ref()).await?;
+            let n = export(&db, &cfg, &verdicts, &deliveries, tg.as_ref(), test).await?;
             eprintln!(
                 "dev-tracker: files in {:?}; {n} changed list(s) sent",
                 cfg.delivery.out_dir
