@@ -88,3 +88,29 @@ All topic0 values below equal the keccak of the signature.
 | Robinhood | Clanker `0xd3f2…9a94`, Virtuals, Klik, Ape.store (Bitquery list) | — | ≤ 18 logs each | — | — | near-inactive |
 
 Corrections: Clanker's frequent topic `0xe80ed94c` is `ExtensionTriggered(address,uint256,uint256)` (293/day), not a launch; Clanker v4 launches are 157/day. Zora ≈ 611 coins/day across three event kinds.
+
+### Addendum B0.3 / B0.4 (2026-10-07): ATH source and backfill source
+
+**ATH — Codex (key present).** `filterTokens(tokens: ["addr:networkId", … up to 200])` returns
+`token.extrema { athPrice athFdv athCircMc + *Timestamp }` for all four chains (network ids: Solana
+1399811149, BNB 56, Base 8453, Robinhood 4663); e.g. Bicat (BSC) athFdv $7.19M, JEANPHIL (Solana)
+$10.99M. Plan: free "Almost Free" tier = 10,000 requests/month, 5 req/s (one-time $1 activation); the next
+plan is a $350/month subscription (no PAYG) → stay within the free tier by batching 200 tokens per request
+(≈ 2M token lookups/month). GeckoTerminal (keyless, ~10–30 calls/min, daily OHLCV only ~6 months back) and
+DexScreener (current values only) are fallbacks, not ATH sources.
+
+**Codex is not a source of truth for counts.** Same settled 24 h window: Codex lists 1,189 Pump.fun tokens
+with `launchpadMigrated` (1,061 creators; `PumpMayhem` 0) vs **1,694** successful migrate transactions signed
+by `39azUYFW…` on chain (≈ 70 % coverage). Codex also has no Flap and no Pons protocol (its launchpad list:
+ArenaTrade, Baseapp, BaseappCreator, BonadFun, BoopFun, Clanker, ClankerV4, Doppler, EgoTech, Flaunch,
+FourMeme, HeavenAMM, Kumbaya, Liquid, MeteoraDBC, Moonit, NadFun, Printr, Pump, PumpMayhem, Rainbow,
+RaydiumLaunchpad, TokenMillEVM, TokenMillV2, Vertigo, Virtuals, ZoraCreatorV4, ZoraV4). Codex does expose
+`creatorAddress`, `launchpad { completed migrated completedAt migratedAt }` and a `creatorAddress` filter
+(a hint for a dev's token list, to be cross-checked).
+
+**Backfill design (B0.4).** Launch and migration FACTS come from chain data (launchpad events on EVM —
+creator inside the launch event; Solana: migrate transactions of `39azUYFW…` and creates via the
+`mint_authority` PDA). A dev can only qualify with ≥ 3 migrations (or ≥ 3 runners), so the full launch
+history (the migration-rate denominator) is fetched only for creators with ≥ 3 migrations in the window,
+from their own wallet history (Helius / Ankr), not for all 19M yearly pump.fun creates (≈ 1.9M Helius
+credits). EVM backfill is a few thousand `eth_getLogs` on Alchemy PAYG (< $1). ATH from Codex in batches.
