@@ -1,21 +1,29 @@
-//! `dev-tracker` — the dev tracker's batch entry points (docs/DEV-TRACKER.md):
-//! `migrate` applies the schema, `ingest` runs one pass over every EVM source,
-//! `derive` prints the categories as JSON. The daemon (B5) loops these.
-//! Secrets (database URL, RPC URLs) come from the environment and are never
-//! printed.
+//! `dev-tracker` — the dev tracker's entry points (docs/DEV-TRACKER.md):
+//! `migrate` applies the schema, `ingest` runs one pass over the sources of the
+//! given chains, `derive` prints the categories as JSON, `export` writes the
+//! wallet-tracker files (and sends changed lists), `run` is the 24/7 daemon
+//! (B5) that loops ingestion and derivation on the config's cadence, re-reading
+//! the config every cycle. Secrets (database URL, RPC URLs, API keys, bot token)
+//! come from the environment and are never printed.
 
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use scout_devdb::DevDb;
 use scout_devtracker::evm_ingest::{EVM_SOURCES, ingest_source};
+use scout_devtracker::export::{Format, render};
 use scout_devtracker::solana_ingest::{SOLANA_SOURCES, ingest_solana_source};
-use scout_devtracker::{DevTrackerConfig, derive_categories};
+use scout_devtracker::telegram::Telegram;
+use scout_devtracker::{Category, DevTrackerConfig, DevVerdict, derive_categories};
 
 const DB_ENV: &str = "SCOUT_DEVTRACKER_DATABASE_URL";
 const CODEX_ENV: &str = "SCOUT_CODEX_API_KEY";
 const HELIUS_ENV: &str = "SCOUT_HELIUS_API_KEY";
+const TELEGRAM_TOKEN_ENV: &str = "SCOUT_TELEGRAM_BOT_TOKEN";
+const TELEGRAM_CHAT_ENV: &str = "SCOUT_TELEGRAM_CHAT_ID";
+const DEFAULT_CONFIG: &str = "config/dev-tracker.example.toml";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -31,17 +39,18 @@ struct Args {
 enum Cmd {
     /// Apply the schema migrations.
     Migrate,
-    /// One ingestion pass over the EVM sources of the given chains.
+    /// One ingestion pass over the sources of the given chains.
     Ingest {
-        /// Comma-separated: bsc, base, robinhood, solana.
+        /// Comma-separated: solana, bsc, base, robinhood.
         #[arg(long, default_value = "bsc,base,robinhood")]
         chains: String,
         /// Where a source without a cursor starts: this many hours back.
         #[arg(long, default_value_t = 24)]
         start_hours_back: u64,
-        /// Blocks behind the head treated as final.
+        /// EVM blocks behind the head treated as final.
         #[arg(long, default_value_t = 20)]
         confirmations: u64,
+        /// HTTP request budget per chain and pass.
         #[arg(long)]
         max_requests: Option<u64>,
         /// New creators classified per chain and pass (contract or wallet).
@@ -63,7 +72,7 @@ enum Cmd {
     },
     /// Derive the categories and print them as JSON lines.
     Derive {
-        #[arg(long, default_value = "config/dev-tracker.example.toml")]
+        #[arg(long, default_value = DEFAULT_CONFIG)]
         config: String,
         /// Launches older than this many days are not loaded.
         #[arg(long, default_value_t = 365)]
@@ -71,6 +80,21 @@ enum Cmd {
         /// Print every creator, not only category members.
         #[arg(long)]
         all: bool,
+    },
+    /// Derive, write the wallet-tracker files to `delivery.out_dir`, and with
+    /// `--send` deliver the lists whose wallets changed to Telegram.
+    Export {
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(long)]
+        send: bool,
+    },
+    /// The daemon: ingestion every `schedule.ingest_every_minutes`, derivation
+    /// and delivery every `schedule.derive_every_minutes`; the config is
+    /// re-read every cycle. Stops on SIGTERM / Ctrl-C.
+    Run {
+        #[arg(long, default_value = DEFAULT_CONFIG)]
+        config: String,
     },
 }
 
@@ -90,151 +114,105 @@ fn blocks_per_hour(chain: &str) -> u64 {
     }
 }
 
-async fn run(args: Args) -> Result<(), String> {
-    let url = std::env::var(DB_ENV).map_err(|_| format!("{DB_ENV} is not set"))?;
-    let db = DevDb::connect(&url, 4).await.map_err(|e| e.to_string())?;
-    match args.cmd {
-        Cmd::Migrate => {
-            db.migrate().await.map_err(|e| e.to_string())?;
-            eprintln!("dev-tracker: schema up to date");
-        }
-        Cmd::Ingest {
-            chains,
-            start_hours_back,
-            confirmations,
-            max_requests,
-            max_new_creators,
-            max_signer_lookups,
-            ath_requests,
-            solana_max_pages,
-            solana_settle_secs,
-        } => {
-            db.migrate().await.map_err(|e| e.to_string())?;
-            let notice: scout_app::LimiterNotice = Arc::new(|m| eprintln!("dev-tracker: {m}"));
-            for chain in chains.split(',').map(str::trim).filter(|c| !c.is_empty()) {
-                if chain == "solana" {
-                    ingest_solana(
-                        &db,
-                        start_hours_back,
-                        solana_settle_secs,
-                        solana_max_pages,
-                        max_requests,
-                    )
-                    .await?;
-                    observe_ath(&db, chain, ath_requests).await?;
-                    continue;
-                }
-                let profile = match chain {
-                    "bsc" => scout_sdk::evm::BSC,
-                    "base" => scout_sdk::evm::BASE,
-                    "robinhood" => scout_sdk::evm::ROBINHOOD,
-                    other => return Err(format!("unknown chain {other}")),
-                };
-                let setup = scout_app::setup_evm(
-                    &profile.verified_chain_key(),
-                    false,
-                    max_requests,
-                    8,
-                    &scout_app::EvmNetOptions::default(),
-                    &notice,
-                    true,
-                    |k| std::env::var(k).ok(),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-                for w in &setup.warnings {
-                    eprintln!("dev-tracker: warning: {w}");
-                }
-                let head = setup.rpc.block_number().await.map_err(|e| e.to_string())?;
-                let start =
-                    head.saturating_sub(start_hours_back.saturating_mul(blocks_per_hour(chain)));
-                for src in EVM_SOURCES.iter().filter(|s| s.chain == chain) {
-                    let r = ingest_source(&db, &setup.rpc, src, head, confirmations, start, now())
-                        .await
-                        .map_err(|e| {
-                            format!("{}: {}", src.key, setup_scrub(&setup, &e.to_string()))
-                        })?;
-                    eprintln!(
-                        "dev-tracker: {:28} blocks {}..={} logs {} decoded {} new {} undecodable {}",
-                        src.key,
-                        r.from_block,
-                        r.to_block,
-                        r.logs,
-                        r.decoded,
-                        r.inserted,
-                        r.undecodable
-                    );
-                }
-                let id = scout_devtracker::identity::enrich_identities(
-                    &db,
-                    &setup.rpc,
-                    chain,
-                    max_new_creators,
-                    max_signer_lookups,
-                    now(),
-                )
-                .await
-                .map_err(|e| {
-                    format!("{chain}: identity: {}", setup_scrub(&setup, &e.to_string()))
-                })?;
-                eprintln!(
-                    "dev-tracker: {chain}: identities: {} creator(s) checked, {} contract(s) ({} single-owner, {} shared), {} signer(s) resolved",
-                    id.creators_checked,
-                    id.contracts,
-                    id.single_owner,
-                    id.shared,
-                    id.signers_resolved
-                );
-                observe_ath(&db, chain, ath_requests).await?;
-                for line in setup.rate_limit_report() {
-                    eprintln!("dev-tracker: {chain}: {line}");
-                }
-                eprintln!(
-                    "dev-tracker: {chain}: requests_made={}",
-                    setup.rpc.total_requests_made()
-                );
-            }
-        }
-        Cmd::Derive {
-            config,
-            since_days,
-            all,
-        } => {
-            let text = std::fs::read_to_string(&config).map_err(|e| format!("{config}: {e}"))?;
-            let cfg = DevTrackerConfig::from_toml(&text).map_err(|e| e.to_string())?;
-            let t = now();
-            let rows = db
-                .dev_launches(None, t.saturating_sub(since_days.saturating_mul(86_400)))
-                .await
-                .map_err(|e| e.to_string())?;
-            let verdicts = derive_categories(&rows, t, &cfg);
-            let mut members = 0usize;
-            for v in &verdicts {
-                if !all && v.categories.is_empty() {
-                    continue;
-                }
-                members += usize::from(!v.categories.is_empty());
-                let s = &v.stats;
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "chain": s.chain, "creator": s.creator,
-                        "categories": v.categories.iter().map(|c| c.label()).collect::<Vec<_>>(),
-                        "launches": s.launches, "curve_launches": s.curve_launches,
-                        "migrated": s.migrated, "resolved": s.resolved, "pending": s.pending,
-                        "migration_rate_bp": s.migration_rate_bp, "current_streak": s.current_streak,
-                        "runners": s.runners, "big_runners": s.big_runners,
-                        "last_launch_at": s.last_launch_at,
-                    })
-                );
-            }
-            eprintln!(
-                "dev-tracker: {} launch rows, {} creators, {members} in a category",
-                rows.len(),
-                verdicts.len()
-            );
+/// Budgets of one ingestion pass over one chain.
+#[derive(Debug, Clone)]
+struct IngestOpts {
+    start_hours_back: u64,
+    confirmations: u64,
+    max_requests: Option<u64>,
+    max_new_creators: i64,
+    max_signer_lookups: i64,
+    ath_requests: usize,
+    solana_max_pages: u32,
+    solana_settle_secs: i64,
+}
+
+impl IngestOpts {
+    fn from_config(cfg: &DevTrackerConfig) -> Self {
+        let s = &cfg.schedule;
+        Self {
+            start_hours_back: s.start_hours_back,
+            confirmations: 20,
+            max_requests: None,
+            max_new_creators: s.max_new_creators,
+            max_signer_lookups: s.max_signer_lookups,
+            ath_requests: s.ath_requests_per_chain,
+            solana_max_pages: s.solana_max_pages,
+            solana_settle_secs: 60,
         }
     }
+}
+
+fn read_config(path: &str) -> Result<DevTrackerConfig, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    DevTrackerConfig::from_toml(&text).map_err(|e| format!("{path}: {e}"))
+}
+
+/// One ingestion pass over one chain: sources, (EVM) dev identities, ATH.
+async fn ingest_chain(db: &DevDb, chain: &str, o: &IngestOpts) -> Result<(), String> {
+    if chain == "solana" {
+        ingest_solana(db, o).await?;
+        return observe_ath(db, chain, o.ath_requests).await;
+    }
+    let profile = match chain {
+        "bsc" => scout_sdk::evm::BSC,
+        "base" => scout_sdk::evm::BASE,
+        "robinhood" => scout_sdk::evm::ROBINHOOD,
+        other => return Err(format!("unknown chain {other}")),
+    };
+    let notice: scout_app::LimiterNotice = Arc::new(|m| eprintln!("dev-tracker: {m}"));
+    let setup = scout_app::setup_evm(
+        &profile.verified_chain_key(),
+        false,
+        o.max_requests,
+        8,
+        &scout_app::EvmNetOptions::default(),
+        &notice,
+        true,
+        |k| std::env::var(k).ok(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    for w in &setup.warnings {
+        eprintln!("dev-tracker: warning: {w}");
+    }
+    let head = setup
+        .rpc
+        .block_number()
+        .await
+        .map_err(|e| setup_scrub(&setup, &e.to_string()))?;
+    let start = head.saturating_sub(o.start_hours_back.saturating_mul(blocks_per_hour(chain)));
+    for src in EVM_SOURCES.iter().filter(|s| s.chain == chain) {
+        let r = ingest_source(db, &setup.rpc, src, head, o.confirmations, start, now())
+            .await
+            .map_err(|e| format!("{}: {}", src.key, setup_scrub(&setup, &e.to_string())))?;
+        eprintln!(
+            "dev-tracker: {:28} blocks {}..={} logs {} decoded {} new {} undecodable {}",
+            src.key, r.from_block, r.to_block, r.logs, r.decoded, r.inserted, r.undecodable
+        );
+    }
+    let id = scout_devtracker::identity::enrich_identities(
+        db,
+        &setup.rpc,
+        chain,
+        o.max_new_creators,
+        o.max_signer_lookups,
+        now(),
+    )
+    .await
+    .map_err(|e| format!("{chain}: identity: {}", setup_scrub(&setup, &e.to_string())))?;
+    eprintln!(
+        "dev-tracker: {chain}: identities: {} creator(s) checked, {} contract(s) ({} single-owner, {} shared), {} signer(s) resolved",
+        id.creators_checked, id.contracts, id.single_owner, id.shared, id.signers_resolved
+    );
+    observe_ath(db, chain, o.ath_requests).await?;
+    for line in setup.rate_limit_report() {
+        eprintln!("dev-tracker: {chain}: {line}");
+    }
+    eprintln!(
+        "dev-tracker: {chain}: requests_made={}",
+        setup.rpc.total_requests_made()
+    );
     Ok(())
 }
 
@@ -258,13 +236,7 @@ async fn observe_ath(db: &DevDb, chain: &str, ath_requests: usize) -> Result<(),
 }
 
 /// One pass over the pump.fun sources on Helius (`SCOUT_HELIUS_API_KEY`).
-async fn ingest_solana(
-    db: &DevDb,
-    start_hours_back: u64,
-    settle_secs: i64,
-    max_pages: u32,
-    max_requests: Option<u64>,
-) -> Result<(), String> {
+async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<(), String> {
     let key = std::env::var(HELIUS_ENV)
         .ok()
         .filter(|k| !k.trim().is_empty())
@@ -276,12 +248,13 @@ async fn ingest_solana(
         .with_status_filter(scout_providers::StatusFilter::Succeeded)
         .with_page_limit(1_000)
         .with_max_pages(
-            std::num::NonZeroU32::new(max_pages.max(1)).unwrap_or(std::num::NonZeroU32::MIN),
+            std::num::NonZeroU32::new(o.solana_max_pages.max(1))
+                .unwrap_or(std::num::NonZeroU32::MIN),
         )
-        .with_max_total_requests(max_requests);
-    let start = i64::try_from(start_hours_back.saturating_mul(3_600)).unwrap_or(i64::MAX);
+        .with_max_total_requests(o.max_requests);
+    let start = i64::try_from(o.start_hours_back.saturating_mul(3_600)).unwrap_or(i64::MAX);
     for src in &SOLANA_SOURCES {
-        let r = ingest_solana_source(db, &provider, src, start, settle_secs, now())
+        let r = ingest_solana_source(db, &provider, src, start, o.solana_settle_secs, now())
             .await
             .map_err(|e| format!("{}: {}", src.key, scrub(e.to_string())))?;
         eprintln!(
@@ -304,6 +277,266 @@ async fn ingest_solana(
         "dev-tracker: solana: requests_made={}",
         provider.total_requests_made()
     );
+    Ok(())
+}
+
+async fn derive(
+    db: &DevDb,
+    cfg: &DevTrackerConfig,
+    since_days: i64,
+) -> Result<Vec<DevVerdict>, String> {
+    let t = now();
+    let rows = db
+        .dev_launches(None, t.saturating_sub(since_days.saturating_mul(86_400)))
+        .await
+        .map_err(|e| e.to_string())?;
+    let verdicts = derive_categories(&rows, t, cfg);
+    eprintln!(
+        "dev-tracker: {} launch rows, {} creators, {} in a category",
+        rows.len(),
+        verdicts.len(),
+        verdicts.iter().filter(|v| !v.categories.is_empty()).count()
+    );
+    Ok(verdicts)
+}
+
+fn telegram_from_env() -> Option<Telegram> {
+    let token = std::env::var(TELEGRAM_TOKEN_ENV)
+        .ok()
+        .filter(|t| !t.trim().is_empty())?;
+    let chat = std::env::var(TELEGRAM_CHAT_ENV)
+        .ok()
+        .filter(|t| !t.trim().is_empty())?;
+    Telegram::new(&token, &chat).ok()
+}
+
+/// Render every file, write it to `out_dir`, and send the lists whose wallets
+/// changed since the last delivery. A list never delivered is not sent while
+/// empty. Returns the number of files sent.
+async fn export(
+    db: &DevDb,
+    cfg: &DevTrackerConfig,
+    verdicts: &[DevVerdict],
+    telegram: Option<&Telegram>,
+) -> Result<usize, String> {
+    let d = &cfg.delivery;
+    if !d.out_dir.is_empty() {
+        std::fs::create_dir_all(&d.out_dir).map_err(|e| format!("{}: {e}", d.out_dir))?;
+    }
+    let mut sent = 0usize;
+    for chain in &d.chains {
+        for category in Category::ALL {
+            for f in d.formats.iter().filter_map(|f| Format::parse(f)) {
+                let file = render(verdicts, category, chain, f, d.max_wallets_per_file);
+                if !d.out_dir.is_empty() {
+                    let path = std::path::Path::new(&d.out_dir).join(&file.file_name);
+                    let tmp = path.with_extension("tmp");
+                    std::fs::write(&tmp, &file.content)
+                        .and_then(|()| std::fs::rename(&tmp, &path))
+                        .map_err(|e| format!("{}: {e}", path.display()))?;
+                }
+                let Some(tg) = telegram else {
+                    continue;
+                };
+                let key = file.delivery_key();
+                let last = db
+                    .last_delivery(&key, f.name())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let changed = last.as_deref() != Some(file.members_hash.as_str());
+                if !changed || (last.is_none() && file.wallets == 0) {
+                    continue;
+                }
+                let caption = format!(
+                    "{} · {chain} · {}: {} wallet(s)",
+                    category.label(),
+                    f.name(),
+                    file.wallets
+                );
+                match tg
+                    .send_document(&file.file_name, file.content.clone(), &caption)
+                    .await
+                {
+                    Ok(()) => {
+                        db.record_delivery(&key, f.name(), &file.members_hash, now())
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        sent += 1;
+                        // Bot API: ~1 message/s per chat
+                        tokio::time::sleep(Duration::from_millis(1_100)).await;
+                    }
+                    // retried next cycle (nothing recorded)
+                    Err(e) => eprintln!("dev-tracker: {}: {e}", file.file_name),
+                }
+            }
+        }
+    }
+    Ok(sent)
+}
+
+async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
+    let mut cfg = read_config(config)?;
+    let mut next_ingest = 0i64;
+    let mut next_derive = 0i64;
+    let mut shutdown = Box::pin(shutdown_signal());
+    eprintln!("dev-tracker: daemon started ({config})");
+    loop {
+        match read_config(config) {
+            Ok(c) => cfg = c,
+            Err(e) => eprintln!("dev-tracker: config not reloaded, keeping the last good one: {e}"),
+        }
+        let s = cfg.schedule.clone();
+        if now() >= next_ingest {
+            let opts = IngestOpts::from_config(&cfg);
+            for chain in &s.chains {
+                if let Err(e) = ingest_chain(db, chain, &opts).await {
+                    // one chain's failure never stops the others
+                    eprintln!("dev-tracker: {chain}: pass failed: {e}");
+                }
+            }
+            next_ingest = now().saturating_add(minutes(s.ingest_every_minutes));
+        }
+        if now() >= next_derive {
+            match derive(db, &cfg, s.since_days).await {
+                Ok(v) => {
+                    let tg = if cfg.delivery.telegram {
+                        telegram_from_env()
+                    } else {
+                        None
+                    };
+                    if cfg.delivery.telegram && tg.is_none() {
+                        eprintln!(
+                            "dev-tracker: telegram skipped ({TELEGRAM_TOKEN_ENV} / {TELEGRAM_CHAT_ENV} not set)"
+                        );
+                    }
+                    match export(db, &cfg, &v, tg.as_ref()).await {
+                        Ok(n) => eprintln!("dev-tracker: export: {n} changed list(s) sent"),
+                        Err(e) => eprintln!("dev-tracker: export failed: {e}"),
+                    }
+                }
+                Err(e) => eprintln!("dev-tracker: derive failed: {e}"),
+            }
+            next_derive = now().saturating_add(minutes(s.derive_every_minutes));
+        }
+        let wait = next_ingest.min(next_derive).saturating_sub(now()).max(1);
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_secs(u64::try_from(wait).unwrap_or(60))) => {}
+            () = &mut shutdown => {
+                eprintln!("dev-tracker: shutdown requested, exiting");
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn minutes(m: u64) -> i64 {
+    i64::try_from(m.saturating_mul(60)).unwrap_or(i64::MAX)
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+        match term {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn run(args: Args) -> Result<(), String> {
+    let url = std::env::var(DB_ENV).map_err(|_| format!("{DB_ENV} is not set"))?;
+    let db = DevDb::connect(&url, 4).await.map_err(|e| e.to_string())?;
+    match args.cmd {
+        Cmd::Migrate => {
+            db.migrate().await.map_err(|e| e.to_string())?;
+            eprintln!("dev-tracker: schema up to date");
+        }
+        Cmd::Ingest {
+            chains,
+            start_hours_back,
+            confirmations,
+            max_requests,
+            max_new_creators,
+            max_signer_lookups,
+            ath_requests,
+            solana_max_pages,
+            solana_settle_secs,
+        } => {
+            db.migrate().await.map_err(|e| e.to_string())?;
+            let opts = IngestOpts {
+                start_hours_back,
+                confirmations,
+                max_requests,
+                max_new_creators,
+                max_signer_lookups,
+                ath_requests,
+                solana_max_pages,
+                solana_settle_secs,
+            };
+            for chain in chains.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+                ingest_chain(&db, chain, &opts).await?;
+            }
+        }
+        Cmd::Derive {
+            config,
+            since_days,
+            all,
+        } => {
+            let cfg = read_config(&config)?;
+            let verdicts = derive(&db, &cfg, since_days).await?;
+            for v in &verdicts {
+                if !all && v.categories.is_empty() {
+                    continue;
+                }
+                let s = &v.stats;
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "chain": s.chain, "creator": s.creator,
+                        "categories": v.categories.iter().map(|c| c.label()).collect::<Vec<_>>(),
+                        "launches": s.launches, "curve_launches": s.curve_launches,
+                        "migrated": s.migrated, "resolved": s.resolved, "pending": s.pending,
+                        "migration_rate_bp": s.migration_rate_bp, "current_streak": s.current_streak,
+                        "runners": s.runners, "big_runners": s.big_runners,
+                        "last_launch_at": s.last_launch_at,
+                    })
+                );
+            }
+        }
+        Cmd::Export { config, send } => {
+            db.migrate().await.map_err(|e| e.to_string())?;
+            let cfg = read_config(&config)?;
+            let verdicts = derive(&db, &cfg, cfg.schedule.since_days).await?;
+            let tg = if send {
+                Some(telegram_from_env().ok_or_else(|| {
+                    format!("--send needs {TELEGRAM_TOKEN_ENV} and {TELEGRAM_CHAT_ENV}")
+                })?)
+            } else {
+                None
+            };
+            let n = export(&db, &cfg, &verdicts, tg.as_ref()).await?;
+            eprintln!(
+                "dev-tracker: files in {:?}; {n} changed list(s) sent",
+                cfg.delivery.out_dir
+            );
+        }
+        Cmd::Run { config } => {
+            db.migrate().await.map_err(|e| e.to_string())?;
+            daemon(&db, &config).await?;
+        }
+    }
     Ok(())
 }
 

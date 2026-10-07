@@ -27,3 +27,4 @@ tokio = { workspace = true, features = ["time"] }
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
+sha2.workspace = true

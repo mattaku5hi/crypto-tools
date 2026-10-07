@@ -96,5 +96,5 @@ alloy-json-rpc = "2"
 alloy-rpc-types-eth = "2"
 csv = "1"
 toml = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
 wiremock = "0.6"

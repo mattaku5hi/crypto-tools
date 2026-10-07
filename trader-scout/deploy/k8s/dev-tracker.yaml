@@ -1,0 +1,79 @@
+# Dev tracker on Kubernetes (B6). Exactly one replica: two daemons would
+# double provider requests and Telegram sends (ingestion itself is idempotent).
+# Apply after creating the Secret (see secret.example.yaml) and a PostgreSQL
+# (managed, or postgres.yaml for a single-node setup):
+#   kubectl apply -f deploy/k8s/dev-tracker.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dev-tracker-config
+data:
+  # Edit and `kubectl apply`; the daemon re-reads the file every cycle
+  # (ConfigMap volume updates propagate within about a minute).
+  dev-tracker.toml: |
+    pending_window_days = 3
+    launchpads_without_migration = ["zora", "clanker"]
+
+    [top_runners]
+    runner_ath_usd = 500000
+    big_runner_ath_usd = 1000000
+    min_big_runners = 1
+    min_other_runners = 2
+    max_plausible_ath_usd = 10000000000
+    min_migration_rate_pct = 3
+    max_inactive_days = 365
+
+    [top_migr]
+    min_migration_rate_pct = 80
+    min_launches = 3
+    max_inactive_days = 365
+
+    [win_streak]
+    min_streak = 3
+    max_inactive_days = 365
+
+    [schedule]
+    chains = ["solana", "bsc", "base", "robinhood"]
+    ingest_every_minutes = 30
+    derive_every_minutes = 60
+
+    [delivery]
+    formats = ["gmgn", "axiom", "basedbot"]
+    out_dir = "/app/exports"
+    telegram = true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-tracker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: dev-tracker }
+  template:
+    metadata:
+      labels: { app: dev-tracker }
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: dev-tracker
+          image: trader-scout/dev-tracker:latest
+          args: ["run", "--config", "/app/config/dev-tracker.toml"]
+          envFrom:
+            - secretRef: { name: dev-tracker-secrets }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - { name: config, mountPath: /app/config, readOnly: true }
+            - { name: exports, mountPath: /app/exports }
+      volumes:
+        - name: config
+          configMap: { name: dev-tracker-config }
+        - name: exports
+          emptyDir: {}

@@ -145,13 +145,35 @@ async fn dev_identity_follows_the_creator_kind() {
         db.creators_without_kind(&chain, 10).await.unwrap(),
         vec!["unknown".to_string()]
     );
-    assert_eq!(
-        db.shared_launches_without_signer(&chain, 10)
-            .await
-            .unwrap()
-            .len(),
-        2
-    );
+    let queue: Vec<String> = db
+        .shared_launches_without_signer(&chain, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    assert_eq!(queue, ["s2", "s1"], "newest first");
+    // a migrated launch jumps the queue (it decides categories)
+    db.insert_migrations(&[scout_devdb::Migration {
+        chain: chain.clone(),
+        token: "s1".into(),
+        launchpad: "flap".into(),
+        migrated_block: 1,
+        migrated_at: 200,
+        tx_hash: "0xm".into(),
+        pool: None,
+        source: "test".into(),
+    }])
+    .await
+    .unwrap();
+    let queue: Vec<String> = db
+        .shared_launches_without_signer(&chain, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    assert_eq!(queue, ["s1", "s2"]);
     db.set_launch_signer(&chain, "s1", "alice").await.unwrap();
     assert_eq!(
         db.shared_launches_without_signer(&chain, 10)

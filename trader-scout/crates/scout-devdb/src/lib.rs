@@ -397,8 +397,9 @@ impl DevDb {
     }
 
     /// Launches through shared intermediaries (contract creators without a
-    /// single owner) whose signer is unresolved: `(token, tx_hash)`, newest
-    /// first, at most `limit`.
+    /// single owner) whose signer is unresolved: `(token, tx_hash)`, migrated
+    /// launches first (they decide categories; a backfill under a lookup budget
+    /// resolves them before the long tail), then newest first, at most `limit`.
     ///
     /// # Errors
     /// Database failure.
@@ -412,7 +413,10 @@ impl DevDb {
              JOIN address_kinds k ON k.chain = l.chain AND k.address = l.creator
              WHERE l.chain = $1 AND k.is_contract AND k.owner IS NULL AND l.signer IS NULL
                AND l.launchpad = ANY($3)
-             ORDER BY l.created_at DESC LIMIT $2",
+             ORDER BY EXISTS (SELECT 1 FROM migrations m
+                              WHERE m.chain = l.chain AND m.token = l.token) DESC,
+                      l.created_at DESC
+             LIMIT $2",
         )
         .bind(chain)
         .bind(limit)

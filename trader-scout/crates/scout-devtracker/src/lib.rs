@@ -7,8 +7,10 @@
 
 pub mod ath;
 pub mod evm_ingest;
+pub mod export;
 pub mod identity;
 pub mod solana_ingest;
+pub mod telegram;
 
 use std::collections::BTreeMap;
 
@@ -48,6 +50,79 @@ pub struct WinStreakConfig {
     pub max_inactive_days: i64,
 }
 
+/// Daemon cadence and per-pass budgets (`[schedule]`, all optional).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ScheduleConfig {
+    /// Chains ingested by the daemon.
+    pub chains: Vec<String>,
+    /// Minutes between ingestion passes (launches, migrations, identities, ATH).
+    pub ingest_every_minutes: u64,
+    /// Minutes between category derivations (and deliveries).
+    pub derive_every_minutes: u64,
+    /// Where a source without a cursor starts.
+    pub start_hours_back: u64,
+    /// Codex requests (200 tokens each) per chain and pass.
+    pub ath_requests_per_chain: usize,
+    /// Helius pages (≤ 1000 txs) per Solana source and pass.
+    pub solana_max_pages: u32,
+    /// New EVM creators classified per chain and pass.
+    pub max_new_creators: i64,
+    /// Signers of launches through shared intermediaries resolved per chain and pass.
+    pub max_signer_lookups: i64,
+    /// Launches older than this many days are not loaded for the derivation.
+    pub since_days: i64,
+}
+
+impl Default for ScheduleConfig {
+    fn default() -> Self {
+        Self {
+            chains: ["solana", "bsc", "base", "robinhood"]
+                .map(String::from)
+                .to_vec(),
+            ingest_every_minutes: 30,
+            derive_every_minutes: 60,
+            start_hours_back: 24,
+            ath_requests_per_chain: 20,
+            solana_max_pages: 200,
+            max_new_creators: 2_000,
+            max_signer_lookups: 5_000,
+            since_days: 365,
+        }
+    }
+}
+
+/// Exports and their delivery (`[delivery]`, all optional).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DeliveryConfig {
+    /// Terminal formats: `gmgn`, `axiom`, `basedbot` (see `export`).
+    pub formats: Vec<String>,
+    /// Chains exported (one file per category, chain and format).
+    pub chains: Vec<String>,
+    /// Best-ranked wallets kept per file (GMGN tracks at most 2,000).
+    pub max_wallets_per_file: usize,
+    /// Directory the current files are written to (empty = none).
+    pub out_dir: String,
+    /// Send changed files to Telegram (`SCOUT_TELEGRAM_BOT_TOKEN`,
+    /// `SCOUT_TELEGRAM_CHAT_ID`).
+    pub telegram: bool,
+}
+
+impl Default for DeliveryConfig {
+    fn default() -> Self {
+        Self {
+            formats: ["gmgn", "axiom", "basedbot"].map(String::from).to_vec(),
+            chains: ["solana", "bsc", "base", "robinhood"]
+                .map(String::from)
+                .to_vec(),
+            max_wallets_per_file: 500,
+            out_dir: "exports".to_string(),
+            telegram: true,
+        }
+    }
+}
+
 /// The whole dev tracker config (`config/dev-tracker.example.toml`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +133,10 @@ pub struct DevTrackerConfig {
     pub top_runners: TopRunnersConfig,
     pub top_migr: TopMigrConfig,
     pub win_streak: WinStreakConfig,
+    #[serde(default)]
+    pub schedule: ScheduleConfig,
+    #[serde(default)]
+    pub delivery: DeliveryConfig,
 }
 
 /// Invalid configuration.
@@ -103,6 +182,18 @@ impl DevTrackerConfig {
                 "top_runners.max_plausible_ath_usd must be >= big_runner_ath_usd".into(),
             ));
         }
+        if c.schedule.ingest_every_minutes == 0 || c.schedule.derive_every_minutes == 0 {
+            return Err(ConfigError::Range(
+                "schedule.*_every_minutes must be >= 1".into(),
+            ));
+        }
+        for f in &c.delivery.formats {
+            if export::Format::parse(f).is_none() {
+                return Err(ConfigError::Range(format!(
+                    "delivery.formats: unknown format {f:?} (gmgn, axiom, basedbot)"
+                )));
+            }
+        }
         if c.top_runners.big_runner_ath_usd < c.top_runners.runner_ath_usd {
             return Err(ConfigError::Range(
                 "top_runners.big_runner_ath_usd must be >= runner_ath_usd".into(),
@@ -121,6 +212,8 @@ pub enum Category {
 }
 
 impl Category {
+    pub const ALL: [Self; 3] = [Self::TopRunners, Self::TopMigr, Self::WinStreak];
+
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {

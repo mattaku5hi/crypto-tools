@@ -1,0 +1,8 @@
+# build context = trader-scout/ (see deploy/Dockerfile)
+target/
+inputs/
+exports/
+.env
+.env.*
+!.env.example
+**/*.tmp

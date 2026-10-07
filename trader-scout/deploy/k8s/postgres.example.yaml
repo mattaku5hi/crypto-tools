@@ -1,0 +1,41 @@
+# Optional single-node PostgreSQL for the dev tracker (prefer a managed one).
+# Password from the Secret `dev-tracker-db` (key `password`):
+#   kubectl create secret generic dev-tracker-db --from-literal=password=<password>
+apiVersion: v1
+kind: Service
+metadata:
+  name: dev-tracker-db
+spec:
+  selector: { app: dev-tracker-db }
+  ports: [{ port: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dev-tracker-db
+spec:
+  serviceName: dev-tracker-db
+  replicas: 1
+  selector:
+    matchLabels: { app: dev-tracker-db }
+  template:
+    metadata:
+      labels: { app: dev-tracker-db }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          env:
+            - { name: POSTGRES_USER, value: scout }
+            - { name: POSTGRES_DB, value: scout }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: dev-tracker-db, key: password } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 10Gi } }

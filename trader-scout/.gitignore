@@ -12,3 +12,5 @@ Cargo.lock.bak
 # Local scratch / probe output that may embed response bodies
 /.scout-data
 /tmp
+/exports/
+/config/dev-tracker.toml
