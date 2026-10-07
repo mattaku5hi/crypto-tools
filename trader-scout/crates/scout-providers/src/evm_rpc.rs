@@ -681,6 +681,12 @@ impl EvmRpcClient {
         self.rpc.total_requests_made()
     }
 
+    /// Calls answered by the fallback endpoint (shared counter).
+    #[must_use]
+    pub fn fallback_calls(&self) -> u64 {
+        self.rpc.fallback_calls()
+    }
+
     /// `(retries after a 429, calls that failed rate limited after the
     /// rate-limit retry budget)`, shared by the main and logs endpoints.
     #[must_use]

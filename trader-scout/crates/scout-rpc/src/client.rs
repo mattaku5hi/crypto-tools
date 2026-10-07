@@ -33,6 +33,10 @@ pub struct RpcClient {
     max_retry_after: Duration,
     budget: Arc<RequestBudget>,
     limiter: Option<MethodLimiter>,
+    /// Second endpoint for the same chain (own limiter, shared budget): a
+    /// call the primary cannot serve (see [`is_fallbackable`]) is repeated
+    /// there once.
+    fallback: Option<Arc<RpcClient>>,
 }
 
 /// A shared limiter plus the per-method cost table of this endpoint.
@@ -80,6 +84,9 @@ struct RequestBudget {
     rate_limit_retries: AtomicU64,
     /// Calls that ended `RateLimited` after spending that budget.
     rate_limit_failures: AtomicU64,
+    /// Calls the primary could not serve that were repeated on the
+    /// fallback endpoint.
+    fallback_calls: AtomicU64,
 }
 
 impl RequestBudget {
@@ -180,6 +187,7 @@ impl RpcClient {
             max_retry_after: DEFAULT_MAX_RETRY_AFTER,
             budget: Arc::new(RequestBudget::default()),
             limiter: None,
+            fallback: None,
         })
     }
 
@@ -206,6 +214,22 @@ impl RpcClient {
     pub fn sharing_budget_with(mut self, other: &RpcClient) -> Self {
         self.budget = Arc::clone(&other.budget);
         self
+    }
+
+    /// Repeat calls the primary cannot serve on `fallback` (another endpoint
+    /// of the SAME chain; the caller checks its identity). The fallback keeps
+    /// its own limiter and shares this client's request budget — call after
+    /// [`Self::with_max_total_requests`], which resets the budget.
+    #[must_use]
+    pub fn with_fallback(mut self, fallback: RpcClient) -> Self {
+        self.fallback = Some(Arc::new(fallback.sharing_budget_with(&self)));
+        self
+    }
+
+    /// Calls answered by the fallback endpoint so far (shared counter).
+    #[must_use]
+    pub fn fallback_calls(&self) -> u64 {
+        self.budget.fallback_calls.load(Ordering::Acquire)
     }
 
     /// Caps a single `Retry-After` wait (default
@@ -315,7 +339,32 @@ impl RpcClient {
         P: Serialize,
         R: DeserializeOwned,
     {
-        let body = JsonRpcRequest::new(method, &params);
+        match self.call_endpoint(method, &params, jitter, sleeper).await {
+            Err(err) if is_fallbackable(&err) => match &self.fallback {
+                Some(fb) => {
+                    self.budget.fallback_calls.fetch_add(1, Ordering::AcqRel);
+                    tracing::warn!(method, "primary endpoint failed; repeating on the fallback");
+                    fb.call_endpoint(method, &params, jitter, sleeper).await
+                }
+                None => Err(err),
+            },
+            other => other,
+        }
+    }
+
+    /// One endpoint, with retries (the body of [`Self::call_with`]).
+    async fn call_endpoint<P, R>(
+        &self,
+        method: &str,
+        params: &P,
+        jitter: &dyn JitterSource,
+        sleeper: &dyn Sleeper,
+    ) -> Result<R, ProviderError>
+    where
+        P: Serialize,
+        R: DeserializeOwned,
+    {
+        let body = JsonRpcRequest::new(method, params);
         let mut last_err: Option<ProviderError> = None;
         // Generic transient failures (5xx/network) spend `max_attempts`;
         // 429 answers spend their own `max_attempts + EXTRA` budget.
@@ -563,6 +612,30 @@ fn map_status(status: reqwest::StatusCode, response: &reqwest::Response) -> Opti
     ))))
 }
 
+/// Does a failure (after this endpoint's own retries) justify repeating the
+/// call on the fallback endpoint? Endpoint-level failures do: transport and
+/// 5xx, rate limiting past the retry budget, rejected credentials, quota /
+/// capacity answers. Request-level answers do not (JSON-RPC errors such as a
+/// range cap are the caller's to handle), nor does the run's own budget.
+#[must_use]
+pub fn is_fallbackable(err: &ProviderError) -> bool {
+    match err {
+        ProviderError::Transport(_)
+        | ProviderError::RateLimited { .. }
+        | ProviderError::ConfigurationRequired { .. } => true,
+        ProviderError::Other(inner) => {
+            if inner.downcast_ref::<RequestBudgetExhausted>().is_some() {
+                return false;
+            }
+            let t = inner.to_string().to_ascii_lowercase();
+            ["capacity", "quota", "credits", "http 402", "exceeded your"]
+                .iter()
+                .any(|k| t.contains(k))
+        }
+        _ => false,
+    }
+}
+
 fn transport_error(err: reqwest::Error) -> ProviderError {
     // `reqwest::Error` Display embeds the request URL, which carries
     // the `?api-key=` secret. Strip it before it can reach logs/errors.
@@ -603,6 +676,79 @@ mod tests {
     async fn client_for(server: &MockServer, max_attempts: u32) -> RpcClient {
         RpcClient::new(RpcEndpoint::new(server.uri()), 5_000, max_attempts)
             .expect("client construction with a valid timeout must not fail")
+    }
+
+    #[tokio::test]
+    async fn endpoint_failures_are_repeated_on_the_fallback_request_errors_are_not() {
+        let primary = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&primary)
+            .await;
+        let fallback = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": 1, "result": "0x10"
+            })))
+            .mount(&fallback)
+            .await;
+        let fb = client_for(&fallback, 1).await;
+        let client = client_for(&primary, 2)
+            .await
+            .with_max_total_requests(Some(10))
+            .with_fallback(fb);
+        let v: String = client
+            .call_with(
+                "eth_blockNumber",
+                json!([]),
+                &NoJitter,
+                &FakeSleeper::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(v, "0x10");
+        assert_eq!(client.fallback_calls(), 1);
+        // 2 primary attempts + 1 fallback attempt, one shared budget
+        assert_eq!(client.total_requests_made(), 3);
+
+        // a JSON-RPC error body is the request's problem: no fallback
+        let bad = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": 1,
+                "error": {"code": -32600, "message": "up to a 10 block range"}
+            })))
+            .mount(&bad)
+            .await;
+        let client = client_for(&bad, 1)
+            .await
+            .with_fallback(client_for(&fallback, 1).await);
+        let e = client
+            .call_with::<_, String>("eth_getLogs", json!([]), &NoJitter, &FakeSleeper::default())
+            .await
+            .unwrap_err();
+        assert!(!is_fallbackable(&e), "{e}");
+        assert_eq!(client.fallback_calls(), 0);
+    }
+
+    #[test]
+    fn fallback_classification() {
+        assert!(is_fallbackable(&ProviderError::RateLimited {
+            retry_after: None
+        }));
+        assert!(is_fallbackable(&ProviderError::ConfigurationRequired {
+            port: "rpc".into(),
+            detail: "HTTP 403".into()
+        }));
+        assert!(is_fallbackable(&ProviderError::Other(Box::new(
+            std::io::Error::other("Monthly capacity limit exceeded")
+        ))));
+        assert!(!is_fallbackable(&ProviderError::Other(Box::new(
+            RequestBudgetExhausted { limit: 1 }
+        ))));
+        assert!(!is_fallbackable(&ProviderError::Other(Box::new(
+            std::io::Error::other("execution reverted")
+        ))));
     }
 
     #[tokio::test]

@@ -116,6 +116,8 @@ pub struct EvmSetup {
     pub state_source: String,
     /// Secret parts of a separate logs URL, when one is used.
     logs_secrets: Vec<String>,
+    /// Secret parts of the fallback URL, when one is attached.
+    fallback_secrets: Vec<String>,
     /// `(label, limiter)` per endpoint, for the end-of-run report.
     limiters: Vec<(String, Arc<RateLimiter>)>,
 }
@@ -126,6 +128,7 @@ impl EvmSetup {
     pub fn secrets(&self) -> Vec<String> {
         let mut v = self.url.secrets();
         v.extend(self.logs_secrets.iter().cloned());
+        v.extend(self.fallback_secrets.iter().cloned());
         v
     }
 
@@ -161,6 +164,13 @@ impl EvmSetup {
             .iter()
             .map(|(label, l)| rate_limit_line(label, &l.stats()))
             .collect();
+        let fb = self.rpc.fallback_calls();
+        if fb > 0 {
+            lines.push(format!(
+                "fallback: {fb} call(s) the primary endpoint could not serve were answered by the \
+                 fallback endpoint"
+            ));
+        }
         let (retries, failed) = self.rpc.rate_limit_counts();
         if retries > 0 || failed > 0 {
             lines.push(format!(
@@ -427,12 +437,56 @@ pub async fn setup_evm(
         .map_err(|e| EvmSetupError::Config(url.redact(&e.to_string())))?
         .with_max_total_requests(max_requests)
         .with_rate_limiter(Arc::clone(&main_limiter), main_cost);
+    // Fallback endpoint of the same chain (A7): checked for chain identity
+    // before it may answer anything, own limiter, shared request budget.
+    let fallback_var = crate::evm_source::fallback_rpc_env_name(profile.name);
+    let mut fallback_secrets: Vec<String> = Vec::new();
+    let mut fallback_limiter: Option<(String, Arc<RateLimiter>)> = None;
+    let rpc = match fallback_var
+        .and_then(&env)
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| EvmRpcUrl::new(v.trim().to_string(), true))
+    {
+        Some(fu) => {
+            let label = format!(
+                "fallback ({})",
+                fallback_var.unwrap_or("SCOUT_<CHAIN>_FALLBACK_RPC_URL")
+            );
+            let (fl, fcost) = make_limiter(
+                &EvmNetOptions::default(),
+                false,
+                fu.is_alchemy(),
+                &label,
+                notice,
+            );
+            let fb = RpcClient::new(RpcEndpoint::new(fu.expose_for_transport()), 30_000, 3)
+                .map_err(|e| EvmSetupError::Config(url.redact(&fu.redact(&e.to_string()))))?
+                .with_rate_limiter(Arc::clone(&fl), fcost)
+                .sharing_budget_with(&rpc);
+            match EvmRpcClient::new(fb.clone(), profile).preflight().await {
+                Ok(_) => {
+                    fallback_secrets = fu.secrets();
+                    fallback_limiter = Some((label, fl));
+                    rpc.with_fallback(fb)
+                }
+                Err(e) => {
+                    warnings.push(format!(
+                        "fallback rpc ignored: chain identity check failed ({})",
+                        url.redact(&fu.redact(&e.to_string()))
+                    ));
+                    rpc
+                }
+            }
+        }
+        None => rpc,
+    };
     let cfg_rpc = scout_providers::EvmRpcConfig {
         concurrency,
         ..scout_providers::EvmRpcConfig::default()
     };
     let mut rpc = EvmRpcClient::with_config(rpc, profile, cfg_rpc);
     let mut limiters = vec![(main_label.clone(), Arc::clone(&main_limiter))];
+    limiters.extend(fallback_limiter);
     let mut logs_secrets: Vec<String> = Vec::new();
     let mut logs_span_cap: Option<u64> = None;
     let mut token_listing_via_transfers = false;
@@ -643,6 +697,7 @@ pub async fn setup_evm(
         logs_source,
         state_source,
         logs_secrets,
+        fallback_secrets,
         limiters,
     })
 }
@@ -1219,6 +1274,99 @@ mod tests {
             setup.block_receipts_min_txs,
             ScanLimits::default().block_receipts_min_txs
         );
+    }
+
+    #[tokio::test]
+    async fn fallback_endpoint_answers_what_the_primary_cannot_and_must_be_the_same_chain() {
+        // primary: identity ok, eth_getBalance always 503
+        let primary = MockServer::start().await;
+        on(&primary, "eth_getBalance", ResponseTemplate::new(503)).await;
+        on(&primary, "eth_chainId", ok(json!("0x1237"))).await;
+        on(
+            &primary,
+            "eth_getBlockByNumber",
+            ok(json!({"hash": format!("{:#x}", ROBINHOOD.genesis_hash), "timestamp": "0x0"})),
+        )
+        .await;
+        on(&primary, "eth_blockNumber", ok(json!("0x1000"))).await;
+        on(&primary, "eth_call", ok(json!(format!("0x{:064x}", 6)))).await;
+        on(&primary, "eth_getLogs", ok(json!([]))).await;
+        let fallback = endpoint(ok(json!([]))).await;
+        let (p, f) = (primary.uri(), fallback.uri());
+        let env = move |name: &str| match name {
+            "SCOUT_ROBINHOOD_RPC_URL" => Some(format!("{p}/v2/{KEYED_SECRET}")),
+            "SCOUT_ROBINHOOD_FALLBACK_RPC_URL" => Some(format!("{f}/fb/{LOGS_SECRET}")),
+            _ => None,
+        };
+        let setup = setup_evm(
+            &robinhood(),
+            false,
+            Some(200),
+            4,
+            &EvmNetOptions::default(),
+            &silent(),
+            true,
+            env,
+        )
+        .await
+        .unwrap();
+        assert!(setup.secrets().iter().any(|s| s.contains(LOGS_SECRET)));
+        setup
+            .rpc
+            .balance_at(alloy_primitives::Address::ZERO, 7)
+            .await
+            .unwrap();
+        assert_eq!(setup.rpc.fallback_calls(), 1);
+        let report = setup.rate_limit_report();
+        assert!(
+            report
+                .iter()
+                .any(|l| l.starts_with("fallback (SCOUT_ROBINHOOD_FALLBACK_RPC_URL)")),
+            "{report:?}"
+        );
+        assert!(
+            report
+                .iter()
+                .any(|l| l.contains("1 call(s) the primary endpoint could not serve")),
+            "{report:?}"
+        );
+        assert!(
+            report
+                .iter()
+                .all(|l| !l.contains(LOGS_SECRET) && !l.contains(KEYED_SECRET))
+        );
+
+        // a fallback on another chain is refused up front
+        let keyed = endpoint(ok(json!([]))).await;
+        let wrong = endpoint_of(&scout_sdk::evm::BSC, ok(json!([]))).await;
+        let (k, w) = (keyed.uri(), wrong.uri());
+        let env = move |name: &str| match name {
+            "SCOUT_ROBINHOOD_RPC_URL" => Some(format!("{k}/v2/{KEYED_SECRET}")),
+            "SCOUT_ROBINHOOD_FALLBACK_RPC_URL" => Some(format!("{w}/fb/{LOGS_SECRET}")),
+            _ => None,
+        };
+        let setup = setup_evm(
+            &robinhood(),
+            false,
+            Some(200),
+            4,
+            &EvmNetOptions::default(),
+            &silent(),
+            true,
+            env,
+        )
+        .await
+        .unwrap();
+        assert!(
+            setup
+                .warnings
+                .iter()
+                .any(|w| w.contains("fallback rpc ignored")),
+            "{:?}",
+            setup.warnings
+        );
+        assert!(setup.warnings.iter().all(|w| !w.contains(LOGS_SECRET)));
+        assert_eq!(setup.rate_limit_report().len(), 1, "no fallback limiter");
     }
 
     #[tokio::test]

@@ -95,6 +95,18 @@ pub const BLOCKSCOUT_KEY_ENV: &str = "SCOUT_BLOCKSCOUT_API_KEY";
 /// measured, research doc section 3).
 pub const ROBINHOOD_PUBLIC_RPC: &str = "https://rpc.mainnet.chain.robinhood.com";
 
+/// Env var with the per-chain fallback RPC URL (dRPC free plan by owner
+/// decision 2026-10-06), used when the primary endpoint cannot serve a call.
+#[must_use]
+pub fn fallback_rpc_env_name(chain: &str) -> Option<&'static str> {
+    match chain {
+        "robinhood" => Some("SCOUT_ROBINHOOD_FALLBACK_RPC_URL"),
+        "base" => Some("SCOUT_BASE_FALLBACK_RPC_URL"),
+        "bsc" => Some("SCOUT_BSC_FALLBACK_RPC_URL"),
+        _ => None,
+    }
+}
+
 /// Env var with a known maximum `eth_getLogs` block span of a chain's logs
 /// endpoint (`SCOUT_<CHAIN>_LOGS_MAX_SPAN`).
 #[must_use]
