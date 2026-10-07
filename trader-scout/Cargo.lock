@@ -1374,6 +1374,7 @@ dependencies = [
  "scout-core",
  "scout-devdb",
  "scout-devtracker",
+ "scout-providers",
  "scout-sdk",
  "serde_json",
  "tokio",
@@ -3451,17 +3452,20 @@ name = "scout-devtracker"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "bs58",
  "futures",
  "reqwest",
  "scout-api",
  "scout-core",
  "scout-devdb",
  "scout-dex-evm",
+ "scout-dex-solana",
  "scout-providers",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-util",
  "toml",
 ]
 

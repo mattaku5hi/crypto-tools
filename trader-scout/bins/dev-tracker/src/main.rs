@@ -10,10 +10,12 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use scout_devdb::DevDb;
 use scout_devtracker::evm_ingest::{EVM_SOURCES, ingest_source};
+use scout_devtracker::solana_ingest::{SOLANA_SOURCES, ingest_solana_source};
 use scout_devtracker::{DevTrackerConfig, derive_categories};
 
 const DB_ENV: &str = "SCOUT_DEVTRACKER_DATABASE_URL";
 const CODEX_ENV: &str = "SCOUT_CODEX_API_KEY";
+const HELIUS_ENV: &str = "SCOUT_HELIUS_API_KEY";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -31,7 +33,7 @@ enum Cmd {
     Migrate,
     /// One ingestion pass over the EVM sources of the given chains.
     Ingest {
-        /// Comma-separated: bsc, base, robinhood.
+        /// Comma-separated: bsc, base, robinhood, solana.
         #[arg(long, default_value = "bsc,base,robinhood")]
         chains: String,
         /// Where a source without a cursor starts: this many hours back.
@@ -51,6 +53,13 @@ enum Cmd {
         /// Codex requests (200 tokens each) per chain and pass for ATH.
         #[arg(long, default_value_t = 20)]
         ath_requests: usize,
+        /// Solana: `getTransactionsForAddress` pages (≤ 1000 txs, 10 Helius
+        /// credits per 100 txs) per source and pass.
+        #[arg(long, default_value_t = 200)]
+        solana_max_pages: u32,
+        /// Solana: seconds behind now treated as final.
+        #[arg(long, default_value_t = 60)]
+        solana_settle_secs: i64,
     },
     /// Derive the categories and print them as JSON lines.
     Derive {
@@ -97,10 +106,24 @@ async fn run(args: Args) -> Result<(), String> {
             max_new_creators,
             max_signer_lookups,
             ath_requests,
+            solana_max_pages,
+            solana_settle_secs,
         } => {
             db.migrate().await.map_err(|e| e.to_string())?;
             let notice: scout_app::LimiterNotice = Arc::new(|m| eprintln!("dev-tracker: {m}"));
             for chain in chains.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+                if chain == "solana" {
+                    ingest_solana(
+                        &db,
+                        start_hours_back,
+                        solana_settle_secs,
+                        solana_max_pages,
+                        max_requests,
+                    )
+                    .await?;
+                    observe_ath(&db, chain, ath_requests).await?;
+                    continue;
+                }
                 let profile = match chain {
                     "bsc" => scout_sdk::evm::BSC,
                     "base" => scout_sdk::evm::BASE,
@@ -162,26 +185,7 @@ async fn run(args: Args) -> Result<(), String> {
                     id.shared,
                     id.signers_resolved
                 );
-                if ath_requests > 0 {
-                    match std::env::var(CODEX_ENV) {
-                        Ok(key) if !key.trim().is_empty() => {
-                            let a = scout_devtracker::ath::observe_ath(
-                                &db,
-                                key.trim(),
-                                chain,
-                                ath_requests,
-                                now(),
-                            )
-                            .await
-                            .map_err(|e| format!("{chain}: ath: {e}"))?;
-                            eprintln!(
-                                "dev-tracker: {chain}: ath: {} codex request(s), {} token(s) asked, {} observed, {} missing",
-                                a.requests, a.tokens_asked, a.observed, a.missing
-                            );
-                        }
-                        _ => eprintln!("dev-tracker: {chain}: ath skipped ({CODEX_ENV} not set)"),
-                    }
-                }
+                observe_ath(&db, chain, ath_requests).await?;
                 for line in setup.rate_limit_report() {
                     eprintln!("dev-tracker: {chain}: {line}");
                 }
@@ -231,6 +235,75 @@ async fn run(args: Args) -> Result<(), String> {
             );
         }
     }
+    Ok(())
+}
+
+async fn observe_ath(db: &DevDb, chain: &str, ath_requests: usize) -> Result<(), String> {
+    if ath_requests == 0 {
+        return Ok(());
+    }
+    match std::env::var(CODEX_ENV) {
+        Ok(key) if !key.trim().is_empty() => {
+            let a = scout_devtracker::ath::observe_ath(db, key.trim(), chain, ath_requests, now())
+                .await
+                .map_err(|e| format!("{chain}: ath: {e}"))?;
+            eprintln!(
+                "dev-tracker: {chain}: ath: {} codex request(s), {} token(s) asked, {} observed, {} missing",
+                a.requests, a.tokens_asked, a.observed, a.missing
+            );
+        }
+        _ => eprintln!("dev-tracker: {chain}: ath skipped ({CODEX_ENV} not set)"),
+    }
+    Ok(())
+}
+
+/// One pass over the pump.fun sources on Helius (`SCOUT_HELIUS_API_KEY`).
+async fn ingest_solana(
+    db: &DevDb,
+    start_hours_back: u64,
+    settle_secs: i64,
+    max_pages: u32,
+    max_requests: Option<u64>,
+) -> Result<(), String> {
+    let key = std::env::var(HELIUS_ENV)
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| format!("solana: {HELIUS_ENV} is not set"))?;
+    let key = key.trim().to_string();
+    let scrub = |t: String| t.replace(&key, "<redacted>");
+    let provider = scout_providers::HeliusProvider::new(&key, 60_000, 3)
+        .map_err(|e| scrub(e.to_string()))?
+        .with_status_filter(scout_providers::StatusFilter::Succeeded)
+        .with_page_limit(1_000)
+        .with_max_pages(
+            std::num::NonZeroU32::new(max_pages.max(1)).unwrap_or(std::num::NonZeroU32::MIN),
+        )
+        .with_max_total_requests(max_requests);
+    let start = i64::try_from(start_hours_back.saturating_mul(3_600)).unwrap_or(i64::MAX);
+    for src in &SOLANA_SOURCES {
+        let r = ingest_solana_source(db, &provider, src, start, settle_secs, now())
+            .await
+            .map_err(|e| format!("{}: {}", src.key, scrub(e.to_string())))?;
+        eprintln!(
+            "dev-tracker: {:28} time {}..{} txs {} decoded {} new {} undecodable {}{}",
+            src.key,
+            r.from,
+            r.to,
+            r.transactions,
+            r.decoded,
+            r.inserted,
+            r.undecodable,
+            if r.truncated {
+                " (page budget hit; continues next pass)"
+            } else {
+                ""
+            }
+        );
+    }
+    eprintln!(
+        "dev-tracker: solana: requests_made={}",
+        provider.total_requests_made()
+    );
     Ok(())
 }
 

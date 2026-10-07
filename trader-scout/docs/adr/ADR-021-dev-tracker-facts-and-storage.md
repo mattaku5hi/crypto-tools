@@ -67,3 +67,18 @@ is never merged into it). EOAs and every other launchpad (Zora `payoutRecipient`
 keep the creator field. Residual risk: a Pons/Flap dev on a smart wallet is resolved to its bundler.
 Cost: one `eth_getCode` per new creator on those launchpads, ≤ 8 lookups per new contract creator, one
 lookup per launch through a shared intermediary (live first pass: ≈ 13k requests for one day, all chains).
+
+## Amendment 2 (2026-10-07) — pump.fun facts
+
+- **Launch** = the self-CPI `CreateEvent` (IDL `pump_idl_e0687ae9.json`) in a successful transaction touching the
+  `mint_authority` PDA `TSLvdd1p…` (`create` / `create_v2` only); the dev is `CreateEvent.creator` (normally the
+  signer `user`; no signer resolution on Solana). `created_block` = slot, `tx_hash` = signature.
+- **Migration** = `CompletePumpAmmMigrationEvent` (mint, pool) in a successful transaction signed by the migrator
+  `39azUYFW…`. Its other transactions are not migrations: "Bonding curve already migrated" no-ops (no event) and
+  buys. Live page (60 txs): every `migrate`/`migrate_v2` with `CreatePool` carried the event (44/44).
+- **Cursor** = the next window's inclusive start in unix seconds (Helius `filters.blockTime.gte`); the window ends
+  60 s before now. A pass cut by the page budget restarts at the newest block time it saw (re-read, idempotent).
+- **Cost** (Helius full mode, 10 credits / 100 txs): ≈ 1.8k txs/hour → ≈ 4.5k credits/day steady state.
+- **Backfill** is not done by default: one year of creates is ≈ 19M txs (≈ 1.9M credits), more than the free
+  plan's month. Forward ingestion fills the window as time passes; a deeper first pass (90 days of migrations
+  ≈ 20k credits, creates of qualifying creators only) waits for the owner's decision on credits.

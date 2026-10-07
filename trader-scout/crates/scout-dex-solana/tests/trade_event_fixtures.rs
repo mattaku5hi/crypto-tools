@@ -311,3 +311,83 @@ fn foreign_program_event_cpi_is_not_mine() {
     ix.program_id = pubkey("11111111111111111111111111111111");
     assert_eq!(d.classify_event(&ix), PumpEventOutcome::NotMine);
 }
+
+#[test]
+fn fixture_lifecycle_events_decode() {
+    use scout_dex_solana::{PumpLifecycleEvent, decode_pump_lifecycle};
+    let (mut creates, mut migrations) = (Vec::new(), Vec::new());
+    for (name, tx) in all_txs() {
+        for ix in &tx.instructions {
+            match decode_pump_lifecycle(ix) {
+                Ok(Some(PumpLifecycleEvent::Create(c))) => {
+                    creates.push((name, tx.signature.clone(), c))
+                }
+                Ok(Some(PumpLifecycleEvent::Migration(m))) => {
+                    migrations.push((name, tx.signature.clone(), m));
+                }
+                Ok(None) => {}
+                Err(e) => panic!("{name} {}: {e}", tx.signature),
+            }
+        }
+    }
+    // the live create of `5XHF…pump` (variants capture, 2026-10-02)
+    assert_eq!(creates.len(), 1, "{creates:?}");
+    let (_, sig, c) = &creates[0];
+    assert!(sig.starts_with("2k7T2yXB"));
+    assert_eq!(
+        c.mint,
+        pubkey("5XHF3mbgpSTsZtBGRTSLiW6Ho2actvfWdgo4Cxrjpump")
+    );
+    assert_eq!(
+        c.creator,
+        pubkey("BXFvTPFcdU4BLjEWXj7mBUSw9PWH6bSQeJyatFcwSSZV")
+    );
+    assert_eq!(c.user, c.creator);
+    assert_eq!(c.timestamp, 1_790_948_410);
+    assert!(migrations.is_empty(), "{migrations:?}");
+}
+
+/// Live migrator page (2026-10-07): `migrate` and `migrate_v2` emit
+/// `CompletePumpAmmMigrationEvent` whose mint / pool equal the instruction's
+/// `mint` (`base_mint`, IDL position 2) and `pool` accounts; an
+/// "already migrated" no-op emits nothing.
+#[test]
+fn migrator_fixture_migrations_match_their_instructions() {
+    use scout_dex_solana::{PumpLifecycleEvent, decode_pump_lifecycle};
+    let doc = fixture("pump_migrator_2026-10-07.json");
+    let mut recs = Vec::new();
+    collect_records(&doc, &mut recs);
+    assert_eq!(recs.len(), 3);
+    let pump = pubkey(PUMP);
+    let mut migrations = 0;
+    for tx in recs.into_iter().map(parse_tx) {
+        let events: Vec<_> = tx
+            .instructions
+            .iter()
+            .filter_map(|ix| match decode_pump_lifecycle(ix).unwrap() {
+                Some(PumpLifecycleEvent::Migration(m)) => Some(m),
+                _ => None,
+            })
+            .collect();
+        let migrate_ix = tx
+            .instructions
+            .iter()
+            .find(|ix| ix.program_id == pump && ix.accounts.len() > 10)
+            .unwrap();
+        if tx.signature.starts_with("3tJzJ5BH") {
+            assert!(events.is_empty(), "the no-op emits no migration");
+            continue;
+        }
+        assert_eq!(events.len(), 1, "{}", tx.signature);
+        assert_eq!(events[0].mint, migrate_ix.accounts[2]);
+        // `pool` is account 9 of `migrate`, 10 of `migrate_v2` (extra quote_mint)
+        let pool_at = if migrate_ix.accounts[3] == events[0].bonding_curve {
+            9
+        } else {
+            10
+        };
+        assert_eq!(events[0].pool, migrate_ix.accounts[pool_at]);
+        migrations += 1;
+    }
+    assert_eq!(migrations, 2);
+}

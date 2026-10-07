@@ -30,6 +30,7 @@ mod pump_accounts;
 mod pump_amm;
 mod pump_amm_event;
 mod pump_amm_reconcile;
+mod pump_lifecycle;
 mod raydium_clmm_event;
 mod raydium_cpmm_event;
 mod swap_math;
@@ -108,6 +109,10 @@ pub use pump_amm_event::{
 pub use pump_amm_reconcile::{
     AmmAttribution, AmmMintLeg, AmmTxReconciliation, AmmUserReconciliation,
     reconcile_pump_amm_transaction,
+};
+pub use pump_lifecycle::{
+    COMPLETE_PUMP_AMM_MIGRATION_EVENT_DISCRIMINATOR, CREATE_EVENT_DISCRIMINATOR,
+    MAX_CREATE_STRING_BYTES, PumpCreate, PumpLifecycleEvent, PumpMigration, decode_pump_lifecycle,
 };
 pub use raydium_clmm_event::{
     ClmmEventLayout, RAYDIUM_CLMM_EVENTS, RAYDIUM_CLMM_IDL_SHA256, RAYDIUM_CLMM_PROGRAM_ID,

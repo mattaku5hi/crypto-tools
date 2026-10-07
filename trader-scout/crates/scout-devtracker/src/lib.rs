@@ -8,6 +8,7 @@
 pub mod ath;
 pub mod evm_ingest;
 pub mod identity;
+pub mod solana_ingest;
 
 use std::collections::BTreeMap;
 
