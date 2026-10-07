@@ -37,6 +37,12 @@ pub const ZORA_FACTORY: Address = address!("777777751622c0d3258f214F9DF38E35BF45
 /// Clanker v4 factory (Base).
 pub const CLANKER_V4: Address = address!("E85A59c628F7d27878ACeB4bf3b35733630083a9");
 
+/// four.meme TokenManager2 `LiquidityAdded(address base, uint256 offers,
+/// address quote, uint256 funds)` — the graduation: emitted right after the
+/// PancakeSwap `PairCreated` in the buy that completes the curve (3/3 sampled
+/// migrations, 2026-10-07; ≈ 4/day, matching Codex's migrated list).
+pub const FOURMEME_LIQUIDITY_ADDED_TOPIC0: B256 =
+    b256!("c18aa71171b358b706fe3dd345299685ba21a5316c66ffa9e319268b033c44b0");
 /// `TokenLaunched(address,address,address,address,uint256,uint256)`.
 pub const PONS_TOKEN_LAUNCHED_TOPIC0: B256 =
     b256!("8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607");
@@ -129,6 +135,15 @@ fn flap_migration(log: &RawEvmLog) -> Option<DecodedFact> {
     }
 }
 
+fn fourmeme_migration(log: &RawEvmLog) -> Option<DecodedFact> {
+    (log.data.len() == 4 * 32 && log.topics.len() == 1).then_some(())?;
+    Some(DecodedFact {
+        token: data_address(log, 0)?,
+        party: None,
+        timestamp: None,
+    })
+}
+
 fn fourmeme_launch(log: &RawEvmLog) -> Option<DecodedFact> {
     match decode_fourmeme_token_create(log) {
         DecodeOutcome::Decoded(c) => Some(DecodedFact {
@@ -210,6 +225,15 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &FOURMEME_MANAGERS,
         topic0: FOURMEME_TOKEN_CREATE_TOPIC0,
         decode: fourmeme_launch,
+    },
+    EvmSource {
+        key: "bsc:fourmeme:migration",
+        chain: "bsc",
+        launchpad: "fourmeme",
+        kind: FactKind::Migration,
+        emitters: &FOURMEME_MANAGERS,
+        topic0: FOURMEME_LIQUIDITY_ADDED_TOPIC0,
+        decode: fourmeme_migration,
     },
     EvmSource {
         key: "robinhood:pons:launch",
@@ -437,6 +461,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fourmeme_graduation_names_the_base_token() {
+        // live LiquidityAdded of 0x7f81…ffff (GameStop), BSC 2026-10-06
+        let data = alloy_primitives::hex::decode(concat!(
+            "0000000000000000000000007f81e5709dfd12ff706f9166c21c07b13773ffff",
+            "000000000000000000000000000000000000000000a56fa5b99019a5c8000000",
+            "00000000000000000000000055d398326f99059ff775485246999027b3197955",
+            "00000000000000000000000000000000000000000000027d82c8dcd8e9e08a04",
+        ))
+        .unwrap();
+        let mut log = RawEvmLog {
+            address: FOURMEME_MANAGERS[1],
+            topics: vec![FOURMEME_LIQUIDITY_ADDED_TOPIC0],
+            data: data.into(),
+            block_number: 1,
+            transaction_index: 0,
+            log_index: 0,
+        };
+        assert_eq!(
+            fourmeme_migration(&log).unwrap().token,
+            address!("7f81e5709dfd12ff706f9166c21c07b13773ffff")
+        );
+        log.topics.push(B256::ZERO);
+        assert!(fourmeme_migration(&log).is_none(), "shape is checked");
+    }
+
+    #[test]
     fn interpolation_is_linear_and_bounded() {
         assert_eq!(interpolate(150, (100, 1_000), (200, 2_000)), 1_500);
         assert_eq!(interpolate(100, (100, 1_000), (200, 2_000)), 1_000);
@@ -447,6 +497,10 @@ mod tests {
     fn every_source_topic_is_the_keccak_of_its_signature() {
         let k = |s: &str| alloy_primitives::keccak256(s.as_bytes());
         let pk = "(address,address,uint24,int24,address)";
+        assert_eq!(
+            FOURMEME_LIQUIDITY_ADDED_TOPIC0,
+            k("LiquidityAdded(address,uint256,address,uint256)")
+        );
         assert_eq!(
             PONS_TOKEN_LAUNCHED_TOPIC0,
             k("TokenLaunched(address,address,address,address,uint256,uint256)")

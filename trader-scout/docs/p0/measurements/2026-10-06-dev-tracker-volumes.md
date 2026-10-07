@@ -114,3 +114,12 @@ creator inside the launch event; Solana: migrate transactions of `39azUYFW…` a
 history (the migration-rate denominator) is fetched only for creators with ≥ 3 migrations in the window,
 from their own wallet history (Helius / Ankr), not for all 19M yearly pump.fun creates (≈ 1.9M Helius
 credits). EVM backfill is a few thousand `eth_getLogs` on Alchemy PAYG (< $1). ATH from Codex in batches.
+### Addendum (2026-10-07): four.meme graduation identified
+
+Codex (`launchpadName: "Four.meme"`, `launchpadMigrated: true`) gave recent migrated tokens; for each, the PancakeSwap v2
+`PairCreated` transaction was located (3/3: `0xf0ef…ffff`, `0x48d8…ffff`, `0x3663…4444`). In every one, four.meme
+TokenManager2 `0x5c95…762b` emits `LiquidityAdded(address base, uint256 offers, address quote, uint256 funds)`
+(`0xc18aa711…`, already pinned in the four.meme IDL) after `PairCreated` and the pair's `Mint`, inside the buy that
+completes the curve (sent directly or through routers). Over the last 24 h: 4 `LiquidityAdded` (TokenManager V1: 0) —
+exactly the 4 tokens Codex lists as migrated in that window. So the row above was right: four.meme graduates ≈ 4 of
+≈ 9k daily launches (the newer `…ffff` vanity tokens included). Ingested as source `bsc:fourmeme:migration`.
