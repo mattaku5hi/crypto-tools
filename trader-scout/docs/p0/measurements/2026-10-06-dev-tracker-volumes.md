@@ -135,3 +135,22 @@ contract `0x1eef016f…2104` (selector `0x60956835`, `tx.from` = the user's EOA)
 (top-runners only, like Zora). Dev rule if added: `UserOperationEvent.sender` when the transaction goes to the
 EntryPoint, else `tx.from` — one receipt per launch (≈ 1.4k/day: ≈ $0.45/month steady, ≈ $5 for a one-year
 backfill on Alchemy).
+
+### Addendum (2026-10-08): Base launchpads beyond Zora / Clanker v4
+
+Method: recent tokens per launchpad from Codex (`launchpadName`, network 8453) → their creation receipts → the
+factory event naming the token → `eth_getLogs` count over the last 43,200 blocks (24 h); signatures from the
+openchain database, fields checked against the transactions.
+
+| Launchpad | Emitter | Event | /24 h | Creator |
+|---|---|---|---|---|
+| Baseapp / Baseapp Creator | Zora factory `0x7777…baF3` | `CoinCreatedV4` / `CreatorCoinCreated` | (in Zora's 611) | already ingested (`payoutRecipient`) |
+| Bankr | `0xbdf93814…6544` | `Create(address indexed poolManager, address indexed token, address indexed quote)` + `Lock(address,(address,uint96)[])` | 839 | not the sender: most go through Bankr's own smart account (`0x2ce078ec…` for many users); the dev is presumably a `Lock` beneficiary — rule to research |
+| Noice | `0xd59ce43e…1178` | same `Create(address,address,address)` | 214 | the sender (EOAs and distinct smart accounts via the EntryPoint) — same rule as Robinhood Doppler |
+| Flaunch | `0x23321f11…2fdc` | `PoolCreated(bytes32,address,address,uint256,bool,uint256,(…,address creator,…))` | 53 | `creator` inside the params tuple |
+| Virtuals | `0x617fd668…a528` | `TokenRegistered(address,address,address)` | 44 | to check (has a curve and a graduation) |
+| Liquid | `0x9811f10c…28cc` | `PoolCreatedFactory(…)` | 6 | negligible |
+| Printr `0xb7772629…`, Clanker v3 `0x2a787b23…` | | | 0 | inactive on Base |
+
+Uniswap v4 `Initialize` (`0xdd466e67`, PoolManager `0x4985…`) accompanies most of these launches; it is not a
+launch event by itself.
