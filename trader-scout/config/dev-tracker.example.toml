@@ -1,0 +1,28 @@
+# Dev tracker configuration (docs/DEV-TRACKER.md). Re-read every cycle:
+# edits apply without a restart. Money in whole USD, time in days.
+
+# A launch younger than this that has not migrated is "pending": it is neither
+# a failure nor a streak breaker until the window expires.
+pending_window_days = 3
+
+# Launchpads with no bonding curve (no migration rate): their devs can only
+# qualify for top-runners (owner decision 2026-10-06).
+launchpads_without_migration = ["zora", "clanker"]
+
+[top_runners]
+runner_ath_usd = 500000          # a "runner" token
+big_runner_ath_usd = 1000000     # at least one big runner …
+min_big_runners = 1
+min_other_runners = 2            # … plus this many further runners
+min_migration_rate_pct = 3       # skipped for launchpads without migration
+max_inactive_days = 365          # last launch no older than this
+
+[top_migr]
+min_migration_rate_pct = 80
+min_launches = 3                 # resolved launches (pending excluded)
+max_inactive_days = 365
+
+[win_streak]
+# only devs that are in neither of the two lists above
+min_streak = 3                   # consecutive migrated launches, newest first
+max_inactive_days = 365

@@ -3433,6 +3433,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "scout-devtracker"
+version = "0.1.0"
+dependencies = [
+ "scout-devdb",
+ "serde",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "scout-dex-evm"
 version = "0.1.0"
 dependencies = [

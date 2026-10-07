@@ -24,6 +24,7 @@ members = [
     "crates/scout-sdk",
     "crates/scout-app",
     "crates/scout-devdb",
+    "crates/scout-devtracker",
 ]
 
 [workspace.package]
@@ -54,6 +55,7 @@ integer_division = "warn"
 # internal crates
 scout-core = { path = "crates/scout-core" }
 scout-devdb = { path = "crates/scout-devdb" }
+scout-devtracker = { path = "crates/scout-devtracker" }
 scout-scan = { path = "crates/scout-scan" }
 scout-rpc = { path = "crates/scout-rpc" }
 scout-evm = { path = "crates/scout-evm" }
