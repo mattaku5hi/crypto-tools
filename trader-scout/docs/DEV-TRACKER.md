@@ -112,3 +112,34 @@ as Codex) → B1 schema → B2 launch/migration ingestion (Solana pump.fun and R
 BSC four.meme, then Base: Zora/Clanker for `top-runners`, other launchpads checked) → B3 ATH → B4
 category engine from config → B5 daemon with incremental cycles → B6 container / compose / k8s → B7
 JSON formats + Telegram delivery on change.
+
+## 7. Status and plan (2026-10-07)
+
+**Built (B0–B7):** facts in PostgreSQL from 12 EVM sources (BSC Flap + four.meme, Robinhood Pons + Flap, Base
+Zora + Clanker) and Solana pump.fun; dev identity behind shared intermediaries; ATH from Codex; categories from the
+TOML; daemon; exports (GMGN / Axiom / BasedBot) with Telegram albums and change reports; container, compose, k8s;
+portable database snapshots. Running data: only since 2026-10-06/07, so the lists are nearly empty (9 devs).
+
+**Why a backfill:** every category looks back up to 365 days (migration rate, streak, runners). Without history
+the lists fill only as time passes; with it they are complete from the first day of the service.
+
+**How (owner decisions 2026-10-07):**
+- EVM launches / migrations: `eth_getLogs` over one year on Alchemy PAYG (a few thousand calls, cents).
+- EVM dev identity (≈ 3M lookups: BSC ≈ 2M, Robinhood ≈ 1M; Base needs none): the free dRPC plan, Alchemy only
+  for answers dRPC leaves empty. Alchemy PAYG bills from the first CU (no free allowance), so this saves ≈ $15–33.
+- Solana: Helius Developer plan for the backfill month (owner bought it 2026-10-07; ≈ 2M of its 10M credits,
+  ≈ 64 GB of gzip traffic), then back to the free plan for 24/7 (≈ 13 % of it).
+- ATH: Codex free tier (≈ 4.6k of the monthly 10k requests).
+- After the backfill the 24/7 service stays on Alchemy (EVM) and Helius free (Solana).
+- Estimated wall time ≈ 1 day (dRPC lookups 8–20 h dominate; Solana 3–6 h in parallel; inserts ≈ 1 h).
+
+**Steps before the launch:**
+1. Backfill mode: reads history backwards from where each source's data starts, with its own cursors (stoppable
+   and resumable); forward ingestion keeps running; signer lookups migrated-first; empty dRPC answers retried on
+   Alchemy.
+2. Batch inserts (≈ 32M rows), parallel Solana time slices, a budget per source; a 2-minute dRPC rate measurement
+   to confirm the estimate.
+3. Free disk right before the launch: `cargo clean` of `target/` (124 GB; 35 GB free, the year needs ≈ 20 GB).
+
+**Launch:** Friday evening (owner's internet is unstable until then), monitored over the weekend. Then
+`deploy/db-dump.sh` → server → `deploy/db-restore.sh` → `dev-tracker run` (section 5).
