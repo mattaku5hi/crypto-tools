@@ -599,9 +599,11 @@ impl DevDb {
 
     /// Tokens of `chain` whose ATH observation is missing or stale: migrated
     /// tokens and every token of a launchpad in `no_curve` (no migration),
-    /// refreshed by age — < 2 days every 6 h, < 7 days daily, < 30 days
-    /// weekly, older monthly. Missing observations first, newest launches
-    /// first, at most `limit`.
+    /// refreshed by age — < 2 days every 12 h, < 7 days daily, < 30 days
+    /// weekly, older every 90 days (a year of tokens stays within Codex's free
+    /// 10k requests/month: ≈ 4.8k steady, ≈ 3.7k more for the backfill
+    /// month). Missing observations first, newest launches first, at most
+    /// `limit`.
     ///
     /// # Errors
     /// Database failure.
@@ -617,10 +619,10 @@ impl DevDb {
              LEFT JOIN ath a ON a.chain = l.chain AND a.token = l.token
              WHERE l.chain = $1 AND (m.token IS NOT NULL OR l.launchpad = ANY($4))
                AND (a.observed_at IS NULL OR a.observed_at < $2 - CASE
-                    WHEN $2 - l.created_at < 172800 THEN 21600
+                    WHEN $2 - l.created_at < 172800 THEN 43200
                     WHEN $2 - l.created_at < 604800 THEN 86400
                     WHEN $2 - l.created_at < 2592000 THEN 604800
-                    ELSE 2592000 END)
+                    ELSE 7776000 END)
              ORDER BY (a.observed_at IS NULL) DESC, l.created_at DESC
              LIMIT $3",
         )

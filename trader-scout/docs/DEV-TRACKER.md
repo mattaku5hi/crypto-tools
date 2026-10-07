@@ -166,3 +166,24 @@ the lists fill only as time passes; with it they are complete from the first day
   with ≥ 2 launches, 4 owner samples instead of 8 → ≈ 0.5M calls ≈ $5. Devs with no migration in the year stay
   unattributed behind intermediaries; they cannot qualify (top-migr / win-streak need migrations; a curve token
   reaches a runner's ATH only after graduating).
+
+### Launch runbook (Friday)
+
+1. Free disk and build: `cargo clean` (≈ 124 GB back), `cargo build --release -p dev-tracker`.
+2. Environment: `.env` with `SCOUT_HELIUS_API_KEY` (Developer plan), Alchemy URLs, Codex key, Telegram;
+   `SCOUT_SOLANA_FALLBACK_RPC_URL` set to the public RPC or empty (the dRPC value answers HTTP 400).
+   `export SCOUT_DEVTRACKER_DATABASE_URL=postgres://scout:scout@127.0.0.1:55439/scout`.
+3. Forward ingestion keeps running during the backfill, with deliveries off (the lists change massively while
+   history arrives): a copy of the config with `[delivery] telegram = false`, then
+   `nohup target/release/dev-tracker run --config <copy> > logs/run.log 2>&1 &`.
+4. Backfill (resumable — rerun the same command after any stop):
+   `nohup target/release/dev-tracker backfill > logs/backfill.log 2>&1 &`
+   Order per EVM chain: logs (minutes) → identity (option B, ≈ 0.5M Alchemy calls); Solana days in parallel
+   (≈ 2–3 h); ATH last (≈ 3.7k Codex requests).
+5. Watch: `tail -f logs/backfill.log`; progress
+   `SELECT source, position FROM cursors WHERE source LIKE 'backfill:%' ORDER BY 1;`
+   (EVM: lowest block reached; Solana: one row per finished day); `df -h /`; database size
+   `SELECT pg_size_pretty(pg_database_size('scout'));`; Alchemy dashboard (CU), Helius dashboard (credits).
+6. Done: `dev-tracker derive` (counts per category), `dev-tracker export --test` (look at the album), then turn
+   deliveries on (restart `run` with the real config) — the first real delivery sends the complete lists.
+7. Snapshot for the server: `deploy/db-dump.sh devtracker-<date>.dump`.
