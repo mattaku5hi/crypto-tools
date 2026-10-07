@@ -11,6 +11,7 @@ description = "Dev tracker fact store (PostgreSQL): launches, migrations, ATH, c
 workspace = true
 
 [dependencies]
+futures.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 

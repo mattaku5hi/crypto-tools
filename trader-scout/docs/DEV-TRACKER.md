@@ -82,6 +82,21 @@ excluded); both raw counts are stored, never only the ratio.
   `Recreate` Deployment, keys from the Secret of `secret.example.yaml`; `postgres.example.yaml` for a
   single-node database). Exactly one daemon per database: two would double provider requests and sends.
 
+- **Moving the database:** `deploy/db-dump.sh <file>` (pg_dump custom format, compressed) and
+  `deploy/db-restore.sh <file>` (into an empty database; stop the daemon first). Facts and cursors travel
+  together, so a restored service resumes where the snapshot ended and reads the gap on its first passes
+  (EVM: one `eth_getLogs` range per source; Solana: up to `solana_max_pages` × 1000 txs per source and pass).
+  Round trip verified 2026-10-07 (56k launches → 5.8 MB dump, identical row counts and cursors).
+
+### Server requirements (measured 2026-10-07)
+
+| Resource | Measured | Recommendation |
+|---|---|---|
+| CPU | passes are I/O-bound | 2 vCPU |
+| RAM | daemon ≤ 100 MB (Solana catch-up of 20k txs: 99 MB); derivation streams one dev at a time (19 MB over 56k launches) | 4 GB (PostgreSQL 1–2 GB) |
+| Disk | ≈ 660 B per launch with indexes; one year ≈ 32M launches (Solana 19.4M, BSC 9.2M, Robinhood 2.1M, Base 1.1M) ≈ 20 GB, +≈ 1.7 GB/month; dump ≈ 100 B/launch (≈ 3–3.5 GB/year) | SSD 80–100 GB |
+| Traffic | gzip on (Helius full tx 16.9 KB → 3.3 KB); Solana ≈ 55k txs/day ≈ 180 MB/day; EVM < 1 GB/month; a one-year Solana backfill ≈ 64 GB | any 100 Mbit/s link |
+
 ## 6. Order of work
 
 B0 measurements (event volumes per chain and launchpad, ATH source: own swaps vs an external API such

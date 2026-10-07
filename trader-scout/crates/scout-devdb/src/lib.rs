@@ -292,7 +292,26 @@ impl DevDb {
         chain: Option<&str>,
         since: i64,
     ) -> Result<Vec<DevLaunchRow>, DevDbError> {
-        let rows = sqlx::query(
+        let mut all = Vec::new();
+        self.for_each_dev(chain, since, |rows| all.extend_from_slice(rows))
+            .await?;
+        Ok(all)
+    }
+
+    /// As [`DevDb::dev_launches`], streamed: `f` gets every launch of one
+    /// (chain, dev) at a time, in launch order, so memory stays bounded by the
+    /// busiest dev, not by the year of launches.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn for_each_dev(
+        &self,
+        chain: Option<&str>,
+        since: i64,
+        mut f: impl FnMut(&[DevLaunchRow]),
+    ) -> Result<(), DevDbError> {
+        use futures::TryStreamExt;
+        let mut rows = sqlx::query(
             "SELECT l.chain,
                     CASE WHEN l.launchpad = ANY($3) AND k.is_contract AND k.owner IS NULL
                          THEN COALESCE(l.signer, 'contract:' || l.creator)
@@ -309,11 +328,10 @@ impl DevDb {
         .bind(chain)
         .bind(since)
         .bind(SIGNER_RESOLVED_LAUNCHPADS)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| DevLaunchRow {
+        .fetch(&self.pool);
+        let mut group: Vec<DevLaunchRow> = Vec::new();
+        while let Some(r) = rows.try_next().await? {
+            let row = DevLaunchRow {
                 chain: r.get("chain"),
                 creator: r.get("creator"),
                 token: r.get("token"),
@@ -321,8 +339,20 @@ impl DevDb {
                 created_at: r.get("created_at"),
                 migrated_at: r.get("migrated_at"),
                 ath_fdv_cents: r.get("ath_fdv_cents"),
-            })
-            .collect())
+            };
+            if group
+                .last()
+                .is_some_and(|g| g.chain != row.chain || g.creator != row.creator)
+            {
+                f(&group);
+                group.clear();
+            }
+            group.push(row);
+        }
+        if !group.is_empty() {
+            f(&group);
+        }
+        Ok(())
     }
 
     /// Creator addresses on [`SIGNER_RESOLVED_LAUNCHPADS`] of `chain` with no

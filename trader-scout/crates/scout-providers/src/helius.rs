@@ -917,12 +917,15 @@ fn decode_token_balance_changes(
         let post_amount = parse_amount(entry, "postTokenBalances")?;
 
         let pre_amount = match pre_by_index.get(&entry.account_index) {
+            // A token account's mint is immutable while it exists, so a
+            // different mint at the same index means the account was closed
+            // and re-created within this transaction (live: pump.fun
+            // migrations): the pre entry is reported as closed below and
+            // this one as new.
+            Some(pre_entry) if decode_pubkey(&pre_entry.mint)? != mint => None,
             Some(pre_entry) => {
-                // Same account index must describe the same mint and
-                // owner on both sides; otherwise do not guess.
-                if decode_pubkey(&pre_entry.mint)? != mint {
-                    return Err(malformed("pre/post token balance mint mismatch"));
-                }
+                // Same account and mint: the owner must match too (an owner
+                // change is not interpreted here).
                 let pre_owner = pre_entry.owner.as_deref().map(decode_pubkey).transpose()?;
                 if pre_owner != owner {
                     return Err(malformed("pre/post token balance owner mismatch"));
@@ -944,11 +947,15 @@ fn decode_token_balance_changes(
         });
     }
     for entry in pre {
-        if post_by_index.contains_key(&entry.account_index) {
+        if post_by_index
+            .get(&entry.account_index)
+            .is_some_and(|post_entry| post_entry.mint == entry.mint)
+        {
             continue;
         }
-        // Present before, absent after: the token account was closed in
-        // this transaction. Its whole pre balance left the account.
+        // Present before, absent after (or re-created for another mint):
+        // the token account was closed in this transaction. Its whole pre
+        // balance left the account.
         changes.push(scout_core::SolanaTokenBalanceChange {
             mint: decode_pubkey(&entry.mint)?,
             owner: entry.owner.as_deref().map(decode_pubkey).transpose()?,
@@ -2714,10 +2721,27 @@ mod tests {
     }
 
     #[test]
-    fn pre_post_mint_or_owner_mismatch_is_a_typed_error() {
+    fn mint_change_at_one_index_is_a_close_and_a_new_account() {
         let keys = vec![[1u8; 32]; 4];
         let pre = vec![tb(1, MINT_A, OWNER_A, "5")];
-        assert!(decode_token_balance_changes(&pre, &[tb(1, MINT_B, OWNER_A, "5")], &keys).is_err());
+        let changes =
+            decode_token_balance_changes(&pre, &[tb(1, MINT_B, OWNER_A, "7")], &keys).unwrap();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].mint, decode_pubkey(MINT_B).unwrap());
+        assert_eq!((changes[0].pre_amount, changes[0].post_amount), (None, 7));
+        assert!(!changes[0].closed);
+        assert_eq!(changes[1].mint, decode_pubkey(MINT_A).unwrap());
+        assert_eq!(
+            (changes[1].pre_amount, changes[1].post_amount),
+            (Some(5), 0)
+        );
+        assert!(changes[1].closed);
+    }
+
+    #[test]
+    fn pre_post_owner_mismatch_is_a_typed_error() {
+        let keys = vec![[1u8; 32]; 4];
+        let pre = vec![tb(1, MINT_A, OWNER_A, "5")];
         assert!(decode_token_balance_changes(&pre, &[tb(1, MINT_A, OWNER_B, "5")], &keys).is_err());
     }
 

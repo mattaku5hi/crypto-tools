@@ -326,11 +326,19 @@ pub fn derive_categories(
     now: i64,
     cfg: &DevTrackerConfig,
 ) -> Vec<DevVerdict> {
-    let active =
-        |s: &DevStats, days: i64| s.last_launch_at >= now.saturating_sub(days.saturating_mul(DAY));
     dev_stats(rows, now, cfg)
         .into_iter()
-        .map(|s| {
+        .map(|s| verdict_of(s, now, cfg))
+        .collect()
+}
+
+/// Categories of one creator's statistics.
+#[must_use]
+pub fn verdict_of(s: DevStats, now: i64, cfg: &DevTrackerConfig) -> DevVerdict {
+    let active =
+        |s: &DevStats, days: i64| s.last_launch_at >= now.saturating_sub(days.saturating_mul(DAY));
+    {
+        {
             let mut categories = Vec::new();
             let tr = &cfg.top_runners;
             let others = s
@@ -366,8 +374,47 @@ pub fn derive_categories(
                 stats: s,
                 categories,
             }
-        })
-        .collect()
+        }
+    }
+}
+
+/// Totals of a streamed derivation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeriveTotals {
+    pub launch_rows: u64,
+    pub creators: u64,
+    pub members: u64,
+}
+
+/// Derive from the database one creator at a time (constant memory in the
+/// number of launches): only category members are kept unless `keep_all`.
+///
+/// # Errors
+/// Database failure.
+pub async fn derive_from_db(
+    db: &scout_devdb::DevDb,
+    since: i64,
+    now: i64,
+    cfg: &DevTrackerConfig,
+    keep_all: bool,
+) -> Result<(Vec<DevVerdict>, DeriveTotals), scout_devdb::DevDbError> {
+    let mut out = Vec::new();
+    let mut totals = DeriveTotals::default();
+    db.for_each_dev(None, since, |rows| {
+        totals.launch_rows += u64::try_from(rows.len()).unwrap_or(u64::MAX);
+        for s in dev_stats(rows, now, cfg) {
+            totals.creators += 1;
+            let v = verdict_of(s, now, cfg);
+            if !v.categories.is_empty() {
+                totals.members += 1;
+            }
+            if keep_all || !v.categories.is_empty() {
+                out.push(v);
+            }
+        }
+    })
+    .await?;
+    Ok((out, totals))
 }
 
 #[cfg(test)]

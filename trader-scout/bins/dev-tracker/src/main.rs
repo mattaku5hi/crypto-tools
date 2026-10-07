@@ -16,7 +16,7 @@ use scout_devtracker::evm_ingest::{EVM_SOURCES, ingest_source};
 use scout_devtracker::export::{Format, render};
 use scout_devtracker::solana_ingest::{SOLANA_SOURCES, ingest_solana_source};
 use scout_devtracker::telegram::Telegram;
-use scout_devtracker::{Category, DevTrackerConfig, DevVerdict, derive_categories};
+use scout_devtracker::{Category, DevTrackerConfig, DevVerdict, derive_from_db};
 
 const DB_ENV: &str = "SCOUT_DEVTRACKER_DATABASE_URL";
 const CODEX_ENV: &str = "SCOUT_CODEX_API_KEY";
@@ -284,18 +284,16 @@ async fn derive(
     db: &DevDb,
     cfg: &DevTrackerConfig,
     since_days: i64,
+    keep_all: bool,
 ) -> Result<Vec<DevVerdict>, String> {
     let t = now();
-    let rows = db
-        .dev_launches(None, t.saturating_sub(since_days.saturating_mul(86_400)))
+    let since = t.saturating_sub(since_days.saturating_mul(86_400));
+    let (verdicts, totals) = derive_from_db(db, since, t, cfg, keep_all)
         .await
         .map_err(|e| e.to_string())?;
-    let verdicts = derive_categories(&rows, t, cfg);
     eprintln!(
         "dev-tracker: {} launch rows, {} creators, {} in a category",
-        rows.len(),
-        verdicts.len(),
-        verdicts.iter().filter(|v| !v.categories.is_empty()).count()
+        totals.launch_rows, totals.creators, totals.members
     );
     Ok(verdicts)
 }
@@ -397,7 +395,7 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
             next_ingest = now().saturating_add(minutes(s.ingest_every_minutes));
         }
         if now() >= next_derive {
-            match derive(db, &cfg, s.since_days).await {
+            match derive(db, &cfg, s.since_days, false).await {
                 Ok(v) => {
                     let tg = if cfg.delivery.telegram {
                         telegram_from_env()
@@ -495,7 +493,7 @@ async fn run(args: Args) -> Result<(), String> {
             all,
         } => {
             let cfg = read_config(&config)?;
-            let verdicts = derive(&db, &cfg, since_days).await?;
+            let verdicts = derive(&db, &cfg, since_days, all).await?;
             for v in &verdicts {
                 if !all && v.categories.is_empty() {
                     continue;
@@ -518,7 +516,7 @@ async fn run(args: Args) -> Result<(), String> {
         Cmd::Export { config, send } => {
             db.migrate().await.map_err(|e| e.to_string())?;
             let cfg = read_config(&config)?;
-            let verdicts = derive(&db, &cfg, cfg.schedule.since_days).await?;
+            let verdicts = derive(&db, &cfg, cfg.schedule.since_days, false).await?;
             let tg = if send {
                 Some(telegram_from_env().ok_or_else(|| {
                     format!("--send needs {TELEGRAM_TOKEN_ENV} and {TELEGRAM_CHAT_ENV}")
