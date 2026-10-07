@@ -3452,6 +3452,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "futures",
+ "reqwest",
  "scout-api",
  "scout-core",
  "scout-devdb",
@@ -3460,6 +3461,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "toml",
 ]
 

@@ -13,6 +13,7 @@ use scout_devtracker::evm_ingest::{EVM_SOURCES, ingest_source};
 use scout_devtracker::{DevTrackerConfig, derive_categories};
 
 const DB_ENV: &str = "SCOUT_DEVTRACKER_DATABASE_URL";
+const CODEX_ENV: &str = "SCOUT_CODEX_API_KEY";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -47,6 +48,9 @@ enum Cmd {
         /// Signers of launches through shared intermediaries resolved per chain and pass.
         #[arg(long, default_value_t = 5_000)]
         max_signer_lookups: i64,
+        /// Codex requests (200 tokens each) per chain and pass for ATH.
+        #[arg(long, default_value_t = 20)]
+        ath_requests: usize,
     },
     /// Derive the categories and print them as JSON lines.
     Derive {
@@ -92,6 +96,7 @@ async fn run(args: Args) -> Result<(), String> {
             max_requests,
             max_new_creators,
             max_signer_lookups,
+            ath_requests,
         } => {
             db.migrate().await.map_err(|e| e.to_string())?;
             let notice: scout_app::LimiterNotice = Arc::new(|m| eprintln!("dev-tracker: {m}"));
@@ -157,6 +162,26 @@ async fn run(args: Args) -> Result<(), String> {
                     id.shared,
                     id.signers_resolved
                 );
+                if ath_requests > 0 {
+                    match std::env::var(CODEX_ENV) {
+                        Ok(key) if !key.trim().is_empty() => {
+                            let a = scout_devtracker::ath::observe_ath(
+                                &db,
+                                key.trim(),
+                                chain,
+                                ath_requests,
+                                now(),
+                            )
+                            .await
+                            .map_err(|e| format!("{chain}: ath: {e}"))?;
+                            eprintln!(
+                                "dev-tracker: {chain}: ath: {} codex request(s), {} token(s) asked, {} observed, {} missing",
+                                a.requests, a.tokens_asked, a.observed, a.missing
+                            );
+                        }
+                        _ => eprintln!("dev-tracker: {chain}: ath skipped ({CODEX_ENV} not set)"),
+                    }
+                }
                 for line in setup.rate_limit_report() {
                     eprintln!("dev-tracker: {chain}: {line}");
                 }

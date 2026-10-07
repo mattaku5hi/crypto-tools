@@ -5,6 +5,7 @@
 //! verdicts, so a config edit takes effect on the next cycle without a rescan.
 //! All arithmetic is integer: money in USD cents, rates in basis points.
 
+pub mod ath;
 pub mod evm_ingest;
 pub mod identity;
 
@@ -23,6 +24,8 @@ pub struct TopRunnersConfig {
     pub big_runner_ath_usd: i64,
     pub min_big_runners: u32,
     pub min_other_runners: u32,
+    /// ATH above this never makes a runner (manipulated price on a huge supply).
+    pub max_plausible_ath_usd: i64,
     pub min_migration_rate_pct: u32,
     pub max_inactive_days: i64,
 }
@@ -93,6 +96,11 @@ impl DevTrackerConfig {
             || c.win_streak.max_inactive_days < 0
         {
             return Err(ConfigError::Range("day counts must be >= 0".into()));
+        }
+        if c.top_runners.max_plausible_ath_usd < c.top_runners.big_runner_ath_usd {
+            return Err(ConfigError::Range(
+                "top_runners.max_plausible_ath_usd must be >= big_runner_ath_usd".into(),
+            ));
         }
         if c.top_runners.big_runner_ath_usd < c.top_runners.runner_ath_usd {
             return Err(ConfigError::Range(
@@ -172,6 +180,7 @@ pub fn dev_stats(rows: &[DevLaunchRow], now: i64, cfg: &DevTrackerConfig) -> Vec
     let pending_cutoff = now.saturating_sub(cfg.pending_window_days.saturating_mul(DAY));
     let runner = cfg.top_runners.runner_ath_usd.saturating_mul(100);
     let big = cfg.top_runners.big_runner_ath_usd.saturating_mul(100);
+    let plausible = cfg.top_runners.max_plausible_ath_usd.saturating_mul(100);
     let no_curve = |lp: &str| cfg.launchpads_without_migration.iter().any(|x| x == lp);
     let mut out = Vec::with_capacity(by_dev.len());
     for ((chain, creator), mut ls) in by_dev {
@@ -205,8 +214,11 @@ pub fn dev_stats(rows: &[DevLaunchRow], now: i64, cfg: &DevTrackerConfig) -> Vec
             pending,
             migration_rate_bp: rate_bp(migrated, resolved),
             current_streak,
-            runners: count(&|r| r.ath_fdv_cents.is_some_and(|a| a >= runner)),
-            big_runners: count(&|r| r.ath_fdv_cents.is_some_and(|a| a >= big)),
+            runners: count(&|r| {
+                r.ath_fdv_cents
+                    .is_some_and(|a| a >= runner && a <= plausible)
+            }),
+            big_runners: count(&|r| r.ath_fdv_cents.is_some_and(|a| a >= big && a <= plausible)),
             last_launch_at: ls.last().map_or(0, |r| r.created_at),
         });
     }
@@ -404,6 +416,18 @@ mod tests {
         ];
         rows.extend((40..140).map(|d| l("m", "pump", d, false, None)));
         assert!(!cats(&rows, "m").contains(&Category::TopRunners));
+    }
+
+    #[test]
+    fn implausible_ath_never_makes_a_runner() {
+        let rows = vec![
+            l("x", "zora", 30, false, Some(99_990_000_000)),
+            l("x", "zora", 20, false, Some(800_000)),
+            l("x", "zora", 10, false, Some(700_000)),
+        ];
+        let v = derive_categories(&rows, NOW, &cfg());
+        assert_eq!((v[0].stats.runners, v[0].stats.big_runners), (2, 0));
+        assert!(v[0].categories.is_empty());
     }
 
     #[test]

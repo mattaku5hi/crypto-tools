@@ -75,6 +75,11 @@ pub struct AddressKind {
     pub checked_at: i64,
 }
 
+/// Launchpads without a bonding curve (no migration rate; owner decision
+/// 2026-10-06). Kept in sync with the config's `launchpads_without_migration`
+/// default.
+pub const NO_CURVE_LAUNCHPADS: &[&str] = &["zora", "clanker"];
+
 /// Launchpads whose creator field is the caller (`msg.sender`), so a contract
 /// there may be a shared intermediary (ADR-021 amendment 1). Pons is listed
 /// although its field is named `originalDeployer`: live, a launcher-service
@@ -437,6 +442,42 @@ impl DevDb {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Tokens of `chain` whose ATH observation is missing or stale: migrated
+    /// tokens and every token of a launchpad in `no_curve` (no migration),
+    /// refreshed by age — < 2 days every 6 h, < 7 days daily, < 30 days
+    /// weekly, older monthly. Missing observations first, newest launches
+    /// first, at most `limit`.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn ath_candidates(
+        &self,
+        chain: &str,
+        now: i64,
+        limit: i64,
+    ) -> Result<Vec<String>, DevDbError> {
+        let rows = sqlx::query(
+            "SELECT l.token FROM launches l
+             LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
+             LEFT JOIN ath a ON a.chain = l.chain AND a.token = l.token
+             WHERE l.chain = $1 AND (m.token IS NOT NULL OR l.launchpad = ANY($4))
+               AND (a.observed_at IS NULL OR a.observed_at < $2 - CASE
+                    WHEN $2 - l.created_at < 172800 THEN 21600
+                    WHEN $2 - l.created_at < 604800 THEN 86400
+                    WHEN $2 - l.created_at < 2592000 THEN 604800
+                    ELSE 2592000 END)
+             ORDER BY (a.observed_at IS NULL) DESC, l.created_at DESC
+             LIMIT $3",
+        )
+        .bind(chain)
+        .bind(now)
+        .bind(limit)
+        .bind(NO_CURVE_LAUNCHPADS)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.get("token")).collect())
     }
 
     /// Content hash of the last delivered export of a category/format.

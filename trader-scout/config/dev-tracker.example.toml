@@ -14,6 +14,9 @@ runner_ath_usd = 500000          # a "runner" token
 big_runner_ath_usd = 1000000     # at least one big runner …
 min_big_runners = 1
 min_other_runners = 2            # … plus this many further runners
+# ATH above this is treated as implausible (manipulated price on a huge
+# supply) and never makes a runner; the observation is kept as is.
+max_plausible_ath_usd = 10000000000
 min_migration_rate_pct = 3       # skipped for launchpads without migration
 max_inactive_days = 365          # last launch no older than this
 
