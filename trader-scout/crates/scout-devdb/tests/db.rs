@@ -54,7 +54,12 @@ async fn facts_are_idempotent_and_joined_for_the_derivation() {
         pool: Some("0xpool".into()),
         source: "test".into(),
     };
-    assert_eq!(db.insert_migrations(&[mig.clone()]).await.unwrap(), 1);
+    assert_eq!(
+        db.insert_migrations(std::slice::from_ref(&mig))
+            .await
+            .unwrap(),
+        1
+    );
     assert_eq!(db.insert_migrations(&[mig]).await.unwrap(), 0);
     let ath = |cents: i64, observed: i64| AthObservation {
         chain: chain.clone(),
