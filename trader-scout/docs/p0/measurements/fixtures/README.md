@@ -83,3 +83,9 @@ Evidence for these BSC venues: `docs/p0/measurements/2026-10-04-bsc-venues-verif
 - Curve fixtures: `evm-capture --chain robinhood --swaps pons|bags|all` writes `curve_metadata` rows (`emitter`, `kind` = `pons_v2`|`bags`, `factory`, `token`, `quote` (zero address = native), `registered_curve`) next to `pool_metadata`; `crates/scout-engine/tests/evm_robinhood_launchpads.rs` admits and verifies them (equations in its header). Pons V1 tokens trade in Uniswap v3 pools (V1 `TokenLaunched.dexFactory` = the DEX factory), covered by the existing v3 admission when it is the official factory.
 - Robinhood public RPC also caps `eth_getLogs` without an address filter at 30,000 blocks (new error shape: -32602 "query spans N blocks … only 30000 are allowed … add an address filter").
 - `evm_robinhood_pons_curves_2026-10-05.json` — `evm-capture --swaps pons` via the public Robinhood RPC, 2,000 blocks: 200 Pons V2 curve events (newest txs), curve metadata for every emitter (factory() = V2 factory, `getLaunchedToken` confirmation, `pairToken`: native, USDG, other ERC-20). Event `buyer/seller` == tx.from in only 53/200 (147 via routers/bots), `recipient != account` in 42. Verification: 200/200 token side exact; quote side erc20-exact 29, native-exact 12, n/a 159 (router-mediated or native sells).
+
+## Flap Portal trades (BSC, ADR-020 amendment 12)
+
+| File | Source | sha256 |
+|---|---|---|
+| `flap_portal_trades_bsc_2026-10-07.json` | `evm-capture --chain bsc --token 0xaac3…7777 --from-block 123161810 --to-block 123161903` (keyed Alchemy BSC), trimmed to the 456 receipts holding a Flap Portal `TokenBought`/`TokenSold`, logs trimmed to the Portal's logs and the Transfer logs of the tokens those events name (`receipts` schema, not `calls`: deliberately outside the `evm_bsc_*` replay glob) | `d5a2fb07b1d71b7fc470c7223b6acd6977bcff3e2efc74e11a4f3aeaa75efdc9` |

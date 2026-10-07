@@ -665,7 +665,10 @@ async fn fourmeme_rows() -> Vec<FmRow> {
                 let GateOutcome::Verified(v) = gate.classify(log) else {
                     continue;
                 };
-                if v.launchpad.is_none() {
+                // other launchpads (Flap Portal) have their own test
+                if v.launchpad.is_none()
+                    || !matches!(v.venue, SwapVenue::FourMemeV1 | SwapVenue::FourMemeV2)
+                {
                     continue;
                 }
                 let DecodeOutcome::Decoded(t) = decode_fourmeme_trade(log) else {
@@ -1214,6 +1217,10 @@ fn bsc_deployments_are_pinned_with_sources() {
             SwapVenue::FourMemeV2,
             "0x5c952063c7fc8610FFDB798152D69F0B9550762b",
         ),
+        (
+            SwapVenue::FlapPortal,
+            "0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0",
+        ),
     ] {
         assert!(
             on_bsc.contains(&(venue, a(addr))),
@@ -1221,7 +1228,7 @@ fn bsc_deployments_are_pinned_with_sources() {
             venue.label()
         );
     }
-    assert_eq!(on_bsc.len(), 7);
+    assert_eq!(on_bsc.len(), 8);
     // PancakeSwap v3 pools come from the PoolDeployer.
     let p3 = VENUE_DEPLOYMENTS
         .iter()

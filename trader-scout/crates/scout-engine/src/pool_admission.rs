@@ -53,7 +53,8 @@ pub fn pool_kind(venue: SwapVenue) -> Option<PoolKind> {
         | SwapVenue::FourMemeV1
         | SwapVenue::FourMemeV2
         | SwapVenue::PonsV2Curve
-        | SwapVenue::BagsCurve => None,
+        | SwapVenue::BagsCurve
+        | SwapVenue::FlapPortal => None,
     }
 }
 

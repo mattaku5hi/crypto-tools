@@ -50,6 +50,7 @@ use crate::curves::{
     PONS_V2_CURVE_SELL_TOPIC0,
 };
 use crate::curves::{CurveFamily, decode_curve_trade};
+use crate::flap::{FLAP_TOKEN_BOUGHT_TOPIC0, FLAP_TOKEN_SOLD_TOPIC0, decode_flap_trade};
 use crate::fourmeme::{
     FOURMEME_V1_PURCHASE_TOPIC0, FOURMEME_V1_SALE_TOPIC0, FOURMEME_V2_PURCHASE_TOPIC0,
     FOURMEME_V2_SALE_TOPIC0, FourMemeVersion, LaunchpadSide, decode_fourmeme_trade,
@@ -113,6 +114,9 @@ pub enum SwapVenue {
     /// `TokensSold`; admitted when `BagsFactory.curveForToken(curve.TOKEN())`
     /// is the emitter.
     BagsCurve,
+    /// Flap (flap.sh) Portal (BSC): one contract emits `TokenBought` /
+    /// `TokenSold` for every bonding-curve token (ADR-020 amendment 12).
+    FlapPortal,
 }
 
 impl SwapVenue {
@@ -129,6 +133,7 @@ impl SwapVenue {
             Self::FourMemeV2 => "fourmeme_v2",
             Self::PonsV2Curve => "pons_v2_curve",
             Self::BagsCurve => "bags_curve",
+            Self::FlapPortal => "flap_portal",
         }
     }
 
@@ -137,7 +142,10 @@ impl SwapVenue {
     /// admission applies.
     #[must_use]
     pub const fn is_emitter_anchored(self) -> bool {
-        matches!(self, Self::UniswapV4 | Self::FourMemeV1 | Self::FourMemeV2)
+        matches!(
+            self,
+            Self::UniswapV4 | Self::FourMemeV1 | Self::FourMemeV2 | Self::FlapPortal
+        )
     }
 
     /// Venues that can emit the swap event of `topic0` (several pool families
@@ -162,6 +170,8 @@ impl SwapVenue {
             &[SwapVenue::PonsV2Curve]
         } else if *topic0 == BAGS_TOKENS_BOUGHT_TOPIC0 || *topic0 == BAGS_TOKENS_SOLD_TOPIC0 {
             &[SwapVenue::BagsCurve]
+        } else if *topic0 == FLAP_TOKEN_BOUGHT_TOPIC0 || *topic0 == FLAP_TOKEN_SOLD_TOPIC0 {
+            &[SwapVenue::FlapPortal]
         } else {
             &[]
         }
@@ -466,6 +476,15 @@ pub const VENUE_DEPLOYMENTS: &[VenueDeployment] = &[
         56,
         SwapVenue::FourMemeV1,
         address!("EC4549caDcE5DA21Df6E6422d448034B5233bFbC"),
+        AnchorRole::SwapEmitter,
+    ),
+    // Flap Portal (docs.flap.sh deployed contracts, BNB Chain): FixtureVerified
+    // by `evm_bsc_flap_portal.rs` — event token amount = the Portal's own token
+    // transfer, 470/470 (261 buys, 209 sells, 38 tokens), ADR-020 amendment 12.
+    dep_fixture_verified(
+        56,
+        SwapVenue::FlapPortal,
+        crate::flap::FLAP_PORTAL_BSC,
         AnchorRole::SwapEmitter,
     ),
     // V2: FixtureVerified on the ADR-015/017 standard (token side exact 4/4, quote
@@ -871,7 +890,8 @@ impl SwapVenueGate {
                 | SwapVenue::FourMemeV1
                 | SwapVenue::FourMemeV2
                 | SwapVenue::PonsV2Curve
-                | SwapVenue::BagsCurve => {
+                | SwapVenue::BagsCurve
+                | SwapVenue::FlapPortal => {
                     return Err(PoolRejection::UnpinnedFactory(factory));
                 }
             };
@@ -893,7 +913,8 @@ impl SwapVenueGate {
                 | SwapVenue::FourMemeV1
                 | SwapVenue::FourMemeV2
                 | SwapVenue::PonsV2Curve
-                | SwapVenue::BagsCurve => true,
+                | SwapVenue::BagsCurve
+                | SwapVenue::FlapPortal => true,
             };
             if !identity_ok {
                 return Err(PoolRejection::IncompleteIdentity);
@@ -995,6 +1016,19 @@ impl SwapVenueGate {
                     if t.version != expected {
                         return GateOutcome::NotSwap;
                     }
+                    launchpad = Some(LaunchpadEvidence {
+                        token: t.token,
+                        account: t.account,
+                        side: t.side,
+                        recipient: None,
+                    });
+                    (None, t.log_index)
+                }
+                DecodeOutcome::Malformed(m) => return GateOutcome::Malformed(m),
+                DecodeOutcome::NotMine => return GateOutcome::NotSwap,
+            },
+            SwapVenue::FlapPortal => match decode_flap_trade(log) {
+                DecodeOutcome::Decoded(t) => {
                     launchpad = Some(LaunchpadEvidence {
                         token: t.token,
                         account: t.account,
@@ -1121,6 +1155,8 @@ mod tests {
                     address!("cA143Ce32Fe78f1f7019d7d551a6402fC5350c73"),
                     address!("0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865"),
                     address!("5c952063c7fc8610FFDB798152D69F0B9550762b"),
+                    // Flap Portal: evm_bsc_flap_portal.rs (470/470).
+                    address!("e2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0"),
                 ]
                 .contains(&d.anchor);
             // Robinhood launchpad curves: Pons V2 FixtureVerified (n = 200,

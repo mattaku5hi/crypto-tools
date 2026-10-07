@@ -17,6 +17,7 @@
 )]
 
 mod curves;
+mod flap;
 mod fourmeme;
 mod gate;
 mod pancake;
@@ -29,6 +30,12 @@ pub use curves::{
     PONS_V2_CURVE_BUY_REFUNDED_TOPIC0, PONS_V2_CURVE_BUY_TOPIC0, PONS_V2_CURVE_COMPLETED_TOPIC0,
     PONS_V2_CURVE_SELL_TOPIC0, PonsBuyRefunded, PonsCurveCompleted, curve_topic_kind,
     decode_curve_trade, decode_pons_buy_refunded, decode_pons_curve_completed,
+};
+pub use flap::{
+    FLAP_LAUNCHED_TO_DEX_TOPIC0, FLAP_PORTAL_BSC, FLAP_TOKEN_BOUGHT_TOPIC0,
+    FLAP_TOKEN_CREATED_TOPIC0, FLAP_TOKEN_SOLD_TOPIC0, FlapLaunchedToDex, FlapTokenCreated,
+    FlapTrade, decode_flap_launched_to_dex, decode_flap_token_created, decode_flap_trade,
+    flap_topic_side,
 };
 pub use fourmeme::{
     FOURMEME_TOKEN_CREATE_TOPIC0, FOURMEME_V1_PURCHASE_TOPIC0, FOURMEME_V1_SALE_TOPIC0,

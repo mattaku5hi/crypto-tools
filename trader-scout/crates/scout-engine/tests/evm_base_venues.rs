@@ -243,7 +243,8 @@ fn pool_event_table(venue: SwapVenue) -> Vec<EventRow> {
         | SwapVenue::FourMemeV1
         | SwapVenue::FourMemeV2
         | SwapVenue::PonsV2Curve
-        | SwapVenue::BagsCurve => Vec::new(),
+        | SwapVenue::BagsCurve
+        | SwapVenue::FlapPortal => Vec::new(),
     }
 }
 
@@ -347,7 +348,8 @@ async fn all_rows() -> Vec<Row> {
                         | SwapVenue::FourMemeV1
                         | SwapVenue::FourMemeV2
                         | SwapVenue::PonsV2Curve
-                        | SwapVenue::BagsCurve => {
+                        | SwapVenue::BagsCurve
+                        | SwapVenue::FlapPortal => {
                             unreachable!("no such emitters in the Base fixtures")
                         }
                     };

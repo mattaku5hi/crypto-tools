@@ -962,7 +962,8 @@ impl Valuer<'_> {
             SwapVenue::FourMemeV1
             | SwapVenue::FourMemeV2
             | SwapVenue::PonsV2Curve
-            | SwapVenue::BagsCurve => Err(R::VenueNotSupported),
+            | SwapVenue::BagsCurve
+            | SwapVenue::FlapPortal => Err(R::VenueNotSupported),
             SwapVenue::UniswapV4 => {
                 let pool_id = last.pool_id.ok_or(R::PoolKeyUnknown)?;
                 let (quoter, source) = self.quoter(QuoterFamily::UniswapV4)?;
@@ -1109,7 +1110,8 @@ impl Valuer<'_> {
             SwapVenue::FourMemeV1
             | SwapVenue::FourMemeV2
             | SwapVenue::PonsV2Curve
-            | SwapVenue::BagsCurve => 0,
+            | SwapVenue::BagsCurve
+            | SwapVenue::FlapPortal => 0,
             SwapVenue::UniswapV4 => {
                 let Some(pool_id) = last.pool_id else {
                     return 0;
