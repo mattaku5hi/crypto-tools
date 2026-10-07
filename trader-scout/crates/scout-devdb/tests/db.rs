@@ -305,5 +305,9 @@ async fn ath_candidates_skip_one_off_creators_without_a_curve() {
     .unwrap();
     let mut got = db.ath_candidates(&chain, 2_000, 10).await.unwrap();
     got.sort();
-    assert_eq!(got, ["a", "b", "c"], "a one-off creator cannot have 3 runners");
+    assert_eq!(
+        got,
+        ["a", "b", "c"],
+        "a one-off creator cannot have 3 runners"
+    );
 }
