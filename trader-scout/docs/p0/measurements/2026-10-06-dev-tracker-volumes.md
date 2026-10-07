@@ -69,3 +69,22 @@ Conclusions:
   the alternatives.
 - EVM: one year of factory events is a few thousand `eth_getLogs` (split for the 150 MB response cap) —
   well under 1M CU (< $1) on PAYG.
+
+
+### Addendum B0.2 (2026-10-07): creation events pinned, more launchpads counted (24 h)
+
+All topic0 values below equal the keccak of the signature.
+
+| Chain | Launchpad (emitter) | Creation event | /24 h | Graduation | /24 h | Dev field |
+|---|---|---|---|---|---|---|
+| Base | Zora factory `0x7777…baF3` | `CoinCreatedV4(address indexed caller, address indexed payoutRecipient, address indexed platformReferrer, address currency, string uri, string name, string symbol, address coin, PoolKey, bytes32 poolKeyHash, string version)` `0x2de43610` | 562 | — (no curve) | — | `payoutRecipient` (creator rewards) / `caller` |
+| Base | Zora factory | `CreatorCoinCreated(…same…)` `0x74b670d6` | 32 | — | — | same |
+| Base | Zora factory | `TrendCoinCreated(address indexed caller, string symbol, address coin, PoolKey, bytes32, bytes poolConfig, string version)` `0xfb9e81c3` | 17 | — | — | `caller` |
+| Base | Clanker v4 `0xE85A…83a9` | `TokenCreated(address msgSender, address indexed tokenAddress, address indexed tokenAdmin, string×5, int24 startingTick, address poolHook, bytes32 poolId, address pairedToken, address locker, address mevModule, uint256 extensionsSupply, address[] extensions)` `0x9299d1d1` | 157 | — (no curve) | — | `tokenAdmin` |
+| Robinhood | Flap Portal `0x26605f32…eb09` (Bitquery) | `TokenCreated` `0x504e7f36` (BSC layout) | 2,195 | `LaunchedToDEX` `0x6e4f4763` | 0 | `creator` |
+| Robinhood | Doppler Airlock `0xeb7c0347…0862` (Bitquery) | `Create(address,address,address,address)` `0x68ff1cfc` | 1,404 | `Migrate(address,address)` `0x2a05bb71` | 0 | to resolve |
+| Robinhood | Pons V2 factory | (see table above) | 4,155 | `PoolGraduated` | 35 | `deployer` |
+| Robinhood | Bags factory `0xe8Cc…Cb37` | — | 0 logs | — | — | inactive |
+| Robinhood | Clanker `0xd3f2…9a94`, Virtuals, Klik, Ape.store (Bitquery list) | — | ≤ 18 logs each | — | — | near-inactive |
+
+Corrections: Clanker's frequent topic `0xe80ed94c` is `ExtensionTriggered(address,uint256,uint256)` (293/day), not a launch; Clanker v4 launches are 157/day. Zora ≈ 611 coins/day across three event kinds.
