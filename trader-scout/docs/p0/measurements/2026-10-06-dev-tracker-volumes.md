@@ -123,3 +123,15 @@ TokenManager2 `0x5c95…762b` emits `LiquidityAdded(address base, uint256 offers
 completes the curve (sent directly or through routers). Over the last 24 h: 4 `LiquidityAdded` (TokenManager V1: 0) —
 exactly the 4 tokens Codex lists as migrated in that window. So the row above was right: four.meme graduates ≈ 4 of
 ≈ 9k daily launches (the newer `…ffff` vanity tokens included). Ingested as source `bsc:fourmeme:migration`.
+
+### Addendum (2026-10-07): Robinhood Doppler — who creates
+
+Airlock `0xeb7c034704ef8dcd2d32324c1545f62fb4ad0862`, `Create(address asset, address indexed numeraire, address
+initializer, address poolOrHook)` topic0 `0x68ff1cfcdcf76864161555fc0de1878d8f83ec6949bf351df74d8a4a1a2679ab`
+(data: asset, initializer, poolOrHook). The event names no creator. Six recent creates: four through a front-end
+contract `0x1eef016f…2104` (selector `0x60956835`, `tx.from` = the user's EOA), one through the ERC-4337 EntryPoint
+`0x0000000071727de2…a032` (`tx.from` = a bundler; the creator is the smart account in that transaction's
+`UserOperationEvent.sender`), one direct to the Airlock. `Migrate` 0/day → treat as a launchpad without a curve
+(top-runners only, like Zora). Dev rule if added: `UserOperationEvent.sender` when the transaction goes to the
+EntryPoint, else `tx.from` — one receipt per launch (≈ 1.4k/day: ≈ $0.45/month steady, ≈ $5 for a one-year
+backfill on Alchemy).
