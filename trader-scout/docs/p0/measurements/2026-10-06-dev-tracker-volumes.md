@@ -16,6 +16,22 @@ Solana via the keyless public RPC (`getSignaturesForAddress`).
 
 Not yet counted: Bags (Robinhood), four.meme graduation contract, other Base launchpads.
 
+### BSC addendum (2026-10-07): Flap is the dominant BSC launchpad
+
+- Pancake v2 `PairCreated`: **17,587 / 24 h**; in a random sample of 120 pairs, 112 contain a token whose
+  address ends in `…7777`, and the most frequent transaction target is `0xe2cE6ab8…9De0` (34/120) =
+  **Flap Portal** (docs.flap.sh deployed addresses; VaultPortal `0x90497450…4C06` is the second, 9/120).
+  `…7777` is Flap's vanity suffix for tax tokens (`…8888` standard). **All four owner BSC tokens are Flap
+  tax tokens** (no four.meme `TokenCreate`; their first Pancake pair is created in Flap transactions).
+- Flap Portal events over 24 h (1.45M logs, 6,000-block windows), topic0 verified by keccak of the
+  published signatures: `TokenCreated(uint256,address,uint256,address,string,string,string)` `0x504e7f36`
+  **15,883**; `LaunchedToDEX(address,address,uint256,uint256)` `0x6e4f4763` **74** (0.47 %);
+  `TokenBought(uint256,address,address,uint256,uint256,uint256,uint256)` `0xa800a203` 205,740;
+  `TokenSold(…7 fields…)` `0x03a4693e` 134,773. VaultPortal: 1,587 logs.
+- four.meme graduation is still unresolved (managers' `LiquidityAdded`/`TradeStop` 3/day vs 9,087 launches).
+- Consequence for wallet discovery: Flap bonding-curve trades (`TokenBought`/`TokenSold` at the Portal) are
+  not a verified venue yet, so `buyer-intersect` saw only the Pancake-pool phase of the owner's BSC tokens.
+
 ## Prices used
 
 - Alchemy PAYG $0.525 / 1M CU; `eth_getLogs` 60 CU; WebSocket subscriptions and webhooks billed by
