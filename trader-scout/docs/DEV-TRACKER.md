@@ -84,7 +84,9 @@ excluded); both raw counts are stored, never only the ratio.
   `schedule.ingest_every_minutes`, derivation + delivery every `schedule.derive_every_minutes`; the config is
   re-read every cycle (a broken edit is reported and the last good config kept); one chain's failure does not
   stop the others; SIGTERM / Ctrl-C stop it between steps.
-- One-shot commands: `migrate`, `ingest --chains …`, `derive`, `export [--send]`.
+- One-shot commands: `migrate`, `ingest --chains …`, `derive`, `export [--send] [--test]`, `backfill`.
+- Solana resilience: a failed Helius pass falls back to standard RPC (`SCOUT_SOLANA_FALLBACK_RPC_URL`, else the
+  public RPC), at most 6 h of window per pass; every source keeps its cursor, so any gap is read later.
 - Packaging: `deploy/Dockerfile` (multi-stage, non-root), `deploy/docker-compose.yml` (PostgreSQL 16 + the
   daemon, keys from `.env`, config and exports mounted), `deploy/k8s/dev-tracker.yaml` (ConfigMap + one-replica
   `Recreate` Deployment, keys from the Secret of `secret.example.yaml`; `postgres.example.yaml` for a

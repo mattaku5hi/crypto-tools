@@ -74,6 +74,8 @@ pub enum SolanaIngestError {
     BadCursor(String),
     #[error("{0} is not a Solana address")]
     BadAddress(&'static str),
+    #[error("standard-RPC fallback: {0}")]
+    Fallback(String),
 }
 
 /// What one pass did.
@@ -118,13 +120,32 @@ pub fn facts_of(
     kind: SolanaFact,
     source: &str,
 ) -> (Vec<Launch>, Vec<Migration>, usize) {
-    let (mut launches, mut migrations, mut bad) = (Vec::new(), Vec::new(), 0usize);
     if !matches!(tx.execution, SolanaExecutionStatus::Succeeded) {
-        return (launches, migrations, bad);
+        return (Vec::new(), Vec::new(), 0);
     }
-    let slot = i64::try_from(tx.slot).unwrap_or(i64::MAX);
-    let signature = b58(&tx.signature);
-    for ix in &tx.instructions {
+    facts_from(
+        &tx.instructions,
+        tx.slot,
+        tx.block_time,
+        &b58(&tx.signature),
+        kind,
+        source,
+    )
+}
+
+/// Facts in the flattened instructions of one SUCCESSFUL transaction.
+#[must_use]
+pub fn facts_from(
+    instructions: &[scout_core::RawSolanaInstruction],
+    slot: u64,
+    block_time: Option<i64>,
+    signature: &str,
+    kind: SolanaFact,
+    source: &str,
+) -> (Vec<Launch>, Vec<Migration>, usize) {
+    let (mut launches, mut migrations, mut bad) = (Vec::new(), Vec::new(), 0usize);
+    let slot = i64::try_from(slot).unwrap_or(i64::MAX);
+    for ix in instructions {
         match (decode_pump_lifecycle(ix), kind) {
             (Ok(Some(PumpLifecycleEvent::Create(c))), SolanaFact::Launch) => {
                 launches.push(Launch {
@@ -133,8 +154,8 @@ pub fn facts_of(
                     launchpad: "pump".to_string(),
                     creator: b58(&c.creator),
                     created_block: slot,
-                    created_at: tx.block_time.unwrap_or(c.timestamp),
-                    tx_hash: signature.clone(),
+                    created_at: block_time.unwrap_or(c.timestamp),
+                    tx_hash: signature.to_string(),
                     source: source.to_string(),
                 });
             }
@@ -144,8 +165,8 @@ pub fn facts_of(
                     token: b58(&m.mint),
                     launchpad: "pump".to_string(),
                     migrated_block: slot,
-                    migrated_at: tx.block_time.unwrap_or(m.timestamp),
-                    tx_hash: signature.clone(),
+                    migrated_at: block_time.unwrap_or(m.timestamp),
+                    tx_hash: signature.to_string(),
                     pool: Some(b58(&m.pool)),
                     source: source.to_string(),
                 });

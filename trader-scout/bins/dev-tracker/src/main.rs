@@ -75,6 +75,10 @@ enum Cmd {
         /// Solana: seconds behind now treated as final.
         #[arg(long, default_value_t = 60)]
         solana_settle_secs: i64,
+        /// Solana: read through the standard-RPC fallback instead of Helius
+        /// (normally used only when Helius fails).
+        #[arg(long)]
+        solana_via_fallback: bool,
     },
     /// Derive the categories and print them as JSON lines.
     Derive {
@@ -139,6 +143,7 @@ struct IngestOpts {
     ath_requests: usize,
     solana_max_pages: u32,
     solana_settle_secs: i64,
+    solana_via_fallback: bool,
 }
 
 impl IngestOpts {
@@ -154,6 +159,7 @@ impl IngestOpts {
             ath_requests: s.ath_requests_per_chain,
             solana_max_pages: s.solana_max_pages,
             solana_settle_secs: 60,
+            solana_via_fallback: false,
         }
     }
 }
@@ -279,12 +285,38 @@ async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<(), String> {
         )
         .with_max_total_requests(o.max_requests);
     let start = i64::try_from(o.start_hours_back.saturating_mul(3_600)).unwrap_or(i64::MAX);
+    let fallback = solana_fallback_rpc()?;
     for src in &SOLANA_SOURCES {
-        let r = ingest_solana_source(db, &provider, src, start, o.solana_settle_secs, now())
-            .await
-            .map_err(|e| format!("{}: {}", src.key, scrub(e.to_string())))?;
+        let primary = if o.solana_via_fallback {
+            Err("forced to the fallback".to_string())
+        } else {
+            ingest_solana_source(db, &provider, src, start, o.solana_settle_secs, now())
+                .await
+                .map_err(|e| scrub(e.to_string()))
+        };
+        let (r, via) = match primary {
+            Ok(r) => (r, "helius"),
+            Err(e) => {
+                eprintln!(
+                    "dev-tracker: {}: helius: {e}; trying the standard-RPC fallback",
+                    src.key
+                );
+                let (rpc, fb_scrub) = &fallback;
+                let r = scout_devtracker::solana_fallback::fallback_ingest_source(
+                    db,
+                    rpc,
+                    src,
+                    o.solana_settle_secs,
+                    SOLANA_FALLBACK_MAX_WINDOW,
+                    now(),
+                )
+                .await
+                .map_err(|e| format!("{}: fallback: {}", src.key, fb_scrub(&e.to_string())))?;
+                (r, "fallback")
+            }
+        };
         eprintln!(
-            "dev-tracker: {:28} time {}..{} txs {} decoded {} new {} undecodable {}{}",
+            "dev-tracker: {:28} time {}..{} txs {} decoded {} new {} undecodable {} via {via}{}",
             src.key,
             r.from,
             r.to,
@@ -314,6 +346,36 @@ async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Longest window one fallback pass reads (a long Helius outage is caught up
+/// over several passes).
+const SOLANA_FALLBACK_MAX_WINDOW: i64 = 6 * 3_600;
+/// Requests per second on the Solana fallback endpoint (public RPC limits).
+const SOLANA_FALLBACK_RPS: u64 = 4;
+const SOLANA_FALLBACK_ENV: &str = "SCOUT_SOLANA_FALLBACK_RPC_URL";
+
+/// The standard-RPC Solana fallback (`SCOUT_SOLANA_FALLBACK_RPC_URL`, else the
+/// keyless public RPC) and a scrubber for its URL.
+#[allow(clippy::type_complexity)]
+fn solana_fallback_rpc() -> Result<(scout_rpc::RpcClient, Box<dyn Fn(&str) -> String>), String> {
+    let url = std::env::var(SOLANA_FALLBACK_ENV)
+        .ok()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| scout_devtracker::solana_fallback::PUBLIC_SOLANA_RPC.to_string());
+    let secret = url.clone();
+    let scrub = Box::new(move |t: &str| t.replace(&secret, "<redacted>"));
+    let rpc = scout_rpc::RpcClient::new(scout_rpc::RpcEndpoint::new(url), 30_000, 3)
+        .map_err(|e| scrub(&e.to_string()))?
+        .with_rate_limiter(
+            Arc::new(scout_rpc::RateLimiter::new(
+                SOLANA_FALLBACK_RPS,
+                SOLANA_FALLBACK_RPS,
+            )),
+            None,
+        );
+    Ok((rpc, scrub))
 }
 
 /// Members of the last delivered lists as `(chain, creator)` (their verdicts
@@ -583,6 +645,7 @@ async fn run(args: Args) -> Result<(), String> {
             ath_requests,
             solana_max_pages,
             solana_settle_secs,
+            solana_via_fallback,
         } => {
             db.migrate().await.map_err(|e| e.to_string())?;
             let opts = IngestOpts {
@@ -595,6 +658,7 @@ async fn run(args: Args) -> Result<(), String> {
                 ath_requests,
                 solana_max_pages,
                 solana_settle_secs,
+                solana_via_fallback,
             };
             for chain in chains.split(',').map(str::trim).filter(|c| !c.is_empty()) {
                 ingest_chain(&db, chain, &opts).await?;
