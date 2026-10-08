@@ -10,7 +10,9 @@
 //! `CreatorCoinCreated` topic 2 (`payoutRecipient`), Zora `TrendCoinCreated`
 //! topic 1 (`caller`), Clanker v4 `TokenCreated` topic 2 (`tokenAdmin`), Robinhood Doppler `Create`
 //! (no creator field): `tx.from`, or the smart account of the `UserOperationEvent` when the
-//! transaction went to an ERC-4337 EntryPoint (one receipt per launch).
+//! transaction went to an ERC-4337 EntryPoint (one receipt per launch); Base Bankr / Noice (Doppler v4
+//! `Create`): the largest non-protocol `Lock` beneficiary, else the sender; Base Flaunch
+//! `PoolCreated`: the final recipient of the position NFT (the event's `creator` may be the zap).
 
 use std::collections::BTreeMap;
 
@@ -62,6 +64,39 @@ pub const ENTRY_POINTS: [Address; 2] = [
 /// actualGasCost, uint256 actualGasUsed)`.
 pub const USER_OPERATION_EVENT_TOPIC0: B256 =
     b256!("49628fd1471006c1482da88028e9ce4dbb080b815c9b0344d39e5a8e6ec1419f");
+/// Doppler v4 initializer used by Bankr on Base (2026-10-08 survey).
+pub const BANKR_INITIALIZER_BASE: Address = address!("bdf938149ac6a781f94faa0ed45e6a0e984c6544");
+/// Doppler v4 initializer used by Noice on Base.
+pub const NOICE_INITIALIZER_BASE: Address = address!("d59ce43e53d69f190e15d9822fb4540dccc91178");
+/// `Create(address indexed poolManager, address indexed asset, address indexed
+/// numeraire)` of those initializers (token = topic 2).
+pub const DOPPLER_V4_CREATE_TOPIC0: B256 =
+    b256!("b224da6575b2c2ffd42454faedb236f7dbe5f92a0c96bb99c0273dbe98464c7e");
+/// `Lock(address indexed pool, (address beneficiary, uint96 shares)[])`.
+pub const DOPPLER_LOCK_TOPIC0: B256 =
+    b256!("5be4f748347693e0500df872d81f7d96bce1b98e6f5adff0cfddfe3e9e415f20");
+/// Doppler protocol's fee beneficiary (5 % of every `Lock`): never the dev.
+pub const DOPPLER_PROTOCOL_BENEFICIARY: Address =
+    address!("21e2ce70511e4fe542a97708e89520471daa7a66");
+/// Flaunch position manager on Base (emits `PoolCreated`).
+pub const FLAUNCH_POSITION_MANAGER_BASE: Address =
+    address!("23321f11a6d44fd1ab790044fdfde5758c902fdc");
+/// Flaunch `PoolCreated(bytes32 indexed poolId, address memecoin, address
+/// memecoinTreasury, uint256 tokenId, bool currencyFlipped, uint256
+/// flaunchFee, (string name, string symbol, string tokenUri, uint256
+/// initialTokenFairLaunch, uint256 fairLaunchDuration, uint256 premineAmount,
+/// address creator, uint24 creatorFeeAllocation, uint256 flaunchAt, bytes
+/// initialPriceParams, bytes feeCalculatorParams) params)`.
+pub const FLAUNCH_POOL_CREATED_TOPIC0: B256 =
+    b256!("54976b48704e67457d6a85a2db51d6e760bbeddf6151f9206512108adce80b42");
+/// Flaunch's zap: launches through it name the zap as `creator` and hand the
+/// position NFT to the user afterwards.
+pub const FLAUNCH_ZAP_BASE: Address = address!("39112541720078c70164ea4deb61f0a4811910f9");
+/// Placeholder recipient some Flaunch launches use: no dev.
+pub const PLACEHOLDER_ONES: Address = address!("1111111111111111111111111111111111111111");
+/// ERC-20 / ERC-721 `Transfer(address,address,uint256)`.
+pub const TRANSFER_TOPIC0: B256 =
+    b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
 /// `TokenLaunched(address,address,address,address,uint256,uint256)`.
 pub const PONS_TOKEN_LAUNCHED_TOPIC0: B256 =
     b256!("8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607");
@@ -112,9 +147,25 @@ pub struct EvmSource {
     pub emitters: &'static [Address],
     pub topic0: B256,
     pub decode: FactDecoder,
-    /// The event names no creator: it is read from the transaction receipt
-    /// ([`creator_from_receipt`]).
-    pub creator_from_tx: bool,
+    /// Where the creator comes from.
+    pub creator: CreatorRule,
+}
+
+/// Where a launch's creator (the dev) comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreatorRule {
+    /// The event's own creator field (`DecodedFact::party`).
+    Event,
+    /// The transaction: `tx.from`, or the smart account of the
+    /// `UserOperationEvent` when sent to an EntryPoint ([`creator_from_receipt`]).
+    Sender,
+    /// Doppler v4 initializers (Bankr, Noice): the largest beneficiary of the
+    /// `Lock` event after the create, the Doppler protocol excluded; else the
+    /// sender ([`creator_from_lock`]).
+    LockBeneficiary,
+    /// Flaunch: the final recipient of the position NFT minted in the
+    /// transaction ([`creator_from_position_nft`]); else the event's field.
+    PositionNft,
 }
 
 fn topic_address(log: &RawEvmLog, i: usize) -> Option<Address> {
@@ -186,6 +237,92 @@ pub fn creator_from_receipt(receipt: &EvmReceiptInfo, log_index: u64) -> Option<
     } else {
         receipt.from
     }
+}
+
+fn doppler_v4_launch(log: &RawEvmLog) -> Option<DecodedFact> {
+    (log.data.is_empty() && log.topics.len() == 4).then_some(())?;
+    Some(DecodedFact {
+        token: topic_address(log, 2)?,
+        party: None,
+        timestamp: None,
+    })
+}
+
+fn word(log: &RawEvmLog, i: usize) -> Option<&[u8]> {
+    log.data
+        .get(i.checked_mul(32)?..i.checked_mul(32)?.checked_add(32)?)
+}
+
+fn word_usize(log: &RawEvmLog, i: usize) -> Option<usize> {
+    let w = word(log, i)?;
+    w.get(..24)?.iter().all(|b| *b == 0).then_some(())?;
+    let tail: [u8; 8] = w.get(24..)?.try_into().ok()?;
+    usize::try_from(u64::from_be_bytes(tail)).ok()
+}
+
+/// Flaunch `PoolCreated`: memecoin, and the `creator` field of the params
+/// tuple unless it is the zap or the placeholder (then the NFT decides).
+fn flaunch_launch(log: &RawEvmLog) -> Option<DecodedFact> {
+    (log.topics.len() == 2).then_some(())?;
+    let tuple = word_usize(log, 5)?.checked_div(32)?;
+    let creator = data_address(log, tuple.checked_add(6)?)?;
+    Some(DecodedFact {
+        token: data_address(log, 0)?,
+        party: (creator != FLAUNCH_ZAP_BASE && creator != PLACEHOLDER_ONES).then_some(creator),
+        timestamp: None,
+    })
+}
+
+/// The largest `Lock` beneficiary after the create at `log_index` from the
+/// same `emitter`, the Doppler protocol excluded; else the sender.
+#[must_use]
+pub fn creator_from_lock(
+    receipt: &EvmReceiptInfo,
+    emitter: Address,
+    log_index: u64,
+) -> Option<Address> {
+    let lock = receipt
+        .logs
+        .iter()
+        .filter(|l| {
+            l.address == emitter
+                && l.topics.first() == Some(&DOPPLER_LOCK_TOPIC0)
+                && l.log_index > log_index
+        })
+        .min_by_key(|l| l.log_index);
+    let best = lock.and_then(|l| {
+        let start = word_usize(l, 0)?.checked_div(32)?;
+        let n = word_usize(l, start)?;
+        (0..n.min(64))
+            .filter_map(|i| {
+                let at = start.checked_add(1)?.checked_add(i.checked_mul(2)?)?;
+                let who = data_address(l, at)?;
+                let shares: [u8; 16] = word(l, at.checked_add(1)?)?.get(16..)?.try_into().ok()?;
+                Some((u128::from_be_bytes(shares), who))
+            })
+            .filter(|(_, who)| *who != DOPPLER_PROTOCOL_BENEFICIARY)
+            .max()
+            .map(|(_, who)| who)
+    });
+    best.or_else(|| creator_from_receipt(receipt, log_index))
+}
+
+/// The final recipient of the Flaunch position NFT (`tokenId`, word 2 of the
+/// `PoolCreated` log) within the transaction; the placeholder means no dev.
+#[must_use]
+pub fn creator_from_position_nft(receipt: &EvmReceiptInfo, log: &RawEvmLog) -> Option<Address> {
+    let token_id = B256::try_from(word(log, 2)?).ok()?;
+    let owner = receipt
+        .logs
+        .iter()
+        .filter(|l| {
+            l.topics.len() == 4
+                && l.topics.first() == Some(&TRANSFER_TOPIC0)
+                && l.topics.get(3) == Some(&token_id)
+        })
+        .max_by_key(|l| l.log_index)
+        .and_then(|l| topic_address(l, 2))?;
+    (owner != PLACEHOLDER_ONES && owner != FLAUNCH_ZAP_BASE).then_some(owner)
 }
 
 fn fourmeme_migration(log: &RawEvmLog) -> Option<DecodedFact> {
@@ -260,7 +397,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[FLAP_PORTAL_BSC],
         topic0: FLAP_TOKEN_CREATED_TOPIC0,
         decode: flap_launch,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "bsc:flap:migration",
@@ -270,7 +407,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[FLAP_PORTAL_BSC],
         topic0: FLAP_LAUNCHED_TO_DEX_TOPIC0,
         decode: flap_migration,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "bsc:fourmeme:launch",
@@ -280,7 +417,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &FOURMEME_MANAGERS,
         topic0: FOURMEME_TOKEN_CREATE_TOPIC0,
         decode: fourmeme_launch,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "bsc:fourmeme:migration",
@@ -290,7 +427,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &FOURMEME_MANAGERS,
         topic0: FOURMEME_LIQUIDITY_ADDED_TOPIC0,
         decode: fourmeme_migration,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "robinhood:pons:launch",
@@ -300,7 +437,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[PONS_FACTORY],
         topic0: PONS_TOKEN_LAUNCHED_TOPIC0,
         decode: pons_launch,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "robinhood:pons:migration",
@@ -310,7 +447,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[PONS_FACTORY],
         topic0: PONS_POOL_GRADUATED_TOPIC0,
         decode: pons_migration,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "robinhood:flap:launch",
@@ -320,7 +457,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[FLAP_PORTAL_ROBINHOOD],
         topic0: FLAP_TOKEN_CREATED_TOPIC0,
         decode: flap_launch,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "robinhood:flap:migration",
@@ -330,7 +467,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[FLAP_PORTAL_ROBINHOOD],
         topic0: FLAP_LAUNCHED_TO_DEX_TOPIC0,
         decode: flap_migration,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "base:zora:coin",
@@ -340,7 +477,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[ZORA_FACTORY],
         topic0: ZORA_COIN_CREATED_V4_TOPIC0,
         decode: zora_coin,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "base:zora:creator-coin",
@@ -350,7 +487,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[ZORA_FACTORY],
         topic0: ZORA_CREATOR_COIN_CREATED_TOPIC0,
         decode: zora_coin,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "base:zora:trend-coin",
@@ -360,7 +497,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[ZORA_FACTORY],
         topic0: ZORA_TREND_COIN_CREATED_TOPIC0,
         decode: zora_trend,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "base:clanker:launch",
@@ -370,7 +507,7 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[CLANKER_V4],
         topic0: CLANKER_V4_TOKEN_CREATED_TOPIC0,
         decode: clanker_launch,
-        creator_from_tx: false,
+        creator: CreatorRule::Event,
     },
     EvmSource {
         key: "robinhood:doppler:launch",
@@ -380,7 +517,37 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         emitters: &[DOPPLER_AIRLOCK_ROBINHOOD],
         topic0: DOPPLER_CREATE_TOPIC0,
         decode: doppler_launch,
-        creator_from_tx: true,
+        creator: CreatorRule::Sender,
+    },
+    EvmSource {
+        key: "base:bankr:launch",
+        chain: "base",
+        launchpad: "bankr",
+        kind: FactKind::Launch,
+        emitters: &[BANKR_INITIALIZER_BASE],
+        topic0: DOPPLER_V4_CREATE_TOPIC0,
+        decode: doppler_v4_launch,
+        creator: CreatorRule::LockBeneficiary,
+    },
+    EvmSource {
+        key: "base:noice:launch",
+        chain: "base",
+        launchpad: "noice",
+        kind: FactKind::Launch,
+        emitters: &[NOICE_INITIALIZER_BASE],
+        topic0: DOPPLER_V4_CREATE_TOPIC0,
+        decode: doppler_v4_launch,
+        creator: CreatorRule::LockBeneficiary,
+    },
+    EvmSource {
+        key: "base:flaunch:launch",
+        chain: "base",
+        launchpad: "flaunch",
+        kind: FactKind::Launch,
+        emitters: &[FLAUNCH_POSITION_MANAGER_BASE],
+        topic0: FLAUNCH_POOL_CREATED_TOPIC0,
+        decode: flaunch_launch,
+        creator: CreatorRule::PositionNft,
     },
 ];
 
@@ -561,9 +728,12 @@ pub async fn ingest_range(
         FactKind::Launch => {
             // creators named only by the transaction (Doppler): one receipt each
             let mut from_tx: BTreeMap<(u64, u64), Address> = BTreeMap::new();
-            if src.creator_from_tx {
+            if src.creator != CreatorRule::Event {
+                // the NFT rule always looks (the event may name the zap)
+                let needs =
+                    |f: &DecodedFact| f.party.is_none() || src.creator == CreatorRule::PositionNft;
                 let mut wanted: Vec<(&RawEvmLog, B256)> = Vec::new();
-                for (l, _) in decoded.iter().filter(|(_, f)| f.party.is_none()) {
+                for (l, _) in decoded.iter().filter(|(_, f)| needs(f)) {
                     if let Some(h) = out.tx_hashes.get(&(l.block_number, l.transaction_index)) {
                         wanted.push((l, *h));
                     }
@@ -571,7 +741,15 @@ pub async fn ingest_range(
                 let hashes: Vec<B256> = wanted.iter().map(|(_, h)| *h).collect();
                 let receipts = rpc.receipts_by_hashes(&hashes).await?;
                 for ((l, _), r) in wanted.iter().zip(&receipts) {
-                    if let Some(c) = creator_from_receipt(r, l.log_index) {
+                    let c = match src.creator {
+                        CreatorRule::Event => None,
+                        CreatorRule::Sender => creator_from_receipt(r, l.log_index),
+                        CreatorRule::LockBeneficiary => {
+                            creator_from_lock(r, l.address, l.log_index)
+                        }
+                        CreatorRule::PositionNft => creator_from_position_nft(r, l),
+                    };
+                    if let Some(c) = c {
                         from_tx.insert((l.block_number, l.log_index), c);
                     }
                 }
@@ -579,9 +757,10 @@ pub async fn ingest_range(
             let rows: Vec<Launch> = decoded
                 .iter()
                 .filter_map(|(l, f)| {
-                    let creator = f
-                        .party
-                        .or_else(|| from_tx.get(&(l.block_number, l.log_index)).copied())?;
+                    let creator = from_tx
+                        .get(&(l.block_number, l.log_index))
+                        .copied()
+                        .or(f.party)?;
                     Some(Launch {
                         chain: src.chain.to_string(),
                         token: format!("{:#x}", f.token),
@@ -674,6 +853,105 @@ mod tests {
     }
 
     #[test]
+    fn lock_beneficiary_and_position_nft_rules() {
+        let w = |a: Address| B256::left_padding_from(a.as_slice()).0;
+        let n = |v: u128| B256::from(alloy_primitives::U256::from(v)).0;
+        let (user, platform, sender) = (
+            address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            address!("ae478d76520000000000000000000000000000ff"),
+            address!("5555555555555555555555555555555555555555"),
+        );
+        let mk =
+            |address: Address, topics: Vec<B256>, data: Vec<[u8; 32]>, log_index: u64| RawEvmLog {
+                address,
+                topics,
+                data: data.concat().into(),
+                block_number: 1,
+                transaction_index: 0,
+                log_index,
+            };
+        let lock = |bens: &[(Address, u128)], i: u64| {
+            let mut d = vec![n(32), n(u128::try_from(bens.len()).unwrap())];
+            for (a, s) in bens {
+                d.push(w(*a));
+                d.push(n(*s));
+            }
+            mk(
+                BANKR_INITIALIZER_BASE,
+                vec![DOPPLER_LOCK_TOPIC0, B256::ZERO],
+                d,
+                i,
+            )
+        };
+        let receipt = |logs: Vec<RawEvmLog>| EvmReceiptInfo {
+            tx_hash: B256::ZERO,
+            block_number: 1,
+            transaction_index: 0,
+            status: scout_core::EvmTxStatus::Success,
+            gas_used: 0,
+            effective_gas_price: None,
+            l1_fee: None,
+            logs,
+            from: Some(sender),
+            to: Some(BANKR_INITIALIZER_BASE),
+        };
+        // Noice shape: 70 % user, 25 % platform, 5 % protocol
+        let r = receipt(vec![lock(
+            &[
+                (DOPPLER_PROTOCOL_BENEFICIARY, 5),
+                (platform, 25),
+                (user, 70),
+            ],
+            4,
+        )]);
+        assert_eq!(creator_from_lock(&r, BANKR_INITIALIZER_BASE, 2), Some(user));
+        // protocol only → the sender
+        let r = receipt(vec![lock(&[(DOPPLER_PROTOCOL_BENEFICIARY, 100)], 4)]);
+        assert_eq!(
+            creator_from_lock(&r, BANKR_INITIALIZER_BASE, 2),
+            Some(sender)
+        );
+        // a Lock of another emitter does not count
+        assert_eq!(
+            creator_from_lock(&r, NOICE_INITIALIZER_BASE, 2),
+            Some(sender)
+        );
+
+        // Flaunch: NFT minted to the zap, then handed to the user
+        let token_id = B256::from(alloy_primitives::U256::from(77u64));
+        let pool = mk(
+            FLAUNCH_POSITION_MANAGER_BASE,
+            vec![FLAUNCH_POOL_CREATED_TOPIC0, B256::ZERO],
+            vec![w(user), w(user), token_id.0],
+            1,
+        );
+        let nft = |from: Address, to: Address, i: u64| {
+            mk(
+                FLAUNCH_POSITION_MANAGER_BASE,
+                vec![
+                    TRANSFER_TOPIC0,
+                    B256::left_padding_from(from.as_slice()),
+                    B256::left_padding_from(to.as_slice()),
+                    token_id,
+                ],
+                vec![],
+                i,
+            )
+        };
+        let r = receipt(vec![
+            nft(Address::ZERO, FLAUNCH_ZAP_BASE, 2),
+            nft(FLAUNCH_ZAP_BASE, user, 3),
+        ]);
+        assert_eq!(creator_from_position_nft(&r, &pool), Some(user));
+        let r = receipt(vec![nft(Address::ZERO, PLACEHOLDER_ONES, 2)]);
+        assert_eq!(
+            creator_from_position_nft(&r, &pool),
+            None,
+            "placeholder = no dev"
+        );
+    }
+
+    #[test]
     fn fourmeme_graduation_names_the_base_token() {
         // live LiquidityAdded of 0x7f81…ffff (GameStop), BSC 2026-10-06
         let data = alloy_primitives::hex::decode(concat!(
@@ -710,6 +988,18 @@ mod tests {
     fn every_source_topic_is_the_keccak_of_its_signature() {
         let k = |s: &str| alloy_primitives::keccak256(s.as_bytes());
         let pk = "(address,address,uint24,int24,address)";
+        assert_eq!(
+            DOPPLER_V4_CREATE_TOPIC0,
+            k("Create(address,address,address)")
+        );
+        assert_eq!(DOPPLER_LOCK_TOPIC0, k("Lock(address,(address,uint96)[])"));
+        assert_eq!(
+            FLAUNCH_POOL_CREATED_TOPIC0,
+            k(
+                "PoolCreated(bytes32,address,address,uint256,bool,uint256,(string,string,string,uint256,uint256,uint256,address,uint24,uint256,bytes,bytes))"
+            )
+        );
+        assert_eq!(TRANSFER_TOPIC0, k("Transfer(address,address,uint256)"));
         assert_eq!(
             DOPPLER_CREATE_TOPIC0,
             k("Create(address,address,address,address)")

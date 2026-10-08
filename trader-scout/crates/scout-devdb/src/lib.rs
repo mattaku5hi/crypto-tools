@@ -83,7 +83,8 @@ pub struct AddressKind {
 /// Launchpads without a bonding curve (no migration rate; owner decision
 /// 2026-10-06). Kept in sync with the config's `launchpads_without_migration`
 /// default.
-pub const NO_CURVE_LAUNCHPADS: &[&str] = &["zora", "clanker", "doppler"];
+pub const NO_CURVE_LAUNCHPADS: &[&str] =
+    &["zora", "clanker", "doppler", "bankr", "noice", "flaunch"];
 
 /// Launches a creator needs before its tokens on launchpads without a curve
 /// get ATH observations: top-runners needs ≥ 3 runners (owner defaults), and

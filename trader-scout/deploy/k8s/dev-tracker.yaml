@@ -12,7 +12,7 @@ data:
   # (ConfigMap volume updates propagate within about a minute).
   dev-tracker.toml: |
     pending_window_days = 3
-    launchpads_without_migration = ["zora", "clanker", "doppler"]
+    launchpads_without_migration = ["zora", "clanker", "doppler", "bankr", "noice", "flaunch"]
 
     [top_runners]
     runner_ath_usd = 500000

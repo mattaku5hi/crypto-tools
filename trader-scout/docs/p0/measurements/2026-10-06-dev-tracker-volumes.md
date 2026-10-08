@@ -154,3 +154,9 @@ openchain database, fields checked against the transactions.
 
 Uniswap v4 `Initialize` (`0xdd466e67`, PoolManager `0x4985…`) accompanies most of these launches; it is not a
 launch event by itself.
+
+Follow-up (2026-10-08): `Lock(address indexed pool, (address,uint96)[])` beneficiaries — Bankr: 95 % to the user
+(the sender or the smart account of its user operation; one sample paid another address), 5 % to the Doppler
+protocol `0x21e2ce70…7a66`; Noice: 70 % user, 25 % Noice `0xae478d76…`, 5 % protocol. Flaunch: the position NFT
+(`tokenId` of `PoolCreated`) goes to the `creator` field directly (14/14) or, when the zap `0x39112541…` is named,
+from the zap to the user in the same transaction (11/11; 2 to the placeholder `0x1111…1111`).

@@ -7,7 +7,7 @@ pending_window_days = 3
 
 # Launchpads with no bonding curve (no migration rate): their devs can only
 # qualify for top-runners (owner decision 2026-10-06).
-launchpads_without_migration = ["zora", "clanker", "doppler"]
+launchpads_without_migration = ["zora", "clanker", "doppler", "bankr", "noice", "flaunch"]
 
 [top_runners]
 runner_ath_usd = 500000          # a "runner" token
