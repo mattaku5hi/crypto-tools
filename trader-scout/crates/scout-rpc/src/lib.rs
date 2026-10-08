@@ -29,6 +29,7 @@ pub use backoff::{
 pub use client::{
     DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_RETRY_AFTER, RATE_LIMIT_EXTRA_RETRIES,
     RATE_LIMIT_MAX_BACKOFF, RequestBudgetExhausted, ResponseTooLarge, RpcClient, is_fallbackable,
+    is_provider_specific,
 };
 pub use endpoint::RpcEndpoint;
 pub use jsonrpc::{JsonRpcEnvelopeError, JsonRpcError, JsonRpcRequest, JsonRpcResponse};

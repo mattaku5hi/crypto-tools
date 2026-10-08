@@ -340,14 +340,24 @@ impl RpcClient {
         R: DeserializeOwned,
     {
         match self.call_endpoint(method, &params, jitter, sleeper).await {
-            Err(err) if is_fallbackable(&err) => match &self.fallback {
-                Some(fb) => {
-                    self.budget.fallback_calls.fetch_add(1, Ordering::AcqRel);
-                    tracing::warn!(method, "primary endpoint failed; repeating on the fallback");
-                    fb.call_endpoint(method, &params, jitter, sleeper).await
+            Err(err) if is_fallbackable(&err) && !is_provider_specific(method) => {
+                match &self.fallback {
+                    Some(fb) => {
+                        self.budget.fallback_calls.fetch_add(1, Ordering::AcqRel);
+                        tracing::warn!(
+                            method,
+                            "primary endpoint failed; repeating on the fallback"
+                        );
+                        match fb.call_endpoint(method, &params, jitter, sleeper).await {
+                            // the fallback cannot serve this method at all: the
+                            // primary's own failure is the informative one
+                            Err(fb_err) if is_method_unavailable(&fb_err) => Err(err),
+                            other => other,
+                        }
+                    }
+                    None => Err(err),
                 }
-                None => Err(err),
-            },
+            }
             other => other,
         }
     }
@@ -612,6 +622,25 @@ fn map_status(status: reqwest::StatusCode, response: &reqwest::Response) -> Opti
     ))))
 }
 
+/// Methods only the primary provider implements (`alchemy_*`): never sent
+/// to a generic fallback (live 2026-10-08: dRPC answered
+/// `alchemy_getAssetTransfers` with -32601, which replaced Alchemy's own
+/// transient error and failed 27 of 100 BSC wallets).
+#[must_use]
+pub fn is_provider_specific(method: &str) -> bool {
+    method.starts_with("alchemy_")
+}
+
+/// A JSON-RPC "method not found / not available" answer (-32601).
+fn is_method_unavailable(err: &ProviderError) -> bool {
+    match err {
+        ProviderError::Other(inner) => inner
+            .downcast_ref::<RpcErrorAdapter>()
+            .is_some_and(|e| e.0.code == -32601),
+        _ => false,
+    }
+}
+
 /// Does a failure (after this endpoint's own retries) justify repeating the
 /// call on the fallback endpoint? Endpoint-level failures do: transport and
 /// 5xx, rate limiting past the retry budget, rejected credentials, quota /
@@ -729,6 +758,50 @@ mod tests {
             .unwrap_err();
         assert!(!is_fallbackable(&e), "{e}");
         assert_eq!(client.fallback_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn provider_specific_methods_and_unavailable_answers_keep_the_primary_error() {
+        let primary = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&primary)
+            .await;
+        let fallback = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": 1,
+                "error": {"code": -32601, "message": "method is not available"}
+            })))
+            .mount(&fallback)
+            .await;
+        let client = client_for(&primary, 1)
+            .await
+            .with_fallback(client_for(&fallback, 1).await);
+        // alchemy_* never goes to the fallback
+        let e = client
+            .call_with::<_, String>(
+                "alchemy_getAssetTransfers",
+                json!([]),
+                &NoJitter,
+                &FakeSleeper::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(is_fallbackable(&e), "the primary's transient error: {e}");
+        assert_eq!(client.fallback_calls(), 0);
+        // a standard method the fallback does not offer: primary error returned
+        let e = client
+            .call_with::<_, String>(
+                "eth_getBlockReceipts",
+                json!([]),
+                &NoJitter,
+                &FakeSleeper::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(client.fallback_calls(), 1);
+        assert!(!e.to_string().contains("not available"), "{e}");
     }
 
     #[test]
