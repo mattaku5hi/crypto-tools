@@ -102,3 +102,18 @@ launch transactions older than a few hours).
   win-streak need migrations; a curve token reaches a runner's ATH only after graduating).
 - Only creators with ≥ 2 launches are classified (a single launch is its creator's own); 4 owner samples, not 8.
 - Expected one-year identity cost ≈ 0.5M calls ≈ $5; steady state cheaper than before.
+
+## Amendment 4 (2026-10-08) — a runner's ATH must be real
+
+Codex `athFdv` is the highest price ever times the total supply; one tiny trade in an empty pool makes it huge.
+Live, Base: Zora coins with 1–8 holders at $1.4M–$99M; 400 Bankr tokens (Doppler v4, 10B supply, ~2,000 airdrop
+holders each) at $380M–$6B with current liquidity of $0 (median) to $3.5k (max). Therefore:
+
+- each ATH observation also stores Codex `holders` and `liquidity`; the store keeps the highest liquidity seen
+  across observations (young tokens are observed every 12 h, so a real runner's peak liquidity is captured);
+- a token is a runner only with `top_runners.min_holders` (default 100) holders — unknown is never assumed;
+- on `top_runners.liquidity_checked_launchpads` (default Bankr, Noice) the highest liquidity seen must also be at
+  least `min_liquidity_bp_of_ath` (default 100 bp = 1 %) of the ATH;
+- migration 0005 made existing observations stale so they are re-observed with holders.
+
+Live after the change (Base, 1,889 observations): ATH ≥ $500k — Bankr 347 → 0 runners, Zora 45 → 0, Clanker 5 → 1.

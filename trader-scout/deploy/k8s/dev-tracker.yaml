@@ -20,6 +20,9 @@ data:
     min_big_runners = 1
     min_other_runners = 2
     max_plausible_ath_usd = 10000000000
+    min_holders = 100
+    liquidity_checked_launchpads = ["bankr", "noice"]
+    min_liquidity_bp_of_ath = 100
     min_migration_rate_pct = 3
     max_inactive_days = 365
 

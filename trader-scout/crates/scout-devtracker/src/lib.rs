@@ -30,8 +30,34 @@ pub struct TopRunnersConfig {
     pub min_other_runners: u32,
     /// ATH above this never makes a runner (manipulated price on a huge supply).
     pub max_plausible_ath_usd: i64,
+    /// A runner needs at least this many holders (Codex, at observation time):
+    /// one tiny trade in an empty pool can show a multi-million ATH (live:
+    /// Zora coins with 1–8 holders at $1.4M–$99M).
+    #[serde(default = "default_min_holders")]
+    pub min_holders: i64,
+    /// Launchpads whose ATH FDV can be an artifact of a huge supply priced by
+    /// one tiny trade (live: Bankr tokens at $380M–$6B with $0–$3.5k
+    /// liquidity): there a runner also needs the highest liquidity seen to be
+    /// at least `min_liquidity_bp_of_ath` of its ATH.
+    #[serde(default = "default_liquidity_checked")]
+    pub liquidity_checked_launchpads: Vec<String>,
+    /// Basis points of the ATH (100 = 1 %).
+    #[serde(default = "default_min_liquidity_bp")]
+    pub min_liquidity_bp_of_ath: i64,
     pub min_migration_rate_pct: u32,
     pub max_inactive_days: i64,
+}
+
+const fn default_min_holders() -> i64 {
+    100
+}
+
+fn default_liquidity_checked() -> Vec<String> {
+    vec!["bankr".to_string(), "noice".to_string()]
+}
+
+const fn default_min_liquidity_bp() -> i64 {
+    100
 }
 
 /// `top_migr` thresholds.
@@ -279,6 +305,26 @@ pub fn dev_stats(rows: &[DevLaunchRow], now: i64, cfg: &DevTrackerConfig) -> Vec
     let runner = cfg.top_runners.runner_ath_usd.saturating_mul(100);
     let big = cfg.top_runners.big_runner_ath_usd.saturating_mul(100);
     let plausible = cfg.top_runners.max_plausible_ath_usd.saturating_mul(100);
+    // unknown holder count = not a runner (never assumed)
+    let held = |r: &DevLaunchRow| {
+        let holders_ok = r
+            .ath_holders
+            .is_some_and(|h| h >= cfg.top_runners.min_holders);
+        let liquidity_ok = !cfg
+            .top_runners
+            .liquidity_checked_launchpads
+            .iter()
+            .any(|lp| lp == &r.launchpad)
+            || match (r.ath_max_liquidity_cents, r.ath_fdv_cents) {
+                (Some(liq), Some(ath)) => {
+                    i128::from(liq).saturating_mul(10_000)
+                        >= i128::from(ath)
+                            .saturating_mul(i128::from(cfg.top_runners.min_liquidity_bp_of_ath))
+                }
+                _ => false,
+            };
+        holders_ok && liquidity_ok
+    };
     let no_curve = |lp: &str| cfg.launchpads_without_migration.iter().any(|x| x == lp);
     let mut out = Vec::with_capacity(by_dev.len());
     for ((chain, creator), mut ls) in by_dev {
@@ -313,10 +359,13 @@ pub fn dev_stats(rows: &[DevLaunchRow], now: i64, cfg: &DevTrackerConfig) -> Vec
             migration_rate_bp: rate_bp(migrated, resolved),
             current_streak,
             runners: count(&|r| {
-                r.ath_fdv_cents
-                    .is_some_and(|a| a >= runner && a <= plausible)
+                held(r)
+                    && r.ath_fdv_cents
+                        .is_some_and(|a| a >= runner && a <= plausible)
             }),
-            big_runners: count(&|r| r.ath_fdv_cents.is_some_and(|a| a >= big && a <= plausible)),
+            big_runners: count(&|r| {
+                held(r) && r.ath_fdv_cents.is_some_and(|a| a >= big && a <= plausible)
+            }),
             last_launch_at: ls.last().map_or(0, |r| r.created_at),
         });
     }
@@ -454,6 +503,8 @@ mod tests {
             created_at: at,
             migrated_at: migrated.then_some(at + 60),
             ath_fdv_cents: ath_usd.map(|u| u * 100),
+            ath_holders: ath_usd.map(|_| 500),
+            ath_max_liquidity_cents: ath_usd.map(|u| u * 10),
         }
     }
 
@@ -565,6 +616,41 @@ mod tests {
         ];
         rows.extend((40..140).map(|d| l("m", "pump", d, false, None)));
         assert!(!cats(&rows, "m").contains(&Category::TopRunners));
+    }
+
+    #[test]
+    fn thin_pool_ath_without_holders_is_not_a_runner() {
+        let mut rows = vec![
+            l("t", "zora", 1, false, Some(2_000_000)),
+            l("t", "zora", 2, false, Some(900_000)),
+            l("t", "zora", 3, false, Some(800_000)),
+        ];
+        assert_eq!(cats(&rows, "t"), [Category::TopRunners]);
+        // one tiny trade in an empty pool: a $2M "ATH" with 3 holders
+        rows[0].ath_holders = Some(3);
+        assert!(cats(&rows, "t").is_empty());
+        // unknown holders are never assumed
+        rows[0].ath_holders = None;
+        assert!(cats(&rows, "t").is_empty());
+    }
+
+    #[test]
+    fn supply_artifact_ath_needs_liquidity_on_checked_launchpads() {
+        let mut rows = vec![
+            l("b", "bankr", 1, false, Some(400_000_000)),
+            l("b", "bankr", 2, false, Some(900_000)),
+            l("b", "bankr", 3, false, Some(800_000)),
+        ];
+        // liquidity seen = 10 % of ATH (test builder): real runners
+        assert_eq!(cats(&rows, "b"), [Category::TopRunners]);
+        // $400M "ATH" with $46 of liquidity (live Bankr shape)
+        rows[0].ath_max_liquidity_cents = Some(4_600);
+        assert!(cats(&rows, "b").is_empty());
+        // the same numbers on a launchpad without the check still count
+        for r in &mut rows {
+            r.launchpad = "zora".into();
+        }
+        assert_eq!(cats(&rows, "b"), [Category::TopRunners]);
     }
 
     #[test]

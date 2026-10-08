@@ -17,6 +17,14 @@ min_other_runners = 2            # … plus this many further runners
 # ATH above this is treated as implausible (manipulated price on a huge
 # supply) and never makes a runner; the observation is kept as is.
 max_plausible_ath_usd = 10000000000
+# A runner also needs this many holders (Codex): one tiny trade in an empty
+# pool can show a multi-million ATH (Zora coins with 1-8 holders at $1.4M-$99M).
+min_holders = 100
+# Launchpads whose ATH FDV can be a supply artifact (Bankr tokens at $380M-$6B
+# with $0-$3.5k liquidity): a runner there also needs the highest liquidity seen
+# to be at least this share of its ATH (basis points, 100 = 1 %).
+liquidity_checked_launchpads = ["bankr", "noice"]
+min_liquidity_bp_of_ath = 100
 min_migration_rate_pct = 3       # skipped for launchpads without migration
 max_inactive_days = 365          # last launch no older than this
 

@@ -73,6 +73,8 @@ async fn facts_are_idempotent_and_joined_for_the_derivation() {
         ath_at: Some(160),
         source: "codex".into(),
         observed_at: observed,
+        holders: Some(500),
+        liquidity_cents: Some(1_000_000),
     };
     db.upsert_ath(&[ath(10_000_000, 10)]).await.unwrap();
     // an older observation never overwrites a newer one

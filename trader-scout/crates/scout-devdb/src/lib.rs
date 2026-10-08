@@ -26,6 +26,8 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("../migrations/0002_dev_identity.sql")),
     (3, include_str!("../migrations/0003_delivery_members.sql")),
     (4, include_str!("../migrations/0004_dev_histories.sql")),
+    (5, include_str!("../migrations/0005_ath_holders.sql")),
+    (6, include_str!("../migrations/0006_ath_liquidity.sql")),
 ];
 
 /// Rows per `INSERT … SELECT FROM UNNEST` statement.
@@ -66,6 +68,11 @@ pub struct AthObservation {
     pub ath_at: Option<i64>,
     pub source: String,
     pub observed_at: i64,
+    /// Holder count reported with the observation (`None` = unknown).
+    pub holders: Option<i64>,
+    /// Pool liquidity in USD cents at observation time (`None` = unknown);
+    /// the store keeps the highest seen.
+    pub liquidity_cents: Option<i64>,
 }
 
 /// What is known about a creator address (ADR-021 amendment 1).
@@ -115,6 +122,10 @@ pub struct DevLaunchRow {
     pub created_at: i64,
     pub migrated_at: Option<i64>,
     pub ath_fdv_cents: Option<i64>,
+    /// Holders reported with the ATH observation (`None` = unknown).
+    pub ath_holders: Option<i64>,
+    /// Highest pool liquidity seen across ATH observations (USD cents).
+    pub ath_max_liquidity_cents: Option<i64>,
 }
 
 /// Connection pool to the fact store.
@@ -247,11 +258,14 @@ impl DevDb {
         let mut n = 0;
         for r in rows {
             n += sqlx::query(
-                "INSERT INTO ath (chain, token, ath_fdv_cents, ath_at, source, observed_at)
-                 VALUES ($1, $2, $3, $4, $5, $6)
+                "INSERT INTO ath (chain, token, ath_fdv_cents, ath_at, source, observed_at, holders,
+                                  max_liquidity_cents)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                  ON CONFLICT (chain, token) DO UPDATE SET
                     ath_fdv_cents = EXCLUDED.ath_fdv_cents, ath_at = EXCLUDED.ath_at,
-                    source = EXCLUDED.source, observed_at = EXCLUDED.observed_at
+                    source = EXCLUDED.source, observed_at = EXCLUDED.observed_at,
+                    holders = EXCLUDED.holders,
+                    max_liquidity_cents = GREATEST(ath.max_liquidity_cents, EXCLUDED.max_liquidity_cents)
                  WHERE EXCLUDED.observed_at >= ath.observed_at",
             )
             .bind(&r.chain)
@@ -260,6 +274,8 @@ impl DevDb {
             .bind(r.ath_at)
             .bind(&r.source)
             .bind(r.observed_at)
+            .bind(r.holders)
+            .bind(r.liquidity_cents)
             .execute(&mut *tx)
             .await?
             .rows_affected();
@@ -337,7 +353,8 @@ impl DevDb {
                          THEN COALESCE(l.signer, 'contract:' || l.creator)
                          ELSE l.creator END AS creator,
                     l.token, l.launchpad, l.created_at,
-                    m.migrated_at, a.ath_fdv_cents
+                    m.migrated_at, a.ath_fdv_cents, a.holders AS ath_holders,
+                    a.max_liquidity_cents AS ath_max_liquidity_cents
              FROM launches l
              LEFT JOIN address_kinds k ON k.chain = l.chain AND k.address = l.creator
              LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
@@ -363,6 +380,8 @@ impl DevDb {
                 created_at: r.get("created_at"),
                 migrated_at: r.get("migrated_at"),
                 ath_fdv_cents: r.get("ath_fdv_cents"),
+                ath_holders: r.get("ath_holders"),
+                ath_max_liquidity_cents: r.get("ath_max_liquidity_cents"),
             };
             if group
                 .last()

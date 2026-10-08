@@ -6,6 +6,8 @@
 //! subscription, so only tokens that can be runners are observed: migrated
 //! tokens of curve launchpads and every token of launchpads without a curve
 //! (Zora, Clanker), refreshed by age (`scout_devdb::DevDb::ath_candidates`).
+//! The current holder count is stored with each observation (a runner needs
+//! `top_runners.min_holders`: thin pools fake huge ATHs).
 //! A token Codex does not return is stored as an observation of 0 with source
 //! `codex-missing`, so it is retried on the age schedule, not every pass.
 
@@ -71,7 +73,7 @@ pub struct AthReport {
 
 async fn query(http: &reqwest::Client, key: &str, ids: &[String]) -> Result<Value, AthError> {
     let q = format!(
-        "{{ filterTokens(tokens: {}, limit: {}) {{ results {{ token {{ address networkId extrema {{ athFdv athFdvTimestamp }} }} }} }} }}",
+        "{{ filterTokens(tokens: {}, limit: {}) {{ results {{ holders liquidity token {{ address networkId extrema {{ athFdv athFdvTimestamp }} }} }} }} }}",
         serde_json::to_string(ids).map_err(|e| AthError::Http(e.to_string()))?,
         CODEX_BATCH
     );
@@ -148,6 +150,12 @@ pub async fn observe_ath(
                     .and_then(Value::as_i64),
                 source: "codex".to_string(),
                 observed_at: now,
+                holders: r.get("holders").and_then(Value::as_i64),
+                liquidity_cents: r.get("liquidity").and_then(|v| match v {
+                    Value::String(s) => usd_to_cents(s),
+                    Value::Number(n) => usd_to_cents(&n.to_string()),
+                    _ => None,
+                }),
             });
         }
         report.observed += rows.len();
@@ -164,6 +172,8 @@ pub async fn observe_ath(
                     ath_at: None,
                     source: "codex-missing".to_string(),
                     observed_at: now,
+                    holders: None,
+                    liquidity_cents: None,
                 });
             }
         }
