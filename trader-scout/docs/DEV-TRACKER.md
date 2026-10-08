@@ -187,3 +187,11 @@ the lists fill only as time passes; with it they are complete from the first day
 6. Done: `dev-tracker derive` (counts per category), `dev-tracker export --test` (look at the album), then turn
    deliveries on (restart `run` with the real config) — the first real delivery sends the complete lists.
 7. Snapshot for the server: `deploy/db-dump.sh devtracker-<date>.dump`.
+
+### Estimate update (2026-10-08, sources added: Robinhood Doppler, Base Bankr / Noice / Flaunch)
+
+These launchpads name the creator only in the transaction, so the backfill reads one receipt per launch. One-day
+backfill smoke: Base 1,156 requests (Bankr 803, Noice 272, Flaunch 52 launches), Robinhood Doppler 964 requests
+(941 launches), 33 s wall. A year ≈ 0.77M Alchemy requests ≈ $8 and ≈ 3–4 h (runs alongside Solana); with the
+option-B identity pass (≈ $5) the one-year EVM backfill costs ≈ $13 on Alchemy. Steady state adds ≈ 2.5k receipts/day
+(≈ $0.8/month). ATH for these launchpads is observed only for creators with ≥ 3 launches (Codex budget).
