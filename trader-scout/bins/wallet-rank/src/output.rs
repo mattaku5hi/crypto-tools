@@ -11,8 +11,8 @@ use scout_analytics::RatioStatus;
 use scout_app::{PriceCoverageDto, PricingMetaDto, SCHEMA_VERSION};
 use scout_core::{MONEY_SCALE, Money};
 use scout_engine::{
-    AnalysisWindow, ExcludedWallet, LowerBound, OpenExposure, QuoteUnit, QuoteUnitBlock,
-    RankedWallet, Ratio, SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION,
+    AnalysisWindow, ExcludedWallet, LowerBound, OpenExposure, OutOfSampleRow, QuoteUnit,
+    QuoteUnitBlock, RankedWallet, Ratio, SOLANA_WALLET_LEDGER_SCOPE, SOLANA_WALLET_LEDGER_VERSION,
     SOLANA_WALLET_RANK_VERSION, ScanStop, SolanaProtocolScope, WalletRankObservation,
     WalletRankReport, format_quote_money, format_scaled_decimal, lamports_to_sol_string,
     quote_unit_decimals, quote_unit_label, quote_units_to_money, rational_to_decimal_string,
@@ -1357,6 +1357,128 @@ fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
+// ---------------------------------------------------------------------
+// Out-of-sample check (A3; docs/p0/cohort-definitions.md criterion 2)
+// ---------------------------------------------------------------------
+
+fn survived_text(s: Option<bool>) -> &'static str {
+    match s {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    }
+}
+
+fn bound_raw(o: &WalletRankObservation) -> Option<i128> {
+    o.net_pnl_lower_bound
+        .as_ref()
+        .and_then(LowerBound::bounded)
+        .copied()
+}
+
+/// Table block appended after the ranking: each ranked wallet on window B.
+pub fn validation_table_lines(rows: &[OutOfSampleRow], window_b: &AnalysisWindow) -> Vec<String> {
+    let (s, f, u) = scout_engine::out_of_sample_counts(rows);
+    let mut out = vec![
+        String::new(),
+        format!(
+            "out-of-sample check on window B [{}, {}): survived {s}, failed {f}, unknown {u} of {}",
+            rfc3339(window_b.since),
+            rfc3339(window_b.until),
+            rows.len()
+        ),
+    ];
+    let header = [
+        "rank_a",
+        "wallet",
+        "survived",
+        "net_pnl_b_lower_bound",
+        "closed_b",
+        "win_rate_b",
+        "status_b",
+    ];
+    let body: Vec<[String; 7]> = rows
+        .iter()
+        .map(|r| {
+            let o = &r.validation;
+            [
+                r.selection_rank.to_string(),
+                addr(o),
+                survived_text(r.survived).to_string(),
+                bound_raw(o)
+                    .and_then(|v| raw_decimal(o.quote, v))
+                    .map_or_else(
+                        || "N/A".to_string(),
+                        |d| format!("{d} {}", quote_unit_label(o.quote)),
+                    ),
+                r.closed_known.to_string(),
+                win_rate_cell(o),
+                o.status.label().to_string(),
+            ]
+        })
+        .collect();
+    let mut widths = header.map(str::len);
+    for row in &body {
+        for (w, c) in widths.iter_mut().zip(row) {
+            *w = (*w).max(c.chars().count());
+        }
+    }
+    let line = |cells: &[String]| {
+        cells
+            .iter()
+            .zip(widths)
+            .map(|(c, w)| format!("{c:<w$}"))
+            .collect::<Vec<_>>()
+            .join("  ")
+            .trim_end()
+            .to_string()
+    };
+    out.push(line(&header.map(String::from)));
+    out.extend(body.iter().map(|r| line(r)));
+    out
+}
+
+#[derive(Debug, Serialize)]
+pub struct ValidationRecord {
+    pub kind: &'static str,
+    pub selection_rank: usize,
+    pub wallet: String,
+    pub chain: String,
+    pub window_b: WindowDto,
+    pub quote_unit: &'static str,
+    /// `yes` / `no` / `unknown` (unknown or unbounded PnL is never either).
+    pub survived: &'static str,
+    pub net_pnl_lower_bound_raw: Option<String>,
+    pub net_pnl_lower_bound: Option<String>,
+    pub closed_known: u64,
+    pub win_rate_lower_bound: Option<RationalDto>,
+    pub status: &'static str,
+}
+
+/// One `wallet_validation` JSONL record per ranked wallet.
+pub fn validation_jsonl_lines(rows: &[OutOfSampleRow], window_b: &AnalysisWindow) -> Vec<String> {
+    rows.iter()
+        .filter_map(|r| {
+            let o = &r.validation;
+            serde_json::to_string(&ValidationRecord {
+                kind: "wallet_validation",
+                selection_rank: r.selection_rank,
+                wallet: addr(o),
+                chain: o.chain.name.to_string(),
+                window_b: window_dto(window_b),
+                quote_unit: quote_unit_label(o.quote),
+                survived: survived_text(r.survived),
+                net_pnl_lower_bound_raw: bound_raw(o).map(|v| v.to_string()),
+                net_pnl_lower_bound: bound_raw(o).and_then(|v| raw_decimal(o.quote, v)),
+                closed_known: r.closed_known,
+                win_rate_lower_bound: o.win_rate_lower_bound.map(|w| rational(w.wins, w.episodes)),
+                status: o.status.label(),
+            })
+            .ok()
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1532,5 +1654,30 @@ mod tests {
         let o = serde_json::to_value(observed).unwrap();
         assert_eq!(o["left_censored_episodes"], 0);
         assert_eq!(o["has_left_censored_inventory"], false);
+    }
+
+    #[test]
+    fn validation_block_reports_survival_per_ranked_wallet() {
+        let rep = report(); // wallet 1 ranked (top 1)
+        let window_b = AnalysisWindow {
+            since: 1_790_000_000,
+            until: 1_790_604_800,
+            as_of: 1_790_604_800,
+            source: scout_engine::WindowSource::Period,
+        };
+        let rows = scout_engine::out_of_sample(&rep, &[wallet(1, -3_000, 10_000)]);
+        let table = validation_table_lines(&rows, &window_b);
+        assert!(
+            table[1].contains("survived 0, failed 1, unknown 0 of 1"),
+            "{table:?}"
+        );
+        assert!(table[2].starts_with("rank_a"));
+        assert!(table[3].contains(" no "), "{table:?}");
+        let j: serde_json::Value =
+            serde_json::from_str(&validation_jsonl_lines(&rows, &window_b)[0]).unwrap();
+        assert_eq!(j["kind"], "wallet_validation");
+        assert_eq!(j["selection_rank"], 1);
+        assert_eq!(j["survived"], "no");
+        assert_eq!(j["window_b"]["source"], "period");
     }
 }

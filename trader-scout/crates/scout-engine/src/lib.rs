@@ -118,9 +118,10 @@ pub use solana_wallet_ledger::{
 };
 pub use solana_wallet_rank::{
     DEFAULT_MAX_UNKNOWN_EPISODE_SHARE_PERCENT, DEFAULT_TOP, ExcludedWallet, ExclusionReason,
-    OpenExposure, PnlStatus, RankBy, RankPolicy, RankProfile, RankedWallet, Ratio,
+    OpenExposure, OutOfSampleRow, PnlStatus, RankBy, RankPolicy, RankProfile, RankedWallet, Ratio,
     SOLANA_WALLET_RANK_VERSION, WalletRankObservation, WalletRankReport,
-    exclude_quote_unit_not_on_chain, money_exact_sol_string, rank_solana_wallets,
+    exclude_quote_unit_not_on_chain, money_exact_sol_string, out_of_sample, out_of_sample_counts,
+    rank_solana_wallets,
 };
 pub use solana_wallet_stats::{
     MAX_WALLET_CONCURRENCY, SolanaWalletStats, SolanaWalletStatsReport, WalletScanStatus,

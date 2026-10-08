@@ -1045,6 +1045,71 @@ pub fn money_exact_sol_string(m: Money) -> String {
     crate::solana_wallet_stats::format_scaled_decimal(m.scaled_units(), MONEY_SCALE + 9)
 }
 
+/// One selected wallet re-checked on a disjoint validation window
+/// (`docs/p0/cohort-definitions.md`, criterion 2: select on window A,
+/// re-verify on window B — a wallet that only looks good where it was found
+/// has been curve-fit, not validated).
+#[derive(Debug, Clone)]
+pub struct OutOfSampleRow {
+    /// Rank on the selection window (1-based).
+    pub selection_rank: usize,
+    /// The validation window's observation (same quote unit as the selection).
+    pub validation: WalletRankObservation,
+    /// Known closed episodes of the quote unit in the validation window.
+    pub closed_known: u64,
+    /// `Some(true)`: worst-case realized net PnL > 0 in the validation
+    /// window; `Some(false)`: ≤ 0; `None`: unknown or unbounded (never
+    /// counted as either).
+    pub survived: Option<bool>,
+}
+
+/// Re-check every ranked wallet of `selection` on `validation` (cards of the
+/// same wallets over a disjoint window), in selection-rank order. A wallet
+/// without a validation card is left out (the caller scans every ranked one).
+#[must_use]
+pub fn out_of_sample(
+    selection: &WalletRankReport,
+    validation: &[SolanaWalletStats],
+) -> Vec<OutOfSampleRow> {
+    let quote = selection.policy.quote;
+    selection
+        .ranked
+        .iter()
+        .filter_map(|r| {
+            let card = validation
+                .iter()
+                .find(|w| w.wallet == r.observation.wallet && w.chain == r.observation.chain)?;
+            let obs = observe(card, quote);
+            let closed_known = obs
+                .ledger
+                .as_ref()
+                .map_or(0, |l| unit_closed_known(l, quote));
+            let survived = obs
+                .net_pnl_lower_bound
+                .as_ref()
+                .and_then(LowerBound::bounded)
+                .map(|v| *v > 0);
+            Some(OutOfSampleRow {
+                selection_rank: r.rank,
+                validation: obs,
+                closed_known,
+                survived,
+            })
+        })
+        .collect()
+}
+
+/// `(survived, failed, unknown)` counts of an out-of-sample check.
+#[must_use]
+pub fn out_of_sample_counts(rows: &[OutOfSampleRow]) -> (usize, usize, usize) {
+    rows.iter()
+        .fold((0, 0, 0), |(s, f, u), r| match r.survived {
+            Some(true) => (s + 1, f, u),
+            Some(false) => (s, f + 1, u),
+            None => (s, f, u + 1),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

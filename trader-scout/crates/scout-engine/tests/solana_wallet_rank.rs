@@ -1249,3 +1249,30 @@ fn quote_usd_rank_uses_the_usd_net_after_failed_fees() {
         .unwrap();
     assert_eq!(a.observation.net_pnl_raw, Some(400));
 }
+
+#[test]
+fn out_of_sample_rechecks_the_selection_on_another_window() {
+    let selection = rank_solana_wallets(
+        &[
+            Spec::new(1).pnl(500, 1_000).build(),
+            Spec::new(2).pnl(300, 1_000).build(),
+        ],
+        &policy(RankProfile::Quality, RankBy::RealizedNetPnl, 20),
+    );
+    assert_eq!(ranked_ids(&selection), vec![1, 2]);
+    // window B: wallet 1 keeps winning, wallet 2 loses
+    let validation = vec![
+        Spec::new(2).pnl(-200, 1_000).build(),
+        Spec::new(1).closed(5).pnl(100, 1_000).build(),
+    ];
+    let rows = scout_engine::out_of_sample(&selection, &validation);
+    assert_eq!(rows.len(), 2);
+    assert_eq!((rows[0].selection_rank, rows[0].survived), (1, Some(true)));
+    assert_eq!(rows[0].closed_known, 5);
+    assert_eq!((rows[1].selection_rank, rows[1].survived), (2, Some(false)));
+    assert_eq!(scout_engine::out_of_sample_counts(&rows), (1, 1, 0));
+    // a ranked wallet without a validation card is left out
+    let rows = scout_engine::out_of_sample(&selection, &validation[..1]);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].selection_rank, 2);
+}

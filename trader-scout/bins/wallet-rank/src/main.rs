@@ -41,9 +41,9 @@ use scout_app::{ChainRun, InputFormat, WriteOutcome, write_lines_to_stdout};
 use scout_core::{AddressBytes, ChainFamily, ChainKey, SolanaPubkey, WalletKey};
 use scout_engine::{
     AnalysisWindow, DEFAULT_TOP, LedgerDecoders, QuoteUnit, RankBy, RankPolicy, RankProfile,
-    ScanStop, SolanaWalletStatsReport, WalletRankReport, pump_amm_decoder,
-    pump_bonding_curve_decoder, rank_solana_wallets, run_solana_wallet_stats_concurrent,
-    sanitize_provider_text,
+    ScanStop, SolanaWalletStatsReport, WalletRankReport, WindowSource, out_of_sample,
+    parse_period_days, pump_amm_decoder, pump_bonding_curve_decoder, rank_solana_wallets,
+    run_solana_wallet_stats_concurrent, sanitize_provider_text,
 };
 use scout_pricing::PriceSource as _;
 use scout_providers::{
@@ -284,6 +284,15 @@ struct Args {
     /// run start). Conflicts with --since.
     #[arg(long, conflicts_with = "since")]
     period: Option<String>,
+
+    /// A3 out-of-sample check (docs/p0/cohort-definitions.md criterion 2):
+    /// rank on the --period window ending N days before --until (window A),
+    /// then re-check every ranked wallet on the last N days (window B,
+    /// disjoint) and report whether its worst-case realized net PnL stayed
+    /// positive there. Single-chain input; doubles the scans of the ranked
+    /// wallets.
+    #[arg(long, requires = "period")]
+    validation_period: Option<String>,
 }
 
 fn policy_from(args: &Args, quote: &str) -> Result<RankPolicy, String> {
@@ -389,6 +398,31 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // A3: window A (selection) ends where window B (validation) starts.
+    let (window, window_b) = match args.validation_period.as_deref() {
+        None => (window, None),
+        Some(v) => match parse_period_days(v) {
+            Ok(days) => {
+                let span = i64::from(days).saturating_mul(86_400);
+                let b = AnalysisWindow {
+                    since: window.until.saturating_sub(span),
+                    until: window.until,
+                    as_of,
+                    source: WindowSource::Period,
+                };
+                let a = AnalysisWindow {
+                    since: window.since.saturating_sub(span),
+                    until: window.until.saturating_sub(span),
+                    ..window
+                };
+                (a, Some(b))
+            }
+            Err(err) => {
+                eprintln!("wallet-rank: --validation-period: {err}");
+                return ExitCode::from(2);
+            }
+        },
+    };
     // Validates the flags (exit 2) before any input is read; the unit is
     // chosen again below once the number of chains is known.
     let policy = match policy_from(&args, args.quote.as_deref().unwrap_or("sol")) {
@@ -455,6 +489,10 @@ fn main() -> ExitCode {
         }
     };
     let groups = scout_app::partition_by_chain(&wallets, |w| &w.chain);
+    if groups.len() > 1 && window_b.is_some() {
+        eprintln!("wallet-rank: --validation-period supports single-chain input only");
+        return ExitCode::from(2);
+    }
     if groups.len() > 1 {
         return multi::run_multi(
             &rt,
@@ -496,6 +534,45 @@ fn main() -> ExitCode {
     );
     if r.run.failure.is_some() {
         return ExitCode::from(r.run.status);
+    }
+    let mut r = r;
+    if let (Some(b), Some(stats_a)) = (window_b.as_ref(), r.stats.as_ref()) {
+        let report_a = rank_solana_wallets(&stats_a.wallets, &policy);
+        let keys: Vec<WalletKey> = report_a
+            .ranked
+            .iter()
+            .filter_map(|rw| {
+                stats_a
+                    .wallets
+                    .iter()
+                    .find(|w| w.wallet == rw.observation.wallet && w.chain == rw.observation.chain)
+                    .map(scout_engine::SolanaWalletStats::wallet_key)
+            })
+            .collect();
+        eprintln!(
+            "wallet-rank: out-of-sample: re-checking {} ranked wallet(s) on window B",
+            keys.len()
+        );
+        let rb = run_chain(&rt, &keys, &chain, &args, &policy, b, 0, true);
+        match rb.stats.as_ref() {
+            Some(stats_b) => {
+                let rows = out_of_sample(&report_a, &stats_b.wallets);
+                let extra = if args.format == "jsonl" {
+                    output::validation_jsonl_lines(&rows, b)
+                } else {
+                    output::validation_table_lines(&rows, b)
+                };
+                // JSONL keeps run_summary as the last record
+                let at = if args.format == "jsonl" {
+                    r.run.lines.len().saturating_sub(1)
+                } else {
+                    r.run.lines.len()
+                };
+                r.run.lines.splice(at..at, extra);
+            }
+            None => eprintln!("wallet-rank: out-of-sample: window B produced no cards"),
+        }
+        r.run.status = r.run.status.max(rb.run.status);
     }
     let outcome = write_lines_to_stdout(r.run.lines);
     if r.run.cancelled {
