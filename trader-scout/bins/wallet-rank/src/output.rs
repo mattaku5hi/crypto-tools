@@ -1378,6 +1378,8 @@ fn bound_raw(o: &WalletRankObservation) -> Option<i128> {
 
 /// Table block appended after the ranking: each ranked wallet on window B.
 pub fn validation_table_lines(rows: &[OutOfSampleRow], window_b: &AnalysisWindow) -> Vec<String> {
+    // `survived` uses the worst case (lower bound); `net_pnl_b_known` is the
+    // known-episode subset, shown for direction only
     let (s, f, u) = scout_engine::out_of_sample_counts(rows);
     let mut out = vec![
         String::new(),
@@ -1450,6 +1452,10 @@ pub struct ValidationRecord {
     pub survived: &'static str,
     pub net_pnl_lower_bound_raw: Option<String>,
     pub net_pnl_lower_bound: Option<String>,
+    /// Realized net PnL of the known episodes only (direction when the lower
+    /// bound is unbounded; not a bound).
+    pub net_pnl_known_raw: Option<String>,
+    pub net_pnl_known: Option<String>,
     pub closed_known: u64,
     pub win_rate_lower_bound: Option<RationalDto>,
     pub status: &'static str,
@@ -1470,6 +1476,8 @@ pub fn validation_jsonl_lines(rows: &[OutOfSampleRow], window_b: &AnalysisWindow
                 survived: survived_text(r.survived),
                 net_pnl_lower_bound_raw: bound_raw(o).map(|v| v.to_string()),
                 net_pnl_lower_bound: bound_raw(o).and_then(|v| raw_decimal(o.quote, v)),
+                net_pnl_known_raw: o.net_pnl_raw.map(|v| v.to_string()),
+                net_pnl_known: o.net_pnl_raw.and_then(|v| raw_decimal(o.quote, v)),
                 closed_known: r.closed_known,
                 win_rate_lower_bound: o.win_rate_lower_bound.map(|w| rational(w.wins, w.episodes)),
                 status: o.status.label(),
