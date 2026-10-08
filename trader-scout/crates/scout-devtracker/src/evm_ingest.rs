@@ -12,7 +12,8 @@
 //! (no creator field): `tx.from`, or the smart account of the `UserOperationEvent` when the
 //! transaction went to an ERC-4337 EntryPoint (one receipt per launch); Base Bankr / Noice (Doppler v4
 //! `Create`): the largest non-protocol `Lock` beneficiary, else the sender; Base Flaunch
-//! `PoolCreated`: the final recipient of the position NFT (the event's `creator` may be the zap).
+//! `PoolCreated`: the final recipient of the position NFT (the event's `creator` may be the zap);
+//! Virtuals `PreLaunched` (Base, Robinhood): the sender; graduation = `Graduated`.
 
 use std::collections::BTreeMap;
 
@@ -97,6 +98,18 @@ pub const PLACEHOLDER_ONES: Address = address!("11111111111111111111111111111111
 /// ERC-20 / ERC-721 `Transfer(address,address,uint256)`.
 pub const TRANSFER_TOPIC0: B256 =
     b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
+/// Virtuals bonding contracts (2026-10-08 survey; the creator is the sender).
+pub const VIRTUALS_BONDING_BASE: Address = address!("1a540088125d00dd3990f9da45ca0859af4d3b01");
+pub const VIRTUALS_BONDING_ROBINHOOD: Address =
+    address!("d4ccbfa37e2f35611b3042e4096ad7a3459bd007");
+/// Virtuals `PreLaunched(address indexed token, address indexed pair, uint256,
+/// uint256, (uint8,uint16,bool,uint8,bool))` — the launch (token = topic 1).
+pub const VIRTUALS_PRELAUNCHED_TOPIC0: B256 =
+    b256!("b9ee8aa6d909a3efd0bf1b0bc2bde7f998f7ad30178b0d45f9227f5382cebc8f");
+/// Virtuals `Graduated(address indexed token, address agentToken)` — the curve
+/// completed (token = topic 1, the same address as at launch).
+pub const VIRTUALS_GRADUATED_TOPIC0: B256 =
+    b256!("381d54fa425631e6266af114239150fae1d5db67bb65b4fa9ecc65013107e07e");
 /// `TokenLaunched(address,address,address,address,uint256,uint256)`.
 pub const PONS_TOKEN_LAUNCHED_TOPIC0: B256 =
     b256!("8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607");
@@ -325,6 +338,24 @@ pub fn creator_from_position_nft(receipt: &EvmReceiptInfo, log: &RawEvmLog) -> O
     (owner != PLACEHOLDER_ONES && owner != FLAUNCH_ZAP_BASE).then_some(owner)
 }
 
+fn virtuals_launch(log: &RawEvmLog) -> Option<DecodedFact> {
+    (log.topics.len() == 3).then_some(())?;
+    Some(DecodedFact {
+        token: topic_address(log, 1)?,
+        party: None,
+        timestamp: None,
+    })
+}
+
+fn virtuals_migration(log: &RawEvmLog) -> Option<DecodedFact> {
+    (log.topics.len() == 2 && log.data.len() == 32).then_some(())?;
+    Some(DecodedFact {
+        token: topic_address(log, 1)?,
+        party: None,
+        timestamp: None,
+    })
+}
+
 fn fourmeme_migration(log: &RawEvmLog) -> Option<DecodedFact> {
     (log.data.len() == 4 * 32 && log.topics.len() == 1).then_some(())?;
     Some(DecodedFact {
@@ -548,6 +579,46 @@ pub const EVM_SOURCES: &[EvmSource] = &[
         topic0: FLAUNCH_POOL_CREATED_TOPIC0,
         decode: flaunch_launch,
         creator: CreatorRule::PositionNft,
+    },
+    EvmSource {
+        key: "base:virtuals:launch",
+        chain: "base",
+        launchpad: "virtuals",
+        kind: FactKind::Launch,
+        emitters: &[VIRTUALS_BONDING_BASE],
+        topic0: VIRTUALS_PRELAUNCHED_TOPIC0,
+        decode: virtuals_launch,
+        creator: CreatorRule::Sender,
+    },
+    EvmSource {
+        key: "base:virtuals:migration",
+        chain: "base",
+        launchpad: "virtuals",
+        kind: FactKind::Migration,
+        emitters: &[VIRTUALS_BONDING_BASE],
+        topic0: VIRTUALS_GRADUATED_TOPIC0,
+        decode: virtuals_migration,
+        creator: CreatorRule::Event,
+    },
+    EvmSource {
+        key: "robinhood:virtuals:launch",
+        chain: "robinhood",
+        launchpad: "virtuals",
+        kind: FactKind::Launch,
+        emitters: &[VIRTUALS_BONDING_ROBINHOOD],
+        topic0: VIRTUALS_PRELAUNCHED_TOPIC0,
+        decode: virtuals_launch,
+        creator: CreatorRule::Sender,
+    },
+    EvmSource {
+        key: "robinhood:virtuals:migration",
+        chain: "robinhood",
+        launchpad: "virtuals",
+        kind: FactKind::Migration,
+        emitters: &[VIRTUALS_BONDING_ROBINHOOD],
+        topic0: VIRTUALS_GRADUATED_TOPIC0,
+        decode: virtuals_migration,
+        creator: CreatorRule::Event,
     },
 ];
 
