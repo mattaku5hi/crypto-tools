@@ -1256,8 +1256,20 @@ impl EvmRpcClient {
                 what: format!("receipts of block {block}"),
             });
         }
+        let kind = match &v {
+            Value::Bool(_) => "a boolean",
+            Value::Number(_) => "a number",
+            Value::String(_) => "a string",
+            Value::Object(_) => "an object",
+            Value::Array(_) | Value::Null => "an array",
+        };
         v.as_array()
-            .ok_or_else(|| malformed("eth_getBlockReceipts", "result is not an array"))?
+            .ok_or_else(|| {
+                malformed(
+                    "eth_getBlockReceipts",
+                    format!("result is not an array (got {kind})"),
+                )
+            })?
             .iter()
             .map(parse_receipt)
             .collect()

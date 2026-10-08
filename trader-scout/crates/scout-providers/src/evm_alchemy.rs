@@ -445,11 +445,27 @@ fn parse_transfer(v: &Value) -> Result<Option<AlchemyTransfer>, EvmSourceError> 
             .filter(|x| !x.is_null())
             .ok_or_else(|| malformed(W, format!("missing field `{k}`")))
     };
-    let hash = b256(get("hash")?, W)?;
-    let block_number = quantity_u64(get("blockNum")?, W)?;
-    let from = address(get("from")?, W)?;
-    let to = match v.get("to").filter(|x| !x.is_null()) {
-        Some(x) => Some(address(x, W)?),
+    // the field name goes into the error (live: one BSC wallet failed with an
+    // unnamed "expected 0x-prefixed hex string")
+    let field = |k: &'static str| move |e: EvmSourceError| malformed(W, format!("`{k}`: {e}"));
+    let hash = b256(get("hash")?, W).map_err(field("hash"))?;
+    let block_number = quantity_u64(get("blockNum")?, W).map_err(field("blockNum"))?;
+    let from = address(get("from")?, W).map_err(field("from"))?;
+    // a contract creation has no recipient: `null`, or `""` (live on BSC)
+    let to = match v
+        .get("to")
+        .filter(|x| !x.is_null() && x.as_str() != Some(""))
+    {
+        Some(x) => Some(address(x, W).map_err(|e| {
+            // untrusted text: show a bounded, alphanumeric-only sample
+            let sample: String = x
+                .to_string()
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(48)
+                .collect();
+            malformed(W, format!("`to` ({sample:?}): {e}"))
+        })?),
         None => None,
     };
     let raw = v
@@ -462,9 +478,12 @@ fn parse_transfer(v: &Value) -> Result<Option<AlchemyTransfer>, EvmSourceError> 
             .filter(|x| !x.is_null())
             .ok_or_else(|| malformed(W, "missing `rawContract.value`"))?,
         W,
-    )?;
+    )
+    .map_err(field("rawContract.value"))?;
     let contract = match (category, raw.get("address").filter(|x| !x.is_null())) {
-        (AlchemyCategory::Erc20, Some(a)) => Some(address(a, W)?),
+        (AlchemyCategory::Erc20, Some(a)) => {
+            Some(address(a, W).map_err(field("rawContract.address"))?)
+        }
         (AlchemyCategory::Erc20, None) => {
             return Err(malformed(W, "erc20 row without `rawContract.address`"));
         }
@@ -506,6 +525,23 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     use super::*;
+
+    #[test]
+    fn empty_to_is_a_contract_creation() {
+        let row = serde_json::json!({
+            "category": "external",
+            "hash": format!("0x{}", "ab".repeat(32)),
+            "blockNum": "0x10",
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "",
+            "rawContract": {"value": "0x0", "address": null},
+        });
+        let t = parse_transfer(&row).unwrap().unwrap();
+        assert_eq!(t.to, None);
+        let mut bad = row.clone();
+        bad["to"] = serde_json::json!("nothex");
+        assert!(parse_transfer(&bad).is_err());
+    }
 
     const W: &str = "0x00000000000000000000000000000000000000aa";
     const OTHER: &str = "0x00000000000000000000000000000000000000bb";
