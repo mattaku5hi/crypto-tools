@@ -1,0 +1,28 @@
+name: Shared Polymarket adapter
+on:
+  push:
+    branches: [feat/p0-p1-foundation]
+    paths: ['polymarket-data/**', '.github/workflows/polymarket-data-feature.yml']
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: polymarket-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-features
+  msrv:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: polymarket-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: cargo check --locked --no-default-features --features streams,gamma
