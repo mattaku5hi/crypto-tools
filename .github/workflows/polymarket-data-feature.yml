@@ -1,4 +1,6 @@
 name: Shared Polymarket adapter
+env:
+  CARGO_TERM_COLOR: never
 on:
   push:
     branches: [feat/p0-p1-foundation]
@@ -23,7 +25,9 @@ jobs:
             cat clippy.log
             python3 - <<'PYCODE'
           from pathlib import Path
-          lines = Path("clippy.log").read_text().splitlines()
+          import re
+          text = re.sub(r"\x1b\[[0-9;]*[mK]", "", Path("clippy.log").read_text())
+          lines = text.splitlines()
           for i, line in enumerate(lines):
               if line.startswith("error"):
                   message = "\n".join(lines[i:i + 10])[:2000]
