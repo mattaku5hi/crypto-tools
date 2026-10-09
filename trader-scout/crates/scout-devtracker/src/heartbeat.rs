@@ -1,8 +1,10 @@
-//! Dead man's switch (healthchecks.io-style ping URL, `SCOUT_HEARTBEAT_URL`):
-//! the daemon pings an external monitor every minute while it and its database
-//! are alive; the monitor alerts when the pings stop (a dead server cannot
-//! report itself). A clean stop is written to the monitor's log (`<url>/log`),
-//! which does not alert. The URL is a secret: it is never printed.
+//! Dead man's switch (`SCOUT_HEARTBEAT_URL`): the daemon sends a plain GET to an
+//! external monitor's ping / heartbeat URL every minute while it and its
+//! database are alive; the monitor alerts when the pings stop (a dead server
+//! cannot report itself). Any service with such a URL works (healthchecks.io,
+//! Better Stack heartbeats, Cronitor). On healthchecks.io (`hc-ping.com`) a
+//! clean stop is also written to the check's log (`<url>/log`, no alert). The
+//! URL is a secret: it is never printed.
 
 use std::time::Duration;
 
@@ -41,29 +43,42 @@ impl Heartbeat {
         format!("{}{suffix}", self.url.trim_end_matches('/'))
     }
 
-    /// "Alive". Failures are returned as text without the URL.
+    /// "Alive" (a plain GET, understood by every heartbeat service).
     ///
     /// # Errors
-    /// Transport failure or a non-2xx answer.
+    /// Transport failure or a non-2xx answer (text without the URL).
     pub async fn ping(&self) -> Result<(), String> {
-        self.send("", None).await
+        Self::check(self.http.get(self.endpoint("")).send().await)
     }
 
-    /// A log entry on the monitor (no alert), e.g. a planned stop.
+    /// healthchecks.io only: a log entry (no alert), e.g. a planned stop.
+    /// Other services have no such endpoint: `Ok(false)`, nothing sent.
     ///
     /// # Errors
     /// As [`Heartbeat::ping`].
-    pub async fn log(&self, message: &str) -> Result<(), String> {
-        self.send("/log", Some(message.to_string())).await
+    pub async fn log(&self, message: &str) -> Result<bool, String> {
+        if !self.supports_log() {
+            return Ok(false);
+        }
+        let resp = self
+            .http
+            .post(self.endpoint("/log"))
+            .body(message.to_string())
+            .send()
+            .await;
+        Self::check(resp).map(|()| true)
     }
 
-    async fn send(&self, suffix: &str, body: Option<String>) -> Result<(), String> {
-        let req = self.http.post(self.endpoint(suffix));
-        let req = match body {
-            Some(b) => req.body(b),
-            None => req,
-        };
-        let resp = req.send().await.map_err(|e| e.without_url().to_string())?;
+    fn supports_log(&self) -> bool {
+        self.url
+            .split("://")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+            .is_some_and(|host| host == "hc-ping.com" || host.ends_with(".hc-ping.com"))
+    }
+
+    fn check(resp: Result<reqwest::Response, reqwest::Error>) -> Result<(), String> {
+        let resp = resp.map_err(|e| e.without_url().to_string())?;
         if resp.status().is_success() {
             Ok(())
         } else {
@@ -87,5 +102,11 @@ mod tests {
         assert_eq!(h.endpoint(""), "https://hc-ping.com/secret-uuid");
         assert_eq!(h.endpoint("/log"), "https://hc-ping.com/secret-uuid/log");
         assert!(!format!("{h:?}").contains("secret"));
+        assert!(h.supports_log());
+        let other = Heartbeat {
+            url: "https://uptime.betterstack.com/api/v1/heartbeat/secret".into(),
+            http: reqwest::Client::new(),
+        };
+        assert!(!other.supports_log(), "only healthchecks has /log");
     }
 }

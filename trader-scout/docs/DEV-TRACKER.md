@@ -90,9 +90,9 @@ excluded); both raw counts are stored, never only the ratio.
   beat is written every minute and the next start compares), 🔴 an incident — a chain's pass (`ingest:<chain>`),
   Helius while Solana runs on its fallback (`provider:helius`), the derivation or the export failing for
   `after_minutes` (30) — sent ONCE, and 🟢 its recovery once (tables `incidents`, `daemon_state`). A server that is
-  dead and never restarts cannot report itself: `SCOUT_HEARTBEAT_URL` (a healthchecks.io check's ping URL; free
-  plan: 20 checks) is pinged every minute while the process and its database are alive, and the monitor alerts
-  when the pings stop; a clean stop is written to the monitor's log (`<url>/log`).
+  dead and never restarts cannot report itself: `SCOUT_HEARTBEAT_URL` (a heartbeat URL of healthchecks.io — free
+  plan: 20 checks —, Better Stack or Cronitor) gets a plain GET every minute while the process and its database are alive, and the monitor alerts
+  when the pings stop; on healthchecks.io a clean stop is also written to the check's log (`<url>/log`).
 - Solana resilience: a failed Helius pass falls back to standard RPC (`SCOUT_SOLANA_FALLBACK_RPC_URL`, else the
   public RPC), at most 6 h of window per pass; every source keeps its cursor, so any gap is read later.
 - Packaging: `deploy/Dockerfile` (multi-stage, non-root), `deploy/docker-compose.yml` (PostgreSQL 16 + the
