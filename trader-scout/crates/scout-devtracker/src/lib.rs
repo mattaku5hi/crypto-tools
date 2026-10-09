@@ -153,6 +153,25 @@ impl Default for DeliveryConfig {
     }
 }
 
+/// Telegram alerts of the daemon (`[alerts]`, all optional).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AlertsConfig {
+    /// Send start / stop / incident messages (same bot and chat as delivery).
+    pub enabled: bool,
+    /// A key failing this long is alerted once; its recovery once.
+    pub after_minutes: u64,
+}
+
+impl Default for AlertsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            after_minutes: 30,
+        }
+    }
+}
+
 /// The whole dev tracker config (`config/dev-tracker.example.toml`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,6 +186,8 @@ pub struct DevTrackerConfig {
     pub schedule: ScheduleConfig,
     #[serde(default)]
     pub delivery: DeliveryConfig,
+    #[serde(default)]
+    pub alerts: AlertsConfig,
 }
 
 /// Invalid configuration.

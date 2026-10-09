@@ -28,6 +28,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (4, include_str!("../migrations/0004_dev_histories.sql")),
     (5, include_str!("../migrations/0005_ath_holders.sql")),
     (6, include_str!("../migrations/0006_ath_liquidity.sql")),
+    (7, include_str!("../migrations/0007_alerts.sql")),
 ];
 
 /// Rows per `INSERT … SELECT FROM UNNEST` statement.
@@ -732,6 +733,144 @@ impl DevDb {
                 delivered_at: r.get("delivered_at"),
             })
             .collect())
+    }
+}
+
+/// An open incident (a key failing since `first_failed_at`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Incident {
+    pub key: String,
+    pub first_failed_at: i64,
+    pub last_failed_at: i64,
+    pub failures: i32,
+    pub last_error: String,
+    /// When the alert was sent (`None` = not yet).
+    pub alerted_at: Option<i64>,
+}
+
+/// What the previous daemon run left behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DaemonState {
+    pub started_at: i64,
+    pub last_beat: i64,
+    pub clean_stop: bool,
+}
+
+impl DevDb {
+    /// Record a failure of `key` (opens the incident or updates it).
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn record_failure(
+        &self,
+        key: &str,
+        error: &str,
+        now: i64,
+    ) -> Result<Incident, DevDbError> {
+        let r = sqlx::query(
+            "INSERT INTO incidents (key, first_failed_at, last_failed_at, failures, last_error)
+             VALUES ($1, $2, $2, 1, $3)
+             ON CONFLICT (key) DO UPDATE SET last_failed_at = EXCLUDED.last_failed_at,
+                failures = incidents.failures + 1, last_error = EXCLUDED.last_error
+             RETURNING key, first_failed_at, last_failed_at, failures, last_error, alerted_at",
+        )
+        .bind(key)
+        .bind(now)
+        .bind(error)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(Incident {
+            key: r.get("key"),
+            first_failed_at: r.get("first_failed_at"),
+            last_failed_at: r.get("last_failed_at"),
+            failures: r.get("failures"),
+            last_error: r.get("last_error"),
+            alerted_at: r.get("alerted_at"),
+        })
+    }
+
+    /// Mark an incident as alerted.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn mark_alerted(&self, key: &str, now: i64) -> Result<(), DevDbError> {
+        sqlx::query("UPDATE incidents SET alerted_at = $2 WHERE key = $1")
+            .bind(key)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Close `key`'s incident; returns it when one was open.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn resolve_incident(&self, key: &str) -> Result<Option<Incident>, DevDbError> {
+        let r = sqlx::query(
+            "DELETE FROM incidents WHERE key = $1
+             RETURNING key, first_failed_at, last_failed_at, failures, last_error, alerted_at",
+        )
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(r.map(|r| Incident {
+            key: r.get("key"),
+            first_failed_at: r.get("first_failed_at"),
+            last_failed_at: r.get("last_failed_at"),
+            failures: r.get("failures"),
+            last_error: r.get("last_error"),
+            alerted_at: r.get("alerted_at"),
+        }))
+    }
+
+    /// Start of a daemon run: returns the previous run's state (if any) and
+    /// records this one as running.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn daemon_started(&self, now: i64) -> Result<Option<DaemonState>, DevDbError> {
+        let prev =
+            sqlx::query("SELECT started_at, last_beat, clean_stop FROM daemon_state WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|r| DaemonState {
+                    started_at: r.get("started_at"),
+                    last_beat: r.get("last_beat"),
+                    clean_stop: r.get("clean_stop"),
+                });
+        sqlx::query(
+            "INSERT INTO daemon_state (id, started_at, last_beat, clean_stop) VALUES (1, $1, $1, false)
+             ON CONFLICT (id) DO UPDATE SET started_at = $1, last_beat = $1, clean_stop = false",
+        )
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(prev)
+    }
+
+    /// Liveness beat of the running daemon.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn daemon_beat(&self, now: i64) -> Result<(), DevDbError> {
+        sqlx::query("UPDATE daemon_state SET last_beat = $1 WHERE id = 1")
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Clean stop of the daemon.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn daemon_stopped(&self, now: i64) -> Result<(), DevDbError> {
+        sqlx::query("UPDATE daemon_state SET last_beat = $1, clean_stop = true WHERE id = 1")
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

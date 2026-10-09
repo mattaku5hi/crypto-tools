@@ -170,10 +170,15 @@ fn read_config(path: &str) -> Result<DevTrackerConfig, String> {
 }
 
 /// One ingestion pass over one chain: sources, (EVM) dev identities, ATH.
-async fn ingest_chain(db: &DevDb, chain: &str, o: &IngestOpts) -> Result<(), String> {
+/// Degradations of a successful pass: `(incident key, error)` — e.g. a
+/// provider that failed while its fallback served the pass.
+type Degraded = Vec<(String, String)>;
+
+async fn ingest_chain(db: &DevDb, chain: &str, o: &IngestOpts) -> Result<Degraded, String> {
     if chain == "solana" {
-        ingest_solana(db, o).await?;
-        return observe_ath(db, chain, o.ath_requests).await;
+        let degraded = ingest_solana(db, o).await?;
+        observe_ath(db, chain, o.ath_requests).await?;
+        return Ok(degraded);
     }
     let profile = match chain {
         "bsc" => scout_sdk::evm::BSC,
@@ -244,7 +249,7 @@ async fn ingest_chain(db: &DevDb, chain: &str, o: &IngestOpts) -> Result<(), Str
         "dev-tracker: {chain}: requests_made={}",
         setup.rpc.total_requests_made()
     );
-    Ok(())
+    Ok(Vec::new())
 }
 
 async fn observe_ath(db: &DevDb, chain: &str, ath_requests: usize) -> Result<(), String> {
@@ -267,7 +272,7 @@ async fn observe_ath(db: &DevDb, chain: &str, ath_requests: usize) -> Result<(),
 }
 
 /// One pass over the pump.fun sources on Helius (`SCOUT_HELIUS_API_KEY`).
-async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<(), String> {
+async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<Degraded, String> {
     let key = std::env::var(HELIUS_ENV)
         .ok()
         .filter(|k| !k.trim().is_empty())
@@ -286,6 +291,7 @@ async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<(), String> {
         .with_max_total_requests(o.max_requests);
     let start = i64::try_from(o.start_hours_back.saturating_mul(3_600)).unwrap_or(i64::MAX);
     let fallback = solana_fallback_rpc()?;
+    let mut degraded: Degraded = Vec::new();
     for src in &SOLANA_SOURCES {
         let primary = if o.solana_via_fallback {
             Err("forced to the fallback".to_string())
@@ -301,6 +307,9 @@ async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<(), String> {
                     "dev-tracker: {}: helius: {e}; trying the standard-RPC fallback",
                     src.key
                 );
+                if !o.solana_via_fallback {
+                    degraded.push(("provider:helius".to_string(), format!("{}: {e}", src.key)));
+                }
                 let (rpc, fb_scrub) = &fallback;
                 let r = scout_devtracker::solana_fallback::fallback_ingest_source(
                     db,
@@ -345,7 +354,7 @@ async fn ingest_solana(db: &DevDb, o: &IngestOpts) -> Result<(), String> {
             eprintln!("dev-tracker: solana:   skipped {sig}: {err}");
         }
     }
-    Ok(())
+    Ok(degraded)
 }
 
 /// Longest window one fallback pass reads (a long Helius outage is caught up
@@ -538,66 +547,211 @@ async fn export(
     Ok(sent)
 }
 
+/// Telegram alerts of the daemon (`[alerts]`): start / stop, an unclean
+/// previous stop, and incidents — a key failing for `after_minutes` is alerted
+/// once and its recovery once, never every failing pass.
+struct Alerts<'a> {
+    db: &'a DevDb,
+    tg: Option<Telegram>,
+    enabled: bool,
+    after_secs: i64,
+}
+
+/// Untrusted error text for a chat message: no control characters, bounded.
+fn alert_text(e: &str) -> String {
+    e.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(300)
+        .collect()
+}
+
+fn duration_text(secs: i64) -> String {
+    let m = secs.max(0).div_euclid(60);
+    if m < 120 {
+        format!("{m} min")
+    } else {
+        format!("{} h {} min", m.div_euclid(60), m.rem_euclid(60))
+    }
+}
+
+impl Alerts<'_> {
+    async fn send(&self, text: &str) {
+        eprintln!("dev-tracker: alert: {text}");
+        if !self.enabled {
+            return;
+        }
+        if let Some(tg) = &self.tg
+            && let Err(e) = tg.send_message(text).await
+        {
+            eprintln!("dev-tracker: alert not delivered: {e}");
+        }
+    }
+
+    async fn failed(&self, key: &str, error: &str) {
+        let t = now();
+        match self.db.record_failure(key, &alert_text(error), t).await {
+            Ok(inc) if inc.alerted_at.is_none() && t - inc.first_failed_at >= self.after_secs => {
+                self.send(&format!(
+                    "🔴 dev-tracker: {key} failing for {} ({} failed pass(es)); needs a look.\nlast error: {}",
+                    duration_text(t - inc.first_failed_at),
+                    inc.failures,
+                    inc.last_error
+                ))
+                .await;
+                if let Err(e) = self.db.mark_alerted(key, t).await {
+                    eprintln!("dev-tracker: incident {key}: {e}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("dev-tracker: incident {key}: {e}"),
+        }
+    }
+
+    async fn ok(&self, key: &str) {
+        match self.db.resolve_incident(key).await {
+            Ok(Some(inc)) if inc.alerted_at.is_some() => {
+                self.send(&format!(
+                    "🟢 dev-tracker: {key} recovered after {}.",
+                    duration_text(now() - inc.first_failed_at)
+                ))
+                .await;
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("dev-tracker: incident {key}: {e}"),
+        }
+    }
+}
+
 async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
     let mut cfg = read_config(config)?;
     let mut next_ingest = 0i64;
     let mut next_derive = 0i64;
     let mut shutdown = Box::pin(shutdown_signal());
     eprintln!("dev-tracker: daemon started ({config})");
-    loop {
+    let alerts = |cfg: &DevTrackerConfig| Alerts {
+        db,
+        tg: telegram_from_env(),
+        enabled: cfg.alerts.enabled,
+        after_secs: minutes(cfg.alerts.after_minutes),
+    };
+    {
+        let a = alerts(&cfg);
+        let started = now();
+        match db.daemon_started(started).await {
+            Ok(Some(prev)) if !prev.clean_stop => {
+                a.send(&format!(
+                    "🟠 dev-tracker restarted after an unclean stop (crash, kill or power loss): last sign of life {} ago.",
+                    duration_text(started - prev.last_beat)
+                ))
+                .await;
+            }
+            Ok(_) => a.send("🟢 dev-tracker started.").await,
+            Err(e) => eprintln!("dev-tracker: daemon state: {e}"),
+        }
+    }
+    // liveness beat every minute (a crash leaves the last beat behind)
+    let beat_db = db.clone();
+    let beat = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            if let Err(e) = beat_db.daemon_beat(now()).await {
+                eprintln!("dev-tracker: liveness beat: {e}");
+            }
+        }
+    });
+    let reason = loop {
         match read_config(config) {
             Ok(c) => cfg = c,
             Err(e) => eprintln!("dev-tracker: config not reloaded, keeping the last good one: {e}"),
         }
         let s = cfg.schedule.clone();
-        if now() >= next_ingest {
-            let opts = IngestOpts::from_config(&cfg);
-            for chain in &s.chains {
-                if let Err(e) = ingest_chain(db, chain, &opts).await {
-                    // one chain's failure never stops the others
-                    eprintln!("dev-tracker: {chain}: pass failed: {e}");
-                }
-            }
-            next_ingest = now().saturating_add(minutes(s.ingest_every_minutes));
-        }
-        if now() >= next_derive {
-            let deliveries = match db.deliveries().await {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("dev-tracker: deliveries not readable: {e}");
-                    Vec::new()
-                }
-            };
-            match derive(db, &cfg, s.since_days, false, &watch_set(&deliveries)).await {
-                Ok(v) => {
-                    let tg = if cfg.delivery.telegram {
-                        telegram_from_env()
-                    } else {
-                        None
-                    };
-                    if cfg.delivery.telegram && tg.is_none() {
-                        eprintln!(
-                            "dev-tracker: telegram skipped ({TELEGRAM_TOKEN_ENV} / {TELEGRAM_CHAT_ENV} not set)"
-                        );
-                    }
-                    match export(db, &cfg, &v, &deliveries, tg.as_ref(), false).await {
-                        Ok(n) => eprintln!("dev-tracker: export: {n} changed list(s) sent"),
-                        Err(e) => eprintln!("dev-tracker: export failed: {e}"),
+        let a = alerts(&cfg);
+        // one cycle; a stop request interrupts it (writes are idempotent and
+        // cursors only move after facts are stored, so nothing is lost)
+        let cycle = async {
+            if now() >= next_ingest {
+                let opts = IngestOpts::from_config(&cfg);
+                for chain in &s.chains {
+                    let key = format!("ingest:{chain}");
+                    match ingest_chain(db, chain, &opts).await {
+                        Ok(degraded) => {
+                            a.ok(&key).await;
+                            if chain == "solana" {
+                                match degraded.iter().find(|(k, _)| k == "provider:helius") {
+                                    Some((k, e)) => a.failed(k, e).await,
+                                    None => a.ok("provider:helius").await,
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // one chain's failure never stops the others
+                            eprintln!("dev-tracker: {chain}: pass failed: {e}");
+                            a.failed(&key, &e).await;
+                        }
                     }
                 }
-                Err(e) => eprintln!("dev-tracker: derive failed: {e}"),
+                next_ingest = now().saturating_add(minutes(s.ingest_every_minutes));
             }
-            next_derive = now().saturating_add(minutes(s.derive_every_minutes));
+            if now() >= next_derive {
+                let deliveries = match db.deliveries().await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("dev-tracker: deliveries not readable: {e}");
+                        Vec::new()
+                    }
+                };
+                match derive(db, &cfg, s.since_days, false, &watch_set(&deliveries)).await {
+                    Ok(v) => {
+                        a.ok("derive").await;
+                        let tg = if cfg.delivery.telegram {
+                            telegram_from_env()
+                        } else {
+                            None
+                        };
+                        if cfg.delivery.telegram && tg.is_none() {
+                            eprintln!(
+                                "dev-tracker: telegram skipped ({TELEGRAM_TOKEN_ENV} / {TELEGRAM_CHAT_ENV} not set)"
+                            );
+                        }
+                        match export(db, &cfg, &v, &deliveries, tg.as_ref(), false).await {
+                            Ok(n) => {
+                                a.ok("export").await;
+                                eprintln!("dev-tracker: export: {n} changed list(s) sent");
+                            }
+                            Err(e) => {
+                                eprintln!("dev-tracker: export failed: {e}");
+                                a.failed("export", &e).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("dev-tracker: derive failed: {e}");
+                        a.failed("derive", &e).await;
+                    }
+                }
+                next_derive = now().saturating_add(minutes(s.derive_every_minutes));
+            }
+        };
+        tokio::select! {
+            () = cycle => {}
+            () = &mut shutdown => break "stop requested during a pass",
         }
         let wait = next_ingest.min(next_derive).saturating_sub(now()).max(1);
         tokio::select! {
             () = tokio::time::sleep(Duration::from_secs(u64::try_from(wait).unwrap_or(60))) => {}
-            () = &mut shutdown => {
-                eprintln!("dev-tracker: shutdown requested, exiting");
-                return Ok(());
-            }
+            () = &mut shutdown => break "stop requested",
         }
+    };
+    beat.abort();
+    eprintln!("dev-tracker: shutdown ({reason}), exiting");
+    if let Err(e) = db.daemon_stopped(now()).await {
+        eprintln!("dev-tracker: daemon state: {e}");
     }
+    alerts(&cfg)
+        .send(&format!("⏹ dev-tracker stopped ({reason})."))
+        .await;
+    Ok(())
 }
 
 fn minutes(m: u64) -> i64 {
@@ -661,7 +815,9 @@ async fn run(args: Args) -> Result<(), String> {
                 solana_via_fallback,
             };
             for chain in chains.split(',').map(str::trim).filter(|c| !c.is_empty()) {
-                ingest_chain(&db, chain, &opts).await?;
+                for (key, e) in ingest_chain(&db, chain, &opts).await? {
+                    eprintln!("dev-tracker: degraded ({key}): {e}");
+                }
             }
         }
         Cmd::Derive {

@@ -44,6 +44,10 @@ data:
     formats = ["gmgn", "axiom", "basedbot"]
     out_dir = "/app/exports"
     telegram = true
+
+    [alerts]
+    enabled = true
+    after_minutes = 30
 ---
 apiVersion: apps/v1
 kind: Deployment

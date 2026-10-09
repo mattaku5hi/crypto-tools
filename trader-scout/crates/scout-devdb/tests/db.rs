@@ -313,3 +313,35 @@ async fn ath_candidates_skip_one_off_creators_without_a_curve() {
         "a one-off creator cannot have 3 runners"
     );
 }
+
+#[tokio::test]
+async fn incidents_open_once_and_close_and_the_daemon_state_survives() {
+    let Some(db) = db().await else { return };
+    let key = format!("test-incident-{}", std::process::id());
+    let a = db.record_failure(&key, "boom", 100).await.unwrap();
+    assert_eq!(
+        (a.first_failed_at, a.failures, a.alerted_at),
+        (100, 1, None)
+    );
+    let b = db.record_failure(&key, "boom again", 160).await.unwrap();
+    assert_eq!(
+        (b.first_failed_at, b.last_failed_at, b.failures),
+        (100, 160, 2)
+    );
+    assert_eq!(b.last_error, "boom again");
+    db.mark_alerted(&key, 170).await.unwrap();
+    let c = db.record_failure(&key, "still", 200).await.unwrap();
+    assert_eq!(c.alerted_at, Some(170), "alerted once, not again");
+    let closed = db.resolve_incident(&key).await.unwrap().unwrap();
+    assert_eq!(closed.failures, 3);
+    assert!(db.resolve_incident(&key).await.unwrap().is_none());
+
+    // liveness: a run that never stopped cleanly is visible to the next one
+    db.daemon_started(1_000).await.unwrap();
+    db.daemon_beat(1_060).await.unwrap();
+    let prev = db.daemon_started(2_000).await.unwrap().unwrap();
+    assert_eq!((prev.last_beat, prev.clean_stop), (1_060, false));
+    db.daemon_stopped(2_100).await.unwrap();
+    let prev = db.daemon_started(3_000).await.unwrap().unwrap();
+    assert!(prev.clean_stop);
+}

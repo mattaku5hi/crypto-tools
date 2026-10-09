@@ -85,6 +85,13 @@ excluded); both raw counts are stored, never only the ratio.
   re-read every cycle (a broken edit is reported and the last good config kept); one chain's failure does not
   stop the others; SIGTERM / Ctrl-C stop it between steps.
 - One-shot commands: `migrate`, `ingest --chains …`, `derive`, `export [--send] [--test]`, `backfill`.
+- Alerts (`[alerts]`, same bot and chat): 🟢 start, ⏹ stop (also when the stop arrives in the middle of a pass —
+  the pass is abandoned safely), 🟠 restart after an unclean stop (crash, `kill -9`, OOM, power loss: a liveness
+  beat is written every minute and the next start compares), 🔴 an incident — a chain's pass (`ingest:<chain>`),
+  Helius while Solana runs on its fallback (`provider:helius`), the derivation or the export failing for
+  `after_minutes` (30) — sent ONCE, and 🟢 its recovery once (tables `incidents`, `daemon_state`). A server that is
+  dead and never restarts cannot report itself; an external dead-man's switch (e.g. a free healthchecks ping)
+  would cover that.
 - Solana resilience: a failed Helius pass falls back to standard RPC (`SCOUT_SOLANA_FALLBACK_RPC_URL`, else the
   public RPC), at most 6 h of window per pass; every source keeps its cursor, so any gap is read later.
 - Packaging: `deploy/Dockerfile` (multi-stage, non-root), `deploy/docker-compose.yml` (PostgreSQL 16 + the
