@@ -14,3 +14,5 @@ Cargo.lock.bak
 /tmp
 /exports/
 /config/dev-tracker.toml
+/logs/
+/config/dev-tracker.backfill.toml

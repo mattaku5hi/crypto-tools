@@ -83,37 +83,42 @@ impl BackfillArgs {
 /// continues (rerun to retry what is left).
 pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
     let chains = a.chains();
-    let evm = async {
-        let mut failed = Vec::new();
-        for chain in chains.iter().filter(|c| c.as_str() != "solana") {
-            if let Err(e) = backfill_evm_chain(db, chain, a).await {
-                eprintln!("dev-tracker: backfill {chain}: {e}");
-                failed.push(chain.clone());
-            }
+    // every chain is its own task (and every Solana day, below): the
+    // multi-threaded runtime spreads the JSON decoding over the cores; one
+    // `join!` would run them all on one thread (measured: Solana's page
+    // decoding starved the EVM steps to one per two minutes)
+    let mut tasks = Vec::new();
+    for chain in chains.iter().filter(|c| c.as_str() != "solana") {
+        let (db, a, chain) = (db.clone(), a.clone(), chain.clone());
+        tasks.push((
+            chain.clone(),
+            tokio::spawn(async move { backfill_evm_chain(&db, &chain, &a).await }),
+        ));
+    }
+    if chains.iter().any(|c| c == "solana") && a.has("solana") {
+        let (db, a) = (db.clone(), a.clone());
+        tasks.push((
+            "solana".to_string(),
+            tokio::spawn(async move { backfill_solana(&db, &a).await }),
+        ));
+    }
+    let mut failed: Vec<String> = Vec::new();
+    for (chain, task) in tasks {
+        let outcome = task.await.map_err(|e| format!("task: {e}")).and_then(|r| r);
+        if let Err(e) = outcome {
+            eprintln!("dev-tracker: backfill {chain}: {e}");
+            failed.push(chain);
         }
-        failed
-    };
-    let sol = async {
-        if chains.iter().any(|c| c == "solana") && a.has("solana") {
-            backfill_solana(db, a).await
-        } else {
-            Ok(())
-        }
-    };
-    let (evm_failed, sol_res) = tokio::join!(evm, sol);
-    if let Err(e) = &sol_res {
-        eprintln!("dev-tracker: backfill solana: {e}");
     }
     if a.has("ath") {
         for chain in &chains {
             backfill_ath(db, chain, a.ath_requests).await?;
         }
     }
-    if !evm_failed.is_empty() || sol_res.is_err() {
+    if !failed.is_empty() {
         return Err(format!(
-            "backfill incomplete (failed: {}{}); rerun to continue",
-            evm_failed.join(","),
-            if sol_res.is_err() { " solana" } else { "" }
+            "backfill incomplete (failed: {}); rerun to continue",
+            failed.join(",")
         ));
     }
     eprintln!("dev-tracker: backfill done");
@@ -278,27 +283,43 @@ async fn backfill_solana(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
         .ok_or_else(|| format!("{HELIUS_ENV} is not set"))?;
     let key = key.trim().to_string();
     let scrub = |t: String| t.replace(&key, "<redacted>");
-    let provider = scout_providers::HeliusProvider::new(&key, 120_000, 4)
-        .map_err(|e| scrub(e.to_string()))?
-        .with_status_filter(scout_providers::StatusFilter::Succeeded)
-        .with_skip_undecodable()
-        .with_page_limit(1_000)
-        .with_max_pages(
-            std::num::NonZeroU32::new(a.solana_max_pages.max(1))
-                .unwrap_or(std::num::NonZeroU32::MIN),
-        );
+    let provider = std::sync::Arc::new(
+        scout_providers::HeliusProvider::new(&key, 120_000, 4)
+            .map_err(|e| scrub(e.to_string()))?
+            .with_status_filter(scout_providers::StatusFilter::Succeeded)
+            .with_skip_undecodable()
+            .with_page_limit(1_000)
+            .with_max_pages(
+                std::num::NonZeroU32::new(a.solana_max_pages.max(1))
+                    .unwrap_or(std::num::NonZeroU32::MIN),
+            ),
+    );
     let days = backfill_days(now(), a.days);
     let mut failed = 0usize;
-    for src in &SOLANA_SOURCES {
+    for src in SOLANA_SOURCES {
         let started = std::time::Instant::now();
         let (mut done, mut skipped, mut txs, mut new) = (0usize, 0usize, 0usize, 0u64);
+        // each day is a task: page decoding runs on all cores
         let mut results = stream::iter(days.iter().copied())
             .map(|d| {
-                let provider = &provider;
-                async move { (d, backfill_solana_day(db, provider, src, d, now()).await) }
+                let (db, provider) = (db.clone(), provider.clone());
+                tokio::spawn(async move {
+                    let r = backfill_solana_day(&db, provider.as_ref(), &src, d, now())
+                        .await
+                        .map_err(|e| e.to_string());
+                    (d, r)
+                })
             })
             .buffer_unordered(a.solana_concurrency.max(1));
-        while let Some((day, r)) = results.next().await {
+        while let Some(joined) = results.next().await {
+            let (day, r) = match joined {
+                Ok(v) => v,
+                Err(e) => {
+                    failed += 1;
+                    eprintln!("dev-tracker: backfill {}: task: {e}", src.key);
+                    continue;
+                }
+            };
             match r {
                 Ok(None) => skipped += 1,
                 Ok(Some(rep)) => {
@@ -322,11 +343,7 @@ async fn backfill_solana(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
                 }
                 Err(e) => {
                     failed += 1;
-                    eprintln!(
-                        "dev-tracker: backfill {} day {day}: {}",
-                        src.key,
-                        scrub(e.to_string())
-                    );
+                    eprintln!("dev-tracker: backfill {} day {day}: {}", src.key, scrub(e));
                 }
             }
         }
