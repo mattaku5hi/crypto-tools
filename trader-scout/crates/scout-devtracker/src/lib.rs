@@ -8,6 +8,7 @@
 pub mod ath;
 pub mod evm_ingest;
 pub mod export;
+pub mod heartbeat;
 pub mod identity;
 pub mod solana_fallback;
 pub mod solana_ingest;

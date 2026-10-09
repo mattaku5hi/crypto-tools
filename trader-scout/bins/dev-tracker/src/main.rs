@@ -651,12 +651,27 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
     }
     // liveness beat every minute (a crash leaves the last beat behind)
     let beat_db = db.clone();
+    // dead man's switch: an external monitor pinged while process AND
+    // database are alive (SCOUT_HEARTBEAT_URL; unset = off)
+    let heartbeat = scout_devtracker::heartbeat::Heartbeat::from_env();
+    eprintln!(
+        "dev-tracker: external heartbeat {}",
+        if heartbeat.is_some() { "on" } else { "off" }
+    );
+    let beat_hb = heartbeat.clone();
     let beat = tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
-            if let Err(e) = beat_db.daemon_beat(now()).await {
-                eprintln!("dev-tracker: liveness beat: {e}");
+            match beat_db.daemon_beat(now()).await {
+                Ok(()) => {
+                    if let Some(hb) = &beat_hb
+                        && let Err(e) = hb.ping().await
+                    {
+                        eprintln!("dev-tracker: external heartbeat: {e}");
+                    }
+                }
+                Err(e) => eprintln!("dev-tracker: liveness beat: {e}"),
             }
         }
     });
@@ -751,6 +766,11 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
     alerts(&cfg)
         .send(&format!("⏹ dev-tracker stopped ({reason})."))
         .await;
+    if let Some(hb) = &heartbeat
+        && let Err(e) = hb.log(&format!("dev-tracker stopped ({reason})")).await
+    {
+        eprintln!("dev-tracker: external heartbeat: {e}");
+    }
     Ok(())
 }
 
