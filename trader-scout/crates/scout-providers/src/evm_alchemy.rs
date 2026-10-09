@@ -802,14 +802,21 @@ mod tests {
             AlchemyConfig::default(),
         );
         // A listing needs 4 requests (2 transfer streams + 2 internal).
+        let started = std::time::Instant::now();
         src.list(W.parse().unwrap(), 0, 9).await.unwrap();
+        let elapsed = started.elapsed();
         assert_eq!(rpc.total_requests_made(), 4);
-        // Bucket of 150 units at 1,500 units/s: with the 150-unit weight of
-        // the method the 4 requests are paced ~100 ms apart; unit cost would
-        // never wait.
+        // Bucket of 150 units at 1,500 units/s: with the method's CU weight
+        // the 4 requests are paced ~70-100 ms apart (> 200 ms for the
+        // listing); unit cost would never wait. Wall time, not the limiter's
+        // own wait counter: on a loaded machine slow requests refill the
+        // bucket and shorten the waits, but never the span.
         let st = limiter.stats();
         assert_eq!(st.acquired, 4);
-        assert!(st.waited_ms >= 150, "CU weight paces requests: {st:?}");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(150),
+            "CU weight paces requests: {elapsed:?} {st:?}"
+        );
         // The second listing needs 4 more but only 1 request is left.
         let e = src.list(W.parse().unwrap(), 0, 9).await.unwrap_err();
         assert!(e.is_budget_exhausted(), "{e}");
