@@ -92,7 +92,10 @@ excluded); both raw counts are stored, never only the ratio.
   `after_minutes` (30) — sent ONCE, and 🟢 its recovery once (tables `incidents`, `daemon_state`). A server that is
   dead and never restarts cannot report itself: `SCOUT_HEARTBEAT_URL` (a heartbeat URL of healthchecks.io — free
   plan: 20 checks —, Better Stack or Cronitor) gets a plain GET every minute while the process and its database are alive, and the monitor alerts
-  when the pings stop; on healthchecks.io a clean stop is also written to the check's log (`<url>/log`).
+  when the pings stop; on healthchecks.io a clean stop is also written to the check's log (`<url>/log`). Progress watchdog:
+  every finished step (a chain pass, the derivation, the export) is marked; no mark for `[alerts] stall_minutes`
+  (90, never below the longest cadence + 15 min) = alive but stuck → one 🔴 from the bot and the external pings
+  stop (the monitor alerts too); progress again → one 🟢 and pings resume.
 - Solana resilience: a failed Helius pass falls back to standard RPC (`SCOUT_SOLANA_FALLBACK_RPC_URL`, else the
   public RPC), at most 6 h of window per pass; every source keeps its cursor, so any gap is read later.
 - Packaging: `deploy/Dockerfile` (multi-stage, non-root), `deploy/docker-compose.yml` (PostgreSQL 16 + the

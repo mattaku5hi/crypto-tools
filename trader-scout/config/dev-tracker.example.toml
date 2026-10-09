@@ -67,3 +67,7 @@ telegram = true                  # needs SCOUT_TELEGRAM_BOT_TOKEN and SCOUT_TELE
 # recovery once — never on every failing pass.
 enabled = true
 after_minutes = 30
+# Alive but stuck: no finished step (a chain pass, the derivation, the export)
+# for this long → alerted once, and the external heartbeat (SCOUT_HEARTBEAT_URL)
+# stops so that monitor alerts too. Never below the longest cadence + 15 min.
+stall_minutes = 90

@@ -162,6 +162,11 @@ pub struct AlertsConfig {
     pub enabled: bool,
     /// A key failing this long is alerted once; its recovery once.
     pub after_minutes: u64,
+    /// No finished step (chain pass, derivation, export) for this long = the
+    /// daemon is alive but stuck: alerted once, and the external heartbeat
+    /// stops so the monitor alerts too. Never below the longest cadence +
+    /// 15 min.
+    pub stall_minutes: u64,
 }
 
 impl Default for AlertsConfig {
@@ -169,6 +174,7 @@ impl Default for AlertsConfig {
         Self {
             enabled: true,
             after_minutes: 30,
+            stall_minutes: 90,
         }
     }
 }

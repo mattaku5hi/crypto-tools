@@ -11,6 +11,7 @@ mod backfill;
 use std::collections::BTreeSet;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -659,22 +660,54 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
         if heartbeat.is_some() { "on" } else { "off" }
     );
     let beat_hb = heartbeat.clone();
+    // progress watchdog: the cycle marks every finished step; no mark for
+    // `stall` seconds = the work is stuck although the process is alive →
+    // stop the external pings (the monitor alerts) and alert once ourselves
+    let progress = Arc::new(AtomicI64::new(now()));
+    let stall_secs = Arc::new(AtomicI64::new(stall_after(&cfg)));
+    let alerts_on = Arc::new(AtomicBool::new(cfg.alerts.enabled));
+    let (beat_progress, beat_stall, beat_alerts_on) =
+        (progress.clone(), stall_secs.clone(), alerts_on.clone());
     let beat = tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
+        let mut stalled_alerted = false;
         loop {
             tick.tick().await;
+            let idle = now().saturating_sub(beat_progress.load(Ordering::Acquire));
+            let stalled = idle > beat_stall.load(Ordering::Acquire);
+            if stalled != stalled_alerted {
+                stalled_alerted = stalled;
+                let text = if stalled {
+                    format!(
+                        "🔴 dev-tracker is alive but stuck: no step finished for {}; external heartbeat paused.",
+                        duration_text(idle)
+                    )
+                } else {
+                    "🟢 dev-tracker is making progress again; external heartbeat resumed."
+                        .to_string()
+                };
+                eprintln!("dev-tracker: alert: {text}");
+                if beat_alerts_on.load(Ordering::Acquire)
+                    && let Some(tg) = telegram_from_env()
+                    && let Err(e) = tg.send_message(&text).await
+                {
+                    eprintln!("dev-tracker: alert not delivered: {e}");
+                }
+            }
             match beat_db.daemon_beat(now()).await {
-                Ok(()) => {
+                Ok(()) if !stalled => {
                     if let Some(hb) = &beat_hb
                         && let Err(e) = hb.ping().await
                     {
                         eprintln!("dev-tracker: external heartbeat: {e}");
                     }
                 }
+                Ok(()) => {}
                 Err(e) => eprintln!("dev-tracker: liveness beat: {e}"),
             }
         }
     });
+    let mark = || progress.store(now(), Ordering::Release);
     let reason = loop {
         match read_config(config) {
             Ok(c) => cfg = c,
@@ -682,6 +715,9 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
         }
         let s = cfg.schedule.clone();
         let a = alerts(&cfg);
+        stall_secs.store(stall_after(&cfg), Ordering::Release);
+        alerts_on.store(cfg.alerts.enabled, Ordering::Release);
+        mark();
         // one cycle; a stop request interrupts it (writes are idempotent and
         // cursors only move after facts are stored, so nothing is lost)
         let cycle = async {
@@ -689,7 +725,9 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
                 let opts = IngestOpts::from_config(&cfg);
                 for chain in &s.chains {
                     let key = format!("ingest:{chain}");
-                    match ingest_chain(db, chain, &opts).await {
+                    let result = ingest_chain(db, chain, &opts).await;
+                    mark();
+                    match result {
                         Ok(degraded) => {
                             a.ok(&key).await;
                             if chain == "solana" {
@@ -716,7 +754,9 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
                         Vec::new()
                     }
                 };
-                match derive(db, &cfg, s.since_days, false, &watch_set(&deliveries)).await {
+                let derived = derive(db, &cfg, s.since_days, false, &watch_set(&deliveries)).await;
+                mark();
+                match derived {
                     Ok(v) => {
                         a.ok("derive").await;
                         let tg = if cfg.delivery.telegram {
@@ -729,7 +769,9 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
                                 "dev-tracker: telegram skipped ({TELEGRAM_TOKEN_ENV} / {TELEGRAM_CHAT_ENV} not set)"
                             );
                         }
-                        match export(db, &cfg, &v, &deliveries, tg.as_ref(), false).await {
+                        let exported = export(db, &cfg, &v, &deliveries, tg.as_ref(), false).await;
+                        mark();
+                        match exported {
                             Ok(n) => {
                                 a.ok("export").await;
                                 eprintln!("dev-tracker: export: {n} changed list(s) sent");
@@ -772,6 +814,16 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
         eprintln!("dev-tracker: external heartbeat: {e}");
     }
     Ok(())
+}
+
+/// No finished step for this long = stuck: `[alerts] stall_minutes`, never
+/// shorter than the longest cadence + 15 min (an idle wait is not a stall).
+fn stall_after(cfg: &DevTrackerConfig) -> i64 {
+    let longest = cfg
+        .schedule
+        .ingest_every_minutes
+        .max(cfg.schedule.derive_every_minutes);
+    minutes(cfg.alerts.stall_minutes.max(longest.saturating_add(15)))
 }
 
 fn minutes(m: u64) -> i64 {
@@ -928,5 +980,32 @@ fn main() -> ExitCode {
             eprintln!("dev-tracker: {e}");
             ExitCode::from(4)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn cfg(toml_tail: &str) -> DevTrackerConfig {
+        let base = include_str!("../../../config/dev-tracker.example.toml");
+        DevTrackerConfig::from_toml(&base.replace("stall_minutes = 90", toml_tail)).unwrap()
+    }
+
+    #[test]
+    fn stall_threshold_never_undercuts_an_idle_wait() {
+        // default: 90 min (cadences 30 / 60)
+        assert_eq!(stall_after(&cfg("stall_minutes = 90")), 90 * 60);
+        // too short for a 60-minute derivation cadence: raised to 75 min
+        assert_eq!(stall_after(&cfg("stall_minutes = 5")), 75 * 60);
+    }
+
+    #[test]
+    fn durations_read_naturally() {
+        assert_eq!(duration_text(59), "0 min");
+        assert_eq!(duration_text(45 * 60), "45 min");
+        assert_eq!(duration_text(150 * 60), "2 h 30 min");
     }
 }

@@ -48,6 +48,7 @@ data:
     [alerts]
     enabled = true
     after_minutes = 30
+    stall_minutes = 90
 ---
 apiVersion: apps/v1
 kind: Deployment
