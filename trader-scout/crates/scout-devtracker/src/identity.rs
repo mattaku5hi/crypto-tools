@@ -28,7 +28,7 @@
 use std::collections::BTreeSet;
 
 use alloy_primitives::B256;
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use scout_devdb::{AddressKind, DevDb, DevDbError};
 use scout_providers::{EvmRpcClient, EvmSourceError};
 use serde_json::json;
@@ -59,6 +59,14 @@ pub enum IdentityError {
     Rpc(#[from] EvmSourceError),
     #[error("{0}")]
     Db(#[from] DevDbError),
+    #[error(
+        "history pagination reached {max_pages} pages for {dev} via {intermediary}; pageKey remains"
+    )]
+    HistoryPageLimit {
+        dev: String,
+        intermediary: String,
+        max_pages: usize,
+    },
 }
 
 /// Per-pass limits of [`enrich_identities`].
@@ -207,21 +215,32 @@ pub async fn enrich_identities(
         let devs = db.history_candidates(chain, max_histories).await?;
         if !devs.is_empty() {
             let intermediaries = db.shared_intermediaries(chain).await?;
-            for dev in devs {
-                let mut attributed = 0u64;
-                for inter in &intermediaries {
-                    let hashes = transactions_to(rpc, &dev, inter).await?;
-                    if !hashes.is_empty() {
-                        attributed += db.set_signer_by_txs(chain, inter, &hashes, &dev).await?;
+            let histories: Result<Vec<u64>, IdentityError> = stream::iter(devs)
+                .map(|dev| {
+                    let intermediaries = &intermediaries;
+                    async move {
+                        let mut attributed = 0u64;
+                        for inter in intermediaries {
+                            let hashes = transactions_to(rpc, &dev, inter).await?;
+                            if !hashes.is_empty() {
+                                attributed +=
+                                    db.set_signer_by_txs(chain, inter, &hashes, &dev).await?;
+                            }
+                        }
+                        db.mark_history_fetched(
+                            chain,
+                            &dev,
+                            i32::try_from(attributed).unwrap_or(i32::MAX),
+                            now,
+                        )
+                        .await?;
+                        Ok(attributed)
                     }
-                }
-                db.mark_history_fetched(
-                    chain,
-                    &dev,
-                    i32::try_from(attributed).unwrap_or(i32::MAX),
-                    now,
-                )
-                .await?;
+                })
+                .buffer_unordered(concurrency)
+                .try_collect()
+                .await;
+            for attributed in histories? {
                 report.histories_fetched += 1;
                 report.launches_from_histories += attributed;
             }
@@ -239,7 +258,7 @@ async fn transactions_to(
     rpc: &EvmRpcClient,
     from: &str,
     to: &str,
-) -> Result<Vec<String>, EvmSourceError> {
+) -> Result<Vec<String>, IdentityError> {
     let mut out = Vec::new();
     let mut page_key: Option<String> = None;
     for _ in 0..MAX_TRANSFER_PAGES {
@@ -274,7 +293,235 @@ async fn transactions_to(
             break;
         }
     }
+    if page_key.is_some() {
+        return Err(IdentityError::HistoryPageLimit {
+            dev: from.to_owned(),
+            intermediary: to.to_owned(),
+            max_pages: MAX_TRANSFER_PAGES,
+        });
+    }
     out.sort_unstable();
     out.dedup();
     Ok(out)
+}
+
+#[cfg(test)]
+mod history_tests {
+    #![allow(
+        clippy::as_conversions,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::unwrap_used
+    )]
+
+    use std::{
+        error::Error,
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
+
+    use scout_devdb::DevDb;
+    use scout_evm::BSC;
+    use scout_providers::{EvmRpcClient, EvmRpcConfig};
+    use scout_rpc::{RpcClient, RpcEndpoint};
+    use serde_json::{Value, json};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    use super::{IdentityBudget, IdentityError, MAX_TRANSFER_PAGES, enrich_identities};
+
+    type Calls = Arc<Mutex<Vec<(Instant, String, String)>>>;
+    const BUDGET: IdentityBudget = IdentityBudget {
+        max_creators: 0,
+        max_signers: 0,
+        max_histories: 2,
+    };
+
+    #[derive(Clone)]
+    struct Transfers {
+        calls: Calls,
+        paged: bool,
+        delay: Duration,
+    }
+
+    impl Respond for Transfers {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+            let from = body["params"][0]["fromAddress"]
+                .as_str()
+                .unwrap_or_default()
+                .into();
+            let to = body["params"][0]["toAddress"]
+                .as_str()
+                .unwrap_or_default()
+                .into();
+            let page = self
+                .calls
+                .lock()
+                .map(|mut calls| {
+                    calls.push((Instant::now(), from, to));
+                    calls.len()
+                })
+                .unwrap_or_default();
+            let result = if self.paged {
+                json!({"transfers": [], "pageKey": format!("page-{page}")})
+            } else {
+                json!({"transfers": []})
+            };
+            ResponseTemplate::new(200)
+                .set_delay(self.delay)
+                .set_body_json(json!({
+                    "jsonrpc":"2.0", "id":body["id"], "result":result
+                }))
+        }
+    }
+
+    struct Data {
+        devs: [String; 2],
+        inters: [String; 2],
+        tokens: [String; 2],
+    }
+
+    impl Data {
+        fn new() -> Self {
+            let base = u64::from(std::process::id()) * 10;
+            Self {
+                devs: [addr(base + 1), addr(base + 2)],
+                inters: [addr(base + 3), addr(base + 4)],
+                tokens: [
+                    format!("identity-history-{}-0", std::process::id()),
+                    format!("identity-history-{}-1", std::process::id()),
+                ],
+            }
+        }
+        fn addresses(&self) -> Vec<String> {
+            self.devs.iter().chain(&self.inters).cloned().collect()
+        }
+    }
+
+    fn addr(value: u64) -> String {
+        format!("0x{value:040x}")
+    }
+
+    async fn seed(pool: &sqlx::PgPool, data: &Data) -> Result<(), Box<dyn Error>> {
+        sqlx::query("INSERT INTO launches (chain, token, launchpad, creator, created_block, created_at, tx_hash, source, signer) SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::bigint[], $7::text[], $8::text[], $9::text[])")
+            .bind(vec!["bsc"; 2]).bind(data.tokens.to_vec()).bind(vec!["flap"; 2])
+            .bind(data.inters.to_vec()).bind(vec![0_i64, 1]).bind(vec![0_i64, 1])
+            .bind(vec!["0xseed0", "0xseed1"]).bind(vec!["identity-test"; 2])
+            .bind(data.devs.to_vec()).execute(pool).await?;
+        sqlx::query("INSERT INTO migrations (chain, token, launchpad, migrated_block, migrated_at, tx_hash, pool, source) SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::bigint[], $5::bigint[], $6::text[], $7::text[], $8::text[])")
+            .bind(vec!["bsc"; 2]).bind(data.tokens.to_vec()).bind(vec!["flap"; 2])
+            .bind(vec![1_i64; 2]).bind(vec![1_i64; 2]).bind(vec!["0xmigration0", "0xmigration1"])
+            .bind(vec![Option::<String>::None; 2]).bind(vec!["identity-test"; 2]).execute(pool).await?;
+        sqlx::query("INSERT INTO address_kinds (chain, address, is_contract, owner, sampled, checked_at) SELECT * FROM UNNEST($1::text[], $2::text[], $3::boolean[], $4::text[], $5::integer[], $6::bigint[])")
+            .bind(vec!["bsc"; 2]).bind(data.inters.to_vec()).bind(vec![true; 2])
+            .bind(vec![Option::<String>::None; 2]).bind(vec![2_i32; 2]).bind(vec![1_i64; 2])
+            .execute(pool).await?;
+        Ok(())
+    }
+
+    async fn mock_rpc(delay: Duration, paged: bool) -> (MockServer, Transfers, EvmRpcClient) {
+        let server = MockServer::start().await;
+        let mock = Transfers {
+            calls: Arc::default(),
+            paged,
+            delay,
+        };
+        Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"method":"alchemy_getAssetTransfers"}),
+            ))
+            .respond_with(mock.clone())
+            .mount(&server)
+            .await;
+        let rpc = EvmRpcClient::with_config(
+            RpcClient::new(RpcEndpoint::new(server.uri()), 5_000, 1).unwrap(),
+            BSC,
+            EvmRpcConfig {
+                concurrency: 2,
+                ..EvmRpcConfig::default()
+            },
+        );
+        (server, mock, rpc)
+    }
+
+    async fn clean(pool: &sqlx::PgPool, data: &Data, addresses: &[String]) {
+        for table in ["migrations", "launches"] {
+            let query = format!("DELETE FROM {table} WHERE chain='bsc' AND token=ANY($1)");
+            let _ = sqlx::query(&query).bind(&data.tokens).execute(pool).await;
+        }
+        let _ = sqlx::query("DELETE FROM dev_histories WHERE chain='bsc' AND dev=ANY($1)")
+            .bind(addresses)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM address_kinds WHERE chain='bsc' AND address=ANY($1)")
+            .bind(addresses)
+            .execute(pool)
+            .await;
+    }
+
+    async fn pass(
+        db: &DevDb,
+        rpc: &EvmRpcClient,
+        now: i64,
+    ) -> Result<super::IdentityReport, IdentityError> {
+        enrich_identities(db, rpc, None, "bsc", BUDGET, now).await
+    }
+
+    #[tokio::test]
+    async fn history_callsite_bounds_concurrency_and_rejects_capped_history() {
+        let Ok(url) = std::env::var("SCOUT_TEST_DATABASE_URL") else {
+            eprintln!("SCOUT_TEST_DATABASE_URL not set: history callsite test skipped");
+            return;
+        };
+        assert!(
+            url.split('?')
+                .next()
+                .is_some_and(|path| path.ends_with("/scout_test")),
+            "SCOUT_TEST_DATABASE_URL must use /scout_test"
+        );
+        let data = Data::new();
+        let addresses = data.addresses();
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        clean(&pool, &data, &addresses).await;
+        let result: Result<_, Box<dyn Error>> = async {
+            let db = DevDb::connect(&url, 4).await?;
+            db.migrate().await?;
+            seed(&pool, &data).await?;
+            let (_s, ok_mock, rpc) = mock_rpc(Duration::from_millis(80), false).await;
+            let report = pass(&db, &rpc, 2).await?;
+            let checkpointed = db.history_candidates("bsc", 10).await?.is_empty();
+            let calls = ok_mock.calls.lock().unwrap().clone();
+            sqlx::query("DELETE FROM dev_histories WHERE chain='bsc' AND dev=ANY($1)").bind(&data.devs).execute(&pool).await?;
+            sqlx::query("DELETE FROM migrations WHERE chain='bsc' AND token=$1").bind(&data.tokens[1]).execute(&pool).await?;
+            let (_s, page_mock, rpc) = mock_rpc(Duration::ZERO, true).await;
+            let capped = pass(&db, &rpc, 3).await;
+            let page_limit = matches!(capped, Err(IdentityError::HistoryPageLimit { max_pages, .. }) if max_pages == MAX_TRANSFER_PAGES);
+            let uncheckpointed = db.history_candidates("bsc", 10).await?.len() == 1;
+            let pages = page_mock.calls.lock().unwrap().len();
+            Ok((report, checkpointed, calls, page_limit, uncheckpointed, pages))
+        }.await;
+        clean(&pool, &data, &addresses).await;
+        pool.close().await;
+        let (report, checkpointed, mut calls, page_limit, uncheckpointed, pages) = result.unwrap();
+        calls.sort_by_key(|(at, _, _)| *at);
+        assert_eq!(report.histories_fetched, 2);
+        assert!(checkpointed);
+        assert_eq!(calls.len(), 4);
+        assert_eq!(
+            calls
+                .iter()
+                .map(|(_, dev, inter)| (dev.as_str(), inter.as_str()))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            4
+        );
+        assert!(
+            calls
+                .windows(2)
+                .any(|pair| pair[1].0.duration_since(pair[0].0) < Duration::from_millis(50))
+        );
+        assert!(page_limit);
+        assert_eq!(pages, MAX_TRANSFER_PAGES);
+        assert!(uncheckpointed);
+    }
 }

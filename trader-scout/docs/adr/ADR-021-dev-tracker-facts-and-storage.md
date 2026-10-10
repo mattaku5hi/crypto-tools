@@ -117,3 +117,22 @@ holders each) at $380M–$6B with current liquidity of $0 (median) to $3.5k (max
 - migration 0005 made existing observations stale so they are re-observed with holders.
 
 Live after the change (Base, 1,889 observations): ATH ≥ $500k — Bankr 347 → 0 runners, Zora 45 → 0, Clanker 5 → 1.
+
+## Amendment 5 (2026-10-10) — bounded candidate-history work and incomplete paging
+
+BSC backfill exposed a long identity step: the daemon checked 500 candidate devs
+against 66 shared intermediaries sequentially, then reported 4,039 attributed
+launches. Its 90-minute progress watchdog fired before that step completed and
+recovered afterwards. Dev identity and transaction matching remain unchanged.
+
+Candidate histories now run with at most the RPC client's configured concurrency
+in flight; each dev checks its intermediaries sequentially and checkpoints only
+after its own history finishes. Completed checkpoints survive cancellation or
+another dev's failure. The same transport limiter still accounts for every call.
+
+A remaining `pageKey` after the existing 50-page bound returns typed
+`IdentityError::HistoryPageLimit` and leaves that dev uncheckpointed. A bounded
+partial listing cannot prove a complete dev history. Existing completed records
+are retained; this change does not retroactively prove that older listings reached
+their natural end. The local PostgreSQL/mock-RPC callsite fixture verifies overlap,
+per-dev checkpoints and the page-limit failure without paid RPC.
