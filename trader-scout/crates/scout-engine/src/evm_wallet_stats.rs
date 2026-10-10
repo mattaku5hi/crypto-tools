@@ -16,7 +16,8 @@
 //! unverified venue touched the wallet's history), malformed logs, trades
 //! on an `IdlOnly` venue deployment.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 use alloy_primitives::Address;
 use scout_api::ProviderError;
@@ -183,6 +184,19 @@ impl EvmRunInfo {
     }
 }
 
+fn collect_coverage_notes(
+    static_note: Option<&'static str>,
+    dynamic_notes: &BTreeSet<&'static str>,
+) -> Vec<String> {
+    static_note
+        .into_iter()
+        .chain(dynamic_notes.iter().copied())
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Everything a stats run reads.
 pub struct EvmStatsSources<'a> {
     pub scanner: &'a EvmHistoryScanner,
@@ -214,6 +228,8 @@ struct RunBudget {
     /// Sum of the estimates of wallets already admitted.
     reserved: std::sync::atomic::AtomicU64,
     limit: u64,
+    /// Distinct provider-owned notes reported by successful wallet listings.
+    coverage_notes: Mutex<BTreeSet<&'static str>>,
 }
 
 impl RunBudget {
@@ -283,6 +299,7 @@ pub async fn run_evm_wallet_stats(
         available: sources.max_requests.map(|m| m.saturating_sub(used)),
         reserved: std::sync::atomic::AtomicU64::new(0),
         limit: sources.max_requests.unwrap_or(0),
+        coverage_notes: Mutex::new(BTreeSet::new()),
     };
     let budget = &budget;
     let cards = run_wallet_cards(&keys, chain, concurrency, cancel, |key, token| async move {
@@ -313,12 +330,13 @@ pub async fn run_evm_wallet_stats(
         },
     );
     info.listing_kind = sources.explorer.kind().to_string();
-    info.coverage_notes = sources
-        .explorer
-        .coverage_note()
-        .map(str::to_string)
-        .into_iter()
-        .collect();
+    info.coverage_notes = collect_coverage_notes(
+        sources.explorer.coverage_note(),
+        &budget
+            .coverage_notes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
     info.logs_source =
         "not used (wallet scans use indexer listings, never window getLogs)".to_string();
     info.block_range = blocks;
@@ -470,6 +488,13 @@ async fn scan_evm_wallet(
         }
         Err(e) => return Ok(Some(evm_error_card(wallet, chain, &e))),
     };
+    if let Some(note) = out.coverage_note {
+        budget
+            .coverage_notes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(note);
+    }
     let mut txs: Vec<RawEvmTransaction> = out.transactions;
     let scanned_n = u64::try_from(txs.len()).unwrap_or(u64::MAX);
     if bounded {

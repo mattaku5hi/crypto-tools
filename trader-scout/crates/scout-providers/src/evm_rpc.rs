@@ -1407,6 +1407,12 @@ impl EvmRpcClient {
         if let Some(ts) = self.cached_timestamp(block) {
             return Ok(ts);
         }
+        self.block_timestamp_fresh(block).await
+    }
+
+    /// Fetch a block timestamp from RPC even when the cache has an entry.
+    /// The fetched value replaces that entry.
+    pub(crate) async fn block_timestamp_fresh(&self, block: u64) -> Result<u64, EvmSourceError> {
         let v = self
             .call_json(
                 "eth_getBlockByNumber",
@@ -1425,6 +1431,21 @@ impl EvmRpcClient {
         )?;
         self.cache_timestamp(block, ts);
         Ok(ts)
+    }
+
+    /// Fetch timestamps for distinct blocks from RPC (bounded concurrency).
+    pub(crate) async fn block_timestamps_fresh(
+        &self,
+        blocks: &[u64],
+    ) -> Result<BTreeMap<u64, u64>, EvmSourceError> {
+        let pairs: Vec<(u64, u64)> = stream::iter(blocks.iter().copied())
+            .map(|b| async move { self.block_timestamp_fresh(b).await.map(|t| (b, t)) })
+            .buffered(self.cfg.concurrency)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<_, _>>()?;
+        Ok(pairs.into_iter().collect())
     }
 
     /// Timestamps of distinct blocks (bounded concurrency).

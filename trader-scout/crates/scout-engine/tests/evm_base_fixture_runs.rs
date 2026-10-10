@@ -18,7 +18,7 @@ use scout_engine::{
     run_evm_wallet_stats,
 };
 use scout_evm::BASE;
-use scout_providers::evm_replay::AlchemyInternalMode;
+use scout_providers::evm_replay::{AlchemyInternalMode, AlchemyReplay, ReplayReply};
 use scout_providers::{
     AlchemyConfig, AlchemyTransfersSource, EvmHistoryScanner, NativeLegPolicy, NativeLegResolver,
     ScanLimits, WalletIndexer,
@@ -142,6 +142,134 @@ async fn run_with(
         calls: scanner.rpc().calls_by_method(),
         alchemy_calls,
     }
+}
+
+#[tokio::test]
+async fn dynamic_alchemy_coverage_note_reaches_run_info_and_keeps_static_limitations() {
+    use serde_json::{Value, json};
+
+    let fixture = evm_base::fixture();
+    let source_rows = AlchemyReplay::from_fixture(&fixture, AlchemyInternalMode::Unsupported);
+    let wallet_addresses = [W_BUY, W_USDC];
+    let mut rows = Vec::new();
+    for wallet in wallet_addresses {
+        let row = source_rows
+            .rows()
+            .iter()
+            .find(|row| {
+                row.category == "external"
+                    && row.from == wallet
+                    && (evm_base::FIRST_BLOCK..=evm_base::FIRST_BLOCK + 7).contains(&row.block)
+            })
+            .expect("fixture wallet should have an external transfer");
+        let canonical = json!({
+            "blockNum": format!("{:#x}", row.block),
+            "uniqueId": row.unique_id,
+            "hash": row.hash,
+            "from": row.from,
+            "to": row.to,
+            "value": 0,
+            "asset": "ETH",
+            "category": row.category,
+            "rawContract": {"value": row.raw_value, "address": row.contract, "decimal": "0x12"}
+        });
+        let mut conflicting = canonical.clone();
+        conflicting["blockNum"] = json!(format!("{:#x}", row.block + 1));
+        rows.push(canonical);
+        rows.push(conflicting);
+    }
+
+    let handler_rows = rows.clone();
+    let replay = evm_base::replay(&fixture, AlchemyInternalMode::Unsupported).with_handler(
+        Box::new(move |method, params| {
+            if method != "alchemy_getAssetTransfers" {
+                return None;
+            }
+            let query = params.get(0)?;
+            let categories = query.get("category")?.as_array()?;
+            if categories.iter().any(|category| category == "internal") {
+                return Some(ReplayReply::Error {
+                    code: -32602,
+                    message: "internal transfers unsupported".to_string(),
+                });
+            }
+            let from = query.get("fromAddress").and_then(Value::as_str);
+            let to = query.get("toAddress").and_then(Value::as_str);
+            let low = u64::from_str_radix(
+                query.get("fromBlock")?.as_str()?.trim_start_matches("0x"),
+                16,
+            )
+            .ok()?;
+            let high =
+                u64::from_str_radix(query.get("toBlock")?.as_str()?.trim_start_matches("0x"), 16)
+                    .ok()?;
+            let transfers = handler_rows
+                .iter()
+                .filter(|row| {
+                    let block = u64::from_str_radix(
+                        row["blockNum"]
+                            .as_str()
+                            .unwrap_or("0x0")
+                            .trim_start_matches("0x"),
+                        16,
+                    )
+                    .unwrap_or_default();
+                    block >= low
+                        && block <= high
+                        && categories
+                            .iter()
+                            .any(|category| category == &row["category"])
+                        && from.is_none_or(|address| {
+                            row["from"].as_str().is_some_and(|value| value == address)
+                        })
+                        && to.is_none_or(|address| {
+                            row["to"].as_str().is_some_and(|value| value == address)
+                        })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            Some(ReplayReply::Result(json!({"transfers": transfers})))
+        }),
+    );
+    let server = evm_base::serve(replay).await;
+    let rpc = evm_base::rpc_client(&server);
+    let chain = rpc.preflight().await.unwrap();
+    let scanner = EvmHistoryScanner::new(rpc.clone(), chain, ScanLimits::default());
+    let indexer: WalletIndexer = AlchemyTransfersSource::new(rpc, AlchemyConfig::default()).into();
+    let cfg = EvmExtractionConfig::for_profile(BASE);
+    let wallets = wallet_addresses
+        .iter()
+        .map(|address| address.parse().unwrap())
+        .collect::<Vec<Address>>();
+    let report = run_evm_wallet_stats(
+        &cfg,
+        &EvmStatsSources {
+            scanner: &scanner,
+            explorer: &indexer,
+            max_requests: None,
+            notice: None,
+            resolver: None,
+        },
+        &wallets,
+        &window(),
+        2,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    let notes = &report.evm.as_ref().unwrap().coverage_notes;
+    assert_eq!(
+        notes.len(),
+        2,
+        "identical per-wallet notes are deduplicated"
+    );
+    assert!(notes.iter().any(|note| note.contains("failed swap")));
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("normalized using canonical RPC"))
+    );
 }
 
 #[tokio::test]
