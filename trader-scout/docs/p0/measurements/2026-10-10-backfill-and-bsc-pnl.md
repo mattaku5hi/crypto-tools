@@ -253,3 +253,66 @@ PostgreSQL имеет `ShmSize=67,108,864` (64 MiB): большой parallel has
 диска. Это ошибка диагностического запроса, не потеря данных. Повторная
 проверка миграций строится от малого migrations с indexed existence lookup,
 без полного launch join; production configuration не менялась.
+
+Read-only итог фактов на 22:28 UTC: Solana 10,083,800 запусков / 162,127
+миграций, BSC 5,404,503 / 20,998, Base 11,480,490 / 28; legacy Robinhood
+1,280,077 / 10,613 отдельно, не часть годового трёхсетевого задания.
+Solana имеет 366 markers каждого source с day starts 2025-10-09…2026-10-09:
+365 требуемых закрытых дней и один предыдущий overlap day.
+На 22:29:56 UTC exact option-B signer eligibility (BSC/Base `now−7d`
+или migration; Robinhood all history) дала 0 pending. Creator-kind
+candidates также 0; BSC history candidates 0. Старый немигрировавший
+BSC tail без signer = 456,683, сознательно вне eligibility. Не утверждаем
+полную атрибуцию каждого запуска. Robinhood имеет 375 потенциальных
+history candidates, но `history_supported` работает только на BSC;
+это legacy gap вне трёхсетевого задания.
+
+Migration-to-launch indexed lookup: BSC 20,739 matched / 259 unmatched,
+Solana 159,606 / 2,521, Base 28 / 0. Отсутствие launch внутри собранного
+диапазона не доказывает отсутствие launch в блокчейне. Для всех matched
+BSC/Solana migration tokens имеется ATH row: BSC 20,531 наблюдений + 208
+`codex-missing`, Solana 152,453 + 7,153; sentinel остаётся unknown, не
+числовым нулём. БД и daemon продолжают forward ingestion, поэтому
+финальные counts manifest могут отличаться от этого audit.
+
+## Budget для боевого режима и повторное использование ATH
+
+Владелец уточнил, что Codex должен использоваться редко. Screenshot
+показывает примерно 7.0K / 10.0K до Oct31; на 22:45:21 UTC historical
+ATH остановлен на 109 завершённых provider-filter днях и 2,442
+application attempts remaining. Base numeric ATH на 22:55:46 UTC =
+187,618 (включая 2 date-gap строки и 539 numeric zeros), положительных
+187,079; `codex-missing` = 642,583 unknown. Существующие значения
+переиспользуются; ограниченная free OHLCV history не заменяет их
+на lifetime ATH без coverage proof. Исследование: отдельный
+`2026-10-11-free-ath-providers.md`.
+
+Изменение `438e603` отделило ATH cadence от facts: defaults
+240 минут / 1 request per chain, facts 30 минут, derive 60 минут.
+До 24 scheduled calls/day на четырёх сетях (744/31 days), плюс ручные
+проходы и рестарты; пустые очереди требуют меньше. Budget 0 отключает
+ATH, не разрешая старый Codex incident; watchdog сохраняет 90-minute
+порог для регулярных facts/derive. CLI ingest budgets не меняются.
+Новые/legacy/default TOML и scheduling regression сначала проверены
+на отсутствующем поле, затем прошли. Повторные fmt, workspace clippy
+с `-D warnings`, all-features workspace tests (1,171 passed, 99 suites,
+0 failed/ignored, изолированный `scout_test`) и release build успешны.
+Логи `.scout-data/checks/2026-10-11/*-ath-cadence.log`; known runtime
+credential scan изменённых tracked файлов — чисто.
+
+Local daemon перезапущен на `438e603`, PID 557910; оба private configs
+проверены `tomllib`, 30-minute facts сохранены, ATH budget 1 / 240 min
+вместо explicit legacy20 / ingestion cycle. Delivery flags не менялись.
+После запуска: Solana1/Base1/Robinhood1 Codex calls; BSC0 (empty queue).
+Finalizer продолжает сохранённые cursors с application reserve примерно
+1,000 для боевого режима; максимальный history pass budget вычисляется
+из текущего остатка. Counter не повышен/reset. Это spend/freshness bound,
+не гарантия полного ATH покрытия всех eligible токенов.
+
+Дополнительная проверка Robinhood: все семь `backfill:robinhood:*`
+cursors равны 0 (Pons/Flap launch+migration, Doppler launch, Virtuals
+launch+migration), forward cursors совпадают на 85,366,329. Значит,
+предыдущий проход фактов дошёл до genesis по каждому настроенному
+source; Robinhood не отсутствует и не требует ещё одного годового
+прохода. Его 375 неиспользуемых history candidates остаются честным
+ограничением `history_supported`, а не незавершённой logs queue.

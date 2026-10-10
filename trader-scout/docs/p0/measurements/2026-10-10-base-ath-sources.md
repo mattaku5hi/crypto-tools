@@ -92,3 +92,39 @@ network/address и денежные значения остаются typed erro
 означает естественный конец пагинации, а не ATH всех контрактов или
 проверенную годовую принадлежность первой пары. Контракт и regression
 fixture закреплены в ADR-021 amendment 8.
+
+Точный месячный остаток через существующий free API key программно не
+подтверждён: просмотренный официальный [список queries](https://docs.codex.io/llms.txt)
+не содержит account monthly usage endpoint. Поле
+[`apiToken.remaining`](https://docs.codex.io/api-reference/queries/apitoken)
+относится к resolution limit короткоживущего JWT, а сам query требует
+Growth/Enterprise; это не месячный остаток бесплатного аккаунта.
+[Rate limits](https://docs.codex.io/concepts/rate-limits) различают 10,000
+requests/month и 5 requests/second. Dashboard Used/Total остаётся
+источником для ручного allowance; локальный shared counter — application
+bound, не подтверждённый баланс провайдера. Платных диагностических
+запросов при этой проверке не было.
+
+## Helius и DexScreener для боевого сервиса — 2026-10-11
+
+По уточнению владельца Codex не должен становиться тяжёлым источником
+обычного мониторинга. Основные факты уже читаются через Helius (Solana)
+и Alchemy с Infura fallback (BSC/Base); Codex сейчас отдельный ATH adapter.
+Официальный [`getAsset`](https://www.helius.dev/docs/api-reference/das/getasset)
+документирует текущую price data, кеш до 600 секунд и покрытие top 10k
+токенов по 24h volume, но не готовый ATH.
+[`DexScreener reference`](https://docs.dexscreener.com/api/reference)
+содержит текущие priceUsd/fdv/marketCap/liquidity; в публичном наборе
+endpoint не документированы ATH/история свечей. Бесплатные текущие котировки
+могут дать только максимум наблюдений с момента подключения; пропущенные
+исторические и короткие внутрипериодные пики этим не восстанавливаются.
+Такой максимум нельзя переименовать в полный historical ATH или смешать
+с Codex FDV без отдельного контракта качества. Нового price adapter в
+этом изменении не добавлено.
+
+Новый screenshot владельца: примерно 7.0K / 10.0K, период Sep30…Oct31.
+На 22:45:21 UTC Base index остановлен на сохранённых 109 closed UTC days
+с 2,442 application attempts remaining; counter не reseed/reset. Это
+операционная остановка ради production budget, не ошибка chain ingestion.
+До продолжения отделяется ATH cadence от 30-minute facts cadence;
+полнота ATH оставшихся 256 дней пока не достигнута.
