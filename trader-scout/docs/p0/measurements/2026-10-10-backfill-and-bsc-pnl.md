@@ -86,3 +86,43 @@ Solana: все 365 требуемых закрытых UTC дней launches и 
 Release build `cargo build --release -p dev-tracker -p wallet-stats` успешен. Код зафиксирован: `dac8bcf` (Alchemy reconciliation + runtime coverage notes), `e98e214` (Base ATH index, SQL, quota, unknown projection, CI DB). Новый daemon использует release с общим allowance 4,000, установленным один раз `ON CONFLICT DO NOTHING`; facts-only бэкфилл продолжает текущий шаг без добровольного прерывания.
 
 Автоматическое завершение запущено как `trader-scout-finalize-year.service` (private helper `.scout-data/finalize-year.py`). Оно ждёт успешного footer facts-job и всех девяти Base cursors ≤ 36,669,205, затем запускает до трёх resumable ATH passes с cap 2,000, общим не сбрасываемым allowance, локальные derive/export и проверенный архив. Guard на текущих незавершённых курсорах проверен: HTTP/export/dump не стартовали. Статус/финальный manifest: `inputs/results/devtracker-year-finalization-status.json`; `complete` относится к facts + positive provider-index scope, а не числовому ATH каждого контракта. При quota/error unknown и частичный статус сохраняются; отдельного Telegram send нет.
+
+## Noice: сокращение запросов чеков, 2026-10-11 по Москве
+
+Увеличение receipt concurrency с 8 до 32 не дало убедительного результата:
+64 исторических чека в каждой конфигурации, около 6 % разницы при большом
+разбросе между двумя группами. Это малый диагностический replay, не измерение
+годового потока; рабочая concurrency остаётся 8.
+
+Новый путь получает Create и Lock одним диапазонным запросом по прежнему
+initializer. Lock группируется по блоку и transaction index; выбирается прежний
+первый same-emitter Lock после Create и прежний крупнейший non-protocol
+beneficiary. Если атрибуция не получилась, вызывается прежний receipt decoder.
+Определение дева не меняется. Create-only counts, idempotent inserts и cursor
+после успешной записи сохранены; оба вида событий входят в прежний cap 200k,
+HTTP body ограничен 16 MiB с существующим adaptive splitting.
+
+На 2026-10-10T21:13:24Z диапазон Base 43,428,000…43,429,000 вернул 248 Create
+и 248 Lock (464,803 байта). Один запрос логов и один batch из восьми receipt
+methods: все восемь Lock совпали по address/topics/data/block/tx index/log index/
+tx hash; независимо выбранные beneficiaries совпали 8/8. В этой выборке нет
+multi-Create транзакций; этот случай проверяется синтетическим тестом. Это
+проверка атрибуции, не экстраполяция производительности или полной сети.
+
+Golden subset из двух реальных транзакций:
+`crates/scout-devtracker/tests/fixtures/noice-lock-companions-2026-10-11.json`,
+SHA256 `dabea7461cea2be7da24846062ba2449ea24d34d1e16de7181d18e94b3cf6d6a`.
+DB-backed mock ingest проверяет отсутствие receipt requests при валидных Lock,
+fallback при пропущенном Lock (beneficiary отличается от sender) и отсутствие
+движения cursor при cap failure. Offline-тесты также покрывают ordering,
+wrong transaction/emitter, malformed first Lock и split oversized response.
+
+Повторные обязательные проверки после изменения: fmt, workspace clippy с
+`-D warnings`, workspace all-features tests — успешно (1,161 passed, 99 suites,
+0 failed/ignored, DB tests без skips на изолированном `scout_test`). Release
+`dev-tracker` собран; результаты и логи —
+`.scout-data/checks/2026-10-11/lock-fastpath-checks.json`. Изменены
+`scout-devtracker/src/evm_ingest.rs`, его golden fixture, regression test в
+`scout-providers/src/evm_rpc.rs`, DEV-TRACKER и эта сводка. Известные runtime
+credentials не найдены scoped scan в новых/изменённых source/fixture/docs.
+Следующий task ID остаётся B8: закончить Base facts/identities, ATH и snapshot.

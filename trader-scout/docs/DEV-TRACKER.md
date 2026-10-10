@@ -207,6 +207,23 @@ backfill smoke: Base 1,156 requests (Bankr 803, Noice 272, Flaunch 52 launches),
 option-B identity pass (≈ $5) the one-year EVM backfill costs ≈ $13 on Alchemy. Steady state adds ≈ 2.5k receipts/day
 (≈ $0.8/month). ATH for these launchpads is observed only for creators with ≥ 3 launches (Codex budget).
 
+### Bankr / Noice receipt reduction (2026-10-11)
+
+The ingestion query now retrieves `Create` and companion `Lock` events together
+from the same initializer. Locks are grouped by block and transaction index;
+the first same-emitter Lock after each Create uses the existing largest
+non-protocol beneficiary rule. A missing or unusable beneficiary still invokes
+the original receipt attribution. Other creator rules remain as before.
+Source reports count Create events only; the existing 200,000-log accumulation
+cap includes both event types. The 16 MiB response bound and adaptive range
+splitting remain enabled, and failed queries do not advance the cursor.
+
+Eight historical Noice transactions passed exact query/receipt Lock comparison
+and beneficiary comparison. A two-transaction mainnet fixture and synthetic
+multi-launch/fallback tests retain that evidence. This verifies the sampled
+attribution; it is not a year-wide throughput measurement. The earlier
+one-receipt-per-launch cost estimates predate this change.
+
 ### Base ATH and shared Codex budget (2026-10-10)
 
 The earlier request estimates above are historical estimates. The live year

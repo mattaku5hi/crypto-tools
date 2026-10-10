@@ -1774,6 +1774,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oversized_log_response_splits_and_single_block_stays_typed() {
+        use wiremock::{Request, Respond};
+
+        struct Oversized;
+        impl Respond for Oversized {
+            fn respond(&self, req: &Request) -> ResponseTemplate {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                let f = &body["params"][0];
+                let hex = |k: &str| {
+                    u64::from_str_radix(f[k].as_str().unwrap().trim_start_matches("0x"), 16)
+                        .unwrap()
+                };
+                let (from, to) = (hex("fromBlock"), hex("toBlock"));
+                let logs = if from == to && from != 3 {
+                    json!([])
+                } else {
+                    json!((0..8).map(|i| log_json(from, i)).collect::<Vec<_>>())
+                };
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc":"2.0", "id":body["id"], "result":logs
+                }))
+            }
+        }
+
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Oversized)
+            .mount(&s)
+            .await;
+        let rpc = RpcClient::new(RpcEndpoint::new(s.uri()), 5_000, 1)
+            .unwrap()
+            .with_max_response_bytes(256);
+        let c = EvmRpcClient::new(rpc, ROBINHOOD);
+        let out = c.get_logs(&LogFilter::default(), 1, 2).await.unwrap();
+        assert_eq!((out.splits, out.requests), (1, 2));
+        assert!(out.logs.is_empty());
+
+        let e = c.get_logs(&LogFilter::default(), 3, 3).await.unwrap_err();
+        assert!(
+            matches!(e, EvmSourceError::RangeUnresolvable { block: 3, .. }),
+            "{e:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn unrelated_rpc_error_is_not_halved() {
         let s = MockServer::start().await;
         mount_method(&s, "eth_getLogs", err(-32601, "method not found")).await;
