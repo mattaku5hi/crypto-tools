@@ -177,3 +177,79 @@ throughput под этим limiter. Выборка раннего dense subrange
 32; остальные сети остаются на 8, method-weighted limiter и retry bounds
 сохранены. После изменения fmt/clippy/workspace tests/release успешны;
 логи `.scout-data/checks/2026-10-11/*-base-concurrency.log`.
+
+## Годовые факты завершены; Base ATH возобновлён — 2026-10-11
+
+На 22:02 UTC 2026-10-10 CLI записал `dev-tracker: backfill done`: завершены
+Solana launch/migration days, четыре BSC event source и все девять Base
+event source. Последний Base identity pass: 0 creators, 0 signers, 0 candidate
+histories. Base cursors = 36,627,719 (Bankr/Clanker/Zora×3), 36,627,952
+(Noice), 36,628,651 (Flaunch/Virtuals launch/migration). Их нижняя граница
+содержит запас относительно 365-day derivation; frozen guard предыдущего
+прохода = 36,669,205. BSC прочитан с более ранним запасом; не выдаём
+approximate block span за ровные календарные 365 дней.
+
+Последний resumer `65e8fcf` (21:50:47…22:02 UTC) добавил 36,283 Flaunch
+launches, 21,213 Virtuals launches и 27 migrations. Это только последний
+resumer, не полный годовой итог. 58,849 RPC attempts относятся ко всему
+client/job (58,847 keyed + 2 fallback), не только к identity.
+
+Первый Base ATH index pass обработал пять закрытых UTC-дней и остановился
+на out-of-interval `createdAt` в странице дня 2026-10-04, offset 1,400.
+Исходная страница сохранена без credentials в
+`.scout-data/diagnostics/codex-base-out-of-interval-2026-10-11.json`; два
+последующих diagnostic query показали совпадающие result/token/top-pair
+апрельские даты и одну из 60 пар, созданную в запрошенном октябрьском дне.
+Это поддерживает multiple-pair объяснение, но server predicate не доказан.
+Все три diagnostic HTTP attempts списаны из общего Codex application counter.
+
+Исправление `9af6baf` сохраняет валидный ATH/timestamp с source
+`codex-index-date-mismatch`, raw page length для offset, per-day mismatch
+count и до четырёх примеров. Невалидные timestamps/network/address/money
+по-прежнему останавливают проход. Scope/completeness исправлены в ADR-021
+amendment 8, DEV-TRACKER, исследовании источников и AGENTS gotcha; fixture
+`codex_base_created_at_mismatch_2026-10-11.json` закрепляет live shape.
+Regression сначала упал на старой проверке, затем проверил реальные writes
+в `scout_test`, checkpoint и zero-request resume.
+
+Полные обязательные проверки после исправления успешны: `cargo fmt --check`,
+workspace/all-targets/all-features clippy с `-D warnings`, workspace/all-features
+tests (1,169 passed, 99 suites, 0 failed/ignored; test DB только `scout_test`),
+release build. Логи `.scout-data/checks/2026-10-11/*-date-mismatch.log`,
+результат `date-mismatch-checks.json`. Повторены 5 Python-тестов генераторов
+BSC PnL; hashes, exact descending sort, unique wallets, CSV/JSON membership
+и integer TPD100 gate замороженных BSC файлов проверены. Результат
+`.scout-data/diagnostics/frozen-leaderboards-audit-2026-10-11.json`.
+Known runtime credentials в восьми изменённых/новых файлах не обнаружены.
+
+ATH finalizer возобновлён 22:21:39 UTC с оставшимися 3,854 attempts,
+без reseed. Release SHA256
+`c48c5b5516e0604b9ac63a1ad79e1f011093dec7598be963d4a7dc547ddc4d7c`.
+Forward daemon остаётся на `01431df`, facts завершены на `65e8fcf`;
+manifest различает эти версии и ATH commit. Finalizer сохраняет отдельные
+36 exports, derivation, compressed PostgreSQL snapshot и hashes;
+`complete` означает facts + естественный конец provider-filter enumeration
++ сохранённые артефакты, не числовое ATH всех токенов. При budget exhaustion
+он сохраняет те же локальные артефакты с `ath_partial`, не отправляя файлы
+в Telegram. Предыдущий derive/export после parser error был прерван;
+это промежуточные файлы, не итоговый bundle. Следующий task ID: B8
+(закончить/зафиксировать ATH scope и final snapshot), затем B9 deployment.
+
+Проверка finalizer исправила provenance до итогового сохранения: 22:24:58 UTC
+короткий resumable restart сохранил курсоры и оставшиеся 3,660 attempts.
+Каждый invocation хранит собственные numeric UTC window/as-of из CLI footer
+(или null, если typed error не дал footer), start/end и расход allowance.
+`complete=true` требует footer с complete и 365 завершённых day cursors в
+его фактическом диапазоне. Facts binary hash записывается отдельно от ATH
+и daemon. Derive, export с повторной деривацией, pg_dump и контрольные counts
+получаются в разные моменты при живом forward daemon: hashes проверяют
+артефакты по отдельности, а не доказывают единый frozen database view.
+Финальный manifest прямо сохраняет это ограничение и временные границы.
+
+Read-only audit facts сохранён в
+`.scout-data/diagnostics/year-facts-audit-2026-10-11.json`. Локальный Docker
+PostgreSQL имеет `ShmSize=67,108,864` (64 MiB): большой parallel hash join
+для audit мог получить shared-memory exhaustion при 171 GiB свободного
+диска. Это ошибка диагностического запроса, не потеря данных. Повторная
+проверка миграций строится от малого migrations с indexed existence lookup,
+без полного launch join; production configuration не менялась.
