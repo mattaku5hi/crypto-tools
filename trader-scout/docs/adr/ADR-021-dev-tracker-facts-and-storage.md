@@ -266,3 +266,41 @@ parser, then passed. They verify the original 165,600-cent ATH/timestamp,
 source provenance, offset advancement, persisted examples and zero-request
 completed-day resume. Unit tests cover bounded examples, old cursor defaults
 and malformed timestamps/quality metadata.
+
+## Amendment 9 (2026-10-11) — independent, bounded ATH polling
+
+Facts use Helius on Solana and Alchemy with Infura fallback on BSC/Base.
+Codex supplies ATH observations across all four configured chains; its
+monthly account allowance is separate from RPC quotas. With nonempty
+candidate queues, one call per chain on every 30-minute ingestion cycle
+can consume 192 calls/day across four chains. An explicit legacy budget of
+20 calls/chain/cycle is much higher; it must not be mistaken for a monthly
+free-tier guarantee. The owner requested light regular Codex usage before
+the October 31 account reset.
+
+The daemon schedules facts, ATH and derivation separately. New optional
+`schedule.ath_every_minutes` defaults to 240 and must be positive.
+`ath_requests_per_chain` defaults to 1; zero disables ATH. Four configured
+chains therefore permit at most 24 successful scheduled calls/day, or 744
+over 31 days, excluding additional process restarts and manual backfills.
+The direct observer does not automatically retry HTTP calls. The shared
+account allowance still bounds every HTTP attempt, including other jobs.
+Explicit old TOML budgets remain explicit and require review; omitted fields
+use the new defaults. Facts default to 30 minutes, derivation to 60.
+
+Daemon ingestion passes use zero inline ATH budget. A separate ATH deadline
+can wake the loop without a facts pass. Only an actual ATH pass updates its
+Codex incident; disabled/skipped ATH must not report recovery. Existing
+provider/facts incidents and shutdown cancellation remain unchanged. The
+facts progress watchdog still uses the existing facts/derivation cadences: a
+slow optional ATH interval cannot extend the regular facts stall allowance.
+
+Candidate eligibility, observation refresh ages, runner gates, monetary
+arithmetic and missing-is-unknown semantics do not change. A bounded poll
+can leave a large queue behind; this configuration is a spending bound, not
+a guarantee of complete or fresh ATH for every candidate. Free current
+quotes or limited candle history are not silently substituted for full ATH.
+
+Config regression failed before the new field existed, then passed. Tests
+cover legacy/default TOML, invalid zero cadence, independent ATH deadline,
+ATH-only wake, disabled budget and unchanged 90-minute default watchdog.

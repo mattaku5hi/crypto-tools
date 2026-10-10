@@ -35,6 +35,7 @@
 
 ## Порядок разработки
 
+- A slow independent ATH cadence must not extend the facts progress watchdog: `bins/dev-tracker/src/main.rs` still wakes for 30-minute facts / 60-minute derivation.
 - Codex `createdAt` filter and returned date can disagree: `crates/scout-devtracker/src/ath.rs` retains valid ATH with date-gap provenance; completed index pagination is not verified first-pair membership (ADR-021 amendment 8).
 - `backfill --days` в `bins/dev-tracker/src/backfill.rs` переводит дни в приблизительный block span: проверять timestamp нижнего блока и указывать фактический scope; BSC может читать запас истории, `since_days` ограничивает период деривации отдельно.
 

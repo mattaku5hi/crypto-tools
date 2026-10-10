@@ -80,7 +80,7 @@ excluded); both raw counts are stored, never only the ratio.
 
 ## 5. Operations
 
-- `dev-tracker run --config <file>` — the daemon: ingestion (launches, migrations, dev identities, ATH) every
+- `dev-tracker run --config <file>` — the daemon: facts ingestion (launches, migrations, dev identities) every
   `schedule.ingest_every_minutes`, derivation + delivery every `schedule.derive_every_minutes`; the config is
   re-read every cycle (a broken edit is reported and the last good config kept); one chain's failure does not
   stop the others; SIGTERM / Ctrl-C stop it between steps.
@@ -306,3 +306,21 @@ arguments. They survive termination of the launching agent; they are not an
 installed reboot deployment. B9 remains the server/deployment task.
 
 A stopped transient unit can be garbage-collected; recreate it with `systemd-run --user` when it no longer exists, rather than starting a missing unit.
+
+### Light Codex usage in the daemon (2026-10-11)
+
+Facts and ATH have independent schedules (ADR-021 amendment 9). Default
+facts cadence is 30 minutes, derivation 60 minutes, and ATH 240 minutes with
+one request (up to 200 candidates) per chain per ATH pass. For four chains
+that is at most 24 scheduled calls/day, 744 over 31 days, plus restarts and
+manual jobs; empty queues use fewer calls. The direct observer has no
+automatic HTTP retries. `ath_requests_per_chain = 0` disables ATH and does
+not clear an existing Codex incident. The shared account counter still
+bounds all jobs. Explicit legacy `ath_requests_per_chain = 20` settings are
+not automatically rewritten: review them before a production start.
+
+This is a request budget with limited coverage/freshness, not full monitoring
+of millions of candidates. Helius (Solana) and Alchemy/Infura (BSC/Base)
+continue chain facts independently. See the
+[free ATH provider research](p0/measurements/2026-10-11-free-ath-providers.md)
+for qualified historical/forward supplements to Codex.
