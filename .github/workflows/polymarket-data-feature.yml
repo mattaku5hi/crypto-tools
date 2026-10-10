@@ -3,7 +3,7 @@ env:
   CARGO_TERM_COLOR: never
 on:
   push:
-    branches: [feat/p0-p1-foundation]
+    branches: [feat/p0-p1-foundation, feat/polymarket-data-quote-profile]
     paths: ['polymarket-data/**', '.github/workflows/polymarket-data-feature.yml']
 jobs:
   sdk:
