@@ -217,6 +217,10 @@ the original receipt attribution. Other creator rules remain as before.
 Source reports count Create events only; the existing 200,000-log accumulation
 cap includes both event types. The 16 MiB response bound and adaptive range
 splitting remain enabled, and failed queries do not advance the cursor.
+`--evm-step-blocks` is the maximum step. Bankr/Noice halve it after more than
+5,000 Create events, down to 2,000 blocks or a smaller requested maximum;
+below 2,500 events they double it back up to that maximum. Each source starts
+with its own requested maximum, so sparse unrelated sources keep wide ranges.
 
 Eight historical Noice transactions passed exact query/receipt Lock comparison
 and beneficiary comparison. A two-transaction mainnet fixture and synthetic

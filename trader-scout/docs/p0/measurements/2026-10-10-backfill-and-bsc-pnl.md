@@ -126,3 +126,26 @@ wrong transaction/emitter, malformed first Lock и split oversized response.
 `scout-providers/src/evm_rpc.rs`, DEV-TRACKER и эта сводка. Известные runtime
 credentials не найдены scoped scan в новых/изменённых source/fixture/docs.
 Следующий task ID остаётся B8: закончить Base facts/identities, ATH и snapshot.
+
+Release `01431df` запущен 21:19:44 UTC. Base возобновлён с `--days 366`, чтобы
+запас приблизительного block span сохранял прежнюю нижнюю границу после
+перезапуска; деривация остаётся 365 дней. Новый floor 36,627,719 проверен RPC:
+2025-10-09T21:19:45Z. Счётчик Codex при рестарте остался 3,994; не сбрасывался.
+На 21:23:54 UTC первые четыре Noice шага сохранили 143,387 запусков. Это
+операционный результат другого диапазона, не контролируемое сравнение скорости
+с предыдущим процессом. На 21:24:18 процессный VmHWM = 264,096 KiB: release,
+i7-12700K, 16 доступных logical CPU, RAM 24,031,788 KiB, Linux 7.0.0-38,
+PostgreSQL16, Alchemy primary с 5,000 CU/s client limiter, параллельно forward
+daemon; provider cache неизвестен, процессный timestamp cache изначально пуст.
+Это пик до указанного момента, не финальный peak RSS всего бэкфилла.
+
+Соседняя проверка 43,300,000…43,300,999: 751 Create + 751 Lock,
+1,349,559 байт, 618 транзакций, из них 111 multi-Create; все 751 дали usable
+companion beneficiary. Чеки этой выборки не запрашивались, поэтому byte equality
+для её multi-Create случаев не заявляется. Большие 50k-block ответы всё ещё
+требуют нескольких splits. Теперь CLI уменьшает шаг Bankr/Noice вдвое при
+>5k Create и увеличивает при <2.5k до `--evm-step-blocks`; minimum = 2k или
+меньший пользовательский cap. Остальные source steps не меняются. Пять тестов
+проверяют density thresholds, bounds и saturation; повторные fmt/clippy/
+workspace tests/release успешны (1,166 tests, 99 suites, 0 failed/ignored,
+DB без skips). Логи: `.scout-data/checks/2026-10-11/*-adaptive-lock.log`.

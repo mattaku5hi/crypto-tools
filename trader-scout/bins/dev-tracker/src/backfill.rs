@@ -15,7 +15,7 @@
 //! is idempotent.
 
 use futures::stream::{self, StreamExt};
-use scout_devtracker::evm_ingest::{EVM_SOURCES, backfill_step};
+use scout_devtracker::evm_ingest::{CreatorRule, EVM_SOURCES, backfill_step};
 use scout_devtracker::identity::enrich_identities;
 use scout_devtracker::solana_ingest::{SOLANA_SOURCES, backfill_days, backfill_solana_day};
 
@@ -33,7 +33,7 @@ pub struct BackfillArgs {
     /// How far back.
     #[arg(long, default_value_t = 365)]
     days: i64,
-    /// EVM blocks per `eth_getLogs` step (the cursor moves after each).
+    /// Maximum EVM blocks per step (dense LockBeneficiary sources adapt down).
     #[arg(long, default_value_t = 200_000)]
     evm_step_blocks: u64,
     /// Resolve identities on the free fallback endpoint (dRPC) instead of the
@@ -166,6 +166,28 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
 
 /// Smallest EVM step the backfill splits down to.
 const MIN_STEP_BLOCKS: u64 = 2_000;
+const DENSE_LOG_THRESHOLD: usize = 5_000;
+const SPARSE_LOG_THRESHOLD: usize = 2_500;
+
+fn adjusted_step_blocks(
+    current: u64,
+    requested_cap: u64,
+    creates: usize,
+    creator_rule: CreatorRule,
+) -> u64 {
+    if creator_rule != CreatorRule::LockBeneficiary {
+        return current;
+    }
+    let ceiling = requested_cap.max(1);
+    let floor = MIN_STEP_BLOCKS.min(ceiling);
+    if creates > DENSE_LOG_THRESHOLD {
+        current.div_euclid(2).max(floor).min(ceiling)
+    } else if creates < SPARSE_LOG_THRESHOLD {
+        current.saturating_mul(2).min(ceiling)
+    } else {
+        current.min(ceiling)
+    }
+}
 
 fn profile_of(chain: &str) -> Result<scout_sdk::evm::EvmChainProfile, String> {
     match chain {
@@ -252,6 +274,8 @@ async fn backfill_evm_chain(db: &DevDb, chain: &str, a: &BackfillArgs) -> Result
                 let Some(r) = step else {
                     break;
                 };
+                step_blocks =
+                    adjusted_step_blocks(step_blocks, a.evm_step_blocks, r.logs, src.creator);
                 logs += r.logs;
                 new += r.inserted;
                 let left = r.from_block.saturating_sub(floor);
@@ -456,4 +480,109 @@ async fn backfill_ath(db: &DevDb, chain: &str, budget: usize) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dense_lock_steps_halve_to_the_configured_floor() {
+        assert_eq!(
+            adjusted_step_blocks(
+                20_000,
+                30_000,
+                DENSE_LOG_THRESHOLD + 1,
+                CreatorRule::LockBeneficiary
+            ),
+            10_000
+        );
+        assert_eq!(
+            adjusted_step_blocks(
+                3_000,
+                30_000,
+                DENSE_LOG_THRESHOLD + 1,
+                CreatorRule::LockBeneficiary
+            ),
+            MIN_STEP_BLOCKS
+        );
+    }
+
+    #[test]
+    fn step_bounds_respect_requested_caps_below_minimum() {
+        assert_eq!(
+            adjusted_step_blocks(
+                1_000,
+                1_000,
+                DENSE_LOG_THRESHOLD + 1,
+                CreatorRule::LockBeneficiary
+            ),
+            1_000
+        );
+        assert_eq!(
+            adjusted_step_blocks(
+                2_000,
+                1_000,
+                SPARSE_LOG_THRESHOLD - 1,
+                CreatorRule::LockBeneficiary
+            ),
+            1_000
+        );
+    }
+
+    #[test]
+    fn sparse_lock_steps_grow_only_to_the_requested_cap() {
+        assert_eq!(
+            adjusted_step_blocks(
+                1_000,
+                10_000,
+                SPARSE_LOG_THRESHOLD - 1,
+                CreatorRule::LockBeneficiary
+            ),
+            2_000
+        );
+        assert_eq!(
+            adjusted_step_blocks(
+                2_000,
+                2_500,
+                SPARSE_LOG_THRESHOLD - 1,
+                CreatorRule::LockBeneficiary
+            ),
+            2_500
+        );
+    }
+
+    #[test]
+    fn middle_density_and_other_creator_rules_keep_the_current_step() {
+        assert_eq!(
+            adjusted_step_blocks(
+                6_000,
+                20_000,
+                SPARSE_LOG_THRESHOLD,
+                CreatorRule::LockBeneficiary
+            ),
+            6_000
+        );
+        assert_eq!(
+            adjusted_step_blocks(
+                6_000,
+                20_000,
+                DENSE_LOG_THRESHOLD,
+                CreatorRule::LockBeneficiary
+            ),
+            6_000
+        );
+        assert_eq!(
+            adjusted_step_blocks(6_000, 20_000, DENSE_LOG_THRESHOLD + 1, CreatorRule::Sender),
+            6_000
+        );
+    }
+
+    #[test]
+    fn sparse_growth_saturates_near_u64_max() {
+        assert_eq!(
+            adjusted_step_blocks(u64::MAX - 1, u64::MAX, 0, CreatorRule::LockBeneficiary),
+            u64::MAX
+        );
+    }
 }
