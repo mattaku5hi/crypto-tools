@@ -130,8 +130,13 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
             )
             .await
             .map_err(|error| format!("base ATH index: {error}"))?;
+            let date_membership = if report.date_mismatch_rows > 0 {
+                "returned-date-membership=unverified"
+            } else {
+                "returned-date-mismatch-rows=0"
+            };
             eprintln!(
-                "dev-tracker: backfill Base ATH provider first-pair closed UTC days {}..{} (as-of {}): complete={}, {} requests, {} provider rows, {} tracked observations, {}/{} days complete in request window, {} budget remaining",
+                "dev-tracker: backfill Base ATH provider createdAt-filter closed UTC days {}..{} (as-of {}): complete={}, {} requests, {} provider rows, {} tracked observations, {} date-mismatch rows ({date_membership}), {}/{} days complete in request window, {} budget remaining",
                 report.window_start,
                 report.window_end,
                 as_of,
@@ -139,6 +144,7 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
                 report.requests,
                 report.provider_rows,
                 report.tracked_rows,
+                report.date_mismatch_rows,
                 report.completed_days,
                 a.days,
                 a.ath_requests.saturating_sub(report.requests)

@@ -215,3 +215,54 @@ Local PostgreSQL/mock-HTTP tests cover paging, resume, subdivision, tracked-toke
 intersection, malformed/network mismatches, shared budget exhaustion and retry
 accounting. Live probes and source limitations are recorded in
 `docs/p0/measurements/2026-10-10-base-ath-sources.md`.
+
+## Amendment 8 (2026-10-11) — provider date mismatch is explicit provenance
+
+This corrects amendment 7's first-pair membership assumption. Codex's
+[TokenFilters](https://docs.codex.io/api-reference/input-objects/tokenfilters) and
+[TokenFilterResult](https://docs.codex.io/api-reference/types/tokenfilterresult)
+describe `createdAt` as first-pair creation, while
+[filterTokens troubleshooting](https://docs.codex.io/api-reference/queries/filtertokens)
+describes the result field as current top-pair creation. The server predicate is
+not established by these conflicting descriptions.
+
+A live Base page filtered to `[1791072000, 1791158400)` (2026-10-04 UTC)
+returned `0x3084d9ed7ebb5670a6192b4716b99256d52212c2` with integer
+`createdAt=1775701583`, matching its tracked April launch. Result, nested token
+and selected pair dates agreed. A separate
+[listPairsForToken](https://docs.codex.io/api-reference/queries/listpairsfortoken)
+response contained 60 pairs, including one created at `1791093681` inside the
+requested day. This supports a multiple-pair explanation; it does not prove
+which date the server actually filtered.
+
+The scope is now explicitly **provider createdAt-filter enumeration** over
+closed UTC intervals. A valid nonnegative integer result date outside its
+requested interval records a quality gap instead of stopping the page. The
+address/network and positive exact-decimal ATH remain validated. A tracked
+observation retains its original ATH and ATH timestamp, with source
+`codex-index-date-mismatch`; no replacement date is fabricated. Invalid,
+fractional or negative date fields still fail. Only `codex-missing` is the
+unknown scheduling sentinel; a date gap does not make a valid ATH unknown.
+
+The cursor JSON contract stays version 1 with serde-default
+`date_mismatch_rows` and `date_mismatch_examples`. At most four examples per
+day retain token, returned date and requested interval. Counts describe
+processed provider rows, not unique tokens: subdivision may replay rows. Raw
+page length still controls offsets, and quality metadata is checkpointed with
+the page only after idempotent ATH writes. Completed-day resume preserves
+counts without additional requests. Existing cursors default to zero; earlier
+completed pages are not retroactively revalidated.
+
+`complete=true` means enumeration reached natural ends in the requested
+provider-filter intervals. It does not certify first-pair date membership,
+all-contract ATH coverage or an immutable provider snapshot. CLI, local
+manifest and documentation retain these limitations and mismatch counts.
+No runner thresholds, monetary arithmetic or ATH definition change.
+
+The two-row live-response subset fixture
+`crates/scout-devtracker/tests/fixtures/codex_base_created_at_mismatch_2026-10-11.json`
+and mock-HTTP/isolated PostgreSQL regression failed against the strict old
+parser, then passed. They verify the original 165,600-cent ATH/timestamp,
+source provenance, offset advancement, persisted examples and zero-request
+completed-day resume. Unit tests cover bounded examples, old cursor defaults
+and malformed timestamps/quality metadata.

@@ -239,7 +239,7 @@ backfill exposed 8.8 million eligible Base tokens without an ATH observation:
 direct 200-address batches alone would require about 44,000 requests. The
 dashboard showed roughly 5.5k of 10k requests used. See
 [measured source coverage](p0/measurements/2026-10-10-base-ath-sources.md) and
-[ADR-021 amendments 6–7](adr/ADR-021-dev-tracker-facts-and-storage.md).
+[ADR-021 amendments 6–8](adr/ADR-021-dev-tracker-facts-and-storage.md).
 
 Run facts and identities independently of ATH:
 
@@ -251,9 +251,13 @@ target/release/dev-tracker backfill --chains bsc,base,solana \
 
 Base's optional provider-index pass requests positive ATH in pages of up to
 200, including scam-labelled tokens, and intersects each page with tracked
-launches. It covers the last 365 closed UTC days of Codex first-pair creation,
-with resumable per-day/interval/offset cursors; it does not prove ATH for every
-contract created in that year. Observed ATH is cumulative at fetch time, not a
+launches. It enumerates Codex's `createdAt` filter over the last 365 closed
+UTC days with resumable per-day/interval/offset cursors. Codex's documentation
+conflicts about the date's meaning, and live results can return dates outside
+the requested interval. Valid ATH for these rows is retained with source
+`codex-index-date-mismatch`; cursors retain a mismatch-row count and up to four
+examples per day. Completion proves that enumeration reached natural ends,
+not returned-date membership or ATH for every contract created in that year. Observed ATH is cumulative at fetch time, not a
 historical snapshot at the interval end. Tokens without a provider result remain
 unknown. Run after launch facts are available, so completed days have the final
 tracked-token intersection:

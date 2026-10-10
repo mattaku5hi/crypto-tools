@@ -5,7 +5,7 @@
 //! free tier is request-limited, so regular observation selects likely runners:
 //! migrated tokens and qualifying launchpads without a curve, refreshed by
 //! age (`scout_devdb::DevDb::ath_candidates`). An explicit Base backfill also
-//! enumerates positive ATHs from Codex's first-pair index, intersected with
+//! enumerates positive ATHs through Codex's createdAt filter, intersected with
 //! all tracked Base launches (ordinary refresh keeps its migrated-token and
 //! three-launch creator eligibility). Index days scope pair creation time;
 //! returned ATH values are current provider observations. The mutable index
@@ -31,6 +31,7 @@ const BASE_INDEX_NETWORK: u64 = 8453;
 const BASE_INDEX_MAX_OFFSET: usize = 10_000;
 const BASE_INDEX_MAX_BODY: usize = 4 * 1024 * 1024;
 const UTC_DAY: i64 = 86_400;
+const MAX_DATE_MISMATCH_EXAMPLES: usize = 4;
 
 /// Codex network id of a chain name.
 #[must_use]
@@ -115,6 +116,7 @@ pub struct AthIndexReport {
     pub provider_rows: usize,
     pub tracked_rows: usize,
     pub completed_days: usize,
+    pub date_mismatch_rows: usize,
     pub complete: bool,
     pub window_start: i64,
     pub window_end: i64,
@@ -128,6 +130,24 @@ struct IndexCursor {
     day_end: i64,
     intervals: Vec<IndexInterval>,
     complete: bool,
+    #[serde(default)]
+    date_mismatch_rows: usize,
+    #[serde(default)]
+    date_mismatch_examples: Vec<DateMismatchExample>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DateMismatchExample {
+    token: String,
+    created_at: i64,
+    interval_start: i64,
+    interval_end: i64,
+}
+
+struct ParsedIndexPage {
+    rows: Vec<AthObservation>,
+    date_mismatch_rows: usize,
+    date_mismatch_examples: Vec<DateMismatchExample>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,7 +335,7 @@ async fn read_bounded(
     Ok(body)
 }
 
-/// Enumerate positive ATH tokens in Base's first-pair index for closed UTC
+/// Enumerate positive ATH tokens through Base's createdAt filter for closed UTC
 /// days, intersecting each page with launches already tracked by this store.
 ///
 /// # Errors
@@ -387,6 +407,10 @@ async fn backfill_base_ath_from_index_at(
                 let cursor: IndexCursor =
                     serde_json::from_str(&position).map_err(|_| AthError::InvalidIndexCursor)?;
                 validate_index_cursor(&cursor, day_start, config)?;
+                report.date_mismatch_rows = report
+                    .date_mismatch_rows
+                    .checked_add(cursor.date_mismatch_rows)
+                    .ok_or(AthError::InvalidIndexCursor)?;
                 if cursor.complete {
                     report.completed_days += 1;
                     day_start -= UTC_DAY;
@@ -405,6 +429,8 @@ async fn backfill_base_ath_from_index_at(
                     offset: 0,
                 }],
                 complete: false,
+                date_mismatch_rows: 0,
+                date_mismatch_examples: Vec::new(),
             },
         };
         while let Some(interval) = cursor.intervals.last().cloned() {
@@ -434,14 +460,28 @@ async fn backfill_base_ath_from_index_at(
                 i64::try_from(pass_started.elapsed().as_secs()).unwrap_or(i64::MAX),
             );
             let page = parse_index_page(&value, &interval, page_now, config.page_size)?;
-            report.provider_rows += page.len();
-            let tokens: Vec<String> = page.iter().map(|row| row.token.clone()).collect();
+            report.provider_rows += page.rows.len();
+            report.date_mismatch_rows = report
+                .date_mismatch_rows
+                .checked_add(page.date_mismatch_rows)
+                .ok_or(AthError::InvalidIndexCursor)?;
+            cursor.date_mismatch_rows = cursor
+                .date_mismatch_rows
+                .checked_add(page.date_mismatch_rows)
+                .ok_or(AthError::InvalidIndexCursor)?;
+            let example_slots =
+                MAX_DATE_MISMATCH_EXAMPLES.saturating_sub(cursor.date_mismatch_examples.len());
+            cursor
+                .date_mismatch_examples
+                .extend(page.date_mismatch_examples.into_iter().take(example_slots));
+            let tokens: Vec<String> = page.rows.iter().map(|row| row.token.clone()).collect();
             let known = db.known_launch_tokens("base", &tokens).await?;
             let known: std::collections::BTreeMap<String, String> = known
                 .into_iter()
                 .map(|token| (token.to_ascii_lowercase(), token))
                 .collect();
             let observations: Vec<AthObservation> = page
+                .rows
                 .into_iter()
                 .filter_map(|row| {
                     known
@@ -505,15 +545,30 @@ fn validate_index_cursor(
     day_start: i64,
     config: IndexConfig,
 ) -> Result<(), AthError> {
+    let day_end = day_start + UTC_DAY;
+    let max_date_mismatch_rows = config.max_offset.saturating_mul(86_400);
     if cursor.version != 1
         || cursor.filter != BASE_INDEX_FILTER
         || cursor.day_start != day_start
-        || cursor.day_end != day_start + UTC_DAY
+        || cursor.day_end != day_end
         || cursor.complete != cursor.intervals.is_empty()
         || cursor.intervals.len() > 18
+        || cursor.date_mismatch_rows > max_date_mismatch_rows
+        || cursor.date_mismatch_rows < cursor.date_mismatch_examples.len()
+        || cursor.date_mismatch_examples.len() > MAX_DATE_MISMATCH_EXAMPLES
+        || cursor.date_mismatch_examples.iter().any(|example| {
+            !valid_evm_address(&example.token)
+                || example.token != example.token.to_ascii_lowercase()
+                || example.created_at < 0
+                || example.interval_start < day_start
+                || example.interval_end > day_end
+                || example.interval_start >= example.interval_end
+                || (example.created_at >= example.interval_start
+                    && example.created_at < example.interval_end)
+        })
         || cursor.intervals.iter().any(|interval| {
             interval.start < day_start
-                || interval.end > day_start + UTC_DAY
+                || interval.end > day_end
                 || interval.start >= interval.end
                 || interval.offset > config.max_offset - config.page_size
                 || interval.offset % config.page_size != 0
@@ -556,7 +611,7 @@ fn parse_index_page(
     interval: &IndexInterval,
     as_of: i64,
     page_size: usize,
-) -> Result<Vec<AthObservation>, AthError> {
+) -> Result<ParsedIndexPage, AthError> {
     let results = value
         .pointer("/data/filterTokens/results")
         .and_then(Value::as_array)
@@ -566,18 +621,21 @@ fn parse_index_page(
             "page exceeded requested limit".into(),
         ));
     }
-    results
+    let mut date_mismatch_rows = 0usize;
+    let mut date_mismatch_examples = Vec::new();
+    let rows = results
         .iter()
         .map(|result| {
             let created_at = result
                 .get("createdAt")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| AthError::MalformedIndex("missing createdAt".into()))?;
-            if created_at < interval.start || created_at >= interval.end {
+            if created_at < 0 {
                 return Err(AthError::MalformedIndex(
-                    "createdAt outside requested interval".into(),
+                    "invalid negative createdAt".into(),
                 ));
             }
+            let date_mismatch = created_at < interval.start || created_at >= interval.end;
             let token = result
                 .pointer("/token/address")
                 .and_then(Value::as_str)
@@ -604,18 +662,40 @@ fn parse_index_page(
             let ath_at = optional_integer(result.pointer("/token/extrema/athFdvTimestamp"))?;
             let holders = optional_integer(result.get("holders"))?;
             let liquidity_cents = optional_decimal_cents(result.get("liquidity"))?;
+            if date_mismatch {
+                date_mismatch_rows = date_mismatch_rows
+                    .checked_add(1)
+                    .ok_or(AthError::InvalidIndexCursor)?;
+                if date_mismatch_examples.len() < MAX_DATE_MISMATCH_EXAMPLES {
+                    date_mismatch_examples.push(DateMismatchExample {
+                        token: token.to_ascii_lowercase(),
+                        created_at,
+                        interval_start: interval.start,
+                        interval_end: interval.end,
+                    });
+                }
+            }
             Ok(AthObservation {
                 chain: "base".into(),
                 token: token.to_ascii_lowercase(),
                 ath_fdv_cents: cents,
                 ath_at,
-                source: "codex".into(),
+                source: if date_mismatch {
+                    "codex-index-date-mismatch".into()
+                } else {
+                    "codex".into()
+                },
                 observed_at: as_of,
                 holders,
                 liquidity_cents,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, AthError>>()?;
+    Ok(ParsedIndexPage {
+        rows,
+        date_mismatch_rows,
+        date_mismatch_examples,
+    })
 }
 
 fn optional_integer(value: Option<&Value>) -> Result<Option<i64>, AthError> {
@@ -753,6 +833,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use scout_devdb::Launch;
+    use sqlx::Row;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -871,6 +952,36 @@ mod tests {
         }
     }
 
+    struct DateMismatchPages {
+        rows: Value,
+        offsets: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl Respond for DateMismatchPages {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let query = body["query"].as_str().unwrap();
+            let offset = query
+                .rsplit("offset: ")
+                .next()
+                .unwrap()
+                .split(')')
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            self.offsets.lock().unwrap().push(offset);
+            let results = if offset == 0 {
+                self.rows.clone()
+            } else {
+                json!([])
+            };
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"filterTokens": {"results": results}}
+            }))
+        }
+    }
+
     #[test]
     fn usd_strings_become_floored_cents() {
         assert_eq!(usd_to_cents("10990755"), Some(1_099_075_500));
@@ -921,13 +1032,13 @@ mod tests {
             200,
         )
         .unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].ath_fdv_cents, 762_200);
-        assert_eq!(rows[1].ath_fdv_cents, 762_700);
-        assert_eq!(rows[0].ath_at, Some(1_791_504_003));
-        assert_eq!(rows[0].holders, None);
-        assert_eq!(rows[0].liquidity_cents, Some(0));
-        assert_eq!(rows[0].source, "codex");
+        assert_eq!(rows.rows.len(), 2);
+        assert_eq!(rows.rows[0].ath_fdv_cents, 762_200);
+        assert_eq!(rows.rows[1].ath_fdv_cents, 762_700);
+        assert_eq!(rows.rows[0].ath_at, Some(1_791_504_003));
+        assert_eq!(rows.rows[0].holders, None);
+        assert_eq!(rows.rows[0].liquidity_cents, Some(0));
+        assert_eq!(rows.rows[0].source, "codex");
     }
 
     #[test]
@@ -1000,8 +1111,8 @@ mod tests {
             200,
         )
         .unwrap();
-        assert_eq!(parsed[0].observed_at, 100);
-        assert_eq!(parsed[0].holders, None);
+        assert_eq!(parsed.rows[0].observed_at, 100);
+        assert_eq!(parsed.rows[0].holders, None);
         let malformed = json!({
             "createdAt": 11,
             "token": {"address": token_address(1), "networkId": BASE_INDEX_NETWORK,
@@ -1018,6 +1129,113 @@ mod tests {
             )
             .is_err()
         );
+
+        for created_at in [json!(-1), json!(11.5)] {
+            let malformed_time = json!({
+                "createdAt": created_at,
+                "token": {"address": token_address(1), "networkId": BASE_INDEX_NETWORK,
+                    "extrema": {"athFdv": "1"}}
+            });
+            assert!(matches!(
+                parse_index_page(
+                    &json!({"data":{"filterTokens":{"results":[malformed_time]}}}),
+                    &interval,
+                    100,
+                    200,
+                ),
+                Err(AthError::MalformedIndex(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn date_mismatch_examples_are_bounded_and_old_cursors_default_them() {
+        let interval = IndexInterval {
+            start: 100,
+            end: 200,
+            offset: 0,
+        };
+        let results: Vec<Value> = (0..6)
+            .map(|index| {
+                json!({
+                    "createdAt": index + 10,
+                    "token": {"address": token_address(index + 1),
+                        "networkId": BASE_INDEX_NETWORK,
+                        "extrema": {"athFdv": "1"}}
+                })
+            })
+            .collect();
+        let page = parse_index_page(
+            &json!({"data":{"filterTokens":{"results":results}}}),
+            &interval,
+            300,
+            10,
+        )
+        .unwrap();
+        assert_eq!(page.date_mismatch_rows, 6);
+        assert_eq!(
+            page.date_mismatch_examples.len(),
+            MAX_DATE_MISMATCH_EXAMPLES
+        );
+        assert!(
+            page.rows
+                .iter()
+                .all(|row| row.source == "codex-index-date-mismatch")
+        );
+
+        let old_cursor: IndexCursor = serde_json::from_value(json!({
+            "version": 1,
+            "filter": BASE_INDEX_FILTER,
+            "day_start": 0,
+            "day_end": UTC_DAY,
+            "intervals": [{"start": 0, "end": UTC_DAY, "offset": 0}],
+            "complete": false
+        }))
+        .unwrap();
+        assert_eq!(old_cursor.date_mismatch_rows, 0);
+        assert!(old_cursor.date_mismatch_examples.is_empty());
+    }
+
+    #[test]
+    fn invalid_date_mismatch_cursor_examples_are_rejected() {
+        let config = IndexConfig {
+            page_size: 1,
+            max_offset: 10,
+            max_body: BASE_INDEX_MAX_BODY,
+            minimum_interval: Duration::ZERO,
+        };
+        let mut cursor = IndexCursor {
+            version: 1,
+            filter: BASE_INDEX_FILTER.into(),
+            day_start: 0,
+            day_end: UTC_DAY,
+            intervals: vec![IndexInterval {
+                start: 0,
+                end: UTC_DAY,
+                offset: 0,
+            }],
+            complete: false,
+            date_mismatch_rows: 1,
+            date_mismatch_examples: vec![DateMismatchExample {
+                token: token_address(1),
+                created_at: 50,
+                interval_start: 100,
+                interval_end: 200,
+            }],
+        };
+        assert!(validate_index_cursor(&cursor, 0, config).is_ok());
+
+        cursor.date_mismatch_examples[0].token = "not-an-address".into();
+        assert!(matches!(
+            validate_index_cursor(&cursor, 0, config),
+            Err(AthError::InvalidIndexCursor)
+        ));
+        cursor.date_mismatch_examples[0].token = token_address(1);
+        cursor.date_mismatch_examples[0].created_at = 150;
+        assert!(matches!(
+            validate_index_cursor(&cursor, 0, config),
+            Err(AthError::InvalidIndexCursor)
+        ));
     }
 
     #[test]
@@ -1118,6 +1336,121 @@ mod tests {
         assert_eq!(stored.ath_max_liquidity_cents, Some(250));
         assert_eq!(rows.iter().filter(|row| row.token == untracked).count(), 0);
         assert_eq!(second.window_end, now.div_euclid(UTC_DAY) * UTC_DAY);
+    }
+
+    #[tokio::test]
+    async fn out_of_interval_integer_created_at_is_observed_and_checkpointed() {
+        let Ok(url) = std::env::var("SCOUT_TEST_DATABASE_URL") else {
+            return;
+        };
+        assert!(url.split('?').next().unwrap().ends_with("/scout_test"));
+        let db = DevDb::connect(&url, 2).await.unwrap();
+        db.migrate().await.unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/codex_base_created_at_mismatch_2026-10-11.json"
+        ))
+        .unwrap();
+        let good = fixture["results"][0].clone();
+        let bad = fixture["results"][1].clone();
+        let tracked = bad["token"]["address"].as_str().unwrap().to_string();
+        let db_pool = sqlx::PgPool::connect(&url).await.unwrap();
+        db.insert_launches(&[Launch {
+            chain: "base".into(),
+            token: tracked.clone(),
+            launchpad: "zora".into(),
+            creator: format!("ath-date-mismatch-{}", std::process::id()),
+            created_block: 1,
+            created_at: 1_775_701_583,
+            tx_hash: "ath-date-mismatch-test".into(),
+            source: "test".into(),
+        }])
+        .await
+        .unwrap();
+
+        let offsets = Arc::new(Mutex::new(Vec::new()));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(DateMismatchPages {
+                rows: json!([good, bad]),
+                offsets: offsets.clone(),
+            })
+            .mount(&server)
+            .await;
+        let config = IndexConfig {
+            page_size: 2,
+            max_offset: 10,
+            max_body: BASE_INDEX_MAX_BODY,
+            minimum_interval: Duration::ZERO,
+        };
+        let now = 1_791_158_401;
+        let suffix = std::process::id();
+        let cursor = format!("ath-date-mismatch:{suffix}");
+        let budget = format!("ath-date-mismatch-budget:{suffix}");
+        let report = backfill_base_ath_from_index_at(
+            &db,
+            "test-key",
+            1,
+            10,
+            now,
+            &server.uri(),
+            config,
+            &cursor,
+            &budget,
+        )
+        .await
+        .unwrap();
+
+        assert!(report.complete);
+        assert_eq!(report.provider_rows, 2);
+        assert_eq!(report.tracked_rows, 1);
+        assert_eq!(report.date_mismatch_rows, 1);
+        assert_eq!(*offsets.lock().unwrap(), [0, 2]);
+        let stored = sqlx::query(
+            "SELECT ath_fdv_cents, ath_at, source FROM ath WHERE chain = 'base' AND token = $1",
+        )
+        .bind(&tracked)
+        .fetch_one(&db_pool)
+        .await
+        .unwrap();
+        assert_eq!(stored.get::<i64, _>("ath_fdv_cents"), 165_600);
+        assert_eq!(stored.get::<Option<i64>, _>("ath_at"), Some(1_791_636_057));
+        assert_eq!(
+            stored.get::<String, _>("source"),
+            "codex-index-date-mismatch"
+        );
+        let cursor_key = format!("{cursor}:1791072000");
+        let saved: IndexCursor =
+            serde_json::from_str(&db.cursor(&cursor_key).await.unwrap().unwrap()).unwrap();
+        assert!(saved.complete);
+        assert_eq!(saved.date_mismatch_rows, 1);
+        assert_eq!(
+            saved.date_mismatch_examples,
+            [DateMismatchExample {
+                token: tracked.to_ascii_lowercase(),
+                created_at: 1_775_701_583,
+                interval_start: 1_791_072_000,
+                interval_end: 1_791_158_400,
+            }]
+        );
+
+        let resume_server = MockServer::start().await;
+        let resumed = backfill_base_ath_from_index_at(
+            &db,
+            "test-key",
+            1,
+            10,
+            now,
+            &resume_server.uri(),
+            config,
+            &cursor,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert!(resumed.complete);
+        assert_eq!(resumed.requests, 0);
+        assert_eq!(resumed.date_mismatch_rows, 1);
+        assert!(resume_server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
