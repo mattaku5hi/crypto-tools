@@ -177,8 +177,8 @@ type Degraded = Vec<(String, String)>;
 
 async fn ingest_chain(db: &DevDb, chain: &str, o: &IngestOpts) -> Result<Degraded, String> {
     if chain == "solana" {
-        let degraded = ingest_solana(db, o).await?;
-        observe_ath(db, chain, o.ath_requests).await?;
+        let mut degraded = ingest_solana(db, o).await?;
+        degraded.extend(ath_degraded(db, chain, o.ath_requests).await);
         return Ok(degraded);
     }
     let profile = match chain {
@@ -242,7 +242,7 @@ async fn ingest_chain(db: &DevDb, chain: &str, o: &IngestOpts) -> Result<Degrade
         id.histories_fetched,
         id.launches_from_histories
     );
-    observe_ath(db, chain, o.ath_requests).await?;
+    let degraded = ath_degraded(db, chain, o.ath_requests).await;
     for line in setup.rate_limit_report() {
         eprintln!("dev-tracker: {chain}: {line}");
     }
@@ -250,7 +250,21 @@ async fn ingest_chain(db: &DevDb, chain: &str, o: &IngestOpts) -> Result<Degrade
         "dev-tracker: {chain}: requests_made={}",
         setup.rpc.total_requests_made()
     );
-    Ok(Vec::new())
+    Ok(degraded)
+}
+
+/// ATH is a separate provider (Codex): its failure degrades the pass (an
+/// incident `codex:<chain>`), it does not fail the chain's facts, which are
+/// already stored (live: Codex transport errors during the backfill raised
+/// false "ingest:solana failing" alerts).
+async fn ath_degraded(db: &DevDb, chain: &str, ath_requests: usize) -> Degraded {
+    match observe_ath(db, chain, ath_requests).await {
+        Ok(()) => Vec::new(),
+        Err(e) => {
+            eprintln!("dev-tracker: {chain}: ath degraded: {e}");
+            vec![(format!("codex:{chain}"), e)]
+        }
+    }
 }
 
 async fn observe_ath(db: &DevDb, chain: &str, ath_requests: usize) -> Result<(), String> {
@@ -730,10 +744,16 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
                     match result {
                         Ok(degraded) => {
                             a.ok(&key).await;
+                            // degradations: providers that failed while the
+                            // pass itself succeeded
+                            let mut keys = vec![format!("codex:{chain}")];
                             if chain == "solana" {
-                                match degraded.iter().find(|(k, _)| k == "provider:helius") {
+                                keys.push("provider:helius".to_string());
+                            }
+                            for key in keys {
+                                match degraded.iter().find(|(k, _)| *k == key) {
                                     Some((k, e)) => a.failed(k, e).await,
-                                    None => a.ok("provider:helius").await,
+                                    None => a.ok(&key).await,
                                 }
                             }
                         }
@@ -854,7 +874,14 @@ async fn shutdown_signal() {
 
 async fn run(args: Args) -> Result<(), String> {
     let url = std::env::var(DB_ENV).map_err(|_| format!("{DB_ENV} is not set"))?;
-    let db = DevDb::connect(&url, 4).await.map_err(|e| e.to_string())?;
+    // a parallel backfill (3 EVM chains + several Solana days) needs more
+    // connections and a longer wait than the daemon
+    let db = if matches!(args.cmd, Cmd::Backfill(_)) {
+        DevDb::connect_with(&url, 24, Duration::from_secs(120)).await
+    } else {
+        DevDb::connect(&url, 4).await
+    }
+    .map_err(|e| e.to_string())?;
     match args.cmd {
         Cmd::Migrate => {
             db.migrate().await.map_err(|e| e.to_string())?;

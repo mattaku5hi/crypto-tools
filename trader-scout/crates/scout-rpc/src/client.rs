@@ -349,10 +349,17 @@ impl RpcClient {
                             "primary endpoint failed; repeating on the fallback"
                         );
                         match fb.call_endpoint(method, &params, jitter, sleeper).await {
-                            // the fallback cannot serve this method at all: the
-                            // primary's own failure is the informative one
-                            Err(fb_err) if is_method_unavailable(&fb_err) => Err(err),
-                            other => other,
+                            Ok(v) => Ok(v),
+                            // the fallback could not serve it either (method not
+                            // offered, a smaller range cap, its own outage): the
+                            // primary's failure is the informative one and the
+                            // caller's retry logic (range halving, next pass)
+                            // keys on it — live, Infura answers 100k-block getLogs
+                            // with -32602 "range exceeds limit of 10000"
+                            Err(fb_err) => {
+                                tracing::warn!(method, fallback_error = %fb_err, "fallback failed too");
+                                Err(err)
+                            }
                         }
                     }
                     None => Err(err),
@@ -629,16 +636,6 @@ fn map_status(status: reqwest::StatusCode, response: &reqwest::Response) -> Opti
 #[must_use]
 pub fn is_provider_specific(method: &str) -> bool {
     method.starts_with("alchemy_")
-}
-
-/// A JSON-RPC "method not found / not available" answer (-32601).
-fn is_method_unavailable(err: &ProviderError) -> bool {
-    match err {
-        ProviderError::Other(inner) => inner
-            .downcast_ref::<RpcErrorAdapter>()
-            .is_some_and(|e| e.0.code == -32601),
-        _ => false,
-    }
 }
 
 /// Does a failure (after this endpoint's own retries) justify repeating the

@@ -125,6 +125,9 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Smallest EVM step the backfill splits down to.
+const MIN_STEP_BLOCKS: u64 = 2_000;
+
 fn profile_of(chain: &str) -> Result<scout_sdk::evm::EvmChainProfile, String> {
     match chain {
         "bsc" => Ok(scout_sdk::evm::BSC),
@@ -180,13 +183,33 @@ async fn backfill_evm_chain(db: &DevDb, chain: &str, a: &BackfillArgs) -> Result
     if a.has("logs") {
         for src in EVM_SOURCES.iter().filter(|s| s.chain == chain) {
             let (mut logs, mut new) = (0usize, 0u64);
+            // a step whose logs exceed the per-call cap is split (live: Zora
+            // on Base had > 200k logs in 200k blocks); the cursor did not move
+            let mut step_blocks = a.evm_step_blocks.max(1);
             loop {
-                let step =
-                    backfill_step(db, &keyed.rpc, src, floor, a.evm_step_blocks, head, now())
-                        .await
-                        .map_err(|e| {
-                            format!("{}: {}", src.key, setup_scrub(&keyed, &e.to_string()))
-                        })?;
+                let step = match backfill_step(db, &keyed.rpc, src, floor, step_blocks, head, now())
+                    .await
+                {
+                    Ok(step) => step,
+                    Err(e)
+                        if e.to_string().contains("configured cap")
+                            && step_blocks > MIN_STEP_BLOCKS =>
+                    {
+                        step_blocks = step_blocks.div_euclid(4).max(MIN_STEP_BLOCKS);
+                        eprintln!(
+                            "dev-tracker: backfill {}: too many logs in one step, retrying with {step_blocks} blocks",
+                            src.key
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "{}: {}",
+                            src.key,
+                            setup_scrub(&keyed, &e.to_string())
+                        ));
+                    }
+                };
                 let Some(r) = step else {
                     break;
                 };

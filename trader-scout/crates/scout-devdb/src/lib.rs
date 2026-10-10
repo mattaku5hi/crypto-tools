@@ -142,8 +142,23 @@ impl DevDb {
     /// # Errors
     /// Connection failure.
     pub async fn connect(url: &str, max_connections: u32) -> Result<Self, DevDbError> {
+        Self::connect_with(url, max_connections, std::time::Duration::from_secs(30)).await
+    }
+
+    /// As [`DevDb::connect`] with an explicit wait for a free connection
+    /// (a parallel backfill needs a larger pool and a longer wait: live, 4
+    /// connections shared by 3 chains and 6 Solana days timed out).
+    ///
+    /// # Errors
+    /// Connection failure.
+    pub async fn connect_with(
+        url: &str,
+        max_connections: u32,
+        acquire_timeout: std::time::Duration,
+    ) -> Result<Self, DevDbError> {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections.max(1))
+            .acquire_timeout(acquire_timeout)
             .connect(url)
             .await?;
         Ok(Self { pool })
@@ -650,6 +665,9 @@ impl DevDb {
                         AND (SELECT count(*) FROM launches x
                              WHERE x.chain = l.chain AND x.creator = l.creator) >= $5))
                AND (a.observed_at IS NULL OR a.observed_at < $2 - CASE
+                    -- a token Codex does not know, past its first 2 days:
+                    -- every 90 days only (live Base: 630k tokens, 99 % missing)
+                    WHEN a.source = 'codex-missing' AND $2 - l.created_at >= 172800 THEN 7776000
                     WHEN $2 - l.created_at < 172800 THEN 43200
                     WHEN $2 - l.created_at < 604800 THEN 86400
                     WHEN $2 - l.created_at < 2592000 THEN 604800

@@ -345,3 +345,41 @@ async fn incidents_open_once_and_close_and_the_daemon_state_survives() {
     let prev = db.daemon_started(3_000).await.unwrap().unwrap();
     assert!(prev.clean_stop);
 }
+
+#[tokio::test]
+async fn tokens_codex_does_not_know_are_asked_again_only_quarterly() {
+    let Some(db) = db().await else { return };
+    let chain = format!("ath-missing-{}", std::process::id());
+    let day = 86_400;
+    let now = 100 * day;
+    let zora = |token: &str, at: i64| Launch {
+        launchpad: "zora".into(),
+        ..launch(&chain, token, "z", at)
+    };
+    // three launches of one creator: candidates; one old (10 days), two fresh
+    db.insert_launches(&[
+        zora("old", now - 10 * day),
+        zora("young", now - day),
+        zora("young2", now - day),
+    ])
+    .await
+    .unwrap();
+    let missing = |token: &str| AthObservation {
+        chain: chain.clone(),
+        token: token.into(),
+        ath_fdv_cents: 0,
+        ath_at: None,
+        source: "codex-missing".into(),
+        observed_at: now - 2 * day,
+        holders: None,
+        liquidity_cents: None,
+    };
+    db.upsert_ath(&[missing("old"), missing("young")])
+        .await
+        .unwrap();
+    let mut got = db.ath_candidates(&chain, now, 10).await.unwrap();
+    got.sort();
+    // the young missing one is retried (12 h schedule), the old missing one
+    // waits 90 days, the never-observed one is asked
+    assert_eq!(got, ["young", "young2"]);
+}
