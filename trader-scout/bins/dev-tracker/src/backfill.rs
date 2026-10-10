@@ -59,6 +59,9 @@ pub struct BackfillArgs {
     /// Codex requests (200 tokens each) per chain.
     #[arg(long, default_value_t = 3_000)]
     ath_requests: usize,
+    /// Enumerate positive Base ATH from Codex's first-pair index by closed UTC day.
+    #[arg(long)]
+    ath_from_index: bool,
 }
 
 impl BackfillArgs {
@@ -83,6 +86,9 @@ impl BackfillArgs {
 /// continues (rerun to retry what is left).
 pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
     let chains = a.chains();
+    if a.ath_from_index && (chains != ["base"] || !a.has("ath")) {
+        return Err("--ath-from-index requires --chains base and the ath phase".into());
+    }
     // every chain is its own task (and every Solana day, below): the
     // multi-threaded runtime spreads the JSON decoding over the cores; one
     // `join!` would run them all on one thread (measured: Solana's page
@@ -111,8 +117,41 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
         }
     }
     if a.has("ath") {
-        for chain in &chains {
-            backfill_ath(db, chain, a.ath_requests).await?;
+        if a.ath_from_index {
+            let key = std::env::var(CODEX_ENV)
+                .map_err(|_| format!("--ath-from-index requires {CODEX_ENV}"))?;
+            let as_of = now();
+            let report = scout_devtracker::ath::backfill_base_ath_from_index(
+                db,
+                key.trim(),
+                a.days,
+                a.ath_requests,
+                as_of,
+            )
+            .await
+            .map_err(|error| format!("base ATH index: {error}"))?;
+            eprintln!(
+                "dev-tracker: backfill Base ATH provider first-pair closed UTC days {}..{} (as-of {}): complete={}, {} requests, {} provider rows, {} tracked observations, {}/{} days complete in request window, {} budget remaining",
+                report.window_start,
+                report.window_end,
+                as_of,
+                report.complete,
+                report.requests,
+                report.provider_rows,
+                report.tracked_rows,
+                report.completed_days,
+                a.days,
+                a.ath_requests.saturating_sub(report.requests)
+            );
+            if !report.complete {
+                return Err(
+                    "Base ATH index pass stopped at its request budget; rerun to resume".into(),
+                );
+            }
+        } else {
+            for chain in &chains {
+                backfill_ath(db, chain, a.ath_requests).await?;
+            }
         }
     }
     if !failed.is_empty() {

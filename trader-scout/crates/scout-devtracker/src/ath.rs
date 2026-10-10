@@ -2,10 +2,14 @@
 //!
 //! `filterTokens(tokens: ["address:networkId", … ≤ 200])` returns
 //! `token.extrema.athFdv` (USD, decimal string) and its timestamp. Codex's
-//! free tier is 10,000 requests/month at 5 requests/s and the next plan is a
-//! subscription, so only tokens that can be runners are observed: migrated
-//! tokens of curve launchpads and every token of launchpads without a curve
-//! (Zora, Clanker), refreshed by age (`scout_devdb::DevDb::ath_candidates`).
+//! free tier is request-limited, so regular observation selects likely runners:
+//! migrated tokens and qualifying launchpads without a curve, refreshed by
+//! age (`scout_devdb::DevDb::ath_candidates`). An explicit Base backfill also
+//! enumerates positive ATHs from Codex's first-pair index, intersected with
+//! all tracked Base launches (ordinary refresh keeps its migrated-token and
+//! three-launch creator eligibility). Index days scope pair creation time;
+//! returned ATH values are current provider observations. The mutable index
+//! is not a complete or canonical launch registry.
 //! The current holder count is stored with each observation (a runner needs
 //! `top_runners.min_holders`: thin pools fake huge ATHs).
 //! A token Codex does not return is stored as an observation of 0 with source
@@ -13,13 +17,20 @@
 
 use std::time::Duration;
 
-use scout_devdb::{AthObservation, DevDb, DevDbError};
+use scout_devdb::{AthObservation, CODEX_REQUEST_BUDGET_KEY, DevDb, DevDbError};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// Codex GraphQL endpoint.
 pub const CODEX_URL: &str = "https://graph.codex.io/graphql";
 /// Tokens per `filterTokens` request (Codex maximum).
 pub const CODEX_BATCH: usize = 200;
+const BASE_INDEX_KEY: &str = "ath-discovery:codex:base:v1";
+const BASE_INDEX_FILTER: &str = "base-positive-ath-created-at-v1";
+const BASE_INDEX_NETWORK: u64 = 8453;
+const BASE_INDEX_MAX_OFFSET: usize = 10_000;
+const BASE_INDEX_MAX_BODY: usize = 4 * 1024 * 1024;
+const UTC_DAY: i64 = 86_400;
 
 /// Codex network id of a chain name.
 #[must_use]
@@ -58,6 +69,32 @@ pub enum AthError {
     Http(String),
     #[error("codex answered an error: {0}")]
     Codex(String),
+    #[error("Codex access denied (HTTP {0})")]
+    AccessDenied(u16),
+    #[error("Codex request budget is exhausted")]
+    QuotaExhausted,
+    #[error("Codex page-attempt budget {0} is exhausted")]
+    PassBudgetExhausted(usize),
+    #[error("Codex response exceeded {0} bytes")]
+    ResponseTooLarge(usize),
+    #[error("Codex requested retry after {0} seconds; cursor is unchanged")]
+    RetryLater(u64),
+    #[error("Codex index returned malformed data: {0}")]
+    MalformedIndex(String),
+    #[error("Codex index returned network {actual}, expected Base network {BASE_INDEX_NETWORK}")]
+    WrongIndexNetwork { actual: u64 },
+    #[error("Codex index interval [{start}, {end}) remains capped at {max_results} rows")]
+    IndexIntervalSaturated {
+        start: i64,
+        end: i64,
+        max_results: usize,
+    },
+    #[error("Codex index cursor is incompatible or malformed")]
+    InvalidIndexCursor,
+    #[error("ATH request budget must be greater than zero")]
+    EmptyIndexBudget,
+    #[error("Base ATH index only supports chain `base`, got `{0}`")]
+    IndexChain(String),
     #[error("{0}")]
     Db(#[from] DevDbError),
 }
@@ -71,34 +108,562 @@ pub struct AthReport {
     pub missing: usize,
 }
 
-async fn query(http: &reqwest::Client, key: &str, ids: &[String]) -> Result<Value, AthError> {
+/// Result of one bounded provider-index pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AthIndexReport {
+    pub requests: usize,
+    pub provider_rows: usize,
+    pub tracked_rows: usize,
+    pub completed_days: usize,
+    pub complete: bool,
+    pub window_start: i64,
+    pub window_end: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IndexCursor {
+    version: u8,
+    filter: String,
+    day_start: i64,
+    day_end: i64,
+    intervals: Vec<IndexInterval>,
+    complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IndexInterval {
+    start: i64,
+    end: i64,
+    offset: usize,
+}
+
+#[derive(Clone, Copy)]
+struct IndexConfig {
+    page_size: usize,
+    max_offset: usize,
+    max_body: usize,
+    minimum_interval: Duration,
+}
+
+impl IndexConfig {
+    const PRODUCTION: Self = Self {
+        page_size: CODEX_BATCH,
+        max_offset: BASE_INDEX_MAX_OFFSET,
+        max_body: BASE_INDEX_MAX_BODY,
+        minimum_interval: Duration::from_secs(1),
+    };
+}
+
+async fn query(
+    db: &DevDb,
+    http: &reqwest::Client,
+    key: &str,
+    ids: &[String],
+    now: i64,
+) -> Result<Value, AthError> {
     let q = format!(
         "{{ filterTokens(tokens: {}, limit: {}) {{ results {{ holders liquidity token {{ address networkId extrema {{ athFdv athFdvTimestamp }} }} }} }} }}",
         serde_json::to_string(ids).map_err(|e| AthError::Http(e.to_string()))?,
         CODEX_BATCH
     );
-    let resp = http
-        .post(CODEX_URL)
-        .header("Authorization", key)
-        .json(&json!({ "query": q }))
-        .send()
-        .await
-        .map_err(|e| AthError::Http(e.without_url().to_string()))?;
-    let status = resp.status();
-    let v: Value = resp
-        .json()
-        .await
-        .map_err(|e| AthError::Http(e.without_url().to_string()))?;
-    if !status.is_success() {
-        return Err(AthError::Http(format!("HTTP {status}")));
-    }
-    if let Some(err) = v.get("errors") {
-        return Err(AthError::Codex(err.to_string().chars().take(300).collect()));
-    }
-    Ok(v)
+    let mut attempts = 0;
+    let mut last_request = None;
+    request_graphql(
+        db,
+        http,
+        key,
+        CODEX_URL,
+        &q,
+        now,
+        BASE_INDEX_MAX_BODY,
+        0,
+        Duration::ZERO,
+        None,
+        CODEX_REQUEST_BUDGET_KEY,
+        &mut attempts,
+        &mut last_request,
+    )
+    .await
 }
 
-/// Observe the ATH of up to `max_requests × 200` candidate tokens of `chain`.
+#[allow(clippy::too_many_arguments)]
+async fn request_graphql(
+    db: &DevDb,
+    http: &reqwest::Client,
+    key: &str,
+    endpoint: &str,
+    query: &str,
+    now: i64,
+    max_body: usize,
+    max_retries: usize,
+    minimum_interval: Duration,
+    pass_budget: Option<usize>,
+    budget_key: &str,
+    attempts: &mut usize,
+    last_request: &mut Option<std::time::Instant>,
+) -> Result<Value, AthError> {
+    for retry in 0..=max_retries {
+        if pass_budget.is_some_and(|budget| *attempts >= budget) {
+            return Err(AthError::PassBudgetExhausted(
+                pass_budget.unwrap_or_default(),
+            ));
+        }
+        if let Some(last) = *last_request
+            && let Some(wait) = minimum_interval.checked_sub(last.elapsed())
+        {
+            tokio::time::sleep(wait).await;
+        }
+        db.reserve_request_budget(budget_key, now)
+            .await
+            .map_err(|e| match e {
+                DevDbError::CodexRequestBudgetExhausted => AthError::QuotaExhausted,
+                other => AthError::Db(other),
+            })?;
+        *attempts += 1;
+        *last_request = Some(std::time::Instant::now());
+        let response = http
+            .post(endpoint)
+            .header("Authorization", key)
+            .json(&json!({ "query": query }))
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) if error.is_timeout() || error.is_connect() || error.is_request() => {
+                if retry < max_retries {
+                    tokio::time::sleep(Duration::from_secs(1u64 << retry.min(2))).await;
+                    continue;
+                }
+                return Err(AthError::Http(error.without_url().to_string()));
+            }
+            Err(error) => return Err(AthError::Http(error.without_url().to_string())),
+        };
+        let status = response.status();
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        let bytes = read_bounded(response, max_body).await?;
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(AthError::AccessDenied(status.as_u16()));
+        }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+            let body = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+            if body.contains("quota") || body.contains("monthly") {
+                return Err(AthError::QuotaExhausted);
+            }
+            if retry < max_retries {
+                tokio::time::sleep(retry_delay(retry_after, retry)?).await;
+                continue;
+            }
+            return Err(AthError::Http(format!("HTTP {status}")));
+        }
+        if !status.is_success() {
+            return Err(AthError::Http(format!("HTTP {status}")));
+        }
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| AthError::Http(format!("invalid JSON response: {error}")))?;
+        if let Some(errors) = value.get("errors") {
+            let detail = errors.to_string().chars().take(300).collect::<String>();
+            if detail.to_ascii_lowercase().contains("quota")
+                || detail.to_ascii_lowercase().contains("monthly")
+            {
+                return Err(AthError::QuotaExhausted);
+            }
+            return Err(AthError::Codex(detail));
+        }
+        return Ok(value);
+    }
+    Err(AthError::Http(
+        "Codex request retry loop ended unexpectedly".into(),
+    ))
+}
+
+fn retry_delay(retry_after: Option<u64>, retry: usize) -> Result<Duration, AthError> {
+    let Some(value) = retry_after else {
+        return Ok(Duration::from_secs(1u64 << retry.min(2)));
+    };
+    if value > 30 {
+        return Err(AthError::RetryLater(value));
+    }
+    Ok(Duration::from_secs(value))
+}
+
+async fn read_bounded(
+    mut response: reqwest::Response,
+    max_body: usize,
+) -> Result<Vec<u8>, AthError> {
+    let max_body_u64 = u64::try_from(max_body).unwrap_or(u64::MAX);
+    if response
+        .content_length()
+        .is_some_and(|len| len > max_body_u64)
+    {
+        return Err(AthError::ResponseTooLarge(max_body));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| AthError::Http(error.without_url().to_string()))?
+    {
+        if body.len().saturating_add(chunk.len()) > max_body {
+            return Err(AthError::ResponseTooLarge(max_body));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// Enumerate positive ATH tokens in Base's first-pair index for closed UTC
+/// days, intersecting each page with launches already tracked by this store.
+///
+/// # Errors
+/// Provider, database, malformed cursor/response, or an unsplittable capped
+/// provider interval. Partial pages are committed before their cursor moves.
+pub async fn backfill_base_ath_from_index(
+    db: &DevDb,
+    codex_key: &str,
+    days: i64,
+    max_requests: usize,
+    now: i64,
+) -> Result<AthIndexReport, AthError> {
+    backfill_base_ath_from_index_at(
+        db,
+        codex_key,
+        days,
+        max_requests,
+        now,
+        CODEX_URL,
+        IndexConfig::PRODUCTION,
+        BASE_INDEX_KEY,
+        CODEX_REQUEST_BUDGET_KEY,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn backfill_base_ath_from_index_at(
+    db: &DevDb,
+    codex_key: &str,
+    days: i64,
+    max_requests: usize,
+    now: i64,
+    endpoint: &str,
+    config: IndexConfig,
+    cursor_prefix: &str,
+    budget_key: &str,
+) -> Result<AthIndexReport, AthError> {
+    if days <= 0 || max_requests == 0 {
+        return Err(AthError::EmptyIndexBudget);
+    }
+    if config.page_size == 0 || config.max_offset < config.page_size || config.max_body == 0 {
+        return Err(AthError::InvalidIndexCursor);
+    }
+    let window_end = now.div_euclid(UTC_DAY) * UTC_DAY;
+    let window_start = window_end
+        .checked_sub(
+            days.checked_mul(UTC_DAY)
+                .ok_or(AthError::InvalidIndexCursor)?,
+        )
+        .ok_or(AthError::InvalidIndexCursor)?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|error| AthError::Http(error.to_string()))?;
+    let mut report = AthIndexReport {
+        window_start,
+        window_end,
+        ..AthIndexReport::default()
+    };
+    let mut last_request = None;
+    let pass_started = std::time::Instant::now();
+    let mut day_start = window_end - UTC_DAY;
+    while day_start >= window_start {
+        let key = format!("{cursor_prefix}:{day_start}");
+        let mut cursor = match db.cursor(&key).await? {
+            Some(position) => {
+                let cursor: IndexCursor =
+                    serde_json::from_str(&position).map_err(|_| AthError::InvalidIndexCursor)?;
+                validate_index_cursor(&cursor, day_start, config)?;
+                if cursor.complete {
+                    report.completed_days += 1;
+                    day_start -= UTC_DAY;
+                    continue;
+                }
+                cursor
+            }
+            None => IndexCursor {
+                version: 1,
+                filter: BASE_INDEX_FILTER.to_string(),
+                day_start,
+                day_end: day_start + UTC_DAY,
+                intervals: vec![IndexInterval {
+                    start: day_start,
+                    end: day_start + UTC_DAY,
+                    offset: 0,
+                }],
+                complete: false,
+            },
+        };
+        while let Some(interval) = cursor.intervals.last().cloned() {
+            let query = index_query(&interval, config.page_size);
+            let value = match request_graphql(
+                db,
+                &client,
+                codex_key,
+                endpoint,
+                &query,
+                now,
+                config.max_body,
+                2,
+                config.minimum_interval,
+                Some(max_requests),
+                budget_key,
+                &mut report.requests,
+                &mut last_request,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(AthError::PassBudgetExhausted(_)) => return Ok(report),
+                Err(error) => return Err(error),
+            };
+            let page_now = now.saturating_add(
+                i64::try_from(pass_started.elapsed().as_secs()).unwrap_or(i64::MAX),
+            );
+            let page = parse_index_page(&value, &interval, page_now, config.page_size)?;
+            report.provider_rows += page.len();
+            let tokens: Vec<String> = page.iter().map(|row| row.token.clone()).collect();
+            let known = db.known_launch_tokens("base", &tokens).await?;
+            let known: std::collections::BTreeMap<String, String> = known
+                .into_iter()
+                .map(|token| (token.to_ascii_lowercase(), token))
+                .collect();
+            let observations: Vec<AthObservation> = page
+                .into_iter()
+                .filter_map(|row| {
+                    known
+                        .get(&row.token.to_ascii_lowercase())
+                        .map(|token| AthObservation {
+                            token: token.clone(),
+                            ..row
+                        })
+                })
+                .collect();
+            report.tracked_rows += observations.len();
+            db.upsert_ath(&observations).await?;
+
+            let result_len = tokens.len();
+            if result_len == config.page_size {
+                if interval.offset + result_len >= config.max_offset {
+                    let width = interval.end - interval.start;
+                    if width <= 1 {
+                        return Err(AthError::IndexIntervalSaturated {
+                            start: interval.start,
+                            end: interval.end,
+                            max_results: config.max_offset,
+                        });
+                    }
+                    cursor.intervals.pop();
+                    #[allow(clippy::integer_division)]
+                    let midpoint = interval.start + width / 2;
+                    cursor.intervals.push(IndexInterval {
+                        start: midpoint,
+                        end: interval.end,
+                        offset: 0,
+                    });
+                    cursor.intervals.push(IndexInterval {
+                        start: interval.start,
+                        end: midpoint,
+                        offset: 0,
+                    });
+                } else if let Some(current) = cursor.intervals.last_mut() {
+                    current.offset += result_len;
+                }
+            } else {
+                cursor.intervals.pop();
+            }
+            if cursor.intervals.is_empty() {
+                cursor.complete = true;
+                report.completed_days += 1;
+            }
+            save_index_cursor(db, &key, &cursor, page_now).await?;
+            if cursor.complete {
+                break;
+            }
+        }
+        day_start -= UTC_DAY;
+    }
+    report.complete = true;
+    Ok(report)
+}
+
+fn validate_index_cursor(
+    cursor: &IndexCursor,
+    day_start: i64,
+    config: IndexConfig,
+) -> Result<(), AthError> {
+    if cursor.version != 1
+        || cursor.filter != BASE_INDEX_FILTER
+        || cursor.day_start != day_start
+        || cursor.day_end != day_start + UTC_DAY
+        || cursor.complete != cursor.intervals.is_empty()
+        || cursor.intervals.len() > 18
+        || cursor.intervals.iter().any(|interval| {
+            interval.start < day_start
+                || interval.end > day_start + UTC_DAY
+                || interval.start >= interval.end
+                || interval.offset > config.max_offset - config.page_size
+                || interval.offset % config.page_size != 0
+        })
+    {
+        return Err(AthError::InvalidIndexCursor);
+    }
+    let mut intervals: Vec<_> = cursor.intervals.iter().collect();
+    intervals.sort_by_key(|interval| interval.start);
+    if intervals.windows(2).any(|pair| {
+        pair.first()
+            .zip(pair.get(1))
+            .is_some_and(|(left, right)| left.end > right.start)
+    }) {
+        return Err(AthError::InvalidIndexCursor);
+    }
+    Ok(())
+}
+
+async fn save_index_cursor(
+    db: &DevDb,
+    key: &str,
+    cursor: &IndexCursor,
+    now: i64,
+) -> Result<(), AthError> {
+    let position = serde_json::to_string(cursor).map_err(|_| AthError::InvalidIndexCursor)?;
+    db.set_cursor(key, &position, now).await?;
+    Ok(())
+}
+
+fn index_query(interval: &IndexInterval, page_size: usize) -> String {
+    format!(
+        "{{ filterTokens(filters: {{network: [{BASE_INDEX_NETWORK}], isTestnet: false, includeScams: true, createdAt: {{gte: {}, lt: {}}}, athFdv: {{gt: 0}}}}, rankings: [{{attribute: createdAt, direction: ASC}}], limit: {page_size}, offset: {}) {{ results {{ createdAt token {{ address networkId extrema {{ athFdv athFdvTimestamp }} }} holders liquidity }} }} }}",
+        interval.start, interval.end, interval.offset
+    )
+}
+
+fn parse_index_page(
+    value: &Value,
+    interval: &IndexInterval,
+    as_of: i64,
+    page_size: usize,
+) -> Result<Vec<AthObservation>, AthError> {
+    let results = value
+        .pointer("/data/filterTokens/results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AthError::MalformedIndex("missing results array".into()))?;
+    if results.len() > page_size {
+        return Err(AthError::MalformedIndex(
+            "page exceeded requested limit".into(),
+        ));
+    }
+    results
+        .iter()
+        .map(|result| {
+            let created_at = result
+                .get("createdAt")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| AthError::MalformedIndex("missing createdAt".into()))?;
+            if created_at < interval.start || created_at >= interval.end {
+                return Err(AthError::MalformedIndex(
+                    "createdAt outside requested interval".into(),
+                ));
+            }
+            let token = result
+                .pointer("/token/address")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AthError::MalformedIndex("missing token address".into()))?;
+            if !valid_evm_address(token) {
+                return Err(AthError::MalformedIndex("invalid token address".into()));
+            }
+            let network = result
+                .pointer("/token/networkId")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| AthError::MalformedIndex("missing token networkId".into()))?;
+            if network != BASE_INDEX_NETWORK {
+                return Err(AthError::WrongIndexNetwork { actual: network });
+            }
+            let ath = result
+                .pointer("/token/extrema/athFdv")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AthError::MalformedIndex("missing positive ATH".into()))?;
+            if !positive_decimal(ath) {
+                return Err(AthError::MalformedIndex("non-positive ATH".into()));
+            }
+            let cents = usd_to_cents(ath)
+                .ok_or_else(|| AthError::MalformedIndex("invalid ATH decimal".into()))?;
+            let ath_at = optional_integer(result.pointer("/token/extrema/athFdvTimestamp"))?;
+            let holders = optional_integer(result.get("holders"))?;
+            let liquidity_cents = optional_decimal_cents(result.get("liquidity"))?;
+            Ok(AthObservation {
+                chain: "base".into(),
+                token: token.to_ascii_lowercase(),
+                ath_fdv_cents: cents,
+                ath_at,
+                source: "codex".into(),
+                observed_at: as_of,
+                holders,
+                liquidity_cents,
+            })
+        })
+        .collect()
+}
+
+fn optional_integer(value: Option<&Value>) -> Result<Option<i64>, AthError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(value)) => value
+            .as_i64()
+            .filter(|value| *value >= 0)
+            .map(Some)
+            .ok_or_else(|| AthError::MalformedIndex("invalid negative/non-integer field".into())),
+        _ => Err(AthError::MalformedIndex("invalid integer field".into())),
+    }
+}
+
+fn optional_decimal_cents(value: Option<&Value>) -> Result<Option<i64>, AthError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let cents = match value {
+        Value::String(value) => usd_to_cents(value),
+        Value::Number(value) => value
+            .as_u64()
+            .and_then(|whole| whole.checked_mul(100))
+            .and_then(|cents| i64::try_from(cents).ok()),
+        _ => None,
+    };
+    cents.map(Some).ok_or_else(|| {
+        AthError::MalformedIndex("decimal must be an exact non-negative string or integer".into())
+    })
+}
+
+fn positive_decimal(value: &str) -> bool {
+    value
+        .bytes()
+        .any(|digit| digit.is_ascii_digit() && digit != b'0')
+        && usd_to_cents(value).is_some()
+}
+
+fn valid_evm_address(value: &str) -> bool {
+    value.len() == 42
+        && value.starts_with("0x")
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Observe up to `max_requests × 200` ATH candidate tokens of `chain`.
 ///
 /// # Errors
 /// HTTP / Codex / database failure (observations stored so far stay).
@@ -121,7 +686,7 @@ pub async fn observe_ath(
         .map_err(|e| AthError::Http(e.to_string()))?;
     for batch in candidates.chunks(CODEX_BATCH) {
         let ids: Vec<String> = batch.iter().map(|t| format!("{t}:{network}")).collect();
-        let v = query(&http, codex_key, &ids).await?;
+        let v = query(db, &http, codex_key, &ids, now).await?;
         report.requests += 1;
         report.tokens_asked += batch.len();
         let mut rows: Vec<AthObservation> = Vec::with_capacity(batch.len());
@@ -151,11 +716,7 @@ pub async fn observe_ath(
                 source: "codex".to_string(),
                 observed_at: now,
                 holders: r.get("holders").and_then(Value::as_i64),
-                liquidity_cents: r.get("liquidity").and_then(|v| match v {
-                    Value::String(s) => usd_to_cents(s),
-                    Value::Number(n) => usd_to_cents(&n.to_string()),
-                    _ => None,
-                }),
+                liquidity_cents: optional_decimal_cents(r.get("liquidity"))?,
             });
         }
         report.observed += rows.len();
@@ -186,7 +747,129 @@ pub async fn observe_ath(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use scout_devdb::Launch;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
     use super::*;
+
+    async fn isolated_db() -> Option<DevDb> {
+        let url = std::env::var("SCOUT_TEST_DATABASE_URL").ok()?;
+        let db = DevDb::connect(&url, 2).await.ok()?;
+        db.migrate().await.ok()?;
+        Some(db)
+    }
+
+    fn token_address(n: u64) -> String {
+        format!("0x{n:040x}")
+    }
+
+    struct IndexReplay {
+        calls: Arc<Mutex<Vec<String>>>,
+        first: String,
+        second: String,
+    }
+
+    impl Respond for IndexReplay {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let query = body["query"].as_str().unwrap().to_string();
+            self.calls.lock().unwrap().push(query.clone());
+            let start = query
+                .split("createdAt: {gte: ")
+                .nth(1)
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap()
+                .parse::<i64>()
+                .unwrap();
+            let end = query
+                .split(", lt: ")
+                .nth(1)
+                .unwrap()
+                .split('}')
+                .next()
+                .unwrap()
+                .parse::<i64>()
+                .unwrap();
+            let offset = query
+                .rsplit("offset: ")
+                .next()
+                .unwrap()
+                .split(')')
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            let address = match (end - start == UTC_DAY, offset) {
+                (true, 0) => Some(self.first.as_str()),
+                (true, 1) => Some(self.second.as_str()),
+                _ => None,
+            };
+            let results = address
+                .map(|address| {
+                    json!([{
+                        "createdAt": start + 1,
+                        "token": {
+                            "address": address,
+                            "networkId": BASE_INDEX_NETWORK,
+                            "extrema": {"athFdv": "1.239", "athFdvTimestamp": start + 2}
+                        },
+                        "holders": 17,
+                        "liquidity": "2.5"
+                    }])
+                })
+                .unwrap_or_else(|| json!([]));
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"filterTokens": {"results": results}}
+            }))
+        }
+    }
+
+    struct RetryOnce(AtomicUsize);
+
+    impl Respond for RetryOnce {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "0")
+                    .set_body_string("temporarily busy")
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({"data": {"ok": true}}))
+            }
+        }
+    }
+
+    struct AlwaysCapped(String);
+
+    impl Respond for AlwaysCapped {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let query = body["query"].as_str().unwrap();
+            let start = query
+                .split("createdAt: {gte: ")
+                .nth(1)
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap()
+                .parse::<i64>()
+                .unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"filterTokens": {"results": [{
+                    "createdAt": start,
+                    "token": {"address": self.0, "networkId": BASE_INDEX_NETWORK,
+                        "extrema": {"athFdv": "1"}}
+                }]}}
+            }))
+        }
+    }
 
     #[test]
     fn usd_strings_become_floored_cents() {
@@ -204,5 +887,411 @@ mod tests {
         assert_eq!(codex_network("solana"), Some(1_399_811_149));
         assert_eq!(codex_network("robinhood"), Some(4663));
         assert_eq!(codex_network("polygon"), None);
+    }
+
+    #[test]
+    fn liquidity_cents_use_exact_strings_or_integer_usd() {
+        assert_eq!(
+            optional_decimal_cents(Some(&json!("12.349"))).unwrap(),
+            Some(1_234)
+        );
+        assert_eq!(
+            optional_decimal_cents(Some(&json!(12))).unwrap(),
+            Some(1_200)
+        );
+        assert_eq!(optional_decimal_cents(Some(&Value::Null)).unwrap(), None);
+        assert!(optional_decimal_cents(Some(&json!(12.34))).is_err());
+        assert!(optional_decimal_cents(Some(&json!("-1"))).is_err());
+    }
+
+    #[test]
+    fn live_base_index_subset_preserves_exact_ath_and_unknown_holders() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/codex_base_positive_ath_2026-10-10.json"
+        ))
+        .unwrap();
+        let rows = parse_index_page(
+            &fixture,
+            &IndexInterval {
+                start: 1_791_504_000,
+                end: 1_791_590_400,
+                offset: 0,
+            },
+            1_791_662_000,
+            200,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].ath_fdv_cents, 762_200);
+        assert_eq!(rows[1].ath_fdv_cents, 762_700);
+        assert_eq!(rows[0].ath_at, Some(1_791_504_003));
+        assert_eq!(rows[0].holders, None);
+        assert_eq!(rows[0].liquidity_cents, Some(0));
+        assert_eq!(rows[0].source, "codex");
+    }
+
+    #[test]
+    fn indexed_query_uses_positive_base_ath_and_half_open_created_at() {
+        let query = index_query(
+            &IndexInterval {
+                start: 10,
+                end: 20,
+                offset: 200,
+            },
+            200,
+        );
+        assert!(query.contains("network: [8453]"));
+        assert!(query.contains("isTestnet: false"));
+        assert!(query.contains("includeScams: true"));
+        assert!(query.contains("createdAt: {gte: 10, lt: 20}"));
+        assert!(query.contains("athFdv: {gt: 0}"));
+        assert!(query.contains("offset: 200"));
+    }
+
+    #[test]
+    fn indexed_results_require_base_valid_positive_ath() {
+        let interval = IndexInterval {
+            start: 10,
+            end: 20,
+            offset: 0,
+        };
+        let row = |network, address: &str, ath: &str| {
+            json!({
+                "createdAt": 11,
+                "token": {"address": address, "networkId": network,
+                    "extrema": {"athFdv": ath}},
+                "holders": null,
+                "liquidity": "0"
+            })
+        };
+        assert!(matches!(
+            parse_index_page(
+                &json!({"data":{"filterTokens":{"results":[row(56, &token_address(1), "1")]}}}),
+                &interval,
+                100,
+                200,
+            ),
+            Err(AthError::WrongIndexNetwork { actual: 56 })
+        ));
+        assert!(
+            parse_index_page(
+                &json!({"data":{"filterTokens":{"results":[row(8453, "not-an-address", "1")]}}}),
+                &interval,
+                100,
+                200,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_index_page(
+                &json!({"data":{"filterTokens":{"results":[row(8453, &token_address(1), "0")]}}}),
+                &interval,
+                100,
+                200,
+            )
+            .is_err()
+        );
+        let parsed = parse_index_page(
+            &json!({
+                "data":{"filterTokens":{"results":[row(8453, &token_address(1), "1")]}}
+            }),
+            &interval,
+            100,
+            200,
+        )
+        .unwrap();
+        assert_eq!(parsed[0].observed_at, 100);
+        assert_eq!(parsed[0].holders, None);
+        let malformed = json!({
+            "createdAt": 11,
+            "token": {"address": token_address(1), "networkId": BASE_INDEX_NETWORK,
+                "extrema": {"athFdv": "1", "athFdvTimestamp": -1}},
+            "holders": null,
+            "liquidity": "0"
+        });
+        assert!(
+            parse_index_page(
+                &json!({"data":{"filterTokens":{"results":[malformed]}}}),
+                &interval,
+                100,
+                200,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn retry_after_is_bounded_and_falls_back_for_invalid_headers() {
+        assert_eq!(retry_delay(Some(0), 0).unwrap(), Duration::ZERO);
+        assert_eq!(retry_delay(None, 1).unwrap(), Duration::from_secs(2));
+        assert!(matches!(
+            retry_delay(Some(31), 0),
+            Err(AthError::RetryLater(31))
+        ));
+    }
+
+    #[tokio::test]
+    async fn indexed_backfill_resumes_splits_cap_and_only_upserts_tracked_tokens() {
+        let Some(db) = isolated_db().await else {
+            return;
+        };
+        let pid = u64::from(std::process::id());
+        let tracked = token_address(pid * 2 + 1);
+        let untracked = token_address(pid * 2 + 2);
+        db.insert_launches(&[Launch {
+            chain: "base".into(),
+            token: tracked.clone(),
+            launchpad: "zora".into(),
+            creator: format!("ath-index-{pid}"),
+            created_block: 1,
+            created_at: 1,
+            tx_hash: "ath-index-test".into(),
+            source: "test".into(),
+        }])
+        .await
+        .unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(IndexReplay {
+                calls: calls.clone(),
+                first: tracked.clone(),
+                second: untracked.clone(),
+            })
+            .mount(&server)
+            .await;
+        let config = IndexConfig {
+            page_size: 1,
+            max_offset: 2,
+            max_body: BASE_INDEX_MAX_BODY,
+            minimum_interval: Duration::ZERO,
+        };
+        let now = 1_800_000_123;
+        let cursor = format!("ath-index-test:{pid}");
+        let budget = format!("ath-index-budget:{pid}");
+        let first = backfill_base_ath_from_index_at(
+            &db,
+            "test-key",
+            1,
+            1,
+            now,
+            &server.uri(),
+            config,
+            &cursor,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert!(!first.complete);
+        assert_eq!(first.requests, 1);
+
+        let second = backfill_base_ath_from_index_at(
+            &db,
+            "test-key",
+            1,
+            3,
+            now,
+            &server.uri(),
+            config,
+            &cursor,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert!(second.complete);
+        assert_eq!(second.requests, 3);
+        {
+            let queries = calls.lock().unwrap();
+            assert_eq!(queries.len(), 4);
+            assert!(queries[0].contains("offset: 0"));
+            assert!(queries[1].contains("offset: 1"));
+            assert!(queries[2].contains("offset: 0"));
+            assert!(queries[3].contains("offset: 0"));
+            assert!(queries[2].contains("lt: "));
+            assert!(queries[3].contains("gte: "));
+        }
+
+        let rows = db.dev_launches(Some("base"), 0).await.unwrap();
+        let stored = rows.iter().find(|row| row.token == tracked).unwrap();
+        assert_eq!(stored.ath_fdv_cents, Some(123));
+        assert_eq!(stored.ath_holders, Some(17));
+        assert_eq!(stored.ath_max_liquidity_cents, Some(250));
+        assert_eq!(rows.iter().filter(|row| row.token == untracked).count(), 0);
+        assert_eq!(second.window_end, now.div_euclid(UTC_DAY) * UTC_DAY);
+    }
+
+    #[tokio::test]
+    async fn zero_shared_budget_stops_before_http() {
+        let Some(db) = isolated_db().await else {
+            return;
+        };
+        let key = format!("ath-index-zero-budget:{}", std::process::id());
+        db.set_cursor(&key, "0", 10).await.unwrap();
+        let server = MockServer::start().await;
+        let mut attempts = 0;
+        let mut last_request = None;
+        let result = request_graphql(
+            &db,
+            &reqwest::Client::new(),
+            "test-key",
+            &server.uri(),
+            "query { test }",
+            10,
+            128,
+            0,
+            Duration::ZERO,
+            None,
+            &key,
+            &mut attempts,
+            &mut last_request,
+        )
+        .await;
+        assert!(matches!(result, Err(AthError::QuotaExhausted)));
+        assert_eq!(attempts, 0);
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn retry_attempts_consume_shared_and_per_pass_budgets() {
+        let Some(db) = isolated_db().await else {
+            return;
+        };
+        let key = format!("ath-retry-budget:{}", std::process::id());
+        db.set_cursor(&key, "2", 10).await.unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(RetryOnce(AtomicUsize::new(0)))
+            .mount(&server)
+            .await;
+        let mut attempts = 0;
+        let mut last_request = None;
+        assert!(
+            request_graphql(
+                &db,
+                &reqwest::Client::new(),
+                "test-key",
+                &server.uri(),
+                "query { test }",
+                10,
+                128,
+                1,
+                Duration::ZERO,
+                Some(2),
+                &key,
+                &mut attempts,
+                &mut last_request,
+            )
+            .await
+            .is_ok()
+        );
+        assert_eq!(attempts, 2);
+        assert_eq!(db.cursor(&key).await.unwrap().as_deref(), Some("0"));
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+
+        let capped_key = format!("ath-pass-budget:{}", std::process::id());
+        db.set_cursor(&capped_key, "2", 10).await.unwrap();
+        let capped = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("busy"))
+            .mount(&capped)
+            .await;
+        let mut attempts = 0;
+        assert!(matches!(
+            request_graphql(
+                &db,
+                &reqwest::Client::new(),
+                "test-key",
+                &capped.uri(),
+                "query { test }",
+                10,
+                128,
+                2,
+                Duration::ZERO,
+                Some(1),
+                &capped_key,
+                &mut attempts,
+                &mut last_request,
+            )
+            .await,
+            Err(AthError::PassBudgetExhausted(1))
+        ));
+        assert_eq!(attempts, 1);
+        assert_eq!(db.cursor(&capped_key).await.unwrap().as_deref(), Some("1"));
+        assert_eq!(capped.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn oversized_response_does_not_advance_cursor_and_second_saturation_fails() {
+        let Some(db) = isolated_db().await else {
+            return;
+        };
+        let now = 1_800_000_123;
+        let prefix = format!("ath-response-cap:{}", std::process::id());
+        let budget = format!("ath-response-budget:{}", std::process::id());
+        let config = IndexConfig {
+            page_size: 1,
+            max_offset: 1,
+            max_body: 1,
+            minimum_interval: Duration::ZERO,
+        };
+        let oversized = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&oversized)
+            .await;
+        assert!(matches!(
+            backfill_base_ath_from_index_at(
+                &db,
+                "test-key",
+                1,
+                1,
+                now,
+                &oversized.uri(),
+                config,
+                &prefix,
+                &budget
+            )
+            .await,
+            Err(AthError::ResponseTooLarge(1))
+        ));
+        let day = now.div_euclid(UTC_DAY) * UTC_DAY - UTC_DAY;
+        assert!(
+            db.cursor(&format!("{prefix}:{day}"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let saturated = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(AlwaysCapped(token_address(88)))
+            .mount(&saturated)
+            .await;
+        let mut config = config;
+        config.max_body = BASE_INDEX_MAX_BODY;
+        assert!(matches!(
+            backfill_base_ath_from_index_at(
+                &db,
+                "test-key",
+                1,
+                30,
+                now,
+                &saturated.uri(),
+                config,
+                &prefix,
+                &budget
+            )
+            .await,
+            Err(AthError::IndexIntervalSaturated { .. })
+        ));
+        let stored = db
+            .cursor(&format!("{prefix}:{day}"))
+            .await
+            .unwrap()
+            .unwrap();
+        let cursor: IndexCursor = serde_json::from_str(&stored).unwrap();
+        assert!(!cursor.complete);
+        assert!(!cursor.intervals.is_empty());
+        assert!(saturated.received_requests().await.unwrap().len() <= 20);
     }
 }

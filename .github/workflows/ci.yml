@@ -9,6 +9,18 @@ jobs:
   fmt-clippy-test:
     name: fmt, clippy, test (offline)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: scout
+          POSTGRES_PASSWORD: scout
+          POSTGRES_DB: scout_test
+        ports:
+          - 55439:5432
+        options: >-
+          --health-cmd "pg_isready -U scout -d scout_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -37,8 +49,10 @@ jobs:
       - name: cargo test
         working-directory: trader-scout
         # Offline CI does not depend on paid RPCs or live-chain state
-        # (AGENTS.md §"CI и сдача"). Every test in this workspace so far
-        # runs against synthetic in-memory fixtures only.
+        # (AGENTS.md §"CI и сдача"). Database tests use the local service;
+        # provider responses use fixtures and mock HTTP/RPC servers.
+        env:
+          SCOUT_TEST_DATABASE_URL: postgres://scout:scout@127.0.0.1:55439/scout_test
         run: cargo test --workspace --all-features
 
   polymarket-data:

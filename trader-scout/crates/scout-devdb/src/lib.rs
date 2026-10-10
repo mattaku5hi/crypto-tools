@@ -15,7 +15,16 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 pub enum DevDbError {
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
+    #[error("token lookup batch has {0} entries; maximum is 200")]
+    TokenLookupTooLarge(usize),
+    #[error("Codex request budget is exhausted")]
+    CodexRequestBudgetExhausted,
+    #[error("Codex request budget cursor is not a non-negative integer")]
+    InvalidCodexRequestBudget,
 }
+
+/// Shared opt-in monthly request budget cursor for every Codex call path.
+pub const CODEX_REQUEST_BUDGET_KEY: &str = "quota:codex:remaining";
 
 /// Embedded schema migrations, applied in order and recorded in
 /// `schema_migrations` (sqlx's own migrator is not used: its macro feature
@@ -29,6 +38,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, include_str!("../migrations/0005_ath_holders.sql")),
     (6, include_str!("../migrations/0006_ath_liquidity.sql")),
     (7, include_str!("../migrations/0007_alerts.sql")),
+    (8, include_str!("../migrations/0008_launches_by_time.sql")),
 ];
 
 /// Rows per `INSERT … SELECT FROM UNNEST` statement.
@@ -300,6 +310,29 @@ impl DevDb {
         Ok(n)
     }
 
+    /// Return the tracked tokens from a provider page (maximum 200).
+    ///
+    /// # Errors
+    /// Database failure or a batch larger than the provider page bound.
+    pub async fn known_launch_tokens(
+        &self,
+        chain: &str,
+        tokens: &[String],
+    ) -> Result<Vec<String>, DevDbError> {
+        if tokens.len() > 200 {
+            return Err(DevDbError::TokenLookupTooLarge(tokens.len()));
+        }
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query("SELECT token FROM launches WHERE chain = $1 AND token = ANY($2)")
+            .bind(chain)
+            .bind(tokens)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get("token")).collect())
+    }
+
     /// Last fully ingested position of a source (`None` = never ingested).
     ///
     /// # Errors
@@ -332,6 +365,47 @@ impl DevDb {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Reserve one provider request from an opt-in shared counter.
+    /// Missing counters preserve legacy unlimited behavior.
+    ///
+    /// # Errors
+    /// Database failure, malformed counter, or exhausted budget.
+    pub async fn reserve_request_budget(
+        &self,
+        key: &str,
+        now: i64,
+    ) -> Result<Option<i64>, DevDbError> {
+        let mut tx = self.pool.begin().await?;
+        let current = sqlx::query_scalar::<_, String>(
+            "SELECT position FROM cursors WHERE source = $1 FOR UPDATE",
+        )
+        .bind(key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(current) = current else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let remaining = current
+            .parse::<i64>()
+            .map_err(|_| DevDbError::InvalidCodexRequestBudget)?;
+        if remaining < 0 {
+            return Err(DevDbError::InvalidCodexRequestBudget);
+        }
+        if remaining == 0 {
+            return Err(DevDbError::CodexRequestBudgetExhausted);
+        }
+        let remaining = remaining - 1;
+        sqlx::query("UPDATE cursors SET position = $2, updated_at = $3 WHERE source = $1")
+            .bind(key)
+            .bind(remaining.to_string())
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(remaining))
     }
 
     /// Every launch of every creator on `chain` (all chains when `None`) that
@@ -369,7 +443,10 @@ impl DevDb {
                          THEN COALESCE(l.signer, 'contract:' || l.creator)
                          ELSE l.creator END AS creator,
                     l.token, l.launchpad, l.created_at,
-                    m.migrated_at, a.ath_fdv_cents, a.holders AS ath_holders,
+                    m.migrated_at,
+                    CASE WHEN a.source = 'codex-missing' THEN NULL ELSE a.ath_fdv_cents END
+                        AS ath_fdv_cents,
+                    a.holders AS ath_holders,
                     a.max_liquidity_cents AS ath_max_liquidity_cents
              FROM launches l
              LEFT JOIN address_kinds k ON k.chain = l.chain AND k.address = l.creator
@@ -642,9 +719,8 @@ impl DevDb {
     /// tokens and the tokens of launchpads without a curve whose creator has
     /// at least [`ATH_MIN_CREATOR_LAUNCHES`] launches,
     /// refreshed by age — < 2 days every 12 h, < 7 days daily, < 30 days
-    /// weekly, older every 90 days (a year of tokens stays within Codex's free
-    /// 10k requests/month: ≈ 4.8k steady, ≈ 3.7k more for the backfill
-    /// month). Missing observations first, newest launches first, at most
+    /// weekly, older every 90 days. Missing observations first, newest launches
+    /// first, at most
     /// `limit`.
     ///
     /// # Errors
@@ -656,24 +732,56 @@ impl DevDb {
         limit: i64,
     ) -> Result<Vec<String>, DevDbError> {
         let rows = sqlx::query(
-            "SELECT l.token FROM launches l
-             LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
-             LEFT JOIN ath a ON a.chain = l.chain AND a.token = l.token
-             WHERE l.chain = $1
-               AND (m.token IS NOT NULL
-                    OR (l.launchpad = ANY($4)
-                        AND (SELECT count(*) FROM launches x
-                             WHERE x.chain = l.chain AND x.creator = l.creator) >= $5))
-               AND (a.observed_at IS NULL OR a.observed_at < $2 - CASE
+            "WITH missing AS (
+                 SELECT l.token, l.created_at
+                 FROM launches l
+                 LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
+                 WHERE l.chain = $1
+                   AND (m.token IS NOT NULL
+                        OR (l.launchpad = ANY($4)
+                            AND EXISTS (
+                                SELECT 1 FROM launches x
+                                WHERE x.chain = l.chain AND x.creator = l.creator
+                                ORDER BY x.created_at
+                                OFFSET ($5 - 1) LIMIT 1
+                            )))
+                   AND NOT EXISTS (
+                       SELECT 1 FROM ath a WHERE a.chain = l.chain AND a.token = l.token
+                   )
+                 ORDER BY l.created_at DESC, l.token
+                 LIMIT $3
+             ), stale AS (
+                 SELECT l.token, l.created_at
+                 FROM launches l
+                 LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
+                 LEFT JOIN ath a ON a.chain = l.chain AND a.token = l.token
+                 WHERE l.chain = $1
+                   AND (m.token IS NOT NULL
+                        OR (l.launchpad = ANY($4)
+                            AND EXISTS (
+                                SELECT 1 FROM launches x
+                                WHERE x.chain = l.chain AND x.creator = l.creator
+                                ORDER BY x.created_at
+                                OFFSET ($5 - 1) LIMIT 1
+                            )))
+                   AND a.observed_at IS NOT NULL
+                   AND a.observed_at < $2 - CASE
                     -- a token Codex does not know, past its first 2 days:
-                    -- every 90 days only (live Base: 630k tokens, 99 % missing)
-                    WHEN a.source = 'codex-missing' AND $2 - l.created_at >= 172800 THEN 7776000
-                    WHEN $2 - l.created_at < 172800 THEN 43200
-                    WHEN $2 - l.created_at < 604800 THEN 86400
-                    WHEN $2 - l.created_at < 2592000 THEN 604800
-                    ELSE 7776000 END)
-             ORDER BY (a.observed_at IS NULL) DESC, l.created_at DESC
-             LIMIT $3",
+                    -- every 90 days only
+                        WHEN a.source = 'codex-missing' AND $2 - l.created_at >= 172800 THEN 7776000
+                        WHEN $2 - l.created_at < 172800 THEN 43200
+                        WHEN $2 - l.created_at < 604800 THEN 86400
+                        WHEN $2 - l.created_at < 2592000 THEN 604800
+                        ELSE 7776000 END
+                 ORDER BY l.created_at DESC, l.token
+                 LIMIT $3 - (SELECT count(*) FROM missing)
+             )
+             SELECT token FROM (
+                 SELECT token, created_at, 0 AS priority FROM missing
+                 UNION ALL
+                 SELECT token, created_at, 1 AS priority FROM stale
+             ) candidates
+             ORDER BY priority, created_at DESC, token",
         )
         .bind(chain)
         .bind(now)

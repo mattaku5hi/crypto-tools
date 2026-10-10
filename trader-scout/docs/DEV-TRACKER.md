@@ -206,3 +206,72 @@ backfill smoke: Base 1,156 requests (Bankr 803, Noice 272, Flaunch 52 launches),
 (941 launches), 33 s wall. A year ≈ 0.77M Alchemy requests ≈ $8 and ≈ 3–4 h (runs alongside Solana); with the
 option-B identity pass (≈ $5) the one-year EVM backfill costs ≈ $13 on Alchemy. Steady state adds ≈ 2.5k receipts/day
 (≈ $0.8/month). ATH for these launchpads is observed only for creators with ≥ 3 launches (Codex budget).
+
+### Base ATH and shared Codex budget (2026-10-10)
+
+The earlier request estimates above are historical estimates. The live year
+backfill exposed 8.8 million eligible Base tokens without an ATH observation:
+direct 200-address batches alone would require about 44,000 requests. The
+dashboard showed roughly 5.5k of 10k requests used. See
+[measured source coverage](p0/measurements/2026-10-10-base-ath-sources.md) and
+[ADR-021 amendments 6–7](adr/ADR-021-dev-tracker-facts-and-storage.md).
+
+Run facts and identities independently of ATH:
+
+```sh
+target/release/dev-tracker backfill --chains bsc,base,solana \
+  --phases logs,identity,solana --evm-step-blocks 50000 \
+  --identity-batch 2000 --solana-max-pages 2000
+```
+
+Base's optional provider-index pass requests positive ATH in pages of up to
+200, including scam-labelled tokens, and intersects each page with tracked
+launches. It covers the last 365 closed UTC days of Codex first-pair creation,
+with resumable per-day/interval/offset cursors; it does not prove ATH for every
+contract created in that year. Observed ATH is cumulative at fetch time, not a
+historical snapshot at the interval end. Tokens without a provider result remain
+unknown. Run after launch facts are available, so completed days have the final
+tracked-token intersection:
+
+```sh
+target/release/dev-tracker backfill --chains base --phases ath \
+  --ath-from-index --days 365 --ath-requests 2000
+```
+
+`--ath-requests` counts HTTP attempts, including retries. A normal budget stop
+reports `complete=false`; rerunning resumes. Authentication, provider quota,
+malformed response and saturated one-second intervals stop with an explicit
+error and preserve the unfinished cursor. Logs distinguish queried provider
+rows, tracked matches and completed days. This is a mutable provider index,
+without an immutable snapshot guarantee.
+
+The shared Codex account counter is an opt-in row in `cursors`. Every daemon or
+backfill HTTP attempt atomically spends one allowance; a zero counter prevents
+another request, while chain ingestion continues. No counter means legacy
+unlimited behavior. Set a conservative allowance from the dashboard before
+running the new binary; do not reseed it on every restart or concurrent run.
+When the billing period changes, verify the dashboard and explicitly replace
+the allowance. Removing a cursor to reopen an index day requires a fresh pass
+and consumes requests again. There is no automatic monthly reset or purchase.
+
+For this session, the initial application allowance is 4,000 attempts, below
+the roughly 4.5k remaining in the supplied dashboard. Initialize once:
+
+```sql
+INSERT INTO cursors (source, position, updated_at)
+VALUES ('quota:codex:remaining', '4000', extract(epoch FROM now())::bigint)
+ON CONFLICT (source) DO NOTHING;
+SELECT position, updated_at FROM cursors WHERE source = 'quota:codex:remaining';
+```
+
+The counter controls this application's attempts; other clients using the
+account can still consume the provider's quota. Provider quota errors therefore
+remain terminal for the pass even if this counter is positive.
+
+The current local processes use transient user services
+`trader-scout-dev-tracker.service` and `trader-scout-year-backfill.service`.
+Inspect them with `systemctl --user show <unit> -p ActiveState -p MainPID` and
+read `logs/run.log` / `logs/backfill.log`. They run outside the agent's process
+group and use the existing private `.env`, without embedding keys in command
+arguments. They survive termination of the launching agent; they are not an
+installed reboot deployment. B9 remains the server/deployment task.

@@ -1,0 +1,46 @@
+{
+  "_fixture": {
+    "kind": "live public Codex Base response subset",
+    "capture_date_utc": "2026-10-10",
+    "endpoint": "https://graph.codex.io/graphql",
+    "source_probe_sha256": "1a5d84b3f536cd041508af14e5e9abdc8e735365d869c5ec6d7c467dd079281b",
+    "query": "query { filterTokens(filters: {network: [8453], isTestnet: false, includeScams: true, createdAt: {gte: 1791504000, lt: 1791590400}, athFdv: {gt: 0}}, rankings: [{attribute: createdAt, direction: ASC}], limit: 200, offset: 0) { count page results { createdAt token { address networkId createdAt extrema { athFdv athFdvTimestamp } } holders liquidity } } }",
+    "interval_start": 1791504000,
+    "interval_end_exclusive": 1791590400,
+    "note": "First two results of a 200-result page; subset tests schema/ATH parsing and does not claim page or index completeness. No request headers or credentials."
+  },
+  "data": {
+    "filterTokens": {
+      "results": [
+        {
+          "createdAt": 1791504003,
+          "token": {
+            "address": "0x80bf0fd492adcbbfc34cbc6465b337874cc7176a",
+            "networkId": 8453,
+            "createdAt": 1791504003,
+            "extrema": {
+              "athFdv": "7622",
+              "athFdvTimestamp": 1791504003
+            }
+          },
+          "holders": null,
+          "liquidity": "0"
+        },
+        {
+          "createdAt": 1791504059,
+          "token": {
+            "address": "0x912acb8e37975fe12a129d6c6f297f26da25fa9e",
+            "networkId": 8453,
+            "createdAt": 1791504059,
+            "extrema": {
+              "athFdv": "7627",
+              "athFdvTimestamp": 1791504059
+            }
+          },
+          "holders": null,
+          "liquidity": "0"
+        }
+      ]
+    }
+  }
+}

@@ -136,3 +136,82 @@ partial listing cannot prove a complete dev history. Existing completed records
 are retained; this change does not retroactively prove that older listings reached
 their natural end. The local PostgreSQL/mock-RPC callsite fixture verifies overlap,
 per-dev checkpoints and the page-limit failure without paid RPC.
+
+## Amendment 6 (2026-10-10) — seek ATH candidates before stale observations
+
+On the live Base database, the old candidate query scanned millions of launches,
+counted every creator's launches and sorted before its limit. A 4,000-token
+diagnostic did not finish within 45 seconds; an abandoned daemon query remained
+active for over 20 minutes after its client stopped.
+
+Migration 0008 adds `(chain, created_at DESC, token)`. The query first selects a
+bounded, ordered set without an ATH row using `NOT EXISTS`, then fills only the
+remaining capacity with stale observations. Creator eligibility uses an indexed
+third-row existence check instead of counting the whole history. Eligibility,
+refresh ages and missing-before-stale priority are unchanged; token address is
+the deterministic tie breaker. `observed_at` is non-null in the schema, so absence
+of an ATH row and the old null-join predicate have the same meaning.
+
+The null-join variant of the new query still timed out at 30 seconds because
+PostgreSQL estimated just one missing row and chose a full scan. The anti-join
+used the new index. A warm diagnostic for 20,000 Base candidates completed in
+765 ms of server execution, with sampled backend peak RSS 232,268 KiB (20 ms
+sampling). Environment: PostgreSQL 16 in local Docker, Intel i7-12700K, 16 logical
+CPUs visible, 24,031,788 KiB RAM, over 10 million Base launches, concurrent forward
+ingestion and Noice backfill. This measures one SQL query, with partially warmed
+buffers and no provider calls; it is not a cold-cache or end-to-end throughput
+claim. SQL, EXPLAIN/BUFFERS and environment metadata are saved locally under
+`.scout-data/diagnostics/ath-base-candidates-antijoin-20000.*`.
+
+## Amendment 7 (2026-10-10) — bounded enumeration of provider-known Base ATH
+
+Directly submitting Base's 8.8 million unobserved eligible addresses would need
+about 44,000 batches of 200, above the current Codex account's remaining quota.
+The opt-in `backfill --chains base --phases ath --ath-from-index` instead
+enumerates positive ATH from Codex's index and intersects each page with tracked
+Base launches. It does not change the runner definition or fabricate ATH for
+unindexed, untraded or unpriced contracts.
+
+Existing `codex-missing` rows retain their stored zero sentinel for retry
+scheduling, but the dev-derivation query projects their ATH as `None`. A real
+provider-reported zero remains a numeric zero; missing is not evidence that the
+token's ATH was zero.
+
+Liquidity is converted to cents from an exact decimal string or integer USD;
+fractional JSON numbers are rejected rather than rounded through a float. Null
+holders/liquidity remain unknown. The public live-response subset fixture
+`crates/scout-devtracker/tests/fixtures/codex_base_positive_ath_2026-10-10.json`
+checks the actual provider shape without credentials or a completeness claim.
+
+The filter fixes network 8453, mainnet, `includeScams:true`, `athFdv > 0` and a
+half-open interval of provider first-pair `createdAt`, ordered ascending. Scams
+remain visible. The requested scope is the last `--days` closed UTC days of
+first-pair creation; it is distinct from contract launch time and from the ATH
+observation timestamp. Observations retain the time they were fetched. A token
+launched in the requested year whose first pair lies outside those intervals is
+a coverage gap for this pass.
+
+Pages contain at most 200 results. Codex rejects `limit + offset > 10,000`, so a
+full interval at the offset boundary is divided into `[start, midpoint)` and
+`[midpoint, end)`. A saturated one-second interval is an explicit error. Versioned
+per-day cursors retain pending intervals and offset, and advance only after
+idempotent ATH writes. Interrupted pages can be replayed. A completed cursor
+means the pass reached the index's natural end for that interval, not that Codex
+indexed every contract or offered an immutable snapshot: live index changes and
+offset ordering remain provider limitations. Re-enumeration after later fact
+ingestion requires a fresh pass; completed days are not silently reopened.
+
+The pass bounds response bodies at 4 MiB and request attempts by
+`--ath-requests`; retries count towards that bound. Authentication, quota,
+malformed data and interval saturation preserve the unfinished cursor. A shared,
+opt-in `cursors` counter for the Codex account reserves one allowance atomically
+before every HTTP attempt, including the daemon and retries. Absence preserves
+legacy behavior; zero stops requests. The application never resets or estimates
+the monthly account quota automatically. Exhaustion is a Codex incident while
+chain-fact ingestion continues. An operator sets the counter from the dashboard
+with a conservative margin and explicitly updates it when a new period starts.
+
+Local PostgreSQL/mock-HTTP tests cover paging, resume, subdivision, tracked-token
+intersection, malformed/network mismatches, shared budget exhaustion and retry
+accounting. Live probes and source limitations are recorded in
+`docs/p0/measurements/2026-10-10-base-ath-sources.md`.

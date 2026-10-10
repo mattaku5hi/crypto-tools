@@ -80,6 +80,30 @@ async fn facts_are_idempotent_and_joined_for_the_derivation() {
     // an older observation never overwrites a newer one
     assert_eq!(db.upsert_ath(&[ath(1, 5)]).await.unwrap(), 0);
     db.upsert_ath(&[ath(20_000_000, 20)]).await.unwrap();
+    db.upsert_ath(&[
+        AthObservation {
+            chain: chain.clone(),
+            token: "t2".into(),
+            ath_fdv_cents: 0,
+            ath_at: None,
+            source: "codex-missing".into(),
+            observed_at: 20,
+            holders: None,
+            liquidity_cents: None,
+        },
+        AthObservation {
+            chain: chain.clone(),
+            token: "t3".into(),
+            ath_fdv_cents: 0,
+            ath_at: None,
+            source: "codex".into(),
+            observed_at: 20,
+            holders: Some(0),
+            liquidity_cents: Some(0),
+        },
+    ])
+    .await
+    .unwrap();
 
     let got = db.dev_launches(Some(&chain), 0).await.unwrap();
     assert_eq!(got.len(), 3);
@@ -90,6 +114,10 @@ async fn facts_are_idempotent_and_joined_for_the_derivation() {
     );
     let t2 = got.iter().find(|r| r.token == "t2").unwrap();
     assert_eq!((t2.migrated_at, t2.ath_fdv_cents), (None, None));
+    assert_eq!(
+        got.iter().find(|r| r.token == "t3").unwrap().ath_fdv_cents,
+        Some(0)
+    );
     assert_eq!(
         db.dev_launches(Some(&chain), 250).await.unwrap().len(),
         1,
@@ -312,6 +340,101 @@ async fn ath_candidates_skip_one_off_creators_without_a_curve() {
         ["a", "b", "c"],
         "a one-off creator cannot have 3 runners"
     );
+}
+
+#[tokio::test]
+async fn ath_candidates_fill_stale_after_missing_and_keep_creator_threshold() {
+    let Some(db) = db().await else { return };
+    let chain = format!("ath-queue-{}", std::process::id());
+    let now = 1_000_000_000;
+    let day = 86_400;
+    let zora = |token: &str, creator: &str, at: i64| Launch {
+        launchpad: "zora".into(),
+        ..launch(&chain, token, creator, at)
+    };
+    let launches = [
+        zora("missing-old", "missing", now - 200 * day),
+        zora("missing-fresh-a", "missing", now - day),
+        zora("missing-fresh-b", "missing", now - 2 * day),
+        zora("stale-new", "stale", now - day),
+        zora("stale-old", "stale", now - 20 * day),
+        zora("stale-fresh", "stale", now - 40 * day),
+        zora("below-threshold-a", "two-launches", now),
+        zora("below-threshold-b", "two-launches", now),
+    ];
+    db.insert_launches(&launches).await.unwrap();
+    assert_eq!(
+        db.known_launch_tokens(&chain, &["missing-old".into(), "not-tracked".into()])
+            .await
+            .unwrap(),
+        ["missing-old"]
+    );
+    assert!(
+        db.known_launch_tokens(&chain, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        db.known_launch_tokens(&chain, &vec![String::new(); 201])
+            .await,
+        Err(scout_devdb::DevDbError::TokenLookupTooLarge(201))
+    ));
+    let observation = |token: &str, observed_at: i64| AthObservation {
+        chain: chain.clone(),
+        token: token.into(),
+        ath_fdv_cents: 1,
+        ath_at: Some(observed_at),
+        source: "test".into(),
+        observed_at,
+        holders: None,
+        liquidity_cents: None,
+    };
+    db.upsert_ath(&[
+        observation("missing-fresh-a", now),
+        observation("missing-fresh-b", now),
+        observation("stale-new", now - 2 * day),
+        observation("stale-old", now - 10 * day),
+        observation("stale-fresh", now),
+    ])
+    .await
+    .unwrap();
+
+    assert_eq!(
+        db.ath_candidates(&chain, now, 3).await.unwrap(),
+        ["missing-old", "stale-new", "stale-old"]
+    );
+}
+
+#[tokio::test]
+async fn shared_request_budget_reserves_atomically_and_is_opt_in() {
+    let Some(db) = db().await else { return };
+    let key = format!("codex-budget-test:{}", std::process::id());
+    assert_eq!(db.reserve_request_budget(&key, 10).await.unwrap(), None);
+    db.set_cursor(&key, "2", 11).await.unwrap();
+    let results = futures::future::join_all((0..4).map(|_| {
+        let db = db.clone();
+        let key = key.clone();
+        async move { db.reserve_request_budget(&key, 12).await }
+    }))
+    .await;
+    assert_eq!(
+        results.iter().filter(|r| matches!(r, Ok(Some(_)))).count(),
+        2
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, Err(scout_devdb::DevDbError::CodexRequestBudgetExhausted)))
+            .count(),
+        2
+    );
+    let remaining: std::collections::BTreeSet<i64> = results
+        .iter()
+        .filter_map(|result| result.as_ref().ok().and_then(|remaining| *remaining))
+        .collect();
+    assert_eq!(remaining, [0, 1].into_iter().collect());
+    assert_eq!(db.cursor(&key).await.unwrap().as_deref(), Some("0"));
 }
 
 #[tokio::test]
