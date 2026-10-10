@@ -275,3 +275,5 @@ read `logs/run.log` / `logs/backfill.log`. They run outside the agent's process
 group and use the existing private `.env`, without embedding keys in command
 arguments. They survive termination of the launching agent; they are not an
 installed reboot deployment. B9 remains the server/deployment task.
+
+A stopped transient unit can be garbage-collected; recreate it with `systemd-run --user` when it no longer exists, rather than starting a missing unit.
