@@ -221,6 +221,10 @@ splitting remain enabled, and failed queries do not advance the cursor.
 5,000 Create events, down to 2,000 blocks or a smaller requested maximum;
 below 2,500 events they double it back up to that maximum. Each source starts
 with its own requested maximum, so sparse unrelated sources keep wide ranges.
+Base backfill uses RPC concurrency 32 after a bounded Flaunch SDK measurement;
+other chains use 8. Request weighting, pacing, retry limits and input ordering
+remain enforced. The benchmark below is sampled evidence, not sustained quota
+or year-wide throughput: [session measurements](p0/measurements/2026-10-10-backfill-and-bsc-pnl.md).
 
 Eight historical Noice transactions passed exact query/receipt Lock comparison
 and beneficiary comparison. A two-transaction mainnet fixture and synthetic

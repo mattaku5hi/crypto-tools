@@ -223,7 +223,7 @@ async fn backfill_evm_chain(db: &DevDb, chain: &str, a: &BackfillArgs) -> Result
         &profile.verified_chain_key(),
         false,
         None,
-        8,
+        if chain == "base" { 32 } else { 8 },
         &scout_app::EvmNetOptions::default(),
         &notice,
         true,

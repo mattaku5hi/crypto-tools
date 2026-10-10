@@ -149,3 +149,31 @@ companion beneficiary. Чеки этой выборки не запрашива�
 проверяют density thresholds, bounds и saturation; повторные fmt/clippy/
 workspace tests/release успешны (1,166 tests, 99 suites, 0 failed/ignored,
 DB без skips). Логи: `.scout-data/checks/2026-10-11/*-adaptive-lock.log`.
+
+Noice завершён на 21:29:44 UTC: cursor 36,627,952; последний запуск процесса
+с 21:27:30 добавил 168,165 фактов за 6,100,893 прочитанных блоков (значительная
+часть диапазона пустая). Flaunch и Virtuals ещё в работе. Finalizer теперь
+клонирует конфигурацию, меняя только output directory, и сохраняет 36 файлов
+GMGN/Axiom/BasedBot в отдельный `inputs/results/devtracker-exports-<tag>/`
+с SHA256. Exact derive as-of CLI не выводит: manifest сохраняет null с причиной
+и start/end bounds; source/frozen config hashes и разные daemon/backfill
+software commits записываются отдельно. Clone проверен через `tomllib`: все
+поля кроме delivery.out_dir совпали, ожидаемый file count = 36.
+
+Для плотного Flaunch повторён тест настоящего SDK `receipts_by_hashes`, release:
+128 разных уже сохранённых hashes в блоках 44,328,856…44,330,388; две группы
+по 64, порядок 8→32 и 32→8, всего 256 actual receipt attempts. Все parsed
+receipts совпали с входными hashes в исходном порядке; 0 null/errors/retries,
+0 limiter waits/halvings. Concurrency 8: 128/2.124 s = 60.3/s; 32:
+128/0.788 s = 162.4/s. Runtime peak RSS 11,120 KiB; i7-12700K, Linux7.0,
+rustc1.98.1, параллельно основной backfill и daemon. Общий client/budget=256,
+2,500 CU/s с burst 2,500, receipt cost20; весь replay 2.912 s / 5,120 CU.
+Краткие фазы используют burst, поэтому 162.4/s не объявляется sustained
+throughput под этим limiter. Выборка раннего dense subrange, provider cache
+мог быть прогрет основным проходом. Диагностика:
+`.scout-data/diagnostics/flaunch-sdk-concurrency-2026-10-11.txt`.
+
+На основании этого измерения только Base backfill concurrency увеличена до
+32; остальные сети остаются на 8, method-weighted limiter и retry bounds
+сохранены. После изменения fmt/clippy/workspace tests/release успешны;
+логи `.scout-data/checks/2026-10-11/*-base-concurrency.log`.
