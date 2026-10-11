@@ -97,6 +97,129 @@ async fn price_windows_preserve_unknown_fdv_and_replay_without_network_identity_
     );
 }
 
+#[tokio::test]
+async fn validated_fallback_ath_only_fills_absent_or_unknown_rows() {
+    let Some(db) = db().await else { return };
+    let chain = format!("fallback-{}", std::process::id());
+    let other_chain = format!("fallback-other-{}", std::process::id());
+    db.insert_launches(&[
+        launch(&chain, "absent", "absent-dev", 1),
+        launch(&chain, "unknown", "unknown-dev", 2),
+        launch(&chain, "zero", "zero-dev", 3),
+        launch(&chain, "positive", "positive-dev", 4),
+        launch(&chain, "same-token", "base-dev", 5),
+        launch(&other_chain, "same-token", "other-dev", 5),
+    ])
+    .await
+    .unwrap();
+    db.upsert_ath(&[
+        AthObservation {
+            chain: chain.clone(),
+            token: "unknown".into(),
+            ath_fdv_cents: 0,
+            ath_at: None,
+            source: "codex-missing".into(),
+            observed_at: 20,
+            holders: Some(50),
+            liquidity_cents: Some(90_000),
+        },
+        AthObservation {
+            chain: chain.clone(),
+            token: "zero".into(),
+            ath_fdv_cents: 0,
+            ath_at: Some(10),
+            source: "codex".into(),
+            observed_at: 20,
+            holders: Some(100),
+            liquidity_cents: None,
+        },
+        AthObservation {
+            chain: chain.clone(),
+            token: "positive".into(),
+            ath_fdv_cents: 12_345,
+            ath_at: Some(10),
+            source: "codex".into(),
+            observed_at: 20,
+            holders: Some(100),
+            liquidity_cents: None,
+        },
+    ])
+    .await
+    .unwrap();
+    let fallback = |chain: &str, token: &str, cents: i64, observed_at: i64| AthObservation {
+        chain: chain.into(),
+        token: token.into(),
+        ath_fdv_cents: cents,
+        ath_at: None,
+        source: "birdeye-window-supply-validated-v1".into(),
+        observed_at,
+        holders: None,
+        liquidity_cents: Some(1_000),
+    };
+
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "absent", 51_104_374_107, 21))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "unknown", 777, 21))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "unknown", 999, 19))
+            .await
+            .unwrap(),
+        0,
+        "an older fallback cannot replace a newer observation"
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "zero", 888, 21))
+            .await
+            .unwrap(),
+        0,
+        "a known Codex zero is protected"
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "positive", 888, 21))
+            .await
+            .unwrap(),
+        0,
+        "a known positive Codex value is protected"
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "same-token", 111, 21))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&other_chain, "same-token", 222, 21))
+            .await
+            .unwrap(),
+        1,
+        "the same token key on another chain has independent state"
+    );
+
+    let rows = db.dev_launches(None, 0).await.unwrap();
+    let row = |chain: &str, token: &str| {
+        rows.iter()
+            .find(|row| row.chain == chain && row.token == token)
+            .unwrap()
+    };
+    assert_eq!(row(&chain, "absent").ath_fdv_cents, Some(51_104_374_107));
+    assert_eq!(row(&chain, "unknown").ath_fdv_cents, Some(777));
+    assert_eq!(row(&chain, "unknown").ath_holders, Some(50));
+    assert_eq!(row(&chain, "unknown").ath_max_liquidity_cents, Some(90_000));
+    assert_eq!(row(&chain, "zero").ath_fdv_cents, Some(0));
+    assert_eq!(row(&chain, "positive").ath_fdv_cents, Some(12_345));
+    assert_eq!(row(&chain, "same-token").ath_fdv_cents, Some(111));
+    assert_eq!(row(&other_chain, "same-token").ath_fdv_cents, Some(222));
+}
+
 async fn db() -> Option<DevDb> {
     let Ok(url) = std::env::var("SCOUT_TEST_DATABASE_URL") else {
         eprintln!("SCOUT_TEST_DATABASE_URL not set: database test skipped");

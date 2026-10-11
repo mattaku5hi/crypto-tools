@@ -1,0 +1,15 @@
+{
+  "chain": "base",
+  "token": "0xe44861a39b8f73040455fa618aa921907d450b07",
+  "window_source": "birdeye-ohlcv-1d-usd-outliers-v1",
+  "window_from": 1760054400,
+  "window_to": 1791676799,
+  "max_price_usd": "0.005110437410707668",
+  "high_candle_at": 1777593600,
+  "verified_total_supply": "100000000000",
+  "supply_block": 52456236,
+  "supply_decimals": 18,
+  "ath_at": null,
+  "fdv_cents": 51104374107,
+  "fdv_source": "birdeye-window-supply-validated-v1"
+}

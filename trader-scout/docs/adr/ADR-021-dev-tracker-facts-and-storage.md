@@ -405,3 +405,43 @@ and observed market-scope validation remain required before any future
 promotion into the monetary ATH table. The supply findings and outstanding
 checks are in `2026-10-11-birdeye-fdv-policy.md`. Golden response fixtures,
 mock HTTP tests and a real `scout_test` persistence test cover the boundary.
+
+## Amendment 13 (2026-10-11) — a verified fallback FDV observation
+
+A hand-checked Birdeye price window may supply a missing numerical FDV
+observation only after validating its denominator and USD market identity.
+The first case is Base token `0xe44861a39b8f73040455fa618aa921907d450b07`:
+the exact verified, non-proxy ClankerToken source allows constructor mint,
+ordinary burns and Superchain bridge mint/burn. Current supply alone was
+insufficient. Alchemy's token-scoped zero-address Transfer queries from the
+creation block through the confirmed state block returned one creation mint
+and no burns, reconciling exactly to `totalSupply()` = 100 billion, decimals
+18. Under that verified ERC-20 implementation, supply was constant across
+the observed price window.
+
+GeckoTerminal's launch-time token/USDC pool independently reports a high on
+the same UTC day within 0.19% of Birdeye. Its other returned token/USDC pool
+was also checked. This corroborates this price level; it does not prove
+complete token-wide indexing or rule out thin-market prices. Existing holder,
+liquidity, plausibility and migration gates are unchanged.
+
+Further hand-checked cases require the same implementation/supply evidence,
+a same-day USD high within 1% of Birdeye, and a maximum across every returned
+pool history within that tolerance. The 1% comparison is corroboration of
+provider observations, not an assertion about a canonical market-wide ATH.
+
+The source is `birdeye-window-supply-validated-v1`. Retain its exact price
+window and day bucket in `ath_price_windows` and the dated proof manifest;
+`ath_at` stays null because a candle does not give the exact trade time.
+The numerical value means maximum FDV observed in that provider window,
+not a new claim of canonical lifetime completeness. It may contribute to
+the existing provider-observed runner derivation with this explicit source
+scope. Uncorroborated or supply-unverified windows remain separate prices.
+
+`upsert_missing_ath` atomically fills only absent or `codex-missing` rows,
+rejects older observations and protects every existing numeric observation,
+including zero. The caller must establish the source/supply evidence; this
+storage primitive cannot establish it. Golden fixture
+`birdeye_validated_fdv_case.json` checks the exact floored 51,104,374,107 cents;
+the database test checks replacement guards and maximum liquidity retention.
+No broad automatic promotion of the other Birdeye windows is enabled.

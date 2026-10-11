@@ -328,6 +328,39 @@ impl DevDb {
         Ok(n)
     }
 
+    /// Record a validated fallback ATH only when no observation exists or the
+    /// current row is still `codex-missing`. Known Codex values, including
+    /// numeric zero, are never replaced. Older fallback observations are
+    /// ignored; pool liquidity remains a high-water mark.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn upsert_missing_ath(&self, r: &AthObservation) -> Result<u64, DevDbError> {
+        Ok(sqlx::query(
+            "INSERT INTO ath (chain, token, ath_fdv_cents, ath_at, source, observed_at, holders,
+                              max_liquidity_cents)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (chain, token) DO UPDATE SET
+                ath_fdv_cents = EXCLUDED.ath_fdv_cents, ath_at = EXCLUDED.ath_at,
+                source = EXCLUDED.source, observed_at = EXCLUDED.observed_at,
+                holders = COALESCE(EXCLUDED.holders, ath.holders),
+                max_liquidity_cents = GREATEST(ath.max_liquidity_cents, EXCLUDED.max_liquidity_cents)
+             WHERE ath.source = 'codex-missing'
+               AND EXCLUDED.observed_at >= ath.observed_at",
+        )
+        .bind(&r.chain)
+        .bind(&r.token)
+        .bind(r.ath_fdv_cents)
+        .bind(r.ath_at)
+        .bind(&r.source)
+        .bind(r.observed_at)
+        .bind(r.holders)
+        .bind(r.liquidity_cents)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
     /// Save a provider price window without changing the monetary ATH table.
     ///
     /// # Errors

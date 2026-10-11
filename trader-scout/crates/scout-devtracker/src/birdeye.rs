@@ -113,7 +113,8 @@ impl ExactDecimal {
     }
 
     /// Parse a plain or scientific nonnegative decimal with at most 38
-    /// coefficient digits and a decimal exponent in [-38, 38].
+    /// coefficient digits and a decimal exponent in [-38, 38]. Effective
+    /// scale may reach 76 when a 38-digit fraction combines with `e-38`.
     pub fn parse(value: &str) -> Result<Self, BirdeyeError> {
         let (mantissa, exponent_text) = match value.find(['e', 'E']) {
             Some(index) => (&value[..index], Some(&value[index + 1..])),
@@ -140,17 +141,22 @@ impl ExactDecimal {
             return Err(BirdeyeError::InvalidDecimal);
         }
         let digits = format!("{whole}{fraction}");
-        if digits.len() > 38 {
+        let significant_digits = digits.trim_start_matches('0');
+        if significant_digits.len() > 38 {
             return Err(BirdeyeError::InvalidDecimal);
         }
-        let coefficient = digits
-            .parse::<u128>()
-            .map_err(|_| BirdeyeError::InvalidDecimal)?;
+        let coefficient = if significant_digits.is_empty() {
+            "0"
+        } else {
+            significant_digits
+        }
+        .parse::<u128>()
+        .map_err(|_| BirdeyeError::InvalidDecimal)?;
         let mut scale = i32::try_from(fraction.len())
             .map_err(|_| BirdeyeError::InvalidDecimal)?
             .checked_sub(exponent)
             .ok_or(BirdeyeError::InvalidDecimal)?;
-        if !(-38..=38).contains(&scale) {
+        if !(-38..=76).contains(&scale) {
             return Err(BirdeyeError::InvalidDecimal);
         }
         let mut coefficient = coefficient;
@@ -192,6 +198,11 @@ impl ExactDecimal {
             numerator = numerator.checked_mul(10u128.checked_pow(self.scale.unsigned_abs())?)?;
         }
         let cents = if self.scale > 0 {
+            // 10^39 exceeds u128::MAX, so every representable numerator is
+            // strictly below the denominator at these scales.
+            if self.scale > 38 {
+                return Some(0);
+            }
             numerator / 10u128.checked_pow(u32::try_from(self.scale).ok()?)?
         } else {
             numerator
@@ -622,15 +633,85 @@ mod tests {
             ExactDecimal::parse("0.000e-20").unwrap().to_plain_string(),
             "0"
         );
+        let max_scale = ExactDecimal::parse(&format!("0.{}e-38", "0".repeat(37) + "1")).unwrap();
+        assert_eq!(
+            max_scale.to_plain_string(),
+            format!("0.{}1", "0".repeat(75))
+        );
+        assert_eq!(max_scale.fdv_cents_for_supply(1), Some(0));
         assert!(ExactDecimal::parse("-1").is_err());
         assert!(ExactDecimal::parse("1e39").is_err());
         assert!(ExactDecimal::parse("1e-39").is_err());
+        assert!(ExactDecimal::parse(&format!("0.{}e-39", "0".repeat(37) + "1")).is_err());
         assert!(ExactDecimal::parse("1.").is_err());
+        assert!(ExactDecimal::parse("123456789012345678901234567890123456789").is_err());
         assert_eq!(
             ExactDecimal::parse("99999999999999999999999999999999999999")
                 .unwrap()
                 .fdv_cents_for_supply(u128::MAX),
             None
+        );
+    }
+
+    #[test]
+    fn validated_supply_case_has_exact_fdv_without_claiming_ath_time() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/birdeye_validated_fdv_case.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["chain"], "base");
+        assert_eq!(
+            fixture["token"],
+            "0xe44861a39b8f73040455fa618aa921907d450b07"
+        );
+        assert_eq!(fixture["ath_at"], serde_json::Value::Null);
+        let price = ExactDecimal::parse(fixture["max_price_usd"].as_str().unwrap()).unwrap();
+        let supply = fixture["verified_total_supply"]
+            .as_str()
+            .unwrap()
+            .parse::<u128>()
+            .unwrap();
+        assert_eq!(
+            price.fdv_cents_for_supply(supply),
+            Some(fixture["fdv_cents"].as_i64().unwrap())
+        );
+        assert_eq!(price.fdv_cents_for_supply(supply), Some(51_104_374_107));
+    }
+
+    #[tokio::test]
+    async fn very_small_scientific_candle_prices_preserve_exact_maximum() {
+        let server = MockServer::start().await;
+        let fixture = include_str!("../tests/fixtures/birdeye_precision_extreme_scale.json");
+        Mock::given(matchers::method("GET"))
+            .and(matchers::header("x-chain", "base"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(fixture, "application/json"))
+            .mount(&server)
+            .await;
+        let request = OhlcvWindow {
+            chain: BirdeyeChain::Base,
+            address: "0x109585ED25e91720f97C188E4de023F770C9E474".into(),
+            time_from: 1_790_208_000,
+            time_to: 1_790_294_400,
+        };
+        let result =
+            fetch_window_price_high(&http_client().unwrap(), &server.uri(), "test-key", &request)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(result.returned_candles, 2);
+        assert_eq!(result.max_price_usd, "0.0000008111506335367991");
+        assert_eq!(result.candle_at, 1_790_208_000);
+        assert_eq!(
+            ExactDecimal::parse(&result.max_price_usd)
+                .unwrap()
+                .fdv_cents_for_supply(1_000_000_000),
+            Some(81_115)
+        );
+        assert_eq!(
+            ExactDecimal::parse("1.7204350703333583e-30")
+                .unwrap()
+                .fdv_cents_for_supply(1_000_000_000),
+            Some(0)
         );
     }
 
