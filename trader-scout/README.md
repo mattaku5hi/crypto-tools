@@ -28,3 +28,25 @@
 ## Не входит в scope
 
 Исполнение сделок, приватные ключи, подписывание транзакций, скрытая брокерская/CEX-история, идентификация реальных людей, автоматическое доказательство общего владельца разных адресов, прогноз будущей прибыли. NFT, перпетуалы, LP-доходность, кредитование и staking требуют отдельных аналитических модулей: в первой версии такие операции обнаруживаются и маркируются, но не притворяются обычными спотовыми сделками.
+
+## Linux release artifacts
+
+Workflow `trader-scout release` creates an x86_64 Linux package for
+`dev-tracker`, `buyer-intersect`, `wallet-rank`, and `wallet-stats`. It runs
+workspace formatting, Clippy, and tests with a local PostgreSQL test service,
+secret/dependency checks, then builds with Rust 1.98.1 on Debian Bookworm and
+smoke-checks the packaged CLIs on the Bookworm runtime image.
+
+Run it manually from Actions to create a reviewable artifact without
+publishing a release. Pushing a project-scoped tag such as
+`trader-scout/v1.2.3` runs the same gates and publishes the tarball,
+`SHA256SUMS`, and JSON manifest as a GitHub Release. The manifest records the
+source commit, tag, target, toolchain, lockfile hash, dependency-license
+inventory hash, and each binary hash. The archive includes the dependency
+license inventory from Cargo metadata; the advisory scan and inventory are
+presence/provenance checks, not legal approval of license compatibility.
+The package targets `x86_64-unknown-linux-gnu`; it is not a Windows, macOS, or
+ARM build. Live provider credentials are not required by this workflow.
+The workflow has not yet been run on GitHub. Local packaging checks used the
+workspace's existing release binaries; they do not attest a release build of
+the current commit.
