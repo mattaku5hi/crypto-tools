@@ -123,6 +123,30 @@ excluded); both raw counts are stored, never only the ratio.
 | Disk | ≈ 660 B per launch with indexes; one year ≈ 32M launches (Solana 19.4M, BSC 9.2M, Robinhood 2.1M, Base 1.1M) ≈ 20 GB, +≈ 1.7 GB/month; dump ≈ 100 B/launch (≈ 3–3.5 GB/year) | SSD 80–100 GB |
 | Traffic | gzip on (Helius full tx 16.9 KB → 3.3 KB); Solana ≈ 55k txs/day ≈ 180 MB/day; EVM < 1 GB/month; a one-year Solana backfill ≈ 64 GB | any 100 Mbit/s link |
 
+For a memory-constrained single-host backfill/derive, an optional Compose
+override is available at `deploy/docker-compose.compact.yml`; it caps PostgreSQL
+at 1 GiB / 1 CPU (no swap) and the daemon at 512 MiB / 1 CPU, and configures
+PostgreSQL with 128 MiB `shared_buffers`, 4 MiB `work_mem`, 64 MiB
+`maintenance_work_mem`, no parallel gather workers, and 32 connections. These
+are per-container ceilings, not reserved RAM. The measured clone benchmark
+restored 28M facts and derived one year with PostgreSQL hard-capped at 1 GiB,
+no swap, one CPU, and these PostgreSQL settings. Container start to restore
+completion took about 5m06s (the exact restore start was not recorded); the
+year derivation took 3m05.90s. The daemon peaked at 52,552 KiB (about 51.32 MiB)
+RSS; the cumulative PostgreSQL temp counter was about 21 GB, an upper bound on
+derive-only spill. See the
+[benchmark details](p0/measurements/2026-10-11-devtracker-compact-memory.md).
+This did not benchmark concurrent XGBoost training or the complete shared-host
+load, so keep host and workload headroom. From the `trader-scout` directory:
+
+```sh
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.compact.yml config --quiet
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.compact.yml up -d --build
+```
+
+Omitting the second `-f` uses the unchanged base profile again; keep the named
+database volume to preserve its data.
+
 ## 6. Order of work
 
 B0 measurements (event volumes per chain and launchpad, ATH source: own swaps vs an external API such
