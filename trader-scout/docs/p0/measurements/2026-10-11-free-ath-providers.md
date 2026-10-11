@@ -6,6 +6,41 @@
 а не завершение годового ATH-филлинга или готовность топов по раннерам.
 События запусков/миграций и наличие ATH — отдельные этапы.
 
+Checkpoint12:03 UTC: из679 исходных числовых пробелов закрыты425,
+включая72 validated Birdeye и19 validated GeckoTerminal FDV; остаются254.
+Для альтернативных записей проверяются исторический supply, priced-token
+identity, день максимума и независимая цена/Swap+FX; дневное окно запроса
+не является доказательством полноты свечей. Новые quote paths исследованы
+в [Zora five-case follow-up](2026-10-11-base-zora-five-price-followup.md):
+точные content-coin quotes имеют USD histories, но daily-high products
+не являются observed target prices. Реальная DVA/MATRY/WETH цепочка
+одной транзакции с minute ETH/USD [расходится с Birdeye на2.55–2.57%](2026-10-11-base-zora-dva-matry-pilot.md)
+и не прошла действующий1% gate. Coinbase SOL/USD также [не устранил
+расхождение](2026-10-11-solana-fx-venue-crosscheck.md). У трёх ранних
+Robinhood-кандидатов [нет price/pool пути в scoped public lookups](2026-10-11-robinhood-empty-price-pilot.md);
+NULL и пустые listings сохраняются как gaps.
+Public Solana Tracker pages трёх спорных mint не дали ATH в сохранённом HTML;
+после добавления владельцем Data API key официальный ATH endpoint ответил
+HTTP200 для всех трёх mint. Фактический лимит этого аккаунта —2500 requests/month
+по данным владельца, а не рекламные10000. Использованы7 запросов:3 ATH,1
+TokenInfo для поиска quote-пула и3 коротких chart/unit/time controls;
+автоматических повторов не было. Новых аккаунтов не создавали.
+Числовые ATH пока не перенесены: цены требуют независимого подтверждения,
+а `highest_market_cap` совпадает с peak price×позднейшим supply у этих ответов.
+Два target-пула котируются в87ea, не SOL/USD; [Helius bridge](2026-10-11-solana-quote87-pool-bridge.md)
+дал nearby execution quotes, но новые instruction variants и временное
+расхождение остаются gaps. [Keyed probe](2026-10-11-solana-tracker-ath-keyed-probe.md),
+[public-page audit](2026-10-11-solana-public-token-ath-pages.md).
+Поздняя сверка [подтверждает цену JC реальной atomic route](2026-10-11-solana-quote87-jc-bracket.md)
+в пределах0.44%. [81 nearby spot](2026-10-11-solana-81-nearby-spot-comparison.md)
+также численно согласуется, с явным временным gap между пулами. Для меняющегося
+supply нужны совместные наблюдения price/supply: цена на историческом максимуме
+не определяет максимум FDV. Это ограничение остаётся после ценовой сверки.
+[JC chart controls](2026-10-11-solana-jc-chart-supply-bounds.md) дали43
+timestamp-aligned price rows, но sparse gaps и same-second supply uncertainty
+сохраняют unknown для максимума FDV. `timezone=UTC` в отдельном ответе
+сдвинул epoch на−7200s; этот ответ не использован как price/supply history.
+
 **Birdeye:** после добавления владельцем ключа пять валидных запросов OHLCV V3
 ответили 200 во всех четырёх сетях. Два старых Base Zora токена вернули дневные
 свечи начиная с октября 2025 года; годовое окно доступно на данном ключе.
@@ -73,7 +108,8 @@ ATH для launches октября 2025 года. Три строки `codex-ind
 
 | Провайдер | Бесплатный путь и квота | История / точность | Сети проекта | Практическая оценка |
 |---|---|---|---|---|
-| **Birdeye Data API** | [План](https://data.birdeye.so/docs/guides/payment/pricing), [endpoint](https://data.birdeye.so/docs/data-api/price-ohlcv/get-defi-v3-ohlcv). `docs`: Standard $0, 30,000 CU/месяц, 1 запрос/с, ограниченный набор API. OHLCV V3 явно доступен на Standard. Требуются аккаунт и API key; живые запросы endpoint не выполнялись. | `docs`: `/defi/v3/ohlcv` принимает адрес токена, возвращает до 5,000 свечей; документация явно ограничивает хранение 1s свечей двумя неделями, 15s/30s — тремя месяцами. Для 1m и более крупных интервалов верхний возраст данных не указан. Не найден документированный all-time ATH endpoint: price-stats дает high только на интервалах до 7d. | `docs`: `solana`, `bsc`, `base`, `robinhood`; network table дает BSC chain ID 56 и Base 8453, но Solana и Robinhood помечены N/A. Robinhood в официальной странице сетей совпадает по имени и параметру с проектной публичной Robinhood Chain; сам Birdeye не указывает там `4663`. Testnet отдельным параметром не перечислен. | Лучший документированный all-four кандидат для bounded OHLCV PoC. `unknown`: полный охват каждого токена, длительность дневной истории, all-pool агрегация и сохранение истории при миграции ликвидности. |
+| **Birdeye Data API** | [План](https://data.birdeye.so/docs/guides/payment/pricing), [endpoint](https://data.birdeye.so/docs/data-api/price-ohlcv/get-defi-v3-ohlcv). `docs`: Standard $0, 30,000 CU/месяц, 1 запрос/с, ограниченный набор API. OHLCV V3 явно доступен на Standard. Требуются аккаунт и API key; OHLCV/intraday запросы на ключе владельца проверены, план этого ключа не установлен. | `docs`: `/defi/v3/ohlcv` принимает адрес токена, возвращает до 5,000 свечей; документация явно ограничивает хранение 1s свечей двумя неделями, 15s/30s — тремя месяцами. Для 1m и более крупных интервалов верхний возраст данных не указан. Не найден документированный all-time ATH endpoint: price-stats дает high только на интервалах до 7d. | `docs`: `solana`, `bsc`, `base`, `robinhood`; network table дает BSC chain ID 56 и Base 8453, но Solana и Robinhood помечены N/A. Robinhood в официальной странице сетей совпадает по имени и параметру с проектной публичной Robinhood Chain; сам Birdeye не указывает там `4663`. Testnet отдельным параметром не перечислен. | Лучший документированный all-four кандидат для bounded OHLCV PoC. `unknown`: полный охват каждого токена, длительность дневной истории, all-pool агрегация и сохранение истории при миграции ликвидности. |
+| **Solana Tracker Data API** | [ATH endpoint](https://docs.solanatracker.io/data-api/tokens/get-all-time-high-price), Data API key via `x-api-key`. Owner account allowance:2,500 requests/month (2026-10-11), overriding the larger advertised allowance for budgeting. `probe`:3 ATH GETs HTTP200,1 TokenInfo and3 bounded chart GETs (7 total); no automatic retries. | Direct `highest_price`, timestamp and pool ID since provider recording began. Price kind, recording start per mint and all-pool/migration completeness remain unknown. Observed `highest_market_cap` matches peak price times later supply in these samples; not automatically project FDV. | Solana only; does not replace BSC/Base/Robinhood sources. | Key works, but all3 sampled FDV values remain unvalidated. Keep this7-call diagnostic separate from daemon cadence. |
 | **GeckoTerminal Public API** | [Публичный API](https://api.geckoterminal.com/docs/index.html), [FAQ](https://apiguide.geckoterminal.com/faq). `docs`: публичный keyless API, без аккаунта. Документы расходятся: Swagger говорит приблизительно 10 запросов/мин с изменением под нагрузкой, FAQ — 30/мин. Для планирования брать более низкую цифру. | `probe`: старый запрос получил 401 с текстом об ограничении 180 дней; недавняя свеча того же SOL/USDC пула вернулась. Свеча включает поле high. `docs`: бесплатный OHLCV endpoint работает по адресу пула. Это доказывает 180-дневное окно на проверенном пуле, а не полную историю всех рынков. | `probe`: полный публичный `/networks` с pagination: `solana`, `bsc`, `base`, `robinhood`; RH на странице 3. Официальные RH docs различают mainnet 4663 и testnet 46630, имя сети совпадает. | Лучшее keyless дополнение/независимая проверка для последних 180 дней. `unknown`: поддержка каждого адреса и миграционного пути. |
 | **CoinMarketCap DEX K-line** | `docs`: Keyless Public API явно документирует K-line candles без ключа/регистрации; keyless запросы используют общий IP rate pool, числовой лимит не задан. Для отдельного Basic key тарифная страница указывает 15,000 credits/месяц и 50 req/min. `probe`: keyless OHLCV запрос вернул HTTP 403, тело ошибки не сохранено. | `docs`: `/v1/k-line/candles` принимает platform ID/name, token/pool address, interval и `from`/`to`; response schema включает OHLCV и traders. `probe`: дневная Base WETH свеча за Oct 2025 была отклонена HTTP 403, так что фактический keyless доступ и история старше 180 дней не доказаны. `unknown`: retention/max candles. `pm=p` означает price, `pm=m` market-cap; семантика `m` к Codex ATH FDV не установлена. | `probe`: официальный keyless platform-list ответ содержит BSC id 14/chId 56, Solana id 16/chId -1, Base id 199/chId 8453, Robinhood Chain id 300/chId 4663; все `v=true`. Это подтверждает перечисление четырех mainnet platforms, но не отвечает на 403 OHLCV. | Сетевой каталог CMC покрывает четыре сети, однако candle endpoint требует отдельного решения по 403; на текущем evidence не считать работающей бесплатной OHLCV опорой. CMC v2 Price Performance ATH — другой listed-coin endpoint; текущий tutorial говорит Basic, authenticated доступ не проверен. |
 | **Coinranking** | `docs`: Free key дает 5,000 запросов/месяц, 5 req/s burst, до 100 результатов. | Для монет, которые Coinranking уже знает, `/coins`/coin details возвращает `allTimeHigh.price` и timestamp; price history на Free ограничена одним годом. `unknown`: arbitrary mint coverage через контрактный фильтр. Полный `/blockchain/:blockchain/:address` contract lookup и tier 3 — не Free; contract-address UUID lookup указан для Professional. | `unknown`: arbitrary токены из Solana/BSC/Base/Robinhood. Coin addresses across chains описывают только coin mapping. | Подходит как легкий reference ATH для совпавших листингов; не является bulk resolver произвольной базы meme-token адресов. Не DEX OHLCV на бесплатном плане. |

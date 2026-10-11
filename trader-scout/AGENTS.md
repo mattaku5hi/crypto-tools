@@ -41,6 +41,10 @@
 - Codex `createdAt` filter and returned date can disagree: `crates/scout-devtracker/src/ath.rs` retains valid ATH with date-gap provenance; completed index pagination is not verified first-pair membership (ADR-021 amendment 8).
 - `backfill --days` в `bins/dev-tracker/src/backfill.rs` переводит дни в приблизительный block span: проверять timestamp нижнего блока и указывать фактический scope; BSC может читать запас истории, `since_days` ограничивает период деривации отдельно.
 - Sourcify source audits: v2 API — `https://sourcify.dev/server/v2/contract/{chain_id}/0x{address}?fields=all`; HTML404 с `repo.sourcify.dev` или адресом без `0x` не означает отсутствие verified source.
+- GeckoTerminal v4/native-ETH audits: `token=quote` в проверенном ответе дал ETH/USD; выбирать точный contract address и сверять priced-token identity/units (`docs/p0/measurements/2026-10-11-base-clanker-prior10-followup.md`).
+- Solana Tracker Data API: у предоставленного Free key лимит2500 requests/month (owner,2026-10-11), а не рекламные10000; ключ `SCOUT_SOLANA_TRACKER_API_KEY` отделён от Solana RPC (`docs/p0/measurements/2026-10-11-solana-tracker-ath-keyed-probe.md`).
+- PumpSwap spot использует signed real+virtual quote reserves; post-vq меняется при удержании комиссий, а `BoostBuyAndBurn` не является покупкой кошелька (`crates/scout-dex-solana/src/pump_amm_event.rs`, `docs/p0/measurements/2026-10-11-solana-virtual-reserve-source-audit.md`).
+- Solana Tracker chart: сохранять exact wire query и проверять scale/epoch; price-default control без `timezone` дал правильные UTC метки, explicit `timezone=UTC` сдвинул их на−7200s (`docs/p0/measurements/2026-10-11-solana-jc-chart-supply-bounds.md`).
 
 Следовать `docs/ROADMAP.md`. Не писать все CLI отдельно. Сначала контракт данных и hand-checked corpus; затем сквозной ограниченный slice, расширение сетей/DEX и оптимизация по профилю. После каждой задачи: перечислить измененные файлы, выполненные проверки, полученные результаты, ограничения и следующий task ID. Фиксировать изменения небольшими законченными коммитами, когда среда действительно дает доступ к git.
 

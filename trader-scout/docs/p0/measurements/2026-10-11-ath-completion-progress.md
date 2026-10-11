@@ -1,10 +1,10 @@
 # ATH: закрытые пропуски и оставшееся покрытие — 2026-10-11
 
 Годовые launch/migration facts для настроенных источников сохранены, но полное
-числовое ATH-покрытие не завершено. На 11:07 UTC закрыты **411 пропусков** в
-зафиксированной выборке: 334 через Codex, 69 через проверенные окна Birdeye
-и 8 через GeckoTerminal с on-chain/FX подтверждением. Последнее продолжение
-добавило 66 числовых значений без ручных запросов к Codex.
+числовое ATH-покрытие не завершено. На 12:03 UTC закрыты **425 пропусков** в
+зафиксированной выборке: 334 через Codex, 72 через проверенные окна Birdeye
+и 19 через GeckoTerminal с on-chain/FX подтверждением. Последнее продолжение
+добавило 80 числовых значений без ручных запросов к Codex.
 Это результат адресного заполнения, не новое доказательство полноты всех
 токенов сети или канонического lifetime ATH.
 
@@ -16,11 +16,11 @@ ATH-eligibility. Не все signer aliases и новые devs входят в �
 
 | Сеть | Unknown до прохода | Новые числовые Codex | Проверенные альтернативные FDV | Осталось unknown |
 |---|---:|---:|---:|---:|
-| Base | 503 | 324 | 53 Birdeye + 5 GeckoTerminal | 121 |
+| Base | 503 | 324 | 56 Birdeye + 16 GeckoTerminal | 107 |
 | BSC | 13 | 0 | 10 Birdeye + 3 GeckoTerminal | 0 |
 | Robinhood | 53 | 0 | 6 | 47 |
 | Solana | 110 | 10 | 0 | 100 |
-| Всего | 679 | 334 | 77 | 268 |
+| Всего | 679 | 334 | 91 | 254 |
 
 Шесть ручных Codex attempts дали 334 числовых наблюдения. Из тех же
 сохранённых ответов дополнительно перенесены holders/liquidity для 281
@@ -28,10 +28,11 @@ unknown-строки без дополнительных API-вызовов. З�
 остаётся unknown; его внутренний нулевой sentinel не становится денежным нулём.
 Числовые нули и известные значения сохранены.
 
-Из оставшихся 268 unknown у 162 сохранённые holders ниже действующего
-порога 100. Ещё 106 могут влиять на раннеры: Base 73, Robinhood 30,
+Из оставшихся 254 unknown у 162 сохранённые holders ниже действующего
+порога 100. Ещё 92 требуют проверки для раннеров: Base 59, Robinhood 30,
 Solana 3. Это приоритизация, не закрытие ATH у остальных токенов. Порог
 holders, миграций, ликвидности, числа запусков и plausibility не менялся.
+В числе92 есть строки с holders=NULL: они не считаются прошедшими порог100.
 В исходной выборке уже были три Base-токена без строки `ath`; проверка
 использует LEFT JOIN и сохраняет их как unknown. Отсутствие записи не
 считается числовым закрытием и не уменьшает исходный знаменатель679.
@@ -91,6 +92,56 @@ market scope и возможными thin-market peaks. Проверка одн�
 USD price corroboration пока не проходит1%, поэтому три FDV остаются
 незаписанными. Дополнительные три GT pool-list GET дали пустые списки;
 нового ценового подтверждения нет. Подробнее: [Solana ledger](2026-10-11-solana-ath-supply-ledger.md).
+Дополнительная Coinbase SOL/USD минутная свеча пересекается с Kraken,
+но расхождение остаётся выше1% при обоих концах диапазона; смена FX venue
+не закрыла пробел. Подробнее: [FX venue check](2026-10-11-solana-fx-venue-crosscheck.md).
+Три public Solana Tracker token-page GET также не дали числового ATH
+в HTML. На момент этого keyless прохода free-plan entitlement ещё
+не был проверен; последующий authenticated проход описан ниже:
+[public pages](2026-10-11-solana-public-token-ath-pages.md).
+После добавления владельцем Data API key выполнены3 ATH GET, все HTTP200.
+Фактический allowance этого аккаунта по данным владельца —2500 requests/month;
+рекламные10000 из docs не используются для бюджета. Цены и millisecond
+timestamps сохранены отдельно. `highest_market_cap` у этих ответов совпадает
+с price×позднейшим supply, а не подтверждённым market cap в момент пика;
+автоматического переноса в ATH нет. Birdeye1D highs совпадают с его1s highs
+и также расходятся с ST. Пулы двух токенов котируются в87ea, не в SOL/USD.
+Подробнее: [keyed probe](2026-10-11-solana-tracker-ath-keyed-probe.md),
+[cached peak transactions](2026-10-11-solana-tracker-pump-swap-peak-validation.md).
+Ещё1 ST TokenInfo GET и8 Helius RPC нашли exact87ea/wSOL pool и nearby
+quote-vault observations: всего4 ST requests за эту проверку, без повторов.
+`MultiHopSwap`/`SellV2` требуют отдельной version/semantics проверки;
+`BoostBuyAndBurn` целевых токенов не считается приобретением пользователя.
+Во вспомогательном private spot расчёте были пропущены virtual quote reserves;
+оригиналы сохранены, отчёты исправлены, неверные значения в БД не попали.
+Production decoder уже сохраняет это поле, SDK bug не установлен.
+Для первого mint v3 восстановил post-virtual state по закреплённой формуле
+комиссий:12 событий согласуются с vault deltas,18 состояний рассчитаны.
+Ближайший coherent spot остаётся ниже ST на2.39–2.47%;1% gate не пройден.
+Историческая deployment revision и привязка provider clock остаются scope gaps.
+Подробнее: [v2 reconciliation](2026-10-11-solana-virtual-reserve-price-reconciliation.md),
+[v3 state reconstruction](2026-10-11-solana-virtual-reserve-price-reconciliation-v3.md),
+[quote87 bridge](2026-10-11-solana-quote87-pool-bridge.md).
+Последующая version-matched сверка JC→87ea→wSOL successful atomic route
+подтвердила цену ST в пределах0.375–0.439% при обоих концах minute FX.
+Поставщик сообщает price peak, а его market-cap поле в этом ответе совпадает
+с price×позднейшим supply. Это не доказывает максимум исторического FDV:
+более низкая цена при supply до сжигания могла дать больший FDV.
+81 post-Boost spot также численно совпал в пределах1%, но quote bridge
+взят из отдельной транзакции через6.967s и не исключает direct vault transfers.
+Новых FDV записей нет. Подробнее: [JC bracket](2026-10-11-solana-quote87-jc-bracket.md),
+[81 spot](2026-10-11-solana-81-nearby-spot-comparison.md),
+[price peak versus FDV](2026-10-11-solana-tracker-price-peak-vs-fdv.md).
+Три коротких chart GET проверили ряд JC и единицы/время: итого7 ST requests
+за диагностику (3 ATH,1 TokenInfo,3 chart), без автоматических повторов.
+Контроль без `marketCap`/`timezone` вернул USD цены и43 метки внутри
+запрошенного347-секундного span; максимальная цена точно совпала с ATH.
+На43 возвращённых строках FDV максимум равен$227310.994248, но ±1s
+проверка supply даёт верхнюю границу$227590.653586. Промежутки до75s,
+неизвестная семантика пропусков и порядок внутри секунды не позволяют
+объявить максимум всего периода. Ответ с `timezone=UTC` имел epoch shift−7200s
+и исключён; исходный chart с capitalisation-scale values сохранён отдельно.
+Все3 FDV остаются unknown. [Chart/supply bounds](2026-10-11-solana-jc-chart-supply-bounds.md).
 
 Шесть Robinhood-токенов относятся к Doppler. Теперь проверены точные
 runtime/source implementation и immutable clone targets; повторные
@@ -147,10 +198,42 @@ immutable offsets и полная сверка100B mint/burn ledger. Ценов�
 успешные peak receipts, raw signed deltas, исторические quote decimals6
 и датированный Kraken FX согласуются с GT максимумами. Root перепроверил
 raw hashes/все Swap ratios и записал5 alternate-GT FDV; остальные10
-ещё не закрыты. Очень малые quote notionals сохранены как limitation.
+на этом checkpoint ещё не были закрыты. Очень малые quote notionals сохранены как limitation.
 У f3ad одинаковый GT максимум есть Apr25/26, выбран подтверждённый Swap
 день Apr25; Birdeye Apr26 не подгонялся. Подробнее:
 [Base discordant audit](2026-10-11-base-clanker-discordant-onchain.md).
+Следующие2 cross-day случая и7 оставшихся расхождений также прошли проверку
+по собственному дню GT-максимума, всем известным USDC Swap ratios,
+успешным peak receipts и обоим концам дневного Kraken FX; записаны9 GT FDV.
+У92d дополнительный ZORA-quote pool остаётся явно unconverted scope gap,
+а его возвращённая GT USD история включена в сравнение известных pool highs.
+У a0ad дочитана третья pool history и записан ещё1 Birdeye FDV. Теперь
+у всей дополнительной группы53 Clanker-токенов есть числовые значения.
+Исходные raw manifests сохранены; нормализованное дополнение исправляет
+ошибочное derived поле Kraken low (правильный OHLC индекс3, high —2).
+Подробнее: [cross-day](2026-10-11-base-clanker-cross-day-onchain.md),
+[last gaps](2026-10-11-base-clanker-last-gaps-onchain.md),
+[a0ad scope](2026-10-11-base-a0ad-pool-scope.md).
+
+Из десяти оставшихся Clanker-токенов более ранней группы24 ещё4 прошли
+полную сверку:2 Birdeye FDV и2 GT FDV записаны guarded missing-only.
+Проверены163 архивных raw файла; exact supply100B/18, все известные
+USDC pools, receipts/header/decimals и same-day FX сохранены в proof v2.
+Предварительный v1 proof имел неправильные observation/window metadata;
+он не использовался для записи, исправленный v2 хранится отдельно.
+Остальные6 остаются unknown. У67d все6 native-pool события после dated FX
+ниже USDC пика, но у одного известного USDC пула пустая GT история;
+nonempty-history gate для alternate GT не ослаблен. У fec3 GT день пика
+не совпадает с on-chain максимумом; соседний день не устранил расхождение.
+Подробнее: [prior10](2026-10-11-base-clanker-prior10-onchain.md),
+[native/date follow-up](2026-10-11-base-clanker-prior10-followup.md),
+[all-six native bound](2026-10-11-base-clanker-67d5-native-fx-bound.md).
+Offline сверка669 cached logs (660 nonzero opposite-delta Swaps) через
+post-swap `sqrtPriceX96` отделила marginal spot от execution ratio. У3607
+совпадение с Birdeye наMay3 не является общим максимумом: более высокий
+известный spot полученMay4, а GT относит высокий уровень кMay5. Остальные
+пять также не закрыли date/price/scope gaps; значения в БД не менялись.
+Подробнее: [prior-six spot audit](2026-10-11-base-prior6-v4-spot-audit.md).
 
 У шести оставшихся Zora-кандидатов fixed clone target, exact verified
 implementation и полный mint/burn ledger подтвердили исторический1B supply.
@@ -159,6 +242,17 @@ GT проход сделал10 GET: один случай согласуется
 пусты; экстремальный outlier не перенесён в FDV. У трёх спорных пар exact
 Initialize и runtime подтвердили content-coin quotes, без доказанного USD FX.
 Подробнее: [Zora audit](2026-10-11-base-zora-ath-source-audit.md).
+Дополнительный keyless проход нашёл USD histories точных content-coin quotes,
+но произведение дневных highs не является ценой одной сделки. Для DVA
+две реальные v4 сделки одной транзакции дают точную MATRY conversion;
+Coinbase minute ETH/USD показывает расхождение2.55–2.57% с Birdeye,
+поэтому FDV не записан. У двух пустых token listings DexScreener также
+не нашёл пары. Подробнее: [five-case follow-up](2026-10-11-base-zora-five-price-followup.md),
+[DVA/MATRY pilot](2026-10-11-base-zora-dva-matry-pilot.md).
+Для трёх ранних Robinhood-кандидатов с неизвестными holders GT списки
+пусты, а DexPaprika вернул address-matched metadata с NULL price stats.
+Это scoped index gap, не доказательство отсутствия сделок или нулевая цена:
+[Robinhood pilot](2026-10-11-robinhood-empty-price-pilot.md).
 
 ## Код, проверки и операционное состояние
 
@@ -203,22 +297,31 @@ cadence остаётся 1 request/chain раз в 240 минут, до 24 sched
 Они появились после checkpoint404 и snapshot10:25 UTC; отдельный
 `inputs/results/ath-complementary-finalization-2026-10-11.json` сохраняет
 следующий экспорт/снимок с411 закрытыми пробелами.
+После checkpoint411 записаны ещё14 значений: a0ad Birdeye1,
+GT cross-day2, GT last-gaps7 и prior4 (Birdeye2 + GT2).
+Recording artifacts: `birdeye-validated-fdv-base-a0ad-2026-10-11.json`,
+`geckoterminal-validated-fdv-base-{cross-day,last-gaps}-2026-10-11.json`,
+`ath-validated-fdv-base-prior4-2026-10-11.json` в `inputs/results/`.
+Свежий checkpoint425 фиксируется отдельно в
+`inputs/results/ath-validated-checkpoint-2026-10-11.json`; предыдущие
+exports/snapshots остаются неизменными.
 Дополнительных ручных Codex requests в продолжении не было; демон не перезапускался.
 
 ## Ресурсы и CI
 
-Новые списки: `inputs/results/devtracker-exports-2026-10-11T110545Z/`.
+Новые списки: `inputs/results/devtracker-exports-2026-10-11T120327Z/`.
 Все 36 файлов имеют записанные SHA-256; GMGN/Axiom/BasedBot совпали по
 составу и порядку, адреса/уникальность/лимиты проверены. Top-runners:
-SOL 36, BSC 11, Base 12, Robinhood 12. Top-migrations: SOL 410, BSC 74,
+SOL 36, BSC 11, Base 12, Robinhood 12. Top-migrations: SOL 412, BSC 74,
 Base 0, Robinhood 12; win-streak: SOL 142, BSC 16, Base 0, Robinhood 4.
-Экспорт обработал 27,473,514 launches, 4,330,647 creators, 717 category members.
-Runner membership и порядок сохранены. Между живыми экспортами10:15/11:05
-UTC у SOL migrations один адрес вошёл и один вышел, у streak один вошёл и
-два вышли. Факты продолжают обновляться, граница365 дней сдвигается;
-это не изменение порогов. Все остальные списки совпали по составу/порядку.
-Проверки файлов и cohort404/275 сохранены в
-`inputs/results/ath-complementary-finalization-2026-10-11.json`.
+Экспорт обработал 27,473,164 launches, 4,331,283 creators, 719 category members.
+Runner membership и порядок сохранены. Между живыми экспортами11:05/12:03
+UTC у SOL migrations два адреса вошли, у streak один вошёл и один вышел.
+Факты продолжают обновляться, граница365 дней сдвигается; пороги сохраняются.
+Все остальные списки совпали по составу/порядку. Новый ATH изменил метрики
+внутри runner names, но не wallet membership. Проверки36 файлов и cohort425/254
+сохранены в `inputs/results/ath-validated-checkpoint-2026-10-11.json`.
+Предыдущие checkpoint404 и411 manifests/exports сохранены отдельно.
 
 Checkpoint404 snapshot: `.scout-data/snapshots/devtracker-2026-10-11T102557Z.dump`,
 2,839,325,070 bytes, SHA-256
@@ -238,10 +341,24 @@ SHA-256 `570ad1c1c6b8b367f79161e478100ebeb3adca282a65e0c77a5613c626b437d6`.
 следует после свежего экспорта; views остаются отдельными. Итоговый manifest:
 `inputs/results/ath-complementary-finalization-2026-10-11.json`.
 
+Checkpoint425 snapshot: `.scout-data/snapshots/devtracker-2026-10-11T120817Z.dump`,
+2,839,741,603 bytes, SHA-256
+`dfe620f46d5884cc89796d6f0b1f75f9e4b6f867a2300384a44ad13d41afba08`.
+SHA и archive-list совпали. Полное восстановление в отдельный PostgreSQL16.15
+прошло с exit0 за8m17.64s: схема1–9, все обязательные таблицы,228 price windows,
+baseline679/425/254/92/3absent и четыре последние записи/window proofs проверены.
+Сохранён941 cursor из восстановленного snapshot, без сравнения с изменяемой
+живой БД. Тестовый контейнер без сети/портов имел1GiB/no-swap и1CPU;
+cgroup peak≈1GiB включает filesystem cache, OOM events0. Это не PostgreSQL RSS.
+Тестовый контейнер и его volume удалены. Снимок включает80 числовых записей
+продолжения; export и dump остаются разными DB views. Полные доказательства:
+[schema9 restore](2026-10-11-snapshot-schema9-restore-b84.md),
+`inputs/results/ath-validated-checkpoint-2026-10-11.json`.
+
 Демон активен, исполняет бинарник с ATH-retention fix и проверенным SHA-256;
 в этом продолжении он не перезапускался. Более новый локальный release
 с intraday CLI собран и проверен отдельно. Локальный Codex counter на
-10:34 UTC — 589: ещё четыре штатных attempts, ручных запросов не было.
+12:16 UTC —585: за продолжение прошли восемь штатных attempts, ручных запросов не было.
 Это не независимое показание dashboard аккаунта. Счётчик не повышался/не сбрасывался.
 
 Для нашего стека подготовлен [compact Compose profile](../../../deploy/docker-compose.compact.yml):
