@@ -780,3 +780,53 @@ Fixture `solana_tracker_two_price_gate_cases.json` pins the exact FDV floors,
 quote-input and reserve-rounding intervals, supply, timestamps, and all
 price/FX endpoint comparisons. The three other cases in the same audit fail
 the independent price gate and remain ineligible.
+
+## Amendment 22 (2026-10-11) — empty provider history for a verified zero-swap pool
+
+An empty target-USD candle response for a known initialized pool may be treated
+as no observed pool price, rather than an automatic blocker, only when a
+complete Swap-log scan from token creation through the pinned anchor proves
+that the pool had zero swaps. The pool remains in the known-pool scope; its
+empty history contributes no price. An Initialize event's initial square-root
+price is state, not a trade, and must not be used to fill the missing candle.
+If a scan is incomplete, returns unsupported events, or finds a Swap, this
+exception does not apply.
+
+For `0x67d5ab989378bfb2070954989a2f09ca6b19ab07` on Base, the four observed
+PoolManager Initialize pools have target-address GeckoTerminal histories except
+for USDC pool `0x218492c713cd10484093bf261b85c65702627dbb54a01c57ac3dc60dbe92da7a`.
+Its full-range creation-to-anchor scan is complete and contains zero Swap logs;
+the provider returned no target-USD candles for it. The other three target-USD
+histories include the corrected native-pool target selector. Their provider
+window maximum is `$0.000144069791573811` per token on 2026-05-01; the native
+pool maximum is `$0.00000816440733742597`. Verified fixed supply of 100 billion
+tokens at 18 decimals yields a provider-window FDV floor of `1440697915` cents.
+
+An independent USDC Swap in the maximum's pool on the same UTC day gives an
+exact execution-price ratio. Applying that day's closed Kraken USDC/USD
+`0.9995–0.9999` low/high range places both endpoints within 1% of the
+GeckoTerminal maximum. The same-day Birdeye value is materially lower and
+remains an unresolved source discrepancy; do not average it away or claim
+cross-source agreement. Under Amendment 15, this supports considering the
+GeckoTerminal value as a separately corroborated provider-window observation,
+not a global or lifetime ATH. Retain `ath_at=NULL`, unknown provider-window
+start and candle-history completeness despite the request bounds, gaps outside
+the four observed pools, and the Birdeye discrepancy. Do not infer a price or
+timestamp from the empty pool's Initialize state.
+
+The cached GeckoTerminal requests are daily (`aggregate=1`, `limit=1000`,
+`before_timestamp=1791676799`, USD, `include_empty_intervals=false`). The
+corrected native-pool request selects the exact target address; the excluded
+control uses `token=quote`. These request bounds and returned candle timestamps
+describe the query and observed rows only. They do not prove the provider has
+returned every historical candle or every market. The zero-Swap scan supports
+the empty-history exception only for that scanned pool and block range.
+
+The proposed source identifier remains
+`geckoterminal-window-supply-swap-fx-validated-v1`; runner gates are unchanged.
+Fixture `geckoterminal_base_zero_swap_pool_fdv_case.json` pins the pool set,
+zero-swap evidence, exact supply/FDV arithmetic, target identity, and both
+independent FX endpoints. The source audit is pinned at SHA-256
+`a586689bc26758a2faec06bf66d1b9ce0a118a01c46f0470b0015813404840c5` and
+reported in
+[`2026-10-11-base-six-triage-67d5-gt-source-audit.md`](../p0/measurements/2026-10-11-base-six-triage-67d5-gt-source-audit.md).
