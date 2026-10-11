@@ -22,7 +22,7 @@ scout-providers.workspace = true
 scout-rpc.workspace = true
 alloy-primitives.workspace = true
 futures.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 reqwest.workspace = true
 tokio = { workspace = true, features = ["time"] }
 serde.workspace = true

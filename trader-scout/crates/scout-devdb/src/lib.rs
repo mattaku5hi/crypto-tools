@@ -39,6 +39,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (6, include_str!("../migrations/0006_ath_liquidity.sql")),
     (7, include_str!("../migrations/0007_alerts.sql")),
     (8, include_str!("../migrations/0008_launches_by_time.sql")),
+    (9, include_str!("../migrations/0009_ath_price_windows.sql")),
 ];
 
 /// Rows per `INSERT … SELECT FROM UNNEST` statement.
@@ -84,6 +85,23 @@ pub struct AthObservation {
     /// Pool liquidity in USD cents at observation time (`None` = unknown);
     /// the store keeps the highest seen.
     pub liquidity_cents: Option<i64>,
+}
+
+/// An observed USD/token daily-price maximum, kept separate from ATH FDV.
+/// Empty provider series have null prices, never a fabricated zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AthPriceWindow {
+    pub chain: String,
+    pub token: String,
+    pub source: String,
+    pub window_from: i64,
+    pub window_to: i64,
+    pub max_price_usd: Option<String>,
+    pub high_candle_at: Option<i64>,
+    pub first_candle_at: Option<i64>,
+    pub last_candle_at: Option<i64>,
+    pub returned_candles: i32,
+    pub observed_at: i64,
 }
 
 /// What is known about a creator address (ADR-021 amendment 1).
@@ -308,6 +326,64 @@ impl DevDb {
         }
         tx.commit().await?;
         Ok(n)
+    }
+
+    /// Save a provider price window without changing the monetary ATH table.
+    ///
+    /// # Errors
+    /// Database failure or violation of the window's schema constraints.
+    pub async fn upsert_ath_price_window(&self, r: &AthPriceWindow) -> Result<u64, DevDbError> {
+        Ok(sqlx::query(
+            "INSERT INTO ath_price_windows
+                (chain, token, source, window_from, window_to, max_price_usd,
+                 high_candle_at, first_candle_at, last_candle_at, returned_candles, observed_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+             ON CONFLICT (chain,token,source,window_from,window_to) DO UPDATE SET
+                max_price_usd=EXCLUDED.max_price_usd, high_candle_at=EXCLUDED.high_candle_at,
+                first_candle_at=EXCLUDED.first_candle_at, last_candle_at=EXCLUDED.last_candle_at,
+                returned_candles=EXCLUDED.returned_candles, observed_at=EXCLUDED.observed_at
+             WHERE EXCLUDED.observed_at >= ath_price_windows.observed_at",
+        )
+        .bind(&r.chain)
+        .bind(&r.token)
+        .bind(&r.source)
+        .bind(r.window_from)
+        .bind(r.window_to)
+        .bind(&r.max_price_usd)
+        .bind(r.high_candle_at)
+        .bind(r.first_candle_at)
+        .bind(r.last_candle_at)
+        .bind(r.returned_candles)
+        .bind(r.observed_at)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
+    /// Whether an exact provider/window request already has a saved observation.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn has_ath_price_window(
+        &self,
+        chain: &str,
+        token: &str,
+        source: &str,
+        from: i64,
+        to: i64,
+    ) -> Result<bool, DevDbError> {
+        Ok(sqlx::query(
+            "SELECT 1 FROM ath_price_windows WHERE chain=$1 AND token=$2 AND source=$3
+             AND window_from=$4 AND window_to=$5",
+        )
+        .bind(chain)
+        .bind(token)
+        .bind(source)
+        .bind(from)
+        .bind(to)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some())
     }
 
     /// Return the tracked tokens from a provider page (maximum 200).

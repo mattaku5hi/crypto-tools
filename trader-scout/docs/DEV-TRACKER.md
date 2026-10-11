@@ -85,6 +85,11 @@ excluded); both raw counts are stored, never only the ratio.
   re-read every cycle (a broken edit is reported and the last good config kept); one chain's failure does not
   stop the others; SIGTERM / Ctrl-C stop it between steps.
 - One-shot commands: `migrate`, `ingest --chains …`, `derive`, `export [--send] [--test]`, `backfill`.
+- `birdeye-prices --tokens <json> --time-from <unix> --time-to <unix> --max-requests <N>` saves
+  daily USD price-window highs separately from ATH FDV. Input is a JSON array of tracked
+  `{"chain":"base","token":"0x..."}` entries; key is `SCOUT_BIRDEYE_API_KEY`. Saved exact
+  windows resume without calls; empty histories remain null. Failed calls or a spent attempt
+  ceiling produce a partial exit. This command does not certify lifetime ATH or change lists.
 - Alerts (`[alerts]`, same bot and chat): 🟢 start, ⏹ stop (also when the stop arrives in the middle of a pass —
   the pass is abandoned safely), 🟠 restart after an unclean stop (crash, `kill -9`, OOM, power loss: a liveness
   beat is written every minute and the next start compares), 🔴 an incident — a chain's pass (`ingest:<chain>`),

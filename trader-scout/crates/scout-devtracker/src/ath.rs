@@ -12,8 +12,9 @@
 //! is not a complete or canonical launch registry.
 //! The current holder count is stored with each observation (a runner needs
 //! `top_runners.min_holders`: thin pools fake huge ATHs).
-//! A token Codex does not return is stored as an observation of 0 with source
-//! `codex-missing`, so it is retried on the age schedule, not every pass.
+//! A token Codex omits or returns without an ATH is stored as an observation of
+//! 0 with source `codex-missing`, so it is retried on the age schedule, not every
+//! pass. Returned holder/liquidity metadata is retained even without an ATH.
 
 use std::time::Duration;
 
@@ -1271,60 +1272,133 @@ pub async fn observe_ath(
         let v = query(db, &http, codex_key, &ids, now).await?;
         report.requests += 1;
         report.tokens_asked += batch.len();
-        let mut rows: Vec<AthObservation> = Vec::with_capacity(batch.len());
-        let results = v
-            .pointer("/data/filterTokens/results")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        for r in &results {
-            let Some(addr) = r.pointer("/token/address").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(cents) = r
-                .pointer("/token/extrema/athFdv")
-                .and_then(Value::as_str)
-                .and_then(usd_to_cents)
-            else {
-                continue;
-            };
-            rows.push(AthObservation {
-                chain: chain.to_string(),
-                token: addr.to_string(),
-                ath_fdv_cents: cents,
-                ath_at: r
-                    .pointer("/token/extrema/athFdvTimestamp")
-                    .and_then(Value::as_i64),
-                source: "codex".to_string(),
-                observed_at: now,
-                holders: r.get("holders").and_then(Value::as_i64),
-                liquidity_cents: optional_decimal_cents(r.get("liquidity"))?,
-            });
-        }
-        report.observed += rows.len();
-        // tokens Codex did not return: an observation of 0 (retried on schedule)
-        let seen: std::collections::BTreeSet<String> =
-            rows.iter().map(|r| r.token.to_ascii_lowercase()).collect();
-        for t in batch {
-            if !seen.contains(&t.to_ascii_lowercase()) {
-                report.missing += 1;
-                rows.push(AthObservation {
-                    chain: chain.to_string(),
-                    token: t.clone(),
-                    ath_fdv_cents: 0,
-                    ath_at: None,
-                    source: "codex-missing".to_string(),
-                    observed_at: now,
-                    holders: None,
-                    liquidity_cents: None,
-                });
-            }
-        }
+        let parsed = parse_observe_batch(&v, chain, network, batch, now)?;
+        report.observed += parsed.observed;
+        report.missing += parsed.missing;
+        let rows = parsed.rows;
         db.upsert_ath(&rows).await?;
         // free tier: 5 requests/s
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Ok(report)
+}
+
+struct ParsedObserveBatch {
+    rows: Vec<AthObservation>,
+    observed: usize,
+    missing: usize,
+}
+
+fn parse_observe_batch(
+    response: &Value,
+    chain: &str,
+    network: u64,
+    requested: &[String],
+    observed_at: i64,
+) -> Result<ParsedObserveBatch, AthError> {
+    let results = response
+        .pointer("/data/filterTokens/results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AthError::MalformedIndex("filterTokens.results is not an array".into()))?;
+    let requested_keys: std::collections::BTreeSet<String> = requested
+        .iter()
+        .map(|token| runner_token_key(chain, token))
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut rows = Vec::with_capacity(requested.len());
+    let mut observed = 0;
+
+    for result in results {
+        let token = result
+            .pointer("/token/address")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AthError::MalformedIndex("result has no token address".into()))?;
+        if !valid_runner_token_address(chain, token) {
+            return Err(AthError::MalformedIndex(
+                "result has invalid token address".into(),
+            ));
+        }
+        let actual_network = result
+            .pointer("/token/networkId")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| AthError::MalformedIndex("result has no token networkId".into()))?;
+        if actual_network != network {
+            return Err(AthError::WrongRunnerIndexNetwork {
+                actual: actual_network,
+                expected: network,
+            });
+        }
+        let key = runner_token_key(chain, token);
+        if !requested_keys.contains(&key) {
+            return Err(AthError::MalformedIndex(
+                "result token was not in the requested batch".into(),
+            ));
+        }
+        if !seen.insert(key) {
+            return Err(AthError::MalformedIndex("duplicate result token".into()));
+        }
+
+        let holders = optional_integer(result.get("holders"))?;
+        let liquidity_cents = optional_decimal_cents(result.get("liquidity"))?;
+        let extrema = result.pointer("/token/extrema");
+        if extrema.is_some_and(|value| !value.is_null() && !value.is_object()) {
+            return Err(AthError::MalformedIndex(
+                "token.extrema is neither an object nor null".into(),
+            ));
+        }
+        let ath_value = result.pointer("/token/extrema/athFdv");
+        let (ath_fdv_cents, ath_at, source) = match ath_value {
+            None | Some(Value::Null) => (0, None, "codex-missing"),
+            Some(Value::String(value)) => {
+                let cents = usd_to_cents(value).ok_or_else(|| {
+                    AthError::MalformedIndex("invalid token.extrema.athFdv".into())
+                })?;
+                let timestamp = optional_integer(result.pointer("/token/extrema/athFdvTimestamp"))?;
+                (cents, timestamp, "codex")
+            }
+            Some(_) => {
+                return Err(AthError::MalformedIndex(
+                    "token.extrema.athFdv is not a decimal string".into(),
+                ));
+            }
+        };
+        observed += usize::from(source == "codex");
+        rows.push(AthObservation {
+            chain: chain.to_string(),
+            token: runner_token_key(chain, token),
+            ath_fdv_cents,
+            ath_at,
+            source: source.to_string(),
+            observed_at,
+            holders,
+            liquidity_cents,
+        });
+    }
+
+    let mut missing = rows
+        .iter()
+        .filter(|row| row.source == "codex-missing")
+        .count();
+    for token in requested {
+        if !seen.contains(&runner_token_key(chain, token)) {
+            missing += 1;
+            rows.push(AthObservation {
+                chain: chain.to_string(),
+                token: token.clone(),
+                ath_fdv_cents: 0,
+                ath_at: None,
+                source: "codex-missing".to_string(),
+                observed_at,
+                holders: None,
+                liquidity_cents: None,
+            });
+        }
+    }
+    Ok(ParsedObserveBatch {
+        rows,
+        observed,
+        missing,
+    })
 }
 
 #[cfg(test)]
@@ -1350,6 +1424,117 @@ mod tests {
 
     fn token_address(n: u64) -> String {
         format!("0x{n:040x}")
+    }
+
+    #[tokio::test]
+    async fn null_extrema_keeps_provider_metadata_and_validates_batch_identity() {
+        let Some(db) = isolated_db().await else {
+            return;
+        };
+        let mut response: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/codex_ath_null_extrema_metadata.json"
+        ))
+        .unwrap();
+        let first = "0x0015279976b7e3211043144b99f44930d3340b07".to_string();
+        let second = "0x009501a47650fe5c940c9f49d1a97388e0a2cb07".to_string();
+        response["data"]["filterTokens"]["results"][0]["token"]["address"] =
+            json!(format!("0x{}", &first[2..].to_ascii_uppercase()));
+        let absent = token_address(u64::from(std::process::id()) + 11);
+        let requested = vec![first.clone(), second.clone(), absent.clone()];
+        let now = 1_800_000_321;
+        let parsed = parse_observe_batch(&response, "base", 8453, &requested, now).unwrap();
+        assert_eq!((parsed.observed, parsed.missing), (1, 2));
+        assert_eq!(parsed.rows.len(), 3);
+        let null_extrema = parsed.rows.iter().find(|row| row.token == first).unwrap();
+        assert_eq!(null_extrema.ath_fdv_cents, 0);
+        assert_eq!(null_extrema.source, "codex-missing");
+        assert_eq!(null_extrema.holders, Some(1419));
+        assert_eq!(null_extrema.liquidity_cents, Some(1234));
+        let positive = parsed.rows.iter().find(|row| row.token == second).unwrap();
+        assert_eq!(positive.ath_fdv_cents, 4_122_600);
+        assert_eq!(positive.holders, Some(1431));
+        assert_eq!(positive.liquidity_cents, Some(2500));
+
+        let pid = u64::from(std::process::id());
+        let launch_rows: Vec<Launch> = requested
+            .iter()
+            .enumerate()
+            .map(|(index, token)| Launch {
+                chain: "base".into(),
+                token: token.clone(),
+                launchpad: "ath-observe-test".into(),
+                creator: format!("ath-observe-{pid}-{index}"),
+                created_block: 1,
+                created_at: now,
+                tx_hash: format!("ath-observe-{pid}-{index}"),
+                source: "test".into(),
+            })
+            .collect();
+        db.insert_launches(&launch_rows).await.unwrap();
+        db.upsert_ath(&[AthObservation {
+            chain: "base".into(),
+            token: requested[0].clone(),
+            ath_fdv_cents: 900,
+            ath_at: Some(now - 1),
+            source: "codex".into(),
+            observed_at: now - 1,
+            holders: Some(1),
+            liquidity_cents: Some(9000),
+        }])
+        .await
+        .unwrap();
+        db.upsert_ath(&parsed.rows).await.unwrap();
+        let stored = db.dev_launches(Some("base"), 0).await.unwrap();
+        let stored_null = stored.iter().find(|row| row.token == requested[0]).unwrap();
+        assert_eq!(stored_null.ath_fdv_cents, None);
+        assert_eq!(stored_null.ath_holders, Some(1419));
+        assert_eq!(stored_null.ath_max_liquidity_cents, Some(9000));
+
+        let sol_mint = "So11111111111111111111111111111111111111112";
+        let sol_response = json!({
+            "data": { "filterTokens": { "results": [{
+                "holders": 5,
+                "liquidity": "1",
+                "token": { "address": sol_mint, "networkId": 1_399_811_149, "extrema": null }
+            }] } }
+        });
+        let sol = parse_observe_batch(
+            &sol_response,
+            "solana",
+            1_399_811_149,
+            &[sol_mint.to_string()],
+            now,
+        )
+        .unwrap();
+        assert_eq!(sol.rows[0].token, sol_mint);
+        let case_variant = format!("s{}", &sol_mint[1..]);
+        assert_ne!(
+            runner_token_key("solana", sol_mint),
+            runner_token_key("solana", &case_variant)
+        );
+
+        let mut wrong_network = response.clone();
+        wrong_network["data"]["filterTokens"]["results"][0]["token"]["networkId"] = json!(56);
+        assert!(matches!(
+            parse_observe_batch(&wrong_network, "base", 8453, &requested, now),
+            Err(AthError::WrongRunnerIndexNetwork {
+                actual: 56,
+                expected: 8453
+            })
+        ));
+        let mut unexpected = response.clone();
+        unexpected["data"]["filterTokens"]["results"][0]["token"]["address"] =
+            json!(token_address(pid + 99));
+        assert!(matches!(
+            parse_observe_batch(&unexpected, "base", 8453, &requested, now),
+            Err(AthError::MalformedIndex(_))
+        ));
+        let mut duplicate = response;
+        duplicate["data"]["filterTokens"]["results"][1]["token"]["address"] = json!(requested[0]);
+        assert!(matches!(
+            parse_observe_batch(&duplicate, "base", 8453, &requested, now),
+            Err(AthError::MalformedIndex(_))
+        ));
     }
 
     struct IndexReplay {

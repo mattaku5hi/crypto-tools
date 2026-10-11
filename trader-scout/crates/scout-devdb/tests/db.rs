@@ -8,7 +8,94 @@
     clippy::indexing_slicing
 )]
 
-use scout_devdb::{AthObservation, DevDb, Launch, Migration};
+use scout_devdb::{AthObservation, AthPriceWindow, DevDb, Launch, Migration};
+
+#[tokio::test]
+async fn price_windows_preserve_unknown_fdv_and_replay_without_network_identity_collisions() {
+    let Some(db) = db().await else { return };
+    let chain = format!("price-window-{}", std::process::id());
+    db.insert_launches(&[
+        launch(&chain, "missing", "dev", 100),
+        launch(&chain, "known", "dev", 200),
+    ])
+    .await
+    .unwrap();
+    db.upsert_ath(&[
+        AthObservation {
+            chain: chain.clone(),
+            token: "missing".into(),
+            ath_fdv_cents: 0,
+            ath_at: None,
+            source: "codex-missing".into(),
+            observed_at: 20,
+            holders: None,
+            liquidity_cents: None,
+        },
+        AthObservation {
+            chain: chain.clone(),
+            token: "known".into(),
+            ath_fdv_cents: 123_456,
+            ath_at: Some(200),
+            source: "codex".into(),
+            observed_at: 20,
+            holders: Some(100),
+            liquidity_cents: None,
+        },
+    ])
+    .await
+    .unwrap();
+    let window = AthPriceWindow {
+        chain: chain.clone(),
+        token: "missing".into(),
+        source: "birdeye-test".into(),
+        window_from: 0,
+        window_to: 86_400,
+        max_price_usd: Some("0.00000000000000000008200605879384362".into()),
+        high_candle_at: Some(0),
+        first_candle_at: Some(0),
+        last_candle_at: Some(0),
+        returned_candles: 1,
+        observed_at: 30,
+    };
+    assert_eq!(db.upsert_ath_price_window(&window).await.unwrap(), 1);
+    assert_eq!(db.upsert_ath_price_window(&window).await.unwrap(), 1);
+    assert!(
+        db.has_ath_price_window(&chain, "missing", "birdeye-test", 0, 86_400)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !db.has_ath_price_window("different-chain", "missing", "birdeye-test", 0, 86_400)
+            .await
+            .unwrap()
+    );
+    let mut old = window.clone();
+    old.observed_at = 29;
+    assert_eq!(db.upsert_ath_price_window(&old).await.unwrap(), 0);
+    let mut empty = window;
+    empty.token = "known".into();
+    empty.max_price_usd = None;
+    empty.high_candle_at = None;
+    empty.first_candle_at = None;
+    empty.last_candle_at = None;
+    empty.returned_candles = 0;
+    db.upsert_ath_price_window(&empty).await.unwrap();
+    let rows = db.dev_launches(Some(&chain), 0).await.unwrap();
+    assert_eq!(
+        rows.iter()
+            .find(|r| r.token == "missing")
+            .unwrap()
+            .ath_fdv_cents,
+        None
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|r| r.token == "known")
+            .unwrap()
+            .ath_fdv_cents,
+        Some(123_456)
+    );
+}
 
 async fn db() -> Option<DevDb> {
     let Ok(url) = std::env::var("SCOUT_TEST_DATABASE_URL") else {

@@ -1,0 +1,31 @@
+{
+  "data": {
+    "filterTokens": {
+      "results": [
+        {
+          "holders": 1419,
+          "liquidity": "12.34",
+          "token": {
+            "address": "0x0015279976b7e3211043144b99f44930d3340b07",
+            "networkId": 8453,
+            "totalSupply": "100000000000",
+            "extrema": null
+          }
+        },
+        {
+          "holders": 1431,
+          "liquidity": "25",
+          "token": {
+            "address": "0x009501a47650fe5c940c9f49d1a97388e0a2cb07",
+            "networkId": 8453,
+            "totalSupply": "100000000000",
+            "extrema": {
+              "athFdv": "41226",
+              "athFdvTimestamp": 1785469561
+            }
+          }
+        }
+      ]
+    }
+  }
+}

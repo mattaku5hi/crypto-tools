@@ -357,3 +357,51 @@ This is a targeted candidate-enumeration aid for runner analysis. It does not
 change the runner definition, ATH policy, or statistical interpretation; the
 filter itself selects high-ATH tokens and therefore cannot be treated as an
 unbiased sample of all launches.
+
+## Amendment 11 (2026-10-11) — retain quality metadata when ATH is unknown
+
+Codex can return a token, its current holders and liquidity, but null extrema.
+The regular observation path previously discarded that metadata. Such a row
+now remains `codex-missing` (the derivation still projects ATH as null), with
+the returned optional holders and liquidity retained. The existing maximum
+observed liquidity rule is unchanged. Omitted tokens still have unknown
+metadata. Neither case is a numeric ATH zero. The report's missing count
+includes both null-ATH results and omitted tokens.
+
+Validate returned network, requested token membership and duplicate rows
+before persistence. Store lowercase EVM keys and case-sensitive Solana keys.
+The sanitized null-extrema fixture and test against `scout_test` check these
+properties and preservation of prior maximum liquidity. This changes no
+runner or migration threshold and supplies no missing extrema.
+
+## Amendment 12 (2026-10-11) — separate Birdeye price-window observations
+
+Birdeye token OHLCV supplies daily USD-per-token prices, not Codex ATH FDV.
+The explicit `birdeye-prices` command saves these in migration 0009's
+`ath_price_windows`, keyed by network, token, source policy and requested
+inclusive time range. It neither updates `ath` nor enters runner derivation.
+Empty returned series have null prices and zero returned-candle count;
+that is not a numeric zero price or evidence of no historical trading.
+
+Use `type=1D`, `currency=usd`, `padding=false`, `outlier=true`; retain the
+requested range, first/last returned UTC bucket, maximum's bucket and
+observation time. A bucket timestamp is not the exact time of its high.
+Partial current-day buckets, omitted no-padding days, pool aggregation and
+provider tracking start do not prove lifetime coverage. The command's
+completed pass means only that every requested price window was saved.
+
+Calls are sequential, at least one second apart, with an explicit attempt
+ceiling and no automatic retries. Input is bounded to 2 MiB/2,000 entries,
+responses to 2 MiB/5,000 candles and 25 seconds. Access denial or rate limiting
+stops the pass. Exact saved windows are skipped on resume; transport/schema
+failures are not saved as empty observations and cause a partial exit.
+Prices preserve JSON decimal lexemes, including scientific notation, and
+use checked integer arithmetic. Unsupported scaled UI prices are rejected.
+
+The overview adapter separately exposes current optional supply, holders,
+liquidity, price, market cap and FDV. It does not equate current supply with
+historical invariant supply, or current FDV with ATH. Token-version/supply
+and observed market-scope validation remain required before any future
+promotion into the monetary ATH table. The supply findings and outstanding
+checks are in `2026-10-11-birdeye-fdv-policy.md`. Golden response fixtures,
+mock HTTP tests and a real `scout_test` persistence test cover the boundary.

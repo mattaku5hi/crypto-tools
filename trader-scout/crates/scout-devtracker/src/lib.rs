@@ -6,6 +6,7 @@
 //! All arithmetic is integer: money in USD cents, rates in basis points.
 
 pub mod ath;
+pub mod birdeye;
 pub mod evm_ingest;
 pub mod export;
 pub mod heartbeat;

@@ -212,6 +212,7 @@ PostgreSQL — отдельный серверный процесс, котор�
 | `launches` | PK `(chain, token)`; launchpad, creator, block/time, tx hash, source, при необходимости signer. Индекс `(chain, creator, created_at)` помогает найти историю создателя; отдельные индексы по tx и времени добавлены миграциями. |
 | `migrations` | PK `(chain, token)`; факт миграции launchpad, время/блок и pool. |
 | `ath` | PK `(chain, token)`; последняя принятая ATH observation в USD cents, nullable время, source, holders и максимальная увиденная ликвидность. |
+| `ath_price_windows` | Наблюдённый максимум цены Birdeye в USD за токен, границы запроса и свечей. Цена хранится точной десятичной строкой; пустая серия — `NULL`. Это отдельные данные, которые пока не входят в ATH FDV и раннеры. |
 | `cursors` | Позиция каждого источника для продолжения загрузки; формат позиции принадлежит конкретному источнику. |
 | `address_kinds` | Контракт/EOA и sampled ownership facts; один signer у всех проб не доказывает универсальное владение. |
 | `dev_histories` | Чекпоинт/счётчик атрибуции истории запуска для создателя; это не сырая история всех его транзакций. |
@@ -285,7 +286,7 @@ Wallet analytics запускается как batch: CLI валидирует i
 4. `crates/scout-normalize/src/`: что именно считается операцией и как назначается участник.
 5. [`crates/scout-ledger/src/fifo.rs`](../crates/scout-ledger/src/fifo.rs), затем wallet-specific pipeline в `crates/scout-engine/src/`: lots, basis и отчётные статусы.
 6. `bins/wallet-stats/src/main.rs`, затем `wallet-rank`/`buyer-intersect`: парсинг аргументов, вызов библиотеки и output.
-7. Отдельно для базы: [`crates/scout-devdb/src/lib.rs`](../crates/scout-devdb/src/lib.rs), все миграции `0001`–`0008`, затем [`bins/dev-tracker/src/main.rs`](../bins/dev-tracker/src/main.rs) и [`docs/DEV-TRACKER.md`](DEV-TRACKER.md).
+7. Отдельно для базы: [`crates/scout-devdb/src/lib.rs`](../crates/scout-devdb/src/lib.rs), все миграции `0001`–`0009`, затем [`bins/dev-tracker/src/main.rs`](../bins/dev-tracker/src/main.rs) и [`docs/DEV-TRACKER.md`](DEV-TRACKER.md).
 
 Удобные команды для изучения: `cargo metadata --no-deps`, `cargo tree -p scout-devdb`, `cargo tree -e features -p scout-sdk`, затем `rg` по имени публичного типа. `cargo tree` показывает, что реально входит в граф; архитектурная картинка сама по себе этого не доказывает.
 

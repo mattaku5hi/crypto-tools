@@ -7,6 +7,7 @@
 //! come from the environment and are never printed.
 
 mod backfill;
+mod birdeye_backfill;
 
 use std::collections::BTreeSet;
 use std::process::ExitCode;
@@ -43,6 +44,8 @@ struct Args {
 enum Cmd {
     /// Apply the schema migrations.
     Migrate,
+    /// Save Birdeye daily USD price windows for tracked tokens; separate from ATH FDV.
+    BirdeyePrices(birdeye_backfill::BirdeyePricesArgs),
     /// One ingestion pass over the sources of the given chains.
     Ingest {
         /// Comma-separated: solana, bsc, base, robinhood.
@@ -925,6 +928,10 @@ async fn run(args: Args) -> Result<(), String> {
         Cmd::Migrate => {
             db.migrate().await.map_err(|e| e.to_string())?;
             eprintln!("dev-tracker: schema up to date");
+        }
+        Cmd::BirdeyePrices(a) => {
+            db.migrate().await.map_err(|e| e.to_string())?;
+            birdeye_backfill::run(&db, a).await?;
         }
         Cmd::Ingest {
             chains,
