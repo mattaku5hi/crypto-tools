@@ -44,7 +44,7 @@ struct Args {
 enum Cmd {
     /// Apply the schema migrations.
     Migrate,
-    /// Save Birdeye daily USD price windows for tracked tokens; separate from ATH FDV.
+    /// Save bounded Birdeye USD candle windows for tracked tokens; separate from ATH FDV.
     BirdeyePrices(birdeye_backfill::BirdeyePricesArgs),
     /// One ingestion pass over the sources of the given chains.
     Ingest {

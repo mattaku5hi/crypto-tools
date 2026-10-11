@@ -4,10 +4,9 @@ use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use scout_devdb::{AthPriceWindow, DevDb};
-use scout_devtracker::birdeye::{BirdeyeChain, BirdeyeError, OhlcvWindow};
+use scout_devtracker::birdeye::{BirdeyeChain, BirdeyeError, CandleInterval, OhlcvWindow};
 use tokio::io::AsyncReadExt;
 
-const SOURCE: &str = "birdeye-ohlcv-1d-usd-outliers-v1";
 const ENDPOINT: &str = "https://public-api.birdeye.so/defi/v3/ohlcv";
 const INPUT_LIMIT: u64 = 2 * 1024 * 1024;
 
@@ -16,17 +15,30 @@ pub struct BirdeyePricesArgs {
     /// JSON array of {"chain":"base","token":"0x..."}; at most 2,000 tracked tokens.
     #[arg(long)]
     tokens: String,
-    /// Inclusive Unix seconds; daily candles are checked by UTC bucket.
+    /// Inclusive Unix seconds; candles are checked against their UTC buckets.
     #[arg(long)]
     time_from: i64,
     #[arg(long)]
     time_to: i64,
+    /// Candle interval; second-level candles are Solana-only.
+    #[arg(long, default_value = "1D", value_parser = ["1D", "1m", "1s"])]
+    interval: String,
     /// Attempt ceiling for this invocation. Saved exact windows are skipped.
     #[arg(long, default_value_t = 20)]
     max_requests: usize,
 }
 
 pub async fn run(db: &DevDb, args: BirdeyePricesArgs) -> Result<(), String> {
+    let interval = match args.interval.as_str() {
+        "1D" => CandleInterval::Day,
+        "1m" => CandleInterval::Minute,
+        "1s" => CandleInterval::Second,
+        _ => return Err("unsupported Birdeye interval".into()),
+    };
+    let source = format!(
+        "birdeye-ohlcv-{}-usd-outliers-v1",
+        args.interval.to_ascii_lowercase()
+    );
     if args.time_from < 0 || args.time_to < args.time_from || args.max_requests == 0 {
         return Err(
             "Birdeye requires a nonnegative ordered window and a positive request budget".into(),
@@ -81,7 +93,7 @@ pub async fn run(db: &DevDb, args: BirdeyePricesArgs) -> Result<(), String> {
     let mut budget_exhausted = false;
     for (chain, token) in tokens {
         if db
-            .has_ath_price_window(&chain, &token, SOURCE, args.time_from, args.time_to)
+            .has_ath_price_window(&chain, &token, &source, args.time_from, args.time_to)
             .await
             .map_err(|e| e.to_string())?
         {
@@ -118,9 +130,10 @@ pub async fn run(db: &DevDb, args: BirdeyePricesArgs) -> Result<(), String> {
             time_from: args.time_from,
             time_to: args.time_to,
         };
-        let result =
-            scout_devtracker::birdeye::fetch_window_price_high(&http, ENDPOINT, &key, &request)
-                .await;
+        let result = scout_devtracker::birdeye::fetch_candle_price_high(
+            &http, ENDPOINT, &key, &request, interval,
+        )
+        .await;
         let observed_at = i64::try_from(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -147,7 +160,7 @@ pub async fn run(db: &DevDb, args: BirdeyePricesArgs) -> Result<(), String> {
         let row = AthPriceWindow {
             chain: chain.clone(),
             token: token.clone(),
-            source: SOURCE.into(),
+            source: source.clone(),
             window_from: args.time_from,
             window_to: args.time_to,
             max_price_usd: high.as_ref().map(|h| h.max_price_usd.clone()),
@@ -165,7 +178,7 @@ pub async fn run(db: &DevDb, args: BirdeyePricesArgs) -> Result<(), String> {
         saved += 1;
         println!(
             "{}",
-            serde_json::json!({"chain":chain,"token":token,"saved":true,"max_price_usd":row.max_price_usd,"returned_candles":row.returned_candles,"quality":"observed-price-window/supply-unverified/lifetime-coverage-unproven"})
+            serde_json::json!({"chain":chain,"token":token,"source":source,"saved":true,"max_price_usd":row.max_price_usd,"returned_candles":row.returned_candles,"quality":"observed-price-window/supply-unverified/lifetime-coverage-unproven"})
         );
     }
     eprintln!(

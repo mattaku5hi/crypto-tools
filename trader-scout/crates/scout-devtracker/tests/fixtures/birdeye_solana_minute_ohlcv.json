@@ -1,0 +1,11 @@
+{
+  "success": true,
+  "data": {
+    "items": [
+      {"address":"48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump","unix_time":1760054460,"type":"1m","currency":"usd","o":0.0001,"h":0.00012179988071982598,"l":0.00009,"c":0.00011,"v":1,"v_usd":0.0001},
+      {"address":"48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump","unix_time":1760054520,"type":"1m","currency":"usd","o":0.00011,"h":0.00012,"l":0.00008,"c":0.0001,"v":1,"v_usd":0.0001}
+    ],
+    "is_scaled_ui_token": false,
+    "multiplier": null
+  }
+}

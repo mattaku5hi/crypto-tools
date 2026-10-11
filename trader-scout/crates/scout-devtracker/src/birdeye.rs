@@ -1,4 +1,4 @@
-//! Bounded Birdeye daily-price history adapter. It reports USD candle highs,
+//! Bounded Birdeye price history adapter. It reports USD candle highs,
 //! not token FDV or lifetime ATH.
 
 use std::{cmp::Ordering, time::Duration};
@@ -9,6 +9,32 @@ use serde_json::value::RawValue;
 const DAY_SECONDS: i64 = 86_400;
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CANDLES: usize = 5_000;
+
+/// Explicit candle buckets for day and intraday supply reconciliation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandleInterval {
+    Day,
+    Minute,
+    Second,
+}
+
+impl CandleInterval {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Day => "1D",
+            Self::Minute => "1m",
+            Self::Second => "1s",
+        }
+    }
+
+    const fn seconds(self) -> i64 {
+        match self {
+            Self::Day => DAY_SECONDS,
+            Self::Minute => 60,
+            Self::Second => 1,
+        }
+    }
+}
 
 /// Supported Birdeye chain identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,8 +76,8 @@ impl BirdeyeChain {
     }
 }
 
-/// Requested inclusive UTC Unix-time range. Birdeye's daily candles are
-/// checked against the UTC-day buckets containing these endpoints.
+/// Requested inclusive UTC Unix-time range. Candles are checked against the
+/// selected interval's UTC buckets containing these endpoints.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OhlcvWindow {
     pub chain: BirdeyeChain,
@@ -60,7 +86,7 @@ pub struct OhlcvWindow {
     pub time_to: i64,
 }
 
-/// Requested and observed boundaries for one returned daily-candle window.
+/// Requested and observed boundaries for one returned candle window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OhlcvTimeScope {
     pub requested_from: i64,
@@ -391,10 +417,28 @@ pub async fn fetch_window_price_high(
     api_key: &str,
     request: &OhlcvWindow,
 ) -> Result<Option<WindowPriceHigh>, BirdeyeError> {
+    fetch_candle_price_high(http, endpoint, api_key, request, CandleInterval::Day).await
+}
+
+/// Fetch a bounded USD price high at an explicit candle interval.
+/// Second-level requests are supported only on Solana. A candle bucket still
+/// does not establish transaction order or supply at an intrabucket trade.
+///
+/// # Errors
+/// Invalid request/interval, transport/status failure, oversized or malformed
+/// response, or an invalid candle.
+pub async fn fetch_candle_price_high(
+    http: &reqwest::Client,
+    endpoint: &str,
+    api_key: &str,
+    request: &OhlcvWindow,
+    interval: CandleInterval,
+) -> Result<Option<WindowPriceHigh>, BirdeyeError> {
     if api_key.is_empty()
         || !request.chain.valid_address(&request.address)
         || request.time_from < 0
         || request.time_to < request.time_from
+        || interval == CandleInterval::Second && request.chain != BirdeyeChain::Solana
     {
         return Err(BirdeyeError::InvalidRequest);
     }
@@ -404,7 +448,7 @@ pub async fn fetch_window_price_high(
         .header("x-chain", request.chain.header_value())
         .query(&[
             ("address", request.address.as_str()),
-            ("type", "1D"),
+            ("type", interval.label()),
             ("currency", "usd"),
             ("time_from", &request.time_from.to_string()),
             ("time_to", &request.time_to.to_string()),
@@ -431,19 +475,20 @@ pub async fn fetch_window_price_high(
     if items.is_empty() {
         return Ok(None);
     }
-    let from_bucket = request.time_from.div_euclid(DAY_SECONDS) * DAY_SECONDS;
-    let to_bucket = request.time_to.div_euclid(DAY_SECONDS) * DAY_SECONDS;
+    let seconds = interval.seconds();
+    let from_bucket = request.time_from.div_euclid(seconds) * seconds;
+    let to_bucket = request.time_to.div_euclid(seconds) * seconds;
     let mut previous = None;
     let mut maximum: Option<(ExactDecimal, i64)> = None;
     for candle in &items {
         if !request
             .chain
             .same_address(&candle.address, &request.address)
-            || candle.candle_type != "1D"
+            || candle.candle_type != interval.label()
             || candle.currency != "usd"
             || candle.unix_time < from_bucket
             || candle.unix_time > to_bucket
-            || candle.unix_time.rem_euclid(DAY_SECONDS) != 0
+            || candle.unix_time.rem_euclid(seconds) != 0
             || previous.is_some_and(|time| candle.unix_time <= time)
         {
             return Err(BirdeyeError::InvalidCandle);
@@ -568,6 +613,111 @@ mod tests {
 
     fn response(items: serde_json::Value) -> serde_json::Value {
         json!({"success": true, "data": {"items": items}})
+    }
+
+    #[test]
+    fn swap_fx_fixture_corroborates_exact_fdv_without_assuming_a_usdc_peg() {
+        let value: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/birdeye_swap_fx_validated_fdv_cases.json"
+        ))
+        .unwrap();
+        for row in value["cases"].as_array().unwrap() {
+            let supply = row["supply_tokens"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            let expected = row["expected_fdv_cents"].as_u64().unwrap();
+            let price = ExactDecimal::parse(row["provider_price_usd"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                price.fdv_cents_for_supply(supply),
+                Some(i64::try_from(expected).unwrap())
+            );
+            let quote = row["usdc_raw"].as_str().unwrap().parse::<u128>().unwrap();
+            let token = row["token_raw"].as_str().unwrap().parse::<u128>().unwrap();
+            let numerator = quote
+                .checked_mul(1_000_000_000_000)
+                .unwrap()
+                .checked_mul(supply)
+                .unwrap()
+                .checked_mul(100)
+                .unwrap();
+            let denominator = token.checked_mul(10_000).unwrap();
+            for rate in ["usdc_usd_low_1e4", "usdc_usd_high_1e4"] {
+                let converted = numerator
+                    .checked_mul(u128::from(row[rate].as_u64().unwrap()))
+                    .unwrap()
+                    .checked_div(denominator)
+                    .unwrap();
+                assert!(
+                    converted
+                        .abs_diff(u128::from(expected))
+                        .checked_mul(100)
+                        .unwrap()
+                        <= u128::from(expected)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn intraday_high_checks_interval_identity_and_bucket_alignment() {
+        const SOL: &str = "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump";
+        let fixture = include_str!("../tests/fixtures/birdeye_solana_minute_ohlcv.json");
+        let server = MockServer::start().await;
+        Mock::given(matchers::query_param("type", "1m"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(fixture, "application/json"))
+            .mount(&server)
+            .await;
+        let client = http_client().unwrap();
+        let endpoint = server.uri();
+        let mut window = request(BirdeyeChain::Solana, SOL);
+        window.time_to = 1_760_054_581;
+        let high =
+            fetch_candle_price_high(&client, &endpoint, "test", &window, CandleInterval::Minute)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(high.max_price_usd, "0.00012179988071982598");
+        assert_eq!(high.candle_at, 1_760_054_460);
+        assert_eq!(high.time_scope.last_candle_at, 1_760_054_520);
+        for (kind, time, expected) in [
+            ("1s", 1_760_054_461, true),
+            ("1m", 1_760_054_461, false),
+            ("1D", 1_760_054_460, false),
+        ] {
+            let server = MockServer::start().await;
+            let value = fixture
+                .replace("\"type\":\"1m\"", &format!("\"type\":\"{kind}\""))
+                .replace("1760054460", &time.to_string());
+            Mock::given(matchers::method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_raw(value, "application/json"))
+                .mount(&server)
+                .await;
+            let interval = if kind == "1s" {
+                CandleInterval::Second
+            } else {
+                CandleInterval::Minute
+            };
+            let result =
+                fetch_candle_price_high(&client, &server.uri(), "test", &window, interval).await;
+            if expected {
+                assert_eq!(result.unwrap().unwrap().candle_at, time);
+            } else {
+                assert!(matches!(result, Err(BirdeyeError::InvalidCandle)));
+            }
+        }
+        assert!(matches!(
+            fetch_candle_price_high(
+                &client,
+                &endpoint,
+                "test",
+                &request(BirdeyeChain::Base, BASE_ADDRESS),
+                CandleInterval::Second
+            )
+            .await,
+            Err(BirdeyeError::InvalidRequest)
+        ));
     }
 
     #[tokio::test]

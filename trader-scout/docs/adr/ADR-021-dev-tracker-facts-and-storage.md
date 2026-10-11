@@ -453,3 +453,28 @@ and `source` as the original value and window proof. A null incoming holder
 count also retains the previous holder count; observed maximum liquidity
 remains a high-water mark. Thus refresh time is not the observation time or
 provenance of a retained ATH value.
+
+## Amendment 14 (2026-10-11) — swap-event price corroboration with FX evidence
+
+For fixed-supply tokens covered by amendment13, a provider's USD candle high
+may also be independently corroborated by a successful, deployment-gated
+pool Swap event on the same UTC day. Validate the exact token/quote identity,
+decimal scales, signed nonzero opposite deltas, receipt/block/hash/log index,
+and all queried known-pool execution maxima. The ratio is a pool execution
+quote, not a wallet-net price or an attributed purchase. Keep post-swap
+square-root spot prices separate; hook/router fees may alter wallet flows.
+
+A non-USD quote requires an independent dated FX observation. For the three
+Base token/USDC cases, Kraken's closed daily USDC/USD low/high observations
+are used as a sensitivity range: converting the exact event ratio at both
+ends must stay within 1% of Birdeye's USD high. This is cross-source price
+corroboration, not a guaranteed bound on global FX or a fixed USDC peg.
+The value stored remains Birdeye's USD high times proven invariant supply;
+no synthetic on-chain USD price replaces it.
+
+Use source `birdeye-window-supply-swap-fx-validated-v1`, retain the provider
+window, FX and exact-event evidence, and leave `ath_at` null. The same guarded
+missing-only write policy applies. Coverage is the queried known pools and
+provider window; new canonical lifetime or wallet-PnL completeness is not
+claimed. Variable-supply cases remain unpromoted until the denominator and
+price time can be reconciled without guessing intrabucket order.
