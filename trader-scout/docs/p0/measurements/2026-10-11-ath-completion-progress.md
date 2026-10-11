@@ -90,6 +90,26 @@ Doppler pools без наблюдённых Swap в audited scope; это отс
 [RH protocol audit](2026-10-11-rh-doppler-empty-window-protocol-audit.md),
 [Base price-kind recheck](2026-10-11-base-prior10-boundary-price-recheck.md).
 
+Повторная read-only проверка живой БД в 19:29 UTC подтвердила те же
+430/249/3 absent; heartbeat был 5 секунд назад, open incidents 0, локальный
+Codex counter 581. Это показание локального quota ledger, не dashboard.
+В 19:30 UTC сформирован [реестр всех 249 пропусков](2026-10-11-remaining-ath-triage.md):
+для каждой строки указаны creator, holders, сохранённая ценовая информация,
+причина и требуемое доказательство. Unknown FDV выводится как null/пустое
+поле, внутренний нулевой sentinel не экспортируется как денежное значение.
+
+У Base 3607 [проверка состояния на May5](2026-10-11-base-3607-may5-carried-state.md)
+подтвердила уровень GeckoTerminal high в пределах 1%, но более ранний
+receipt-verified execution ratio в том же известном пуле выше примерно
+в 7.2 раза. [Итоговый сертификат](2026-10-11-base-3607-ath-eligibility-certificate.md)
+сохраняет этот конфликт и не разрешает numeric write по текущей политике.
+Корректность receipt/header, пяти Swap событий, exact price/FX fractions,
+подписи диагностического slot0-запроса и общего счёта 8 RPC attempts
+проверена независимо: `.scout-data/diagnostics/base-3607-ath-eligibility-certificate-2026-10-11/root-independent-check.json`.
+Этот follow-up не менял БД и не расходовал Codex, Birdeye, GeckoTerminal
+или Solana Tracker requests. Повторное restore не требуется: пять
+сохранённых numerical promotions и текущий пакет остаются теми же.
+
 ## Исторический checkpoint: 17:12 UTC
 
 На этом этапе было закрыто **427 пропусков** в зафиксированной выборке:
@@ -526,8 +546,9 @@ Standalone disk budget проекта 80–100 GB не является сумм
 [GitHub CI](../../../../.github/workflows/ci.yml) выполняет проверки и тесты;
 release workflow создан локально (commit `8787c5b`), но GitHub workflow ещё не
 запускался. **B8.4** остаётся в работе из-за непроверенных ценовых
-расхождений. B9.1 реализован локально; B9.2 ожидает упаковку полного текущего
-private state bundle и передачу на сервер.
+расхождений. B9.1 реализован локально. B9.2 завершён локально: текущий private
+state bundle собран и проверен; передача и развёртывание на сервере относятся
+к ещё открытой B9.
 
 ## Изменённые файлы
 
@@ -545,7 +566,7 @@ private state bundle и передачу на сервер.
 
 ## Зафиксированные файлы и проверки продолжения
 
-Коммиты: `be442ee`, `8787c5b`, `b21db97`, `974a015`, `54472c5`, `7bd0635`, `cbb5997`, `6c7170e`, `de3fd42`. Текущий
+Коммиты: `be442ee`, `8787c5b`, `b21db97`, `974a015`, `54472c5`, `7bd0635`, `cbb5997`, `6c7170e`, `de3fd42`, `0532d9c`, `9faca53`. Текущий
 код прошёл workspace fmt, Clippy all-targets/all-features с `-D warnings`,
 1 213 offline tests с отдельной `scout_test`, и release build `--locked`
 для всех четырёх CLI. Python/shell/Compose проверки переноса, Bookworm
@@ -600,6 +621,8 @@ Known-credential scan прошёл для публичных файлов и в�
 - `docs/p0/measurements/2026-10-11-base-prior10-boundary-price-recheck.md`
 - `docs/p0/measurements/2026-10-11-base-robinhood-ath-free-source-followup.md`
 - `docs/p0/measurements/2026-10-11-base-six-triage-67d5-gt-source-audit.md`
+- `docs/p0/measurements/2026-10-11-base-3607-ath-eligibility-certificate.md`
+- `docs/p0/measurements/2026-10-11-base-3607-may5-carried-state.md`
 - `docs/p0/measurements/2026-10-11-base-zora-14-boundary-audit.md`
 - `docs/p0/measurements/2026-10-11-current-top-runner-ath-gap-audit.md`
 - `docs/p0/measurements/2026-10-11-empty-cohort-v4-quote-route-audit.md`

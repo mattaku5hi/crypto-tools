@@ -1,5 +1,39 @@
 # Remaining ATH gaps: saved price evidence and holder gates
 
+## Current inventory — 19:30:49 UTC
+
+A fresh read-only database join finds **249 unknown FDV rows**, including
+three absent ATH rows, in the frozen 679-address cohort. It matches the
+250-row checkpoint below except for Base 67d5, whose independently validated
+provider-window value was written at 18:38 UTC. No other unknown row was
+removed or treated as zero. There are five Base rows with known holders at
+least 100, 86 rows with unknown holders, and 158 below 100; unknown holders
+still do not pass the runner gate.
+
+The current private [CSV gap register](../../../.scout-data/diagnostics/ath-remaining-triage-current-2026-10-11/remaining-249.csv)
+and [JSON evidence inventory](../../../.scout-data/diagnostics/ath-remaining-triage-current-2026-10-11/remaining-249.json)
+include each token's creator, holder status, saved price evidence, blocker,
+and next required proof. Unknown FDV serializes as JSON null or an empty CSV
+field, rather than the database's internal `codex-missing` sentinel. Holder
+and ATH status are refreshed from the database; cached price evidence retains
+its separate 18:18 UTC inventory timestamp. The JSON SHA-256 is
+`cb24e70420d4f5afc60a6b10d34c11eb487df4cd3d32c30f1a38fdc78209a1ea`;
+CSV SHA-256 is
+`0be7d571d9644d1727fbbcf8f0e736c1dd5200efbb830818a1d7cb166021dbd4`.
+Manifest: `.scout-data/diagnostics/ath-remaining-triage-current-2026-10-11/manifest.json`.
+No provider requests or database writes were made.
+
+Independent offline review of the five known-holder Base candidates finds
+no additional promotion under the current price policy. The separate
+[boundary-price audit](2026-10-11-base-prior10-boundary-price-recheck.md)
+preserves higher known execution or pool-state values, unmatched peak days,
+and unsupported quote routes. A lower matching provider price must not erase
+that evidence. Current snapshot, bundle, and exports are the verified
+18:39/18:42 checkpoint described in the
+[progress report](2026-10-11-ath-completion-progress.md). Next task: B8.4.
+
+## Historical checkpoint — 18:18:46 UTC
+
 At 18:18:46 UTC, a bounded read-only join of the frozen 679-address cohort
 still finds 250 unknown FDV rows, including three absent ATH rows. This
 inventory classifies saved evidence; it does not promote prices to FDV,
