@@ -132,7 +132,7 @@ are per-container ceilings, not reserved RAM. The measured clone benchmark
 restored 28M facts and derived one year with PostgreSQL hard-capped at 1 GiB,
 no swap, one CPU, and these PostgreSQL settings. Container start to restore
 completion took about 5m06s (the exact restore start was not recorded); the
-year derivation took 3m05.90s. The daemon peaked at 52,552 KiB (about 51.32 MiB)
+year derivation took 3m05.90s. The derive process peaked at 52,552 KiB (about 51.32 MiB)
 RSS; the cumulative PostgreSQL temp counter was about 21 GB, an upper bound on
 derive-only spill. See the
 [benchmark details](p0/measurements/2026-10-11-devtracker-compact-memory.md).
@@ -146,6 +146,11 @@ docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.compact.yml
 
 Omitting the second `-f` uses the unchanged base profile again; keep the named
 database volume to preserve its data.
+
+The Kubernetes examples use the same PostgreSQL settings and 1 GiB database /
+512 MiB daemon memory ceilings. Their database PVC requests 60 GiB for annual
+data, derive temp files and WAL headroom; this is separate from the total host
+disk budget and the storage of other services.
 
 ## 6. Order of work
 
