@@ -327,13 +327,15 @@ for qualified historical/forward supplements to Codex.
 
 ### Targeted EVM runner ATH backfill
 
-`dev-tracker backfill --chains <base|bsc|robinhood> --phases ath
+`dev-tracker backfill --chains <solana|base|bsc|robinhood> --phases ath
 --ath-runners-from-index`
 uses `config/dev-tracker.toml` (override with `--ath-index-config`) to read
 the current `top_runners` minimum ATH, maximum plausible ATH and minimum
-holders. It enumerates the selected Codex EVM mainnet index with those
-filters, then stores observations only for that chain's launch tokens already
-in PostgreSQL. Chain and network keep same-byte addresses isolated.
+holders. It enumerates the selected Codex mainnet index with those filters,
+then stores observations only for that chain's launch tokens already in
+PostgreSQL. Chain and network keep identical address strings isolated.
+Solana mints must decode from Base58 to 32 bytes and retain their case-sensitive
+spelling through lookup and storage.
 This mode has a separate cursor for each filter configuration and uses
 `--ath-requests` as its request-attempt budget. It makes no automatic retries.
 

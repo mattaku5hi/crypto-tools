@@ -139,7 +139,7 @@ pub struct RunnerAthIndexFilter {
     pub min_holders: i64,
 }
 
-/// All-time EVM provider-filtered runner candidate enumeration.
+/// All-time provider-filtered runner candidate enumeration.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunnerAthIndexReport {
     pub chain: String,
@@ -660,9 +660,9 @@ pub async fn backfill_base_runner_ath_from_index(
     backfill_runner_ath_from_index(db, codex_key, "base", filter, max_requests, now).await
 }
 
-/// Enumerate an EVM chain's all-time Codex index with the configured runner
+/// Enumerate a chain's all-time Codex index with the configured runner
 /// filters and store observations for already tracked launch tokens.
-/// Supported chains are Base, BSC, and Robinhood Chain.
+/// Supported chains are Solana, Base, BSC, and Robinhood Chain.
 ///
 /// # Errors
 /// Unsupported chain, provider, database, malformed cursor/response, or offset cap.
@@ -675,7 +675,7 @@ pub async fn backfill_runner_ath_from_index(
     now: i64,
 ) -> Result<RunnerAthIndexReport, AthError> {
     let Some(network) =
-        codex_network(chain).filter(|_| matches!(chain, "base" | "bsc" | "robinhood"))
+        codex_network(chain).filter(|_| matches!(chain, "solana" | "base" | "bsc" | "robinhood"))
     else {
         return Err(AthError::IndexChain(chain.to_string()));
     };
@@ -850,13 +850,13 @@ async fn backfill_runner_ath_from_index_at(
         let known = db.known_launch_tokens(chain, &tokens).await?;
         let known: std::collections::BTreeMap<String, String> = known
             .into_iter()
-            .map(|token| (token.to_ascii_lowercase(), token))
+            .map(|token| (runner_token_key(chain, &token), token))
             .collect();
         let observations: Vec<AthObservation> = rows
             .into_iter()
             .filter_map(|row| {
                 known
-                    .get(&row.token.to_ascii_lowercase())
+                    .get(&runner_token_key(chain, &row.token))
                     .map(|token| AthObservation {
                         token: token.clone(),
                         ..row
@@ -980,7 +980,7 @@ fn parse_runner_index_page(
             let token = result
                 .pointer("/token/address")
                 .and_then(Value::as_str)
-                .filter(|address| valid_evm_address(address))
+                .filter(|address| valid_runner_token_address(chain, address))
                 .ok_or_else(|| AthError::MalformedIndex("invalid token address".into()))?;
             let network = result
                 .pointer("/token/networkId")
@@ -1012,7 +1012,7 @@ fn parse_runner_index_page(
                 })?;
             Ok(AthObservation {
                 chain: chain.into(),
-                token: token.to_ascii_lowercase(),
+                token: runner_token_key(chain, token),
                 ath_fdv_cents: cents,
                 ath_at: optional_integer(result.pointer("/token/extrema/athFdvTimestamp"))?,
                 source: "codex-runner-index".into(),
@@ -1177,6 +1177,25 @@ fn valid_evm_address(value: &str) -> bool {
     value.len() == 42
         && value.starts_with("0x")
         && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_runner_token_address(chain: &str, value: &str) -> bool {
+    if chain == "solana" {
+        (32..=44).contains(&value.len())
+            && bs58::decode(value)
+                .into_vec()
+                .is_ok_and(|mint| mint.len() == 32)
+    } else {
+        valid_evm_address(value)
+    }
+}
+
+fn runner_token_key(chain: &str, value: &str) -> String {
+    if chain == "solana" {
+        value.to_string()
+    } else {
+        value.to_ascii_lowercase()
+    }
 }
 
 /// Observe up to `max_requests × 200` ATH candidate tokens of `chain`.
@@ -1623,6 +1642,45 @@ mod tests {
         assert!(matches!(parse(row), Err(AthError::MalformedIndex(_))));
     }
 
+    #[test]
+    fn solana_runner_index_parser_preserves_and_validates_base58_mints() {
+        assert!(!valid_runner_token_address("solana", &"1".repeat(45)));
+        assert!(!valid_runner_token_address("solana", &"1".repeat(31)));
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/codex_solana_runner_filter_mock.json"
+        ))
+        .unwrap();
+        let filter = RunnerAthIndexFilter {
+            min_ath_usd: 500_000,
+            max_ath_usd: 10_000_000_000,
+            min_holders: 100,
+        };
+        let parsed =
+            parse_runner_index_page(&fixture, 1_800, 200, filter, 1_399_811_149, "solana").unwrap();
+        assert_eq!(parsed[0].chain, "solana");
+        assert_eq!(
+            parsed[0].token,
+            "So11111111111111111111111111111111111111112"
+        );
+
+        let mut invalid_mint = fixture.clone();
+        invalid_mint["data"]["filterTokens"]["results"][0]["token"]["address"] =
+            json!("0x1111111111111111111111111111111111111111");
+        assert!(matches!(
+            parse_runner_index_page(&invalid_mint, 1_800, 200, filter, 1_399_811_149, "solana"),
+            Err(AthError::MalformedIndex(_))
+        ));
+        let mut wrong_network = fixture;
+        wrong_network["data"]["filterTokens"]["results"][0]["token"]["networkId"] = json!(8453);
+        assert!(matches!(
+            parse_runner_index_page(&wrong_network, 1_800, 200, filter, 1_399_811_149, "solana"),
+            Err(AthError::WrongRunnerIndexNetwork {
+                actual: 8453,
+                expected: 1_399_811_149
+            })
+        ));
+    }
+
     #[tokio::test]
     async fn runner_index_resumes_by_provider_rows_and_scopes_cursor_to_filter() {
         let Some(db) = isolated_db().await else {
@@ -1924,6 +1982,88 @@ mod tests {
             format!("{prefix}:robinhood-4663-runner-ath-holders-v1:500000:10000000000:100");
         assert!(db.cursor(&rh_cursor).await.unwrap().is_some());
         assert_ne!(bsc_cursor, rh_cursor);
+    }
+
+    #[tokio::test]
+    async fn solana_runner_index_db_mock_preserves_mint_case_in_lookup_and_storage() {
+        let Some(db) = isolated_db().await else {
+            return;
+        };
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/codex_solana_runner_filter_mock.json"
+        ))
+        .unwrap();
+        let token = fixture["data"]["filterTokens"]["results"][0]["token"]["address"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        db.insert_launches(&[Launch {
+            chain: "solana".into(),
+            token: token.clone(),
+            launchpad: "test".into(),
+            creator: format!("runner-solana-{}", std::process::id()),
+            created_block: 1,
+            created_at: 1,
+            tx_hash: format!("runner-solana-{}", std::process::id()),
+            source: "test".into(),
+        }])
+        .await
+        .unwrap();
+        let results = fixture["data"]["filterTokens"]["results"].clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(RunnerIndexPages {
+                rows: results,
+                calls: calls.clone(),
+            })
+            .mount(&server)
+            .await;
+        let filter = RunnerAthIndexFilter {
+            min_ath_usd: 500_000,
+            max_ath_usd: 10_000_000_000,
+            min_holders: 100,
+        };
+        let prefix = format!("runner-solana-cursor:{}", std::process::id());
+        let budget = format!("runner-solana-budget:{}", std::process::id());
+        let report = backfill_runner_ath_from_index_at(
+            &db,
+            "fixture-key",
+            "solana",
+            1_399_811_149,
+            filter,
+            2,
+            1_800_000_000,
+            &server.uri(),
+            IndexConfig {
+                page_size: 2,
+                max_offset: 10,
+                max_body: BASE_INDEX_MAX_BODY,
+                minimum_interval: Duration::ZERO,
+            },
+            &prefix,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert!(report.complete);
+        assert_eq!(report.chain, "solana");
+        assert_eq!(report.network_id, 1_399_811_149);
+        assert_eq!(report.tracked_rows, 1);
+        assert!(calls.lock().unwrap()[0].contains("network: [1399811149]"));
+        let db_pool = sqlx::PgPool::connect(&std::env::var("SCOUT_TEST_DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        let stored = sqlx::query(
+            "SELECT token, ath_fdv_cents FROM ath WHERE chain = 'solana' AND token = $1",
+        )
+        .bind(&token)
+        .fetch_one(&db_pool)
+        .await
+        .unwrap();
+        assert_eq!(stored.get::<String, _>("token"), token);
+        assert_eq!(stored.get::<i64, _>("ath_fdv_cents"), 138_171_100);
+        assert_ne!(token.to_ascii_lowercase(), token);
     }
 
     #[tokio::test]

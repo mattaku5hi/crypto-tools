@@ -307,9 +307,9 @@ ATH-only wake, disabled budget and unchanged 90-minute default watchdog.
 
 ## Amendment 10 (2026-10-11) — all-time filtered EVM runner enumeration
 
-The separate opt-in `backfill --chains <base|bsc|robinhood> --phases ath
---ath-runners-from-index` enumerates Codex Base, BSC, or Robinhood Chain
-mainnet tokens with
+The separate opt-in `backfill --chains <solana|base|bsc|robinhood> --phases ath
+--ath-runners-from-index` enumerates Codex mainnet tokens on Solana, Base,
+BSC, or Robinhood Chain with
 `athFdv >= top_runners.runner_ath_usd`,
 `athFdv <= top_runners.max_plausible_ath_usd`, and
 `holders >= top_runners.min_holders` from the selected
@@ -320,9 +320,11 @@ holder count and current index membership can change.
 
 The pass stores only rows matching already tracked tokens on the selected
 chain. Chain and Codex network are part of cursor identity and database
-intersection, so identical EVM address bytes on different networks remain
-separate assets. The Base cursor continues its existing namespace. The pass
-advances by raw provider page length,
+intersection, so identical address strings on different networks remain
+separate assets. Solana mint addresses are validated as 32-byte Base58 keys
+and retain their case-sensitive spelling in storage and lookup; EVM
+hex-address normalization remains lowercase. The Base cursor continues its
+existing namespace. The pass advances by raw provider page length,
 and checkpoints only after idempotent ATH writes. Unknown database membership
 does not change pagination or create a zero/missing ATH observation. Different
 thresholds use separate cursors. A full provider page at the 10,000 offset cap
@@ -338,7 +340,9 @@ category derivation remains independently scoped by `since_days` from tracked
 launch facts. Unknown or unindexed tokens remain unknown, never zero. The
 public five-row Base response fixture
 `crates/scout-devtracker/tests/fixtures/codex_base_runner_filter_2026-10-11.json`
-records the observed provider shape without credentials.
+records the observed provider shape without credentials. The synthetic
+Solana mock fixture `codex_solana_runner_filter_mock.json` checks the Base58
+mint shape without representing a live Codex response.
 
 This is a targeted candidate-enumeration aid for runner analysis. It does not
 change the runner definition, ATH policy, or statistical interpretation; the

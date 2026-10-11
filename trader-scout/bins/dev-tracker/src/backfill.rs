@@ -62,7 +62,7 @@ pub struct BackfillArgs {
     /// Enumerate positive Base ATH from Codex's first-pair index by closed UTC day.
     #[arg(long)]
     ath_from_index: bool,
-    /// Enumerate one EVM chain's tokens matching the configured runner ATH/holder gates.
+    /// Enumerate one supported chain's tokens matching runner ATH/holder gates.
     #[arg(long)]
     ath_runners_from_index: bool,
     /// Config whose top_runners thresholds define the provider index filter.
@@ -100,11 +100,11 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
             || chains.len() != 1
             || !matches!(
                 chains.first().map(String::as_str),
-                Some("base" | "bsc" | "robinhood")
+                Some("solana" | "base" | "bsc" | "robinhood")
             ))
     {
         return Err(
-            "--ath-runners-from-index requires exactly one EVM chain: base, bsc, or robinhood, and the ath phase".into(),
+            "--ath-runners-from-index requires exactly one supported chain: solana, base, bsc, or robinhood, and the ath phase".into(),
         );
     }
     if a.ath_from_index && a.ath_runners_from_index {
@@ -153,10 +153,9 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
             let key = std::env::var(CODEX_ENV)
                 .map_err(|_| format!("--ath-runners-from-index requires {CODEX_ENV}"))?;
             let as_of = now();
-            let chain = chains
-                .first()
-                .map(String::as_str)
-                .ok_or_else(|| "--ath-runners-from-index requires one EVM chain".to_string())?;
+            let chain = chains.first().map(String::as_str).ok_or_else(|| {
+                "--ath-runners-from-index requires one supported chain".to_string()
+            })?;
             let report = scout_devtracker::ath::backfill_runner_ath_from_index(
                 db,
                 key.trim(),
