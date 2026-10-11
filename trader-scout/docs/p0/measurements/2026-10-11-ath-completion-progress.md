@@ -1,12 +1,66 @@
 # ATH: закрытые пропуски и оставшееся покрытие — 2026-10-11
 
 Годовые launch/migration facts для настроенных источников сохранены, но полное
-числовое ATH-покрытие не завершено. На 12:03 UTC закрыты **425 пропусков** в
-зафиксированной выборке: 334 через Codex, 72 через проверенные окна Birdeye
-и 19 через GeckoTerminal с on-chain/FX подтверждением. Последнее продолжение
-добавило 80 числовых значений без ручных запросов к Codex.
-Это результат адресного заполнения, не новое доказательство полноты всех
+числовое ATH-покрытие не завершено.
+
+## Текущий аудит — 18:03 UTC
+
+В frozen cohort из 679 ранее unknown строк теперь **429 числовых значений**:
+334 Codex, 72 Birdeye, 19 GeckoTerminal и 4 Solana Tracker; осталось 250
+unknown, включая 3 строки без `ath`. Все 13
+BSC-пропусков закрыты. Это адресное заполнение, не доказательство полноты всех
 токенов сети или канонического lifetime ATH.
+
+Четыре Solana Tracker значения прошли независимую проверку цены и supply:
+8Cc — `$47,952.52`, PEC — `$65,651.14`, 5b2 — `$121,337.50`, 7DGZ —
+`$59,125.28`. У всех `ath_at=NULL`, provider recording window и market scope
+остаются неизвестными. 5b2 подтверждён ближайшим post-state за 1.990 секунды
+до времени provider peak; для 7DGZ подтверждён только уровень цены в той же
+секунде, порядок миллисекунд неизвестен. Сохранены holders 4, 7, 4 и 4; они
+ниже порога 100, поэтому эти четыре записи не меняют membership текущих
+runner lists. Методика двух последних проверок: [Solana price audit](2026-10-11-solana-five-low-burn-price-corroboration.md);
+source-price/supply history: [supply audit](2026-10-11-solana-low-burn-peak-supply-history.md).
+
+Schema-10 snapshot с четырьмя записями снят в 17:51:08 UTC и полностью
+восстановлен в изолированной PostgreSQL за 490.13 секунды при лимитах 1 GiB,
+1 CPU и без сети. Restore подтвердил 28,300,208 launches, 194,654 migrations,
+1,357,128 ATH rows, 941 cursors, 100 source observations, quota ledger 104,
+и cohort 679/429/250/3 absent. Manifest: `.scout-data/diagnostics/schema10-four-solana-snapshot-manifest.json`;
+[restore manifest](../../../.scout-data/diagnostics/schema10-four-solana-restore-manifest.json).
+Текущие 36 export files собраны в 18:05 UTC. После commit `7bd0635` собраны
+все четыре CLI release binaries; local isolated runtime smoke прошёл без
+provider calls, host ports или production writes и не был GitHub/Bookworm
+build ([manifest](../../../.scout-data/checks/2026-10-11/b9-2-portable-current/runtime-smoke-manifest.json)).
+Новый private bundle с этими данными проверен и извлечён: 39 files,
+2,842,306,560 bytes, SHA-256
+`defd186671ad8c9fc5a0fe23271d2fe6ab1b1a957ac2a1937796a33492dfe344`.
+Dump byte-identical восстановленному snapshot; config использует относительный
+путь `exports`, секреты передаются отдельно. Подробности и пути:
+[portable validation](2026-10-11-portable-deployment-validation.md).
+
+| Сеть | Числовые значения из исходных unknown | Осталось unknown |
+|---|---:|---:|
+| Base | 396 / 503 | 107 |
+| BSC | 13 / 13 | 0 |
+| Robinhood | 6 / 53 | 47 |
+| Solana | 14 / 110 | 96 |
+| Всего | 429 / 679 | 250 |
+
+Свежие файлы: `inputs/results/devtracker-exports-2026-10-11T180500Z/`.
+Топ по миграциям содержит SOL 413, BSC 75, Robinhood 12, Base 0;
+топ по раннерам — SOL 36, BSC 11, Robinhood 12, Base 12.
+Existing BSC wallet PnL отдельно проверен: 355 rows в
+`inputs/results/bsc_k2_human_pnl30d_by_pnl.{csv,json}`, сортировка exact-decimal
+realized USD DESC. Это exploratory known-subset PnL с per-wallet windows
+и coverage gaps, без применения `wallet-rank` quality gates.
+
+## Исторический checkpoint: 17:12 UTC
+
+На этом этапе было закрыто **427 пропусков** в зафиксированной выборке:
+334 через Codex, 72 через проверенные окна Birdeye, 19 через GeckoTerminal
+с on-chain/FX подтверждением и 2 через Solana Tracker после независимой
+сверки цены и доказательства supply. На этапе до 12:03 добавлены 80 значений;
+эта таблица сохраняет состояние до следующих двух Solana Tracker записей.
 
 ## Выборка и фактические записи
 
@@ -19,8 +73,8 @@ ATH-eligibility. Не все signer aliases и новые devs входят в �
 | Base | 503 | 324 | 56 Birdeye + 16 GeckoTerminal | 107 |
 | BSC | 13 | 0 | 10 Birdeye + 3 GeckoTerminal | 0 |
 | Robinhood | 53 | 0 | 6 | 47 |
-| Solana | 110 | 10 | 0 | 100 |
-| Всего | 679 | 334 | 91 | 254 |
+| Solana | 110 | 10 | 2 Solana Tracker | 98 |
+| Всего | 679 | 334 | 93 | 252 |
 
 Шесть ручных Codex attempts дали 334 числовых наблюдения. Из тех же
 сохранённых ответов дополнительно перенесены holders/liquidity для 281
@@ -28,7 +82,7 @@ unknown-строки без дополнительных API-вызовов. З�
 остаётся unknown; его внутренний нулевой sentinel не становится денежным нулём.
 Числовые нули и известные значения сохранены.
 
-Из оставшихся 254 unknown у 162 сохранённые holders ниже действующего
+На этапе 12:03 из 254 unknown у 162 сохранённые holders были ниже действующего
 порога 100. Ещё 92 требуют проверки для раннеров: Base 59, Robinhood 30,
 Solana 3. Это приоритизация, не закрытие ATH у остальных токенов. Порог
 holders, миграций, ликвидности, числа запусков и plausibility не менялся.
@@ -36,6 +90,57 @@ holders, миграций, ликвидности, числа запусков �
 В исходной выборке уже были три Base-токена без строки `ath`; проверка
 использует LEFT JOIN и сохраняет их как unknown. Отсутствие записи не
 считается числовым закрытием и не уменьшает исходный знаменатель679.
+Два последующих SOL-закрытия на этом checkpoint имеют 4 и 7 holders; тогда среди
+252 unknown оставались 160 с известными holders ниже100 и прежние92,
+требовавшие проверки. Четыре текущих Solana записи имеют holders 4, 7, 4 и 4,
+все ниже порога; runner membership от них не меняется.
+
+## Последующее продолжение: Solana Tracker, scope и перенос
+
+Все 100 оставшихся SOL получили точные source-price observations: 97 новых
+GET и 3 ранее сохранённых ответа. Учтённое использование приложения —
+104 запроса из выделенных250 в октябре; allowance владельца2500/month не
+приравнивается к нашему счётчику. У всех100 проверены birth receipts,
+отзыв mint authority и более поздний finalized supply snapshot; 49 минтов
+выпущены с1B и51 с2B, поэтому blanket1B denominator исключён.
+
+У 8Cc и PEC границы возможного FDV при максимальной цене поставщика
+округляются к одной сумме cents. Независимая сверка со стартовыми/ближайшими
+после миграции PumpSwap состояниями и датированным SOL/USD подтверждает
+обе цены в пределах1% при обоих концах minute FX. Записаны `$47 952.52`
+и `$65 651.14` под source
+`solana-tracker-window-supply-bounds-pool-fx-validated-v1`, `ath_at=NULL`;
+unknown provider window и market scope сохранены. Guards затронули только
+два `codex-missing` sentinel rows, holders/liquidity не изменены.
+Для PEC порядок первой продажи относительно vendor milliseconds неизвестен;
+это сверка близкой цены, не точное восстановление pool state в эти millis.
+[8Cc](2026-10-11-solana-8cc-migration-pool-spot-corroboration.md),
+[PEC](2026-10-11-solana-pec-migration-spot-corroboration.md).
+
+Дополнительная проверка актуальных топов выявила восемь eligible launches
+без ATH вне frozen679: шесть Base/Zora и два уже мигрированных SOL/Pump.
+Ещё142 absent-ATH rows сейчас не выбираются по migration/pending rules;
+их не прибавляем к историческому знаменателю. Все150 имеют holders=NULL.
+Это отдельный live scope, а frozen audit не доказывает полноту новых devs
+или всех signer aliases. [Аудит scope](2026-10-11-current-top-runner-ath-gap-audit.md).
+
+Base empty-window аудит обнаружил36 токенов со Swap в настроенном v4 scope
+и42 без наблюдавшихся там Swap. Для14 восстановлены indirect USD routes
+и event-time supply. Тринадцать Oct9 marks после почти полного выкупа
+990M market allocation экстремальны; на их основе ATH/раннеры не добавлялись.
+Для e465 получена проверяемая оценка `$112.60` на observed trade boundary,
+но independent candle history пуста и полный ATH не доказан.
+[14 boundary cases](2026-10-11-base-zora-14-boundary-audit.md).
+
+Полный schema10 snapshot на15:25 UTC восстановлен в отдельной БД: все100
+source observations, quota ledger104,941 курсор и прежние425/254 проверены.
+Он предшествует двум последующим FDV-записям. Из него собран и извлечён
+39-file private deployment bundle; daemon отдельно прошёл startup/export/
+clean-stop smoke из `/tmp` с internal network и без provider calls.
+[Перенос](2026-10-11-portable-deployment-validation.md).
+Workspace fmt, Clippy и1210 тестов прошли перед двумя guarded writes;
+код/evidence закреплены в54472c5, перенос — в974a015. B8.4 остаётся
+незавершённой задачей; эти результаты не заявляют полного annual/lifetime ATH.
 
 ## Birdeye: цены отдельно от FDV
 
@@ -379,12 +484,11 @@ Standalone disk budget проекта 80–100 GB не является сумм
 равняется 917 MiB private process memory; измеренный суммарный PSS был
 около 255 MiB в конкретном idle snapshot.
 
-[GitHub CI](../../../../.github/workflows/ci.yml) выполняет проверки и тесты,
-но отдельной release artifact/image сборки и публикации сейчас нет.
-Release binary собирался локально. Следующий task — **B8.4**, оставшиеся
-источники/ценовые расхождения; **B9.1** — release generation через GitHub CI,
-**B9.2** — переносимый deployment-каталог и private state bundle с manifest/SHA.
-Оба deployment task запланированы, пакет переноса ещё не реализован.
+[GitHub CI](../../../../.github/workflows/ci.yml) выполняет проверки и тесты;
+release workflow создан локально (commit `8787c5b`), но GitHub workflow ещё не
+запускался. **B8.4** остаётся в работе из-за непроверенных ценовых
+расхождений. B9.1 реализован локально; B9.2 ожидает упаковку полного текущего
+private state bundle и передачу на сервер.
 
 ## Изменённые файлы
 

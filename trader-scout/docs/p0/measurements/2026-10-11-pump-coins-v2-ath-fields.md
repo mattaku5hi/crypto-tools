@@ -1,0 +1,13 @@
+# Pump frontend coin endpoint ATH-field probe (2026-10-11)
+
+This read-only probe queried Pump's documented public `coins-v2` endpoint once for each requested mint, without authentication, retries, or API keys. Full request metadata, HTTP status, bounded raw bodies, SHA-256 digests, and observed fields are in `.scout-data/diagnostics/pump-official-coins-v2-ath-probe-2026-10-11/manifest.json` and adjacent response files.
+
+Pump's official `pump-fun-skills` documentation names `GET https://frontend-api-v3.pump.fun/coins-v2/{mint}` and gives a sample current response containing `market_cap`, `usd_market_cap`, and `total_supply`; it does not define `ath_market_cap` or `ath_market_cap_timestamp` (or their units, calculation, or historical coverage). See [official Pump skill documentation](https://github.com/pump-fun/pump-fun-skills/blob/main/create-coin/SKILL.md#L387-L415). The response observed here therefore supplies evidence of field presence and values, not an official semantic contract.
+
+For `8CcYviLTUTnWjoVpa2nW8bHS9mgqDumbqeVqUDfVpump`, the endpoint returned HTTP 200 and the mint matched. The body SHA-256 is `dc2574997a953e045151c0006141ca08ff2af27069451f426f60cd4f92a9d727`. The response included `ath_market_cap=47945.79785329106` and `ath_market_cap_timestamp=1771704111000` (2026-02-21 20:01:51 UTC), alongside current `market_cap=17.7466343977035`, `usd_market_cap=1514.59179182551`, quote mint `So11111111111111111111111111111111111111112`, and raw `total_supply=1000000000000000` / `total_supply_str` (1 billion tokens at six decimals, consistent with prior supply evidence).
+
+Interpreting the ATH field as USD and dividing by the documented on-chain 1-billion-token supply gives `$0.00004794579785329106/token`. This is numerically close to the existing independent ST observation `$0.000047952524582282125/token` (about 0.014% lower); the endpoint timestamp is about 1.8 seconds before the ST observation timestamp. That alignment is suggestive but does not establish the field's currency, whether it is a spot price times supply, its exact timestamp semantics, or complete lifetime coverage. It does not resolve the independent Birdeye disagreement. Treat this as source-only corroboration under an explicit USD interpretation hypothesis, not as a validated price or FDV and not as an ATH promotion.
+
+For `PECazcZMchmn86TfUVDVKeAtVaiKSJFQCZ9BvZfh3km`, the same endpoint returned HTTP 404. The raw response SHA-256 is `df109e1c816d66988c70ecf572a05d3d542be96a05bcfcdb42666b0cd371d4ca`; there is no ATH observation for this mint from this probe.
+
+No other endpoint variants were queried. No database, production code, or provider state was changed.
