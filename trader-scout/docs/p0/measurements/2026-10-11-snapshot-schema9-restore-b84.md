@@ -1,0 +1,11 @@
+# Snapshot restore verification: schema 9
+
+The custom PostgreSQL archive devtracker-2026-10-11T120817Z.dump passed its SHA-256 sidecar check and its full pg_restore --list output matched the saved TOC list byte-for-byte. A full restore from stdin into disposable PostgreSQL 16.15 completed with exit status 0 in 8m17.64s. The container had no network or published ports and used a 1 GiB memory limit, no swap, 512 MiB shared memory, one CPU, shared_buffers=128MB, maintenance_work_mem=128MB, work_mem=8MB, max_parallel_workers_per_gather=0, and JIT disabled. The restore log reports host-side Docker exec max RSS of 29,900 KiB; cgroup peak memory was 1,073,745,920 bytes, with zero OOM events.
+
+The Docker-exec RSS is the host client measurement, not PostgreSQL memory. The cgroup peak includes file cache and is not a PostgreSQL RSS figure. The archive contains2,839,741,603 bytes; SHA-256 is `dfe620f46d5884cc89796d6f0b1f75f9e4b6f867a2300384a44ad13d41afba08`. Capture started12:08:17UTC; the separate12:03 export is another live database view, not the same immutable transaction snapshot.
+
+The restored schema_migrations table contains versions 1–9. All required tables are present, including schema-9 ath_price_windows (228 rows). The frozen 679-address baseline left join yields 425 numeric, 254 unknown, 92 potential among unknown, and 3 absent ATH rows, matching the saved checkpoint. Each of the four prior validated ATH values matches the snapshot’s cents, source, observation time, created block, and ath_at=NULL; each corresponding schema-9 price-window row also matches its input record.
+
+The restore query captured the snapshot’s 941 cursor rows, including ATH discovery, backfill and Codex quota cursors, plus daemon state. These values are read from the restored snapshot; no mutable live-state comparison is claimed. Full restore logs, query outputs, archive list copy and container evidence are under .scout-data/diagnostics/snapshot-schema9-restore-b84-*; the summary manifest is .scout-data/diagnostics/snapshot-schema9-restore-b84-manifest.json.
+
+The disposable container and its dedicated volume were removed after verification. The production container and volume were untouched. Overall progress and export scope are in the [ATH completion report](2026-10-11-ath-completion-progress.md); validation does not close the254 remaining numerical gaps.
