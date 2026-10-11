@@ -1,0 +1,61 @@
+{
+  "scope": "Exact two-hop SMOGGY/NVDA and NVDA/USDG pool execution, then same-UTC-day Kraken USDG/USD low/high. Window-local price corroboration only; not all-pool or lifetime ATH completeness.",
+  "target_token": "0xbdb0ce555c126c1868d04e439aca019c1a1ffee1",
+  "target_pool": "0x8415358f75e4ad6bf6483baee586709f56ecb832e472e3d68d8f9447adb09936",
+  "supply_tokens": "1000000000",
+  "target_token_decimals": 18,
+  "target_nvda_raw": "444293424717033",
+  "target_token_raw": "9701813616465735219516",
+  "target_block": "0x2cc0ffe",
+  "target_block_number": 46927870,
+  "target_timestamp": 1787781746,
+  "birdeye_price_usd": "0.000010037876121664267",
+  "expected_fdv_cents": 1003787,
+  "quote_asset": "USDG",
+  "quote_notional_units": "USDG",
+  "usdg_decimals": 6,
+  "nvda_decimals": 18,
+  "usdg_usd_kraken": {
+    "pair": "USDGUSD",
+    "utc_day": "2026-08-26",
+    "timestamp": 1787702400,
+    "low_1e4": 9999,
+    "high_1e4": 10001
+  },
+  "nvda_usdg_pool": "0xd4EB21209C4D6093f80B5b84f5C45cc093EA14a3",
+  "stock_swaps": [
+    {
+      "position": "before",
+      "block": "0x2cc0ffb",
+      "block_number": 46927867,
+      "transaction_index": "0x3",
+      "timestamp": 1787781745,
+      "usdg_raw": "48743613",
+      "nvda_raw": "222601496439278724",
+      "quote_notional_usdg": "48.743613"
+    },
+    {
+      "position": "after_1",
+      "block": "0x2cc1003",
+      "block_number": 46927875,
+      "transaction_index": "0x4",
+      "timestamp": 1787781746,
+      "usdg_raw": "29569025",
+      "nvda_raw": "135035833331963918",
+      "quote_notional_usdg": "29.569025"
+    },
+    {
+      "position": "after_2",
+      "block": "0x2cc1003",
+      "block_number": 46927875,
+      "transaction_index": "0x5",
+      "timestamp": 1787781746,
+      "usdg_raw": "29162858",
+      "nvda_raw": "133181331594850372",
+      "quote_notional_usdg": "29.162858"
+    }
+  ],
+  "trade_source_scope": "Nearest cached pre-target pool trade and first two post-target trades; exact event deltas, not an orderbook oracle.",
+  "target_log_index": 15,
+  "target_transaction_hash": "0x2d2c053158a83cb5af079355850fecf6a29bf929e18077a53fcc852c9c05d51f"
+}

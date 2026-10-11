@@ -531,3 +531,47 @@ under `birdeye-window-supply-swap-fx-validated-v1`; retain the contrary GT
 window and timing gaps. Golden
 `birdeye_bsc_usd1_daily_fx_validated_fdv_case.json` checks exact FDV and both
 FX steps. The unchanged1% check applies to both ends, without assumed pegs.
+
+Five additional Base Clanker cases follow the same alternative-window policy
+with verified invariant 100B supply and registry-gated Uniswap v4 pools.
+Historical USDC decimals at each successful peak block are6; token decimals
+are18, requiring an exact10^12 ratio adjustment. Both dated Kraken USDC/USD
+daily endpoints agree within1% of the GT maximum over all returned page1
+pool histories. Quote notionals are small, including3 raw USDC units; retain
+this limitation rather than equating FDV with executable market depth.
+Golden `geckoterminal_base_swap_fx_validated_fdv_cases.json` records the
+decimal conversion, floor-to-cents values, known-pool maxima and day ties.
+For an equal maximum appearing on multiple UTC days, corroboration may select
+the winning day that contains the independently verified Swap; the original
+vendor rows and any Birdeye day disagreement remain intact. This provides
+a source-window high day, not a precise ATH timestamp; `ath_at` stays null.
+
+## Amendment 16 (2026-10-11) — stock-token quote with traded cross conversion
+
+The remaining Robinhood SMOGGY3 observation uses NVDA as its pool quote.
+An equity ticker or a stale oracle answer is insufficient USD evidence.
+Validate the exact stock-token contract, its decimals and raw-unit multiplier
+at the target block. Independently identify its NVDA/USDG v3 pool by official
+factory deployment, historical token0/token1/fee/decimals and factory lookup;
+verify source/runtime and successful trade receipts. This is manual FX
+evidence, not admission of a new DEX to the wallet decoder registry.
+
+Use actual opposite-delta NVDA/USDG executions before and after the target
+Swap, each within five minutes in canonical block order. This case has one
+trade one second before and two trades in a later block at the same timestamp
+second. Verify exact USDG identity against Paxos's official deployment table
+and historical OFT token/unit getters. Convert all three observed execution
+ratios with Kraken's closed, positive-volume USDG/USD daily low/high; every
+endpoint must agree with the Birdeye high within1%. Do not assume a peg or
+substitute the stale stock/USDG oracle. Both quote legs use exact arithmetic;
+the USDG6/NVDA18 ratio requires10^12 normalization.
+
+Retain the original Birdeye high times proven invariant1B token supply,
+`ath_at=NULL` and source
+`birdeye-window-supply-stock-swap-fx-validated-v1`. Apply missing-only guards
+and preserve the nearby trade, source, identity and daily FX proofs. Golden
+`birdeye_robinhood_stock_quote_swap_fx_validated_fdv_case.json` checks the
+two quote legs, canonical time bracket, both FX endpoints and FDV floor.
+This corroborates a provider-window USD level in the identified pools;
+the trades are not simultaneous fiat executions, a guaranteed global FX
+bound, a redemption guarantee, or a canonical lifetime ATH proof.

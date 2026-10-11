@@ -705,6 +705,88 @@ mod tests {
     }
 
     #[test]
+    fn robinhood_stock_quote_fixture_checks_two_hop_usdg_fx_bracket() {
+        use alloy_primitives::U256;
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/birdeye_robinhood_stock_quote_swap_fx_validated_fdv_case.json"
+        ))
+        .unwrap();
+        assert_eq!(row["target_token_decimals"].as_u64(), Some(18));
+        assert_eq!(row["nvda_decimals"].as_u64(), Some(18));
+        assert_eq!(row["usdg_decimals"].as_u64(), Some(6));
+        assert_eq!(row["quote_notional_units"], "USDG");
+        assert_eq!(row["usdg_usd_kraken"]["pair"], "USDGUSD");
+
+        let supply = row["supply_tokens"]
+            .as_str()
+            .unwrap()
+            .parse::<u128>()
+            .unwrap();
+        let expected = row["expected_fdv_cents"].as_u64().unwrap();
+        let price = ExactDecimal::parse(row["birdeye_price_usd"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            price.fdv_cents_for_supply(supply),
+            Some(i64::try_from(expected).unwrap())
+        );
+
+        let target_block = row["target_block_number"].as_u64().unwrap();
+        let target_at = row["target_timestamp"].as_i64().unwrap();
+        let swaps = row["stock_swaps"].as_array().unwrap();
+        assert_eq!(swaps.len(), 3);
+        let target_nvda = row["target_nvda_raw"]
+            .as_str()
+            .unwrap()
+            .parse::<U256>()
+            .unwrap();
+        let target_token = row["target_token_raw"]
+            .as_str()
+            .unwrap()
+            .parse::<U256>()
+            .unwrap();
+        for (index, swap) in swaps.iter().enumerate() {
+            let block = swap["block_number"].as_u64().unwrap();
+            if index == 0 {
+                assert!(block < target_block);
+            } else {
+                assert!(block > target_block);
+            }
+            assert!(swap["timestamp"].as_i64().unwrap().abs_diff(target_at) <= 300);
+
+            let usdg = swap["usdg_raw"].as_str().unwrap().parse::<U256>().unwrap();
+            let stock_nvda = swap["nvda_raw"].as_str().unwrap().parse::<U256>().unwrap();
+            let numerator = target_nvda
+                .checked_mul(usdg)
+                .unwrap()
+                .checked_mul(U256::from(1_000_000_000_000_u64))
+                .unwrap()
+                .checked_mul(U256::from(supply))
+                .unwrap()
+                .checked_mul(U256::from(100))
+                .unwrap();
+            let denominator = target_token
+                .checked_mul(stock_nvda)
+                .unwrap()
+                .checked_mul(U256::from(10_000))
+                .unwrap();
+            for rate in ["low_1e4", "high_1e4"] {
+                let converted = numerator
+                    .checked_mul(U256::from(row["usdg_usd_kraken"][rate].as_u64().unwrap()))
+                    .unwrap()
+                    .checked_div(denominator)
+                    .unwrap();
+                let expected = U256::from(expected);
+                let difference = if converted >= expected {
+                    converted.checked_sub(expected).unwrap()
+                } else {
+                    expected.checked_sub(converted).unwrap()
+                };
+                assert!(difference.checked_mul(U256::from(100)).unwrap() <= expected);
+            }
+        }
+    }
+
+    #[test]
     fn geckoterminal_fx_fixture_preserves_two_quote_conversions() {
         use alloy_primitives::U256;
 
@@ -749,6 +831,130 @@ mod tests {
                     expected.checked_sub(converted).unwrap()
                 };
                 assert!(difference.checked_mul(U256::from(100)).unwrap() <= expected);
+            }
+        }
+    }
+
+    #[test]
+    fn geckoterminal_base_fixture_checks_fx_event_day_pool_maxima_and_ties() {
+        use alloy_primitives::U256;
+
+        let value: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/geckoterminal_base_swap_fx_validated_fdv_cases.json"
+        ))
+        .unwrap();
+        for row in value["cases"].as_array().unwrap() {
+            assert_eq!(row["chain_id"].as_u64(), Some(8453));
+            assert_eq!(row["token_decimals"].as_u64(), Some(18));
+            assert_eq!(row["usdc_decimals"].as_u64(), Some(6));
+            assert_eq!(row["supply_tokens"].as_str(), Some("100000000000"));
+            assert_eq!(
+                row["quote_notional_quality"].as_str(),
+                Some("small_quote_notional_observation")
+            );
+            assert!(row["all_listed_page1_pools_scanned"].as_bool().unwrap());
+
+            let supply = row["supply_tokens"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            let expected = row["expected_fdv_cents"].as_u64().unwrap();
+            let provider_price =
+                ExactDecimal::parse(row["gt_event_day_high_usd"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                provider_price.fdv_cents_for_supply(supply),
+                Some(i64::try_from(expected).unwrap())
+            );
+
+            // USDC raw has 6 decimals and the token has 18, so the exact
+            // price ratio carries a 10^12 decimal adjustment.
+            let quote = row["usdc_raw"].as_str().unwrap().parse::<U256>().unwrap();
+            let token = row["token_raw"].as_str().unwrap().parse::<U256>().unwrap();
+            let numerator = quote
+                .checked_mul(U256::from(1_000_000_000_000_u64))
+                .unwrap()
+                .checked_mul(U256::from(supply))
+                .unwrap()
+                .checked_mul(U256::from(100))
+                .unwrap();
+            let denominator = token.checked_mul(U256::from(10_000)).unwrap();
+            for rate in ["usdc_usd_low_1e4", "usdc_usd_high_1e4"] {
+                let converted = numerator
+                    .checked_mul(U256::from(row[rate].as_u64().unwrap()))
+                    .unwrap()
+                    .checked_div(denominator)
+                    .unwrap();
+                let expected = U256::from(expected);
+                let difference = if converted >= expected {
+                    converted.checked_sub(expected).unwrap()
+                } else {
+                    expected.checked_sub(converted).unwrap()
+                };
+                assert!(difference.checked_mul(U256::from(100)).unwrap() <= expected);
+            }
+
+            let event_at = row["event_timestamp"].as_i64().unwrap();
+            let event_day = event_at.div_euclid(86_400) * 86_400;
+            assert_eq!(row["event_utc_day_timestamp"].as_i64(), Some(event_day));
+            let day_rows = row["gt_event_day_pool_highs"].as_array().unwrap();
+            assert!(!day_rows.is_empty());
+            let mut highest: Option<ExactDecimal> = None;
+            for candle in day_rows {
+                assert_eq!(candle["timestamp"].as_i64(), Some(event_day));
+                let price = ExactDecimal::parse(candle["high_usd"].as_str().unwrap()).unwrap();
+                highest = Some(match highest {
+                    Some(current) => {
+                        let scale = current.scale.max(price.scale);
+                        let scaled = |value: ExactDecimal| {
+                            let mut coefficient = U256::from(value.coefficient);
+                            for _ in value.scale..scale {
+                                coefficient = coefficient.checked_mul(U256::from(10)).unwrap();
+                            }
+                            coefficient
+                        };
+                        if scaled(price) > scaled(current) {
+                            price
+                        } else {
+                            current
+                        }
+                    }
+                    None => price,
+                });
+            }
+            assert_eq!(
+                highest.unwrap().to_plain_string(),
+                ExactDecimal::parse(row["gt_event_day_high_usd"].as_str().unwrap())
+                    .unwrap()
+                    .to_plain_string()
+            );
+            let known_pools = row["known_page1_pool_count"].as_u64().unwrap();
+            assert_eq!(row["gt_scanned_pool_count"].as_u64(), Some(known_pools));
+            assert_eq!(
+                u64::try_from(day_rows.len()).unwrap()
+                    + u64::try_from(
+                        row["gt_event_day_pools_without_candle"]
+                            .as_array()
+                            .unwrap()
+                            .len()
+                    )
+                    .unwrap(),
+                known_pools
+            );
+
+            if row["token"].as_str() == Some("0xf3ad70951949ce317144c699fbc3f3dd6af68b07") {
+                let tie_rows = row["gt_window_max_tie_rows"].as_array().unwrap();
+                assert_eq!(tie_rows.len(), 2);
+                let event_day_ties: Vec<_> = tie_rows
+                    .iter()
+                    .filter(|tie| tie["timestamp"].as_i64() == Some(event_day))
+                    .collect();
+                assert_eq!(event_day_ties.len(), 1);
+                assert_eq!(event_day_ties[0]["high_usd"], row["gt_event_day_high_usd"]);
+                assert_ne!(
+                    row["birdeye_peak_day"].as_str(),
+                    row["event_utc_day"].as_str()
+                );
             }
         }
     }
