@@ -50,3 +50,9 @@ ARM build. Live provider credentials are not required by this workflow.
 The workflow has not yet been run on GitHub. Local packaging checks used the
 workspace's existing release binaries; they do not attest a release build of
 the current commit.
+
+For a portable host directory and separate verified state bundle, see
+[portable deployment](deploy/portable/README.md). The release archive now
+contains the runtime template and verifier; database/config/export state and
+the separately supplied mode-0600 `deploy/.env` stay outside the public
+release.

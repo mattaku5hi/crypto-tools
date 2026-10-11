@@ -42,17 +42,28 @@ mkdir -p "$stage/$package_name/bin"
 for binary in dev-tracker buyer-intersect wallet-rank wallet-stats; do
   install -m 0755 "$binary_dir/$binary" "$stage/$package_name/bin/$binary"
 done
+mkdir -p "$stage/$package_name/deploy/portable" "$stage/$package_name/config"
+install -m 0644 deploy/portable/compose.yml "$stage/$package_name/compose.yml"
+install -m 0644 deploy/portable/compose.compact.yml "$stage/$package_name/compose.compact.yml"
+install -m 0644 deploy/portable/runtime.Dockerfile "$stage/$package_name/deploy/portable/runtime.Dockerfile"
+install -m 0755 deploy/portable/prepare-runtime.sh "$stage/$package_name/deploy/portable/prepare-runtime.sh"
+install -m 0644 deploy/portable/.dockerignore "$stage/$package_name/.dockerignore"
+install -m 0644 deploy/.env.example "$stage/$package_name/deploy/.env.example"
+install -m 0644 deploy/portable/README.md "$stage/$package_name/deploy/portable/README.md"
+install -m 0644 config/dev-tracker.example.toml "$stage/$package_name/config/dev-tracker.example.toml"
+install -m 0644 deploy/state_bundle.py "$stage/$package_name/deploy/state_bundle.py"
 
-python3 - "$stage/$package_name/manifest.json" "$stage/$package_name/dependency-licenses.json" "$version" "$commit" "$tag" "$target" "$stage/$package_name/bin" <<'PY'
+python3 - "$stage/$package_name/manifest.json" "$stage/$package_name/dependency-licenses.json" "$version" "$commit" "$tag" "$target" "$stage/$package_name/bin" "$stage/$package_name" <<'PY'
 import hashlib
 import json
 import pathlib
 import subprocess
 import sys
 
-manifest_path, licenses_path, version, commit, tag, target, binary_dir = sys.argv[1:]
+manifest_path, licenses_path, version, commit, tag, target, binary_dir, package_root = sys.argv[1:]
 names = ("dev-tracker", "buyer-intersect", "wallet-rank", "wallet-stats")
 binary_root = pathlib.Path(binary_dir)
+package_root = pathlib.Path(package_root)
 metadata = json.loads(
     subprocess.check_output(
         ["cargo", "metadata", "--locked", "--format-version", "1"], text=True
@@ -89,6 +100,18 @@ for package_id in sorted(external_ids, key=lambda item: (packages[item]["name"],
     license_inventory.append(entry)
 license_bytes = (json.dumps({"schema_version": 1, "packages": license_inventory}, indent=2, sort_keys=True) + "\n").encode()
 pathlib.Path(licenses_path).write_bytes(license_bytes)
+runtime_templates = {}
+template_paths = [package_root / ".dockerignore", package_root / "compose.yml", package_root / "compose.compact.yml"]
+template_paths += sorted((package_root / "deploy").rglob("*"))
+template_paths += sorted((package_root / "config").rglob("*"))
+for path in template_paths:
+    if path.is_file():
+        relative = path.relative_to(package_root).as_posix()
+        content = path.read_bytes()
+        runtime_templates[relative] = {
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "bytes": len(content),
+        }
 manifest = {
     "schema_version": 1,
     "project": "trader-scout",
@@ -101,6 +124,7 @@ manifest = {
     "cargo_lock_sha256": hashlib.sha256(pathlib.Path("Cargo.lock").read_bytes()).hexdigest(),
     "dependency_licenses_sha256": hashlib.sha256(license_bytes).hexdigest(),
     "binaries": {},
+    "runtime_templates": runtime_templates,
 }
 for name in names:
     content = (binary_root / name).read_bytes()
