@@ -53,6 +53,9 @@ flowchart LR
   subgraph Dev tracker
     LP[Launchpad события] --> F[PostgreSQL факты]
     CP[Codex ATH] --> F
+    PH[Birdeye / Solana Tracker цены] --> PO[Отдельные ценовые наблюдения]
+    PO --> V[Проверка supply и цены]
+    V --> F
     F --> Q[Категории из текущего TOML]
     Q --> X[Файлы / Telegram]
   end
@@ -213,6 +216,8 @@ PostgreSQL — отдельный серверный процесс, котор�
 | `migrations` | PK `(chain, token)`; факт миграции launchpad, время/блок и pool. |
 | `ath` | PK `(chain, token)`; последняя принятая ATH observation в USD cents, nullable время, source, holders и максимальная увиденная ликвидность. |
 | `ath_price_windows` | Наблюдённый максимум цены Birdeye в USD за токен, границы запроса и свечей. Цена хранится точной десятичной строкой; пустая серия — `NULL`. В ATH FDV проходят только отдельно проверенные случаи с доказанным supply и независимой сверкой цены; остальные окна остаются отдельными ценовыми данными. |
+| `ath_price_observations` | PK `(chain, token, source)`; точные ценовые экстремумы Solana Tracker, отдельные provider timestamp/pool/market-cap поля, observation time и hash raw-ответа. Scope записанной поставщиком истории неизвестен; автоматического переноса этих полей в `ath` нет. |
+| `provider_request_budgets` | PK `(provider, quota_group, billing_period)`; месячная доля запросов приложения и резервирование каждой попытки до HTTP. Смена ключа не сбрасывает счётчик; внешние запросы аккаунта этому журналу неизвестны. |
 | `cursors` | Позиция каждого источника для продолжения загрузки; формат позиции принадлежит конкретному источнику. |
 | `address_kinds` | Контракт/EOA и sampled ownership facts; один signer у всех проб не доказывает универсальное владение. |
 | `dev_histories` | Чекпоинт/счётчик атрибуции истории запуска для создателя; это не сырая история всех его транзакций. |
@@ -231,6 +236,15 @@ rollback отменяет. Здесь миграции схемы защищен
 PostgreSQL dev facts нет общего журнала rollback для любого глубокого reorg;
 используются ограничения finality/overlap источника. Число блока/slot само
 по себе не доказывает окончательность.
+
+Цена ATH и ATH FDV — разные данные. Если токены сжигаются, самая высокая
+цена может приходиться на меньший supply, а максимум FDV — на более раннюю
+сделку. Поэтому цена × текущий supply не восстанавливает исторический FDV.
+Для минтов без права допечатки код может посчитать точные границы через
+проверенные начальный и текущий supply. Если обе границы после округления
+вниз дают одну сумму в центах, арифметический результат определён; качество
+цены и полнота окна всё равно проверяются отдельно. Примеры и границы
+метода зафиксированы в [ADR-021, amendment 18](adr/ADR-021-dev-tracker-facts-and-storage.md).
 
 Таблица `cursors` приложения — не cursor SQL. SQL cursor обычно означает серверную итерацию/удержание соединения для обхода результата. Здесь `cursors.position` — checkpoint приложения между независимыми запусками: например, до какого блока источник устойчиво обработан. При чтении больших выборок используйте ограниченные страницы и индексы; не загружайте все миллионы строк в `Vec` только ради удобства.
 
@@ -286,7 +300,7 @@ Wallet analytics запускается как batch: CLI валидирует i
 4. `crates/scout-normalize/src/`: что именно считается операцией и как назначается участник.
 5. [`crates/scout-ledger/src/fifo.rs`](../crates/scout-ledger/src/fifo.rs), затем wallet-specific pipeline в `crates/scout-engine/src/`: lots, basis и отчётные статусы.
 6. `bins/wallet-stats/src/main.rs`, затем `wallet-rank`/`buyer-intersect`: парсинг аргументов, вызов библиотеки и output.
-7. Отдельно для базы: [`crates/scout-devdb/src/lib.rs`](../crates/scout-devdb/src/lib.rs), все миграции `0001`–`0009`, затем [`bins/dev-tracker/src/main.rs`](../bins/dev-tracker/src/main.rs) и [`docs/DEV-TRACKER.md`](DEV-TRACKER.md).
+7. Отдельно для базы: [`crates/scout-devdb/src/lib.rs`](../crates/scout-devdb/src/lib.rs), все миграции `0001`–`0010`, затем [`bins/dev-tracker/src/main.rs`](../bins/dev-tracker/src/main.rs) и [`docs/DEV-TRACKER.md`](DEV-TRACKER.md).
 
 Удобные команды для изучения: `cargo metadata --no-deps`, `cargo tree -p scout-devdb`, `cargo tree -e features -p scout-sdk`, затем `rg` по имени публичного типа. `cargo tree` показывает, что реально входит в граф; архитектурная картинка сама по себе этого не доказывает.
 

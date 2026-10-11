@@ -39,6 +39,7 @@
 - После ATH runner-index backfill проверять signer gaps: старые немигрированные кандидаты вне migrated/recent очереди `DevDb::shared_launches_without_signer` (`crates/scout-devdb/src/lib.rs`).
 - A slow independent ATH cadence must not extend the facts progress watchdog: `bins/dev-tracker/src/main.rs` still wakes for 30-minute facts / 60-minute derivation.
 - Codex `createdAt` filter and returned date can disagree: `crates/scout-devtracker/src/ath.rs` retains valid ATH with date-gap provenance; completed index pagination is not verified first-pair membership (ADR-021 amendment 8).
+- GeckoTerminal public OHLCV может вернуть 401 для истории старше 180 дней при успешной pool metadata; не считать это transport failure и не повторять запрос без изменения entitlement (measurement 2026-10-11, Solana cent-bound audit).
 - `backfill --days` в `bins/dev-tracker/src/backfill.rs` переводит дни в приблизительный block span: проверять timestamp нижнего блока и указывать фактический scope; BSC может читать запас истории, `since_days` ограничивает период деривации отдельно.
 - Sourcify source audits: v2 API — `https://sourcify.dev/server/v2/contract/{chain_id}/0x{address}?fields=all`; HTML404 с `repo.sourcify.dev` или адресом без `0x` не означает отсутствие verified source.
 - GeckoTerminal v4/native-ETH audits: `token=quote` в проверенном ответе дал ETH/USD; выбирать точный contract address и сверять priced-token identity/units (`docs/p0/measurements/2026-10-11-base-clanker-prior10-followup.md`).
