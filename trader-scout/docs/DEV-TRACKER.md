@@ -160,6 +160,15 @@ lockfile. Offline checks and Debian Bookworm runtime smoke precede versioned
 archives, checksums and manifests. Manual workflow runs produce Actions
 artifacts; `trader-scout/v*` tags generate GitHub Releases. See `docs/TICKETS.md`.
 
+Planned **B9.2** packages a runtime directory and a separate private state
+bundle with relative-path checksums, schema/software versions and restore
+verification; secrets are supplied separately as `deploy/.env`. Today the
+Compose example still builds from the repository checkout, reads root
+`../.env`, and mounts sibling config/exports directories. PostgreSQL is already
+in a persistent named volume, and its dump carries facts and cursors; config,
+exports and proof files are not included by the database dump script. The
+batch wallet CLIs have no wired persistent SQLite/raw-segment state today.
+
 B0 measurements (event volumes per chain and launchpad, ATH source: own swaps vs an external API such
 as Codex) → B1 schema → B2 launch/migration ingestion (Solana pump.fun and Robinhood Pons first, then
 BSC four.meme, then Base: Zora/Clanker for `top-runners`, other launchpads checked) → B3 ATH → B4

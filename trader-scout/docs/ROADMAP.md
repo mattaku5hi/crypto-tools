@@ -119,6 +119,14 @@ and checks the binaries in Debian Bookworm. Manual runs produce Actions
 artifacts; project-scoped `trader-scout/v*` tags generate GitHub Releases.
 Acceptance details and dependency on server installation: `docs/TICKETS.md`.
 
+**B9.2 — portable deployment/state transfer.** Assemble a runtime directory
+independent of the repository checkout and workstation paths; configure its
+paths and PostgreSQL volume. Transfer config, database dump and required
+exports/provenance in a separate private bundle with relative paths,
+SHA-256/version/scope manifest and validation before restore. Supply
+`deploy/.env` separately with restrictive permissions. Verify a round-trip
+in a clean directory; see `docs/TICKETS.md` for the acceptance criteria.
+
 **Gate:** новый пользователь с настроенными источниками может воспроизвести три CLI сценария; downstream проект компилируется с одними scanner features. Все ограничения показаны до принятия решения по рейтингу.
 
 ## Что не нужно делать первым

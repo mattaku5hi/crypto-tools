@@ -3,6 +3,10 @@ target/
 inputs/
 exports/
 .env
+.scout-data/
+logs/
+*.swp
+*.swo
 .env.*
 !.env.example
 **/*.tmp
