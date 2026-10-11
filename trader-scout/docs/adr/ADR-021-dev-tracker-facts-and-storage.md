@@ -305,10 +305,11 @@ Config regression failed before the new field existed, then passed. Tests
 cover legacy/default TOML, invalid zero cadence, independent ATH deadline,
 ATH-only wake, disabled budget and unchanged 90-minute default watchdog.
 
-## Amendment 10 (2026-10-11) — all-time filtered Base runner enumeration
+## Amendment 10 (2026-10-11) — all-time filtered EVM runner enumeration
 
-The separate opt-in `backfill --chains base --phases ath
---ath-runners-from-index` enumerates Codex Base mainnet tokens with
+The separate opt-in `backfill --chains <base|bsc|robinhood> --phases ath
+--ath-runners-from-index` enumerates Codex Base, BSC, or Robinhood Chain
+mainnet tokens with
 `athFdv >= top_runners.runner_ath_usd`,
 `athFdv <= top_runners.max_plausible_ath_usd`, and
 `holders >= top_runners.min_holders` from the selected
@@ -317,8 +318,11 @@ The separate opt-in `backfill --chains base --phases ath
 `createdAt` range. This is an all-time provider-index filter pass; the current
 holder count and current index membership can change.
 
-The pass stores only rows matching already tracked Base launch tokens. It
-uses a separate filter-identity cursor, advances by raw provider page length,
+The pass stores only rows matching already tracked tokens on the selected
+chain. Chain and Codex network are part of cursor identity and database
+intersection, so identical EVM address bytes on different networks remain
+separate assets. The Base cursor continues its existing namespace. The pass
+advances by raw provider page length,
 and checkpoints only after idempotent ATH writes. Unknown database membership
 does not change pagination or create a zero/missing ATH observation. Different
 thresholds use separate cursors. A full provider page at the 10,000 offset cap
@@ -332,7 +336,7 @@ index changes. It does not establish full-lifetime ATH coverage, an immutable
 snapshot, or absence of qualifying tokens outside the provider index. Annual
 category derivation remains independently scoped by `since_days` from tracked
 launch facts. Unknown or unindexed tokens remain unknown, never zero. The
-public five-row response fixture
+public five-row Base response fixture
 `crates/scout-devtracker/tests/fixtures/codex_base_runner_filter_2026-10-11.json`
 records the observed provider shape without credentials.
 

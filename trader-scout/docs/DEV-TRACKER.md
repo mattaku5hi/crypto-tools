@@ -325,13 +325,15 @@ continue chain facts independently. See the
 [free ATH provider research](p0/measurements/2026-10-11-free-ath-providers.md)
 for qualified historical/forward supplements to Codex.
 
-### Targeted Base runner ATH backfill
+### Targeted EVM runner ATH backfill
 
-`dev-tracker backfill --chains base --phases ath --ath-runners-from-index`
+`dev-tracker backfill --chains <base|bsc|robinhood> --phases ath
+--ath-runners-from-index`
 uses `config/dev-tracker.toml` (override with `--ath-index-config`) to read
 the current `top_runners` minimum ATH, maximum plausible ATH and minimum
-holders. It enumerates Codex's all-time Base mainnet index with those filters,
-then stores observations only for Base launch tokens already in PostgreSQL.
+holders. It enumerates the selected Codex EVM mainnet index with those
+filters, then stores observations only for that chain's launch tokens already
+in PostgreSQL. Chain and network keep same-byte addresses isolated.
 This mode has a separate cursor for each filter configuration and uses
 `--ath-requests` as its request-attempt budget. It makes no automatic retries.
 

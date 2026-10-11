@@ -62,7 +62,7 @@ pub struct BackfillArgs {
     /// Enumerate positive Base ATH from Codex's first-pair index by closed UTC day.
     #[arg(long)]
     ath_from_index: bool,
-    /// Enumerate Base tokens matching the configured runner ATH/holder gates.
+    /// Enumerate one EVM chain's tokens matching the configured runner ATH/holder gates.
     #[arg(long)]
     ath_runners_from_index: bool,
     /// Config whose top_runners thresholds define the provider index filter.
@@ -92,8 +92,20 @@ impl BackfillArgs {
 /// continues (rerun to retry what is left).
 pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
     let chains = a.chains();
-    if (a.ath_from_index || a.ath_runners_from_index) && (chains != ["base"] || !a.has("ath")) {
-        return Err("Base ATH index modes require --chains base and the ath phase".into());
+    if a.ath_from_index && (chains != ["base"] || !a.has("ath")) {
+        return Err("--ath-from-index requires --chains base and the ath phase".into());
+    }
+    if a.ath_runners_from_index
+        && (!a.has("ath")
+            || chains.len() != 1
+            || !matches!(
+                chains.first().map(String::as_str),
+                Some("base" | "bsc" | "robinhood")
+            ))
+    {
+        return Err(
+            "--ath-runners-from-index requires exactly one EVM chain: base, bsc, or robinhood, and the ath phase".into(),
+        );
     }
     if a.ath_from_index && a.ath_runners_from_index {
         return Err("--ath-from-index and --ath-runners-from-index are separate modes".into());
@@ -141,17 +153,24 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
             let key = std::env::var(CODEX_ENV)
                 .map_err(|_| format!("--ath-runners-from-index requires {CODEX_ENV}"))?;
             let as_of = now();
-            let report = scout_devtracker::ath::backfill_base_runner_ath_from_index(
+            let chain = chains
+                .first()
+                .map(String::as_str)
+                .ok_or_else(|| "--ath-runners-from-index requires one EVM chain".to_string())?;
+            let report = scout_devtracker::ath::backfill_runner_ath_from_index(
                 db,
                 key.trim(),
+                chain,
                 filter,
                 a.ath_requests,
                 as_of,
             )
             .await
-            .map_err(|error| format!("base runner ATH index: {error}"))?;
+            .map_err(|error| format!("{chain} runner ATH index: {error}"))?;
             eprintln!(
-                "dev-tracker: backfill Base all-time Codex runner filter ATH ${}..${}, holders >= {} (as-of {}): complete={}, {} requests, {} provider rows, {} tracked observations, next offset {}, quality=provider-filtered-index-only/full-lifetime-ATH-unproven/mutable-offset-order, annual derivation scope remains since_days, {} budget remaining",
+                "dev-tracker: backfill {} (Codex network {}) all-time runner filter ATH ${}..${}, holders >= {} (as-of {}): complete={}, {} requests, {} provider rows, {} tracked observations, next offset {}, quality=provider-filtered-index-only/full-lifetime-ATH-unproven/mutable-offset-order, annual derivation scope remains since_days, {} budget remaining",
+                report.chain,
+                report.network_id,
                 report.min_ath_usd,
                 report.max_ath_usd,
                 report.min_holders,
@@ -165,8 +184,7 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
             );
             if !report.complete {
                 return Err(
-                    "Base runner ATH index pass stopped at its request budget; rerun to resume"
-                        .into(),
+                    "runner ATH index pass stopped at its request budget; rerun to resume".into(),
                 );
             }
         } else if a.ath_from_index {

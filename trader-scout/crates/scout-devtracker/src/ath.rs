@@ -87,6 +87,8 @@ pub enum AthError {
     MalformedIndex(String),
     #[error("Codex index returned network {actual}, expected Base network {BASE_INDEX_NETWORK}")]
     WrongIndexNetwork { actual: u64 },
+    #[error("Codex runner index returned network {actual}, expected {expected}")]
+    WrongRunnerIndexNetwork { actual: u64, expected: u64 },
     #[error("Codex index interval [{start}, {end}) remains capped at {max_results} rows")]
     IndexIntervalSaturated {
         start: i64,
@@ -137,9 +139,11 @@ pub struct RunnerAthIndexFilter {
     pub min_holders: i64,
 }
 
-/// All-time Base provider-filtered runner candidate enumeration.
+/// All-time EVM provider-filtered runner candidate enumeration.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunnerAthIndexReport {
+    pub chain: String,
+    pub network_id: u64,
     pub requests: usize,
     pub provider_rows: usize,
     pub tracked_rows: usize,
@@ -156,6 +160,10 @@ struct RunnerIndexCursor {
     filter: String,
     offset: usize,
     complete: bool,
+    #[serde(default)]
+    chain: String,
+    #[serde(default)]
+    network_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -649,9 +657,38 @@ pub async fn backfill_base_runner_ath_from_index(
     max_requests: usize,
     now: i64,
 ) -> Result<RunnerAthIndexReport, AthError> {
-    backfill_base_runner_ath_from_index_at(
+    backfill_runner_ath_from_index(db, codex_key, "base", filter, max_requests, now).await
+}
+
+/// Enumerate an EVM chain's all-time Codex index with the configured runner
+/// filters and store observations for already tracked launch tokens.
+/// Supported chains are Base, BSC, and Robinhood Chain.
+///
+/// # Errors
+/// Unsupported chain, provider, database, malformed cursor/response, or offset cap.
+pub async fn backfill_runner_ath_from_index(
+    db: &DevDb,
+    codex_key: &str,
+    chain: &str,
+    filter: RunnerAthIndexFilter,
+    max_requests: usize,
+    now: i64,
+) -> Result<RunnerAthIndexReport, AthError> {
+    let Some(network) =
+        codex_network(chain).filter(|_| matches!(chain, "base" | "bsc" | "robinhood"))
+    else {
+        return Err(AthError::IndexChain(chain.to_string()));
+    };
+    let cursor_prefix = if chain == "base" {
+        BASE_RUNNERS_INDEX_KEY.to_string()
+    } else {
+        format!("ath-runners:codex:{chain}:{network}:v1")
+    };
+    backfill_runner_ath_from_index_at(
         db,
         codex_key,
+        chain,
+        network,
         filter,
         max_requests,
         now,
@@ -661,12 +698,13 @@ pub async fn backfill_base_runner_ath_from_index(
             max_offset: BASE_RUNNERS_INDEX_MAX_OFFSET,
             ..IndexConfig::PRODUCTION
         },
-        BASE_RUNNERS_INDEX_KEY,
+        &cursor_prefix,
         CODEX_REQUEST_BUDGET_KEY,
     )
     .await
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn backfill_base_runner_ath_from_index_at(
     db: &DevDb,
@@ -679,11 +717,41 @@ async fn backfill_base_runner_ath_from_index_at(
     cursor_prefix: &str,
     budget_key: &str,
 ) -> Result<RunnerAthIndexReport, AthError> {
-    let min_cents = filter
+    backfill_runner_ath_from_index_at(
+        db,
+        codex_key,
+        "base",
+        BASE_INDEX_NETWORK,
+        filter,
+        max_requests,
+        now,
+        endpoint,
+        config,
+        cursor_prefix,
+        budget_key,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn backfill_runner_ath_from_index_at(
+    db: &DevDb,
+    codex_key: &str,
+    chain: &str,
+    network: u64,
+    filter: RunnerAthIndexFilter,
+    max_requests: usize,
+    now: i64,
+    endpoint: &str,
+    config: IndexConfig,
+    cursor_prefix: &str,
+    budget_key: &str,
+) -> Result<RunnerAthIndexReport, AthError> {
+    let _min_cents = filter
         .min_ath_usd
         .checked_mul(100)
         .ok_or(AthError::InvalidRunnerIndexCursor)?;
-    let max_cents = filter
+    let _max_cents = filter
         .max_ath_usd
         .checked_mul(100)
         .ok_or(AthError::InvalidRunnerIndexCursor)?;
@@ -697,16 +765,23 @@ async fn backfill_base_runner_ath_from_index_at(
     {
         return Err(AthError::InvalidRunnerIndexCursor);
     }
-    let filter_id = format!(
-        "base-runner-ath-holders-v1:{}:{}:{}",
-        filter.min_ath_usd, filter.max_ath_usd, filter.min_holders
-    );
+    let filter_id = if chain == "base" {
+        format!(
+            "base-runner-ath-holders-v1:{}:{}:{}",
+            filter.min_ath_usd, filter.max_ath_usd, filter.min_holders
+        )
+    } else {
+        format!(
+            "{chain}-{network}-runner-ath-holders-v1:{}:{}:{}",
+            filter.min_ath_usd, filter.max_ath_usd, filter.min_holders
+        )
+    };
     let cursor_key = format!("{cursor_prefix}:{filter_id}");
     let mut cursor = match db.cursor(&cursor_key).await? {
         Some(position) => {
             let cursor: RunnerIndexCursor =
                 serde_json::from_str(&position).map_err(|_| AthError::InvalidRunnerIndexCursor)?;
-            validate_runner_index_cursor(&cursor, &filter_id, config)?;
+            validate_runner_index_cursor(&cursor, &filter_id, chain, network, config)?;
             cursor
         }
         None => RunnerIndexCursor {
@@ -714,10 +789,14 @@ async fn backfill_base_runner_ath_from_index_at(
             filter: filter_id,
             offset: 0,
             complete: false,
+            chain: chain.to_string(),
+            network_id: network,
         },
     };
     let mut report = RunnerAthIndexReport {
         next_offset: cursor.offset,
+        chain: chain.to_string(),
+        network_id: network,
         min_ath_usd: filter.min_ath_usd,
         max_ath_usd: filter.max_ath_usd,
         min_holders: filter.min_holders,
@@ -739,7 +818,7 @@ async fn backfill_base_runner_ath_from_index_at(
         .map_err(|error| AthError::Http(error.to_string()))?;
     let mut last_request = None;
     while report.requests < max_requests {
-        let query = runner_index_query(filter, cursor.offset, config.page_size);
+        let query = runner_index_query(network, filter, cursor.offset, config.page_size);
         let value = match request_graphql(
             db,
             &http,
@@ -761,21 +840,14 @@ async fn backfill_base_runner_ath_from_index_at(
             Err(AthError::PassBudgetExhausted(_)) => break,
             Err(error) => return Err(error),
         };
-        let rows = parse_runner_index_page(
-            &value,
-            now,
-            config.page_size,
-            min_cents,
-            max_cents,
-            filter.min_holders,
-        )?;
+        let rows = parse_runner_index_page(&value, now, config.page_size, filter, network, chain)?;
         let page_len = rows.len();
         report.provider_rows = report
             .provider_rows
             .checked_add(rows.len())
             .ok_or(AthError::InvalidRunnerIndexCursor)?;
         let tokens: Vec<String> = rows.iter().map(|row| row.token.clone()).collect();
-        let known = db.known_launch_tokens("base", &tokens).await?;
+        let known = db.known_launch_tokens(chain, &tokens).await?;
         let known: std::collections::BTreeMap<String, String> = known
             .into_iter()
             .map(|token| (token.to_ascii_lowercase(), token))
@@ -806,6 +878,8 @@ async fn backfill_base_runner_ath_from_index_at(
                 .ok_or(AthError::InvalidRunnerIndexCursor)?;
             if next >= config.max_offset {
                 cursor.offset = next;
+                cursor.chain = chain.to_string();
+                cursor.network_id = network;
                 save_runner_index_cursor(db, &cursor_key, &cursor, now).await?;
                 return Err(AthError::RunnerIndexSaturated {
                     max_results: config.max_offset,
@@ -815,6 +889,8 @@ async fn backfill_base_runner_ath_from_index_at(
         } else {
             cursor.complete = true;
         }
+        cursor.chain = chain.to_string();
+        cursor.network_id = network;
         save_runner_index_cursor(db, &cursor_key, &cursor, now).await?;
         report.next_offset = cursor.offset;
         report.complete = cursor.complete;
@@ -828,10 +904,14 @@ async fn backfill_base_runner_ath_from_index_at(
 fn validate_runner_index_cursor(
     cursor: &RunnerIndexCursor,
     filter: &str,
+    chain: &str,
+    network: u64,
     config: IndexConfig,
 ) -> Result<(), AthError> {
     if cursor.version != 1
         || cursor.filter != filter
+        || (!cursor.chain.is_empty() && (cursor.chain != chain || cursor.network_id != network))
+        || (cursor.chain.is_empty() && (chain != "base" || network != BASE_INDEX_NETWORK))
         || cursor.offset > config.max_offset
         || (cursor.complete && cursor.offset >= config.max_offset)
         || !cursor.offset.is_multiple_of(config.page_size)
@@ -852,9 +932,14 @@ async fn save_runner_index_cursor(
     Ok(())
 }
 
-fn runner_index_query(filter: RunnerAthIndexFilter, offset: usize, page_size: usize) -> String {
+fn runner_index_query(
+    network: u64,
+    filter: RunnerAthIndexFilter,
+    offset: usize,
+    page_size: usize,
+) -> String {
     format!(
-        "{{ filterTokens(filters: {{network: [{BASE_INDEX_NETWORK}], isTestnet: false, includeScams: true, athFdv: {{gte: {}, lte: {}}}, holders: {{gte: {}}}}}, rankings: [{{attribute: createdAt, direction: ASC}}], limit: {page_size}, offset: {offset}) {{ results {{ createdAt token {{ address networkId extrema {{ athFdv athFdvTimestamp }} }} holders liquidity }} }} }}",
+        "{{ filterTokens(filters: {{network: [{network}], isTestnet: false, includeScams: true, athFdv: {{gte: {}, lte: {}}}, holders: {{gte: {}}}}}, rankings: [{{attribute: createdAt, direction: ASC}}], limit: {page_size}, offset: {offset}) {{ results {{ createdAt token {{ address networkId extrema {{ athFdv athFdvTimestamp }} }} holders liquidity }} }} }}",
         filter.min_ath_usd, filter.max_ath_usd, filter.min_holders
     )
 }
@@ -863,10 +948,18 @@ fn parse_runner_index_page(
     value: &Value,
     as_of: i64,
     page_size: usize,
-    min_cents: i64,
-    max_cents: i64,
-    min_holders: i64,
+    filter: RunnerAthIndexFilter,
+    expected_network: u64,
+    chain: &str,
 ) -> Result<Vec<AthObservation>, AthError> {
+    let min_cents = filter
+        .min_ath_usd
+        .checked_mul(100)
+        .ok_or(AthError::InvalidRunnerIndexCursor)?;
+    let max_cents = filter
+        .max_ath_usd
+        .checked_mul(100)
+        .ok_or(AthError::InvalidRunnerIndexCursor)?;
     let results = value
         .pointer("/data/filterTokens/results")
         .and_then(Value::as_array)
@@ -893,8 +986,11 @@ fn parse_runner_index_page(
                 .pointer("/token/networkId")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| AthError::MalformedIndex("missing token networkId".into()))?;
-            if network != BASE_INDEX_NETWORK {
-                return Err(AthError::WrongIndexNetwork { actual: network });
+            if network != expected_network {
+                return Err(AthError::WrongRunnerIndexNetwork {
+                    actual: network,
+                    expected: expected_network,
+                });
             }
             let ath = result
                 .pointer("/token/extrema/athFdv")
@@ -910,12 +1006,12 @@ fn parse_runner_index_page(
                 })
                 .ok_or_else(|| AthError::MalformedIndex("ATH outside runner filter".into()))?;
             let holders = optional_integer(result.get("holders"))?
-                .filter(|holders| *holders >= min_holders)
+                .filter(|holders| *holders >= filter.min_holders)
                 .ok_or_else(|| {
                     AthError::MalformedIndex("holders missing or below filter".into())
                 })?;
             Ok(AthObservation {
-                chain: "base".into(),
+                chain: chain.into(),
                 token: token.to_ascii_lowercase(),
                 ath_fdv_cents: cents,
                 ath_at: optional_integer(result.pointer("/token/extrema/athFdvTimestamp"))?,
@@ -1447,7 +1543,7 @@ mod tests {
             max_ath_usd: 10_000_000_000,
             min_holders: 100,
         };
-        let query = runner_index_query(filter, 400, 200);
+        let query = runner_index_query(8453, filter, 400, 200);
         assert!(query.contains("network: [8453]"));
         assert!(query.contains("isTestnet: false"));
         assert!(query.contains("includeScams: true"));
@@ -1466,66 +1562,24 @@ mod tests {
             })
         };
         let page = |row| json!({"data":{"filterTokens":{"results":[row]}}});
+        let parse = |row| parse_runner_index_page(&page(row), 1_800, 5, filter, 8453, "base");
         for ath in ["500000", "10000000000"] {
-            let parsed = parse_runner_index_page(
-                &page(row(&token_address(1), ath, json!(100))),
-                1_800,
-                5,
-                50_000_000,
-                1_000_000_000_000,
-                100,
-            )
-            .unwrap();
+            let parsed = parse(row(&token_address(1), ath, json!(100))).unwrap();
             assert_eq!(parsed[0].holders, Some(100));
         }
-        assert!(
-            parse_runner_index_page(
-                &page(row(&token_address(1), "500000.001", json!(100))),
-                1_800,
-                5,
-                50_000_000,
-                1_000_000_000_000,
-                100,
-            )
-            .is_ok()
-        );
-        assert!(
-            parse_runner_index_page(
-                &page(row(&token_address(1), "499999.999", json!(100))),
-                1_800,
-                5,
-                50_000_000,
-                1_000_000_000_000,
-                100,
-            )
-            .is_err()
-        );
-        assert!(
-            parse_runner_index_page(
-                &page(row(&token_address(1), "10000000000.001", json!(100))),
-                1_800,
-                5,
-                50_000_000,
-                1_000_000_000_000,
-                100,
-            )
-            .is_err()
-        );
-        assert!(
-            parse_runner_index_page(
-                &page(row(&token_address(1), "500000", Value::Null)),
-                1_800,
-                5,
-                50_000_000,
-                1_000_000_000_000,
-                100,
-            )
-            .is_err()
-        );
+        assert!(parse(row(&token_address(1), "500000.001", json!(100))).is_ok());
+        assert!(parse(row(&token_address(1), "499999.999", json!(100))).is_err());
+        assert!(parse(row(&token_address(1), "10000000000.001", json!(100))).is_err());
+        assert!(parse(row(&token_address(1), "500000", Value::Null)).is_err());
     }
 
     #[test]
     fn runner_index_parser_rejects_wrong_network_addresses_and_invalid_timestamps() {
+        let filter = RunnerAthIndexFilter {
+            min_ath_usd: 500_000,
+            max_ath_usd: 10_000_000_000,
+            min_holders: 100,
+        };
         let valid = json!({
             "createdAt": 1_690_997_881,
             "token": {"address": token_address(1), "networkId": BASE_INDEX_NETWORK,
@@ -1538,16 +1592,19 @@ mod tests {
                 &json!({"data":{"filterTokens":{"results":[row]}}}),
                 1_800,
                 5,
-                50_000_000,
-                1_000_000_000_000,
-                100,
+                filter,
+                8453,
+                "base",
             )
         };
         let mut row = valid.clone();
         row["token"]["networkId"] = json!(56);
         assert!(matches!(
             parse(row),
-            Err(AthError::WrongIndexNetwork { actual: 56 })
+            Err(AthError::WrongRunnerIndexNetwork {
+                actual: 56,
+                expected: 8453
+            })
         ));
         let mut row = valid.clone();
         row["token"]["address"] = json!("bad-address");
@@ -1714,6 +1771,162 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runner_index_keeps_same_address_and_cursor_isolated_across_evm_chains() {
+        let Some(db) = isolated_db().await else {
+            return;
+        };
+        let token = token_address(7_654_321);
+        let pid = std::process::id();
+        for (chain, suffix) in [("bsc", "bsc"), ("robinhood", "rh")] {
+            db.insert_launches(&[Launch {
+                chain: chain.into(),
+                token: token.clone(),
+                launchpad: "test".into(),
+                creator: format!("runner-network-{pid}-{suffix}"),
+                created_block: 1,
+                created_at: 1,
+                tx_hash: format!("runner-network-{pid}-{suffix}"),
+                source: "test".into(),
+            }])
+            .await
+            .unwrap();
+        }
+        let filter = RunnerAthIndexFilter {
+            min_ath_usd: 500_000,
+            max_ath_usd: 10_000_000_000,
+            min_holders: 100,
+        };
+        let config = IndexConfig {
+            page_size: 2,
+            max_offset: 10,
+            max_body: BASE_INDEX_MAX_BODY,
+            minimum_interval: Duration::ZERO,
+        };
+        let prefix = format!("runner-network-cursor:{pid}");
+        let budget = format!("runner-network-budget:{pid}");
+        let row = |network: u64, ath: &str| {
+            json!({
+                "createdAt": 1_690_997_881,
+                "token": {"address": token, "networkId": network,
+                    "extrema": {"athFdv": ath, "athFdvTimestamp": 1_778_068_501}},
+                "holders": 100,
+                "liquidity": "1000"
+            })
+        };
+
+        let wrong_server = MockServer::start().await;
+        let wrong_calls = Arc::new(Mutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .respond_with(RunnerIndexPages {
+                rows: json!([row(8453, "1500000")]),
+                calls: wrong_calls,
+            })
+            .mount(&wrong_server)
+            .await;
+        assert!(matches!(
+            backfill_runner_ath_from_index_at(
+                &db,
+                "fixture-key",
+                "bsc",
+                56,
+                filter,
+                1,
+                1_800_000_000,
+                &wrong_server.uri(),
+                config,
+                &prefix,
+                &budget,
+            )
+            .await,
+            Err(AthError::WrongRunnerIndexNetwork {
+                actual: 8453,
+                expected: 56
+            })
+        ));
+        let bsc_cursor = format!("{prefix}:bsc-56-runner-ath-holders-v1:500000:10000000000:100");
+        assert!(db.cursor(&bsc_cursor).await.unwrap().is_none());
+
+        let bsc_server = MockServer::start().await;
+        let bsc_calls = Arc::new(Mutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .respond_with(RunnerIndexPages {
+                rows: json!([row(56, "1500000")]),
+                calls: bsc_calls.clone(),
+            })
+            .mount(&bsc_server)
+            .await;
+        let bsc = backfill_runner_ath_from_index_at(
+            &db,
+            "fixture-key",
+            "bsc",
+            56,
+            filter,
+            2,
+            1_800_000_001,
+            &bsc_server.uri(),
+            config,
+            &prefix,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert!(bsc.complete);
+        assert_eq!((bsc.chain.as_str(), bsc.network_id), ("bsc", 56));
+        assert!(bsc_calls.lock().unwrap()[0].contains("network: [56]"));
+
+        let rh_server = MockServer::start().await;
+        let rh_calls = Arc::new(Mutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .respond_with(RunnerIndexPages {
+                rows: json!([row(4663, "2500000")]),
+                calls: rh_calls.clone(),
+            })
+            .mount(&rh_server)
+            .await;
+        let rh = backfill_runner_ath_from_index_at(
+            &db,
+            "fixture-key",
+            "robinhood",
+            4663,
+            filter,
+            2,
+            1_800_000_002,
+            &rh_server.uri(),
+            config,
+            &prefix,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert!(rh.complete);
+        assert_eq!((rh.chain.as_str(), rh.network_id), ("robinhood", 4663));
+        assert!(rh_calls.lock().unwrap()[0].contains("network: [4663]"));
+
+        let db_pool = sqlx::PgPool::connect(&std::env::var("SCOUT_TEST_DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        let ath_rows = sqlx::query(
+            "SELECT chain, token, ath_fdv_cents FROM ath WHERE token = $1 AND chain = ANY($2)",
+        )
+        .bind(&token)
+        .bind(vec!["bsc", "robinhood"])
+        .fetch_all(&db_pool)
+        .await
+        .unwrap();
+        assert_eq!(ath_rows.len(), 2);
+        let values: std::collections::BTreeMap<String, i64> = ath_rows
+            .into_iter()
+            .map(|row| (row.get("chain"), row.get("ath_fdv_cents")))
+            .collect();
+        assert_eq!(values.get("bsc"), Some(&150_000_000));
+        assert_eq!(values.get("robinhood"), Some(&250_000_000));
+        let rh_cursor =
+            format!("{prefix}:robinhood-4663-runner-ath-holders-v1:500000:10000000000:100");
+        assert!(db.cursor(&rh_cursor).await.unwrap().is_some());
+        assert_ne!(bsc_cursor, rh_cursor);
+    }
+
+    #[tokio::test]
     async fn runner_index_errors_do_not_advance_and_offset_cap_is_not_complete() {
         let Some(db) = isolated_db().await else {
             return;
@@ -1803,7 +2016,16 @@ mod tests {
         assert!(!saved.complete);
         let mut invalid_complete = saved.clone();
         invalid_complete.complete = true;
-        assert!(validate_runner_index_cursor(&invalid_complete, &saved.filter, config).is_err());
+        assert!(
+            validate_runner_index_cursor(
+                &invalid_complete,
+                &saved.filter,
+                "base",
+                BASE_INDEX_NETWORK,
+                config
+            )
+            .is_err()
+        );
         let empty_server = MockServer::start().await;
         assert!(matches!(
             backfill_base_runner_ath_from_index_at(
