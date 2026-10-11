@@ -68,6 +68,9 @@ pub struct BackfillArgs {
     /// Config whose top_runners thresholds define the provider index filter.
     #[arg(long, default_value = "config/dev-tracker.toml")]
     ath_index_config: String,
+    /// Include Codex tokens born at or after this Unix timestamp in runner-index mode.
+    #[arg(long)]
+    ath_index_token_created_since: Option<i64>,
 }
 
 impl BackfillArgs {
@@ -110,6 +113,14 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
     if a.ath_from_index && a.ath_runners_from_index {
         return Err("--ath-from-index and --ath-runners-from-index are separate modes".into());
     }
+    if a.ath_index_token_created_since.is_some() && !a.ath_runners_from_index {
+        return Err("--ath-index-token-created-since requires --ath-runners-from-index".into());
+    }
+    if a.ath_index_token_created_since
+        .is_some_and(|timestamp| timestamp < 0)
+    {
+        return Err("--ath-index-token-created-since must be a nonnegative Unix timestamp".into());
+    }
     // every chain is its own task (and every Solana day, below): the
     // multi-threaded runtime spreads the JSON decoding over the cores; one
     // `join!` would run them all on one thread (measured: Solana's page
@@ -149,6 +160,7 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
                 min_ath_usd: thresholds.runner_ath_usd,
                 max_ath_usd: thresholds.max_plausible_ath_usd,
                 min_holders: thresholds.min_holders,
+                min_token_created_at: a.ath_index_token_created_since,
             };
             let key = std::env::var(CODEX_ENV)
                 .map_err(|_| format!("--ath-runners-from-index requires {CODEX_ENV}"))?;
@@ -167,17 +179,19 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
             .await
             .map_err(|error| format!("{chain} runner ATH index: {error}"))?;
             eprintln!(
-                "dev-tracker: backfill {} (Codex network {}) all-time runner filter ATH ${}..${}, holders >= {} (as-of {}): complete={}, {} requests, {} provider rows, {} tracked observations, next offset {}, quality=provider-filtered-index-only/full-lifetime-ATH-unproven/mutable-offset-order, annual derivation scope remains since_days, {} budget remaining",
+                "dev-tracker: backfill {} (Codex network {}) runner filter ATH ${}..${}, holders >= {}, tokenCreatedAt >= {:?} (as-of {}): complete={}, {} requests, {} provider rows, {} tracked observations, {} token-createdAt quality gaps, next offset {}, quality=provider-filtered-index-only/full-lifetime-ATH-unproven/mutable-offset-order, annual derivation scope remains since_days, {} budget remaining",
                 report.chain,
                 report.network_id,
                 report.min_ath_usd,
                 report.max_ath_usd,
                 report.min_holders,
+                report.min_token_created_at,
                 as_of,
                 report.complete,
                 report.requests,
                 report.provider_rows,
                 report.tracked_rows,
+                report.token_created_at_gap_rows,
                 report.next_offset,
                 a.ath_requests.saturating_sub(report.requests)
             );

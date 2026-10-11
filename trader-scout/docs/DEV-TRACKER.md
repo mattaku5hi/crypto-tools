@@ -338,11 +338,20 @@ Solana mints must decode from Base58 to 32 bytes and retain their case-sensitive
 spelling through lookup and storage.
 This mode has a separate cursor for each filter configuration and uses
 `--ath-requests` as its request-attempt budget. It makes no automatic retries.
+For a fixed token-birth floor, add
+`--ath-index-token-created-since <unix-seconds>`; it is valid only with
+`--ath-runners-from-index` and uses Codex `tokenCreatedAt` (token creation),
+not the first-pair `createdAt` used for ranking. The query requests
+`token.createdAt`; missing, malformed, negative, future, or below-floor
+returned values are reported as quality gaps without discarding valid ATH.
+The floor and runner thresholds are recorded in the report and cursor identity.
 
 The mode removes the daily first-pair `createdAt` bound used by
 `--ath-from-index`; it is still a filtered provider enumeration, not a complete
 historical ATH index. `complete=true` means Codex returned a short page for
 that filter. Index changes can affect offset pagination; saturation at 10,000
 results is reported as incomplete. Unknown tokens remain unknown and do not
-receive zero ATH. Category derivation still uses its configured `since_days`
-launch-history scope. See ADR-021 amendment 10 for cursor and coverage details.
+receive zero ATH. A token-birth floor narrows provider filter membership only;
+it does not prove complete birth or launch coverage. Category derivation still
+uses its configured `since_days` launch-history scope. See ADR-021 amendment 10
+for cursor and coverage details.

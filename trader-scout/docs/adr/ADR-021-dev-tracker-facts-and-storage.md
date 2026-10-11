@@ -315,8 +315,15 @@ BSC, or Robinhood Chain with
 `holders >= top_runners.min_holders` from the selected
 `--ath-index-config` (default `config/dev-tracker.toml`). It sets
 `includeScams:true`, orders by `createdAt ASC`, and does not send a
-`createdAt` range. This is an all-time provider-index filter pass; the current
-holder count and current index membership can change.
+first-pair `createdAt` range. Optional
+`--ath-index-token-created-since <unix-seconds>` adds the provider's
+`tokenCreatedAt: {gte: ...}` birth-time filter and has a separate cursor; the
+requested `token.createdAt` is checked as returned-data quality metadata.
+Missing, malformed, negative, future, or below-floor returned token birth
+timestamps increment a bounded count while valid numeric ATH remains stored.
+This is provider-filter membership only: returned birth dates do not prove
+coverage of every token created after the floor. The current holder count and
+current index membership can change.
 
 The pass stores only rows matching already tracked tokens on the selected
 chain. Chain and Codex network are part of cursor identity and database
@@ -338,6 +345,8 @@ index changes. It does not establish full-lifetime ATH coverage, an immutable
 snapshot, or absence of qualifying tokens outside the provider index. Annual
 category derivation remains independently scoped by `since_days` from tracked
 launch facts. Unknown or unindexed tokens remain unknown, never zero. The
+optional token-birth floor also does not establish complete birth-time or
+launch coverage. The
 public five-row Base response fixture
 `crates/scout-devtracker/tests/fixtures/codex_base_runner_filter_2026-10-11.json`
 records the observed provider shape without credentials. The synthetic
