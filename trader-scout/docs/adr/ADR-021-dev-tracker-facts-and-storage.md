@@ -708,3 +708,75 @@ zero-sentinel rows, guarded by matching stored provider price, timestamp, pool
 and response hash. Preserve holders/liquidity and every already-known numeric
 observation, including genuine zero. This selects an observed-provider-scope
 FDV under the checks above; it does not upgrade either record's completeness.
+
+## Amendment 20 (2026-10-11) — exact-cent bound from peak-time supply
+
+For a provider recording scope with maximum recorded price `Pmax`, verified
+nonincreasing supply, birth supply `B`, and supply `Speak` at that price, the
+maximum FDV in that scope is bounded by `Pmax × Speak ≤ max(Pi × Si) ≤ Pmax × B`.
+If exact cent floors of both endpoints match, the maximum's rounded cents are
+determined without assuming that supply stayed constant. This does not extend
+the provider's coverage beyond its unknown recording window or independently
+validate its prices.
+
+The frozen burn reconstruction (SHA-256
+`419c8f7f1d8064cc67b230d800e011f691257de9cd8853b66f41405fc9e3c143`) records
+five Solana Tracker maximum-price observations with complete birth-to-snapshot
+burn ordering. Three have `Speak = B`; two have `Speak = B − 1` raw unit. For
+all five, the existing exact decimal-to-cent calculation gives equal endpoint
+floors, respectively `12133750`, `5912528`, `7616407`, `3236880`, and `8220527`
+cents. Their birth and current supply differences are larger, but must not be
+substituted for peak-time supply when applying this bound.
+
+The JC negative control's conservative interval does not collapse: at price
+`0.00023536979981208752`, the finalized current-supply lower bound is
+`965761089271256` raw units against birth supply `1000000000000000` at 6
+decimals. The resulting lower and upper floors are `22731099` and `23536979`
+cents. Current supply is a lower bound on supply at this earlier price point,
+not its exact peak-time supply. This wide interval cannot assign one exact
+source-scope maximum FDV cent value; a tighter historical price/supply bound
+could still establish one.
+
+Fixture `solana_tracker_peak_supply_fdv_bounds.json` pins the five-case
+reconstruction and JC negative control. This arithmetic does not assign an ATH
+timestamp, establish lifetime or market-wide price completeness, waive the
+independent price-validation gate, or trigger automatic promotion.
+
+## Amendment 21 (2026-10-11) — two more scoped price checks
+
+Two additional Solana Tracker maximum-price observations pass the existing
+independent spot-price comparison using transaction states from the named
+PumpSwap pool and the closed Coinbase SOL-USD candle for the matching UTC
+minute. For 5b2, the selected post-Buy state is 1.990 seconds before the
+provider timestamp. Because the legacy quote-input interpretation differs by
+one lamport, the CPMM check uses both `user_quote_amount_in − 1` and
+`user_quote_amount_in`; the resulting effective-quote interval is
+`157497770361–157497771060` raw units. Applying the observed quote-vault delta
+gives post-state bounds `157723425616–157723426315`. Across that interval and
+the Coinbase `$86.92–$86.94` range, both spot endpoints are within 1% of the
+provider price. For 7DGZ, the selected SELL pre-state is in the provider's
+whole-second bucket; millisecond ordering within that second is unresolved.
+Its exact CPMM effective-quote interval is `87520405888–87520405894` raw
+units. Across that interval and the `$135.73–$135.85` Coinbase range, both
+spot endpoints are within 1%.
+
+For both observations, the verified supply at the provider maximum is the
+birth supply (`1000000000000000` raw units, 6 decimals); the birth-to-snapshot
+burn ledger places all burns after the maximum-price observation. The exact
+provider-price FDV floors are `12133750` cents for 5b2 and `5912528` cents for
+7DGZ. The review artifact is pinned by SHA-256
+`7633ace65d9586828bb14077695450e633331fba85fa0602c184cd27ac6794c9`, alongside
+the independent burn reconstruction pinned in Amendment 20.
+
+These checks corroborate price level, not an exact millisecond pool state.
+They retain `ath_at=NULL`, unknown provider recording-window scope, and
+unknown market scope. They do not establish lifetime price or pool coverage.
+The two records may be written only through the existing guarded
+missing-only path: preserve every known numeric observation, including genuine
+zero, and update only a matching `codex-missing` zero-sentinel row. The source
+identifier is
+`solana-tracker-window-historical-supply-bounds-pool-fx-validated-v1`.
+Fixture `solana_tracker_two_price_gate_cases.json` pins the exact FDV floors,
+quote-input and reserve-rounding intervals, supply, timestamps, and all
+price/FX endpoint comparisons. The three other cases in the same audit fail
+the independent price gate and remain ineligible.

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "source": "solana-tracker-window-historical-supply-bounds-pool-fx-validated-v1",
+  "provider_window_scope": "unknown",
+  "market_scope": "unknown",
+  "ath_at": null,
+  "price_audit_sha256": "7633ace65d9586828bb14077695450e633331fba85fa0602c184cd27ac6794c9",
+  "supply_reconstruction_sha256": "419c8f7f1d8064cc67b230d800e011f691257de9cd8853b66f41405fc9e3c143",
+  "cases": [
+    {
+      "mint": "5b2BsBEVvsjBegVaKik9vByFJ8YGcDbk8R3A96RTpump",
+      "pool": "EUdEcUw8NBAp9VH4cvt2jtgBaTRsTduiBVnAzXfgaWBf",
+      "provider_price_usd": "0.00012133750413201461",
+      "provider_response_sha256": "f4ba705eb8f0d3d6e6b3deb76f72e64257f4865e43ed790b0e7f939882879d1c",
+      "provider_timestamp_ms": 1773522436990,
+      "snapshot_peak_supply_raw": 1000000000000000,
+      "decimals": 6,
+      "fdv_cents": 12133750,
+      "selected_state_block_time_unix_s": 1773522435,
+      "base_reserve_raw": 113027171132959,
+      "spot_quote_min_raw": 157723425616,
+      "spot_quote_max_raw": 157723426315,
+      "quote_decimals": 9,
+      "coinbase_sol_usd_low": "86.92",
+      "coinbase_sol_usd_high": "86.94",
+      "cpmm": {
+        "variant": "buy_exact_quote_in",
+        "pre_base_raw": 113188787810988,
+        "output_raw": 161616678029,
+        "actual_pre_quote_raw": 157497770361,
+        "effective_quote_min_raw": 157497770361,
+        "effective_quote_max_raw": 157497771060,
+        "input_min_raw": 225204844,
+        "input_max_raw": 225204845,
+        "quote_vault_delta_raw": 225655255
+      }
+    },
+    {
+      "mint": "7DGZSvNASBwjVZbFL9UwGtimdgitQu7Pq6RVb23pump",
+      "pool": "2EWDUtcnLqJJKKN9FZEq2t3hVkSusJDc4QkdwCGetLM3",
+      "provider_price_usd": "0.000059125282926240427",
+      "provider_response_sha256": "36af7f7d9fa1480f2f0230cdca84e3764da803d056613c6211d9ccca3281ce20",
+      "provider_timestamp_ms": 1767887469699,
+      "snapshot_peak_supply_raw": 1000000000000000,
+      "decimals": 6,
+      "fdv_cents": 5912528,
+      "selected_state_block_time_unix_s": 1767887469,
+      "base_reserve_raw": 200920354180067,
+      "spot_quote_min_raw": 87520405888,
+      "spot_quote_max_raw": 87520405894,
+      "quote_decimals": 9,
+      "coinbase_sol_usd_low": "135.73",
+      "coinbase_sol_usd_high": "135.85",
+      "cpmm": {
+        "variant": "sell",
+        "pre_base_raw": 200920354180067,
+        "output_raw": 12163624104,
+        "actual_pre_quote_raw": 87520405891,
+        "effective_quote_min_raw": 87520405888,
+        "effective_quote_max_raw": 87520405894,
+        "input_min_raw": 32431316800503,
+        "input_max_raw": 32431316800503,
+        "quote_vault_delta_raw": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "source": "solana-tracker-window-historical-supply-bounds-v1",
+  "provider_window_scope": "unknown",
+  "result_scope": "maximum FDV implied by this source-recorded maximum price only",
+  "reconstruction_sha256": "419c8f7f1d8064cc67b230d800e011f691257de9cd8853b66f41405fc9e3c143",
+  "cases": [
+    {
+      "mint": "5b2BsBEVvsjBegVaKik9vByFJ8YGcDbk8R3A96RTpump",
+      "price_usd": "0.00012133750413201461",
+      "timestamp_ms": 1773522436990,
+      "birth_raw": 1000000000000000,
+      "peak_raw": 1000000000000000,
+      "decimals": 6,
+      "expected_floor_cents": 12133750
+    },
+    {
+      "mint": "7DGZSvNASBwjVZbFL9UwGtimdgitQu7Pq6RVb23pump",
+      "price_usd": "0.000059125282926240427",
+      "timestamp_ms": 1767887469699,
+      "birth_raw": 1000000000000000,
+      "peak_raw": 1000000000000000,
+      "decimals": 6,
+      "expected_floor_cents": 5912528
+    },
+    {
+      "mint": "8bp3yea4ZyT8KkHJQAQCHEMC1AhRHx7bYQfJD2uye6Bd",
+      "price_usd": "0.00007616407294683686",
+      "timestamp_ms": 1770252665146,
+      "birth_raw": 1000000000000000,
+      "peak_raw": 999999999999999,
+      "decimals": 6,
+      "expected_floor_cents": 7616407
+    },
+    {
+      "mint": "jKWmQJgLfTRp2VeXHKtGK9DxJReBuuocus7ZU6Kpump",
+      "price_usd": "0.000032368803648389175",
+      "timestamp_ms": 1771979313268,
+      "birth_raw": 1000000000000000,
+      "peak_raw": 1000000000000000,
+      "decimals": 6,
+      "expected_floor_cents": 3236880
+    },
+    {
+      "mint": "9dZkVHy3byQvSxw7h7gk5tScp9zfg8rizYDKq9XSpump",
+      "price_usd": "0.00008220527118895571",
+      "timestamp_ms": 1769340410559,
+      "birth_raw": 1000000000000000,
+      "peak_raw": 999999999999999,
+      "decimals": 6,
+      "expected_floor_cents": 8220527
+    }
+  ],
+  "negative_control": {
+    "mint": "JCd8kQpU6RpSNASnxwF8i8vGdf8FNVtAVCiCi1uUpump",
+    "price_usd": "0.00023536979981208752",
+    "timestamp_unix_seconds": 1791672254,
+    "birth_raw": 1000000000000000,
+    "decimals": 6,
+    "birth_floor_cents": 23536979,
+    "chart_sha256": "e0d4399401ee02baacab63fe217b42c6598b26564492fdb114ee9fafa8865fc0",
+    "lower_bound_raw": 965761089271256,
+    "lower_bound_floor_cents": 22731099,
+    "supply_join_sha256": "2f260bbd0af32861f15e2eb3d4edc156642feb4e52abe183a41b60f077a396e3",
+    "supply_basis": "later finalized current supply; conservative lower bound on supply at the earlier price point, not exact peak-time supply"
+  }
+}

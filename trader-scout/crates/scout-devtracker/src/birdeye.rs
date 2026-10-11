@@ -1249,6 +1249,205 @@ mod tests {
     }
 
     #[test]
+    fn provider_peak_supply_bounds_collapse_only_when_cent_floors_match() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_peak_supply_fdv_bounds.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["reconstruction_sha256"],
+            "419c8f7f1d8064cc67b230d800e011f691257de9cd8853b66f41405fc9e3c143"
+        );
+        assert_eq!(fixture["provider_window_scope"], "unknown");
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 5);
+        for case in cases {
+            let price = ExactDecimal::parse(case["price_usd"].as_str().unwrap()).unwrap();
+            let birth = u128::from(case["birth_raw"].as_u64().unwrap());
+            let at_peak = u128::from(case["peak_raw"].as_u64().unwrap());
+            let decimals = u8::try_from(case["decimals"].as_u64().unwrap()).unwrap();
+            let lower = price.fdv_cents_for_raw_supply(at_peak, decimals).unwrap();
+            let upper = price.fdv_cents_for_raw_supply(birth, decimals).unwrap();
+            assert_eq!(lower, case["expected_floor_cents"].as_i64().unwrap());
+            assert_eq!(lower, upper, "{} has non-collapsing bounds", case["mint"]);
+        }
+
+        let negative = &fixture["negative_control"];
+        assert_eq!(
+            negative["supply_basis"],
+            "later finalized current supply; conservative lower bound on supply at the earlier price point, not exact peak-time supply"
+        );
+        assert_eq!(
+            negative["chart_sha256"],
+            "e0d4399401ee02baacab63fe217b42c6598b26564492fdb114ee9fafa8865fc0"
+        );
+        assert_eq!(
+            negative["supply_join_sha256"],
+            "2f260bbd0af32861f15e2eb3d4edc156642feb4e52abe183a41b60f077a396e3"
+        );
+        let price = ExactDecimal::parse(negative["price_usd"].as_str().unwrap()).unwrap();
+        let decimals = u8::try_from(negative["decimals"].as_u64().unwrap()).unwrap();
+        let lower = price
+            .fdv_cents_for_raw_supply(
+                u128::from(negative["lower_bound_raw"].as_u64().unwrap()),
+                decimals,
+            )
+            .unwrap();
+        let upper = price
+            .fdv_cents_for_raw_supply(
+                u128::from(negative["birth_raw"].as_u64().unwrap()),
+                decimals,
+            )
+            .unwrap();
+        assert_eq!(lower, negative["lower_bound_floor_cents"].as_i64().unwrap());
+        assert_eq!(upper, negative["birth_floor_cents"].as_i64().unwrap());
+        assert_ne!(lower, upper);
+    }
+
+    #[test]
+    fn two_solana_peak_prices_have_independent_pool_spot_corroboration() {
+        use alloy_primitives::U256;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_two_price_gate_cases.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["price_audit_sha256"],
+            "7633ace65d9586828bb14077695450e633331fba85fa0602c184cd27ac6794c9"
+        );
+        assert_eq!(
+            fixture["supply_reconstruction_sha256"],
+            "419c8f7f1d8064cc67b230d800e011f691257de9cd8853b66f41405fc9e3c143"
+        );
+        assert_eq!(fixture["ath_at"], serde_json::Value::Null);
+        assert_eq!(fixture["provider_window_scope"], "unknown");
+        assert_eq!(fixture["market_scope"], "unknown");
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 2);
+
+        for case in cases {
+            let price = ExactDecimal::parse(case["provider_price_usd"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                price.fdv_cents_for_raw_supply(
+                    u128::from(case["snapshot_peak_supply_raw"].as_u64().unwrap()),
+                    u8::try_from(case["decimals"].as_u64().unwrap()).unwrap(),
+                ),
+                Some(case["fdv_cents"].as_i64().unwrap())
+            );
+            let at_ms = case["provider_timestamp_ms"].as_u64().unwrap();
+            let block_ms = case["selected_state_block_time_unix_s"]
+                .as_u64()
+                .unwrap()
+                .checked_mul(1_000)
+                .unwrap();
+            assert!(at_ms.abs_diff(block_ms) <= 2_000);
+
+            let raw = |v: &serde_json::Value| U256::from(v.as_u64().unwrap());
+            let cpmm = &case["cpmm"];
+            let input_min = raw(&cpmm["input_min_raw"]);
+            let input_max = raw(&cpmm["input_max_raw"]);
+            let output = raw(&cpmm["output_raw"]);
+            let pre_base = raw(&cpmm["pre_base_raw"]);
+            let (minimum, maximum) = match cpmm["variant"].as_str().unwrap() {
+                "buy_exact_quote_in" => {
+                    let min_numerator = input_min.checked_mul(pre_base).unwrap();
+                    let max_numerator = input_max.checked_mul(pre_base).unwrap();
+                    let minimum = min_numerator
+                        .checked_div(output.checked_add(U256::from(1)).unwrap())
+                        .unwrap()
+                        .checked_sub(input_min)
+                        .unwrap()
+                        .checked_add(U256::from(1))
+                        .unwrap();
+                    let maximum = max_numerator
+                        .checked_div(output)
+                        .unwrap()
+                        .checked_sub(input_max)
+                        .unwrap();
+                    (minimum, maximum)
+                }
+                "sell" => {
+                    let denominator = input_min;
+                    let base_after = pre_base.checked_add(input_min).unwrap();
+                    let lower_numerator = output.checked_mul(base_after).unwrap();
+                    let upper_numerator = output
+                        .checked_add(U256::from(1))
+                        .unwrap()
+                        .checked_mul(base_after)
+                        .unwrap();
+                    let minimum = lower_numerator
+                        .checked_add(denominator.checked_sub(U256::from(1)).unwrap())
+                        .unwrap()
+                        .checked_div(denominator)
+                        .unwrap();
+                    let maximum = upper_numerator
+                        .checked_add(denominator.checked_sub(U256::from(1)).unwrap())
+                        .unwrap()
+                        .checked_div(denominator)
+                        .unwrap()
+                        .checked_sub(U256::from(1))
+                        .unwrap();
+                    (minimum, maximum)
+                }
+                _ => (U256::ZERO, U256::ZERO),
+            };
+            assert_eq!(minimum, raw(&cpmm["effective_quote_min_raw"]));
+            assert_eq!(maximum, raw(&cpmm["effective_quote_max_raw"]));
+            assert!(minimum <= raw(&cpmm["actual_pre_quote_raw"]));
+            assert!(raw(&cpmm["actual_pre_quote_raw"]) <= maximum);
+            let quote_vault_delta = raw(&cpmm["quote_vault_delta_raw"]);
+            assert_eq!(
+                minimum.checked_add(quote_vault_delta).unwrap(),
+                raw(&case["spot_quote_min_raw"])
+            );
+            assert_eq!(
+                maximum.checked_add(quote_vault_delta).unwrap(),
+                raw(&case["spot_quote_max_raw"])
+            );
+
+            let pow10 = |n: u32| {
+                (0..n)
+                    .try_fold(U256::from(1), |v, _| v.checked_mul(U256::from(10)))
+                    .unwrap()
+            };
+            for quote in [
+                raw(&case["spot_quote_min_raw"]),
+                raw(&case["spot_quote_max_raw"]),
+            ] {
+                for fx_field in ["coinbase_sol_usd_low", "coinbase_sol_usd_high"] {
+                    let fx = ExactDecimal::parse(case[fx_field].as_str().unwrap()).unwrap();
+                    let lhs = quote
+                        .checked_mul(U256::from(fx.coefficient))
+                        .unwrap()
+                        .checked_mul(pow10(u32::try_from(price.scale).unwrap()))
+                        .unwrap();
+                    let quote_base_scale = case["quote_decimals"]
+                        .as_u64()
+                        .unwrap()
+                        .checked_sub(case["decimals"].as_u64().unwrap())
+                        .unwrap();
+                    let exponent = u32::try_from(quote_base_scale)
+                        .unwrap()
+                        .checked_add(u32::try_from(fx.scale).unwrap())
+                        .unwrap();
+                    let rhs = raw(&case["base_reserve_raw"])
+                        .checked_mul(pow10(exponent))
+                        .unwrap()
+                        .checked_mul(U256::from(price.coefficient))
+                        .unwrap();
+                    let delta = if lhs >= rhs {
+                        lhs.checked_sub(rhs).unwrap()
+                    } else {
+                        rhs.checked_sub(lhs).unwrap()
+                    };
+                    assert!(delta.checked_mul(U256::from(100)).unwrap() <= rhs);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn solana_tracker_spot_supply_cases_are_correlated() {
         use alloy_primitives::U256;
 
