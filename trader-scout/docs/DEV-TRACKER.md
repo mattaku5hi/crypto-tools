@@ -154,6 +154,12 @@ disk budget and the storage of other services.
 
 ## 6. Order of work
 
+Planned **B9.1**: GitHub CI generates Linux x86_64 release packages for
+dev-tracker and the three wallet CLIs, using the pinned Rust toolchain and
+lockfile. Offline checks and Debian Bookworm runtime smoke precede versioned
+archives, checksums and manifests. Manual workflow runs produce Actions
+artifacts; `trader-scout/v*` tags generate GitHub Releases. See `docs/TICKETS.md`.
+
 B0 measurements (event volumes per chain and launchpad, ATH source: own swaps vs an external API such
 as Codex) → B1 schema → B2 launch/migration ingestion (Solana pump.fun and Robinhood Pons first, then
 BSC four.meme, then Base: Zora/Clanker for `top-runners`, other launchpads checked) → B3 ATH → B4

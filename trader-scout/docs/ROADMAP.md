@@ -112,6 +112,13 @@
 
 **P8.3.** CI feature matrix, reproducible fixture tests, dependency/security/license checks, release builds, opt-in live smoke workflow. Ни одного ключа/секрета в git history или logs.
 
+Dev-tracker deployment follow-up **B9.1** (owner request 2026-10-11): GitHub CI
+builds the four Linux x86_64 binaries with the pinned Rust toolchain and
+`Cargo.lock`, runs offline checks, packages tar.gz/SHA-256/version manifests,
+and checks the binaries in Debian Bookworm. Manual runs produce Actions
+artifacts; project-scoped `trader-scout/v*` tags generate GitHub Releases.
+Acceptance details and dependency on server installation: `docs/TICKETS.md`.
+
 **Gate:** новый пользователь с настроенными источниками может воспроизвести три CLI сценария; downstream проект компилируется с одними scanner features. Все ограничения показаны до принятия решения по рейтингу.
 
 ## Что не нужно делать первым
