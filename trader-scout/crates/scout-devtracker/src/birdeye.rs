@@ -660,6 +660,148 @@ mod tests {
         }
     }
 
+    #[test]
+    fn robinhood_swap_fx_fixture_preserves_eth_units_and_exact_fdv() {
+        let value: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/birdeye_robinhood_swap_fx_validated_fdv_cases.json"
+        ))
+        .unwrap();
+        for row in value["cases"].as_array().unwrap() {
+            let supply = row["supply_tokens"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            let expected = u128::from(row["expected_fdv_cents"].as_u64().unwrap());
+            let price = ExactDecimal::parse(row["provider_price_usd"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                price.fdv_cents_for_supply(supply),
+                Some(i64::try_from(expected).unwrap())
+            );
+            let numerator = row["weth_token_ratio_numerator"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            let denominator = row["weth_token_ratio_denominator"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            for rate in ["eth_usd_low_cents", "eth_usd_high_cents"] {
+                let converted = numerator
+                    .checked_mul(supply)
+                    .unwrap()
+                    .checked_mul(u128::from(row[rate].as_u64().unwrap()))
+                    .unwrap()
+                    .checked_div(denominator)
+                    .unwrap();
+                assert!(converted.abs_diff(expected).checked_mul(100).unwrap() <= expected);
+            }
+            let swap_at = row["swap_at"].as_i64().unwrap();
+            let minute_at = row["fx_minute_at"].as_i64().unwrap();
+            assert_eq!(swap_at.div_euclid(60) * 60, minute_at);
+        }
+    }
+
+    #[test]
+    fn geckoterminal_fx_fixture_preserves_two_quote_conversions() {
+        use alloy_primitives::U256;
+
+        let value: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/geckoterminal_bsc_swap_fx_validated_fdv_cases.json"
+        ))
+        .unwrap();
+        for row in value["cases"].as_array().unwrap() {
+            let supply = row["supply_tokens"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            let expected = row["expected_fdv_cents"].as_u64().unwrap();
+            let price = ExactDecimal::parse(row["provider_price_usd"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                price.fdv_cents_for_supply(supply),
+                Some(i64::try_from(expected).unwrap())
+            );
+            let quote = row["bnb_raw"].as_str().unwrap().parse::<U256>().unwrap();
+            let token = row["token_raw"].as_str().unwrap().parse::<U256>().unwrap();
+            let denominator = token.checked_mul(U256::from(100_000_000)).unwrap();
+            for (bnb, usdt) in [
+                ("bnb_usdt_low_milli", "usdt_usd_low_1e5"),
+                ("bnb_usdt_high_milli", "usdt_usd_high_1e5"),
+            ] {
+                let converted = quote
+                    .checked_mul(U256::from(supply))
+                    .unwrap()
+                    .checked_mul(U256::from(100))
+                    .unwrap()
+                    .checked_mul(U256::from(row[bnb].as_u64().unwrap()))
+                    .unwrap()
+                    .checked_mul(U256::from(row[usdt].as_u64().unwrap()))
+                    .unwrap()
+                    .checked_div(denominator)
+                    .unwrap();
+                let expected = U256::from(expected);
+                let difference = if converted >= expected {
+                    converted.checked_sub(expected).unwrap()
+                } else {
+                    expected.checked_sub(converted).unwrap()
+                };
+                assert!(difference.checked_mul(U256::from(100)).unwrap() <= expected);
+            }
+        }
+    }
+
+    #[test]
+    fn usd1_daily_fx_fixture_checks_trade_observations_without_a_peg() {
+        use alloy_primitives::U256;
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/birdeye_bsc_usd1_daily_fx_validated_fdv_case.json"
+        ))
+        .unwrap();
+        let supply = row["supply_tokens"]
+            .as_str()
+            .unwrap()
+            .parse::<u128>()
+            .unwrap();
+        let expected = row["expected_fdv_cents"].as_u64().unwrap();
+        let price = ExactDecimal::parse(row["provider_price_usd"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            price.fdv_cents_for_supply(supply),
+            Some(i64::try_from(expected).unwrap())
+        );
+        assert!(row["daily_volume_1e2"].as_u64().unwrap() > 0);
+        assert!(row["daily_turnover_1e5"].as_u64().unwrap() > 0);
+        let quote = row["usd1_raw"].as_str().unwrap().parse::<U256>().unwrap();
+        let token = row["token_raw"].as_str().unwrap().parse::<U256>().unwrap();
+        let denominator = token.checked_mul(U256::from(1_000_000_000)).unwrap();
+        for (usd1, usdt) in [
+            ("usd1_usdt_low_1e4", "usdt_usd_low_1e5"),
+            ("usd1_usdt_high_1e4", "usdt_usd_high_1e5"),
+        ] {
+            let converted = quote
+                .checked_mul(U256::from(supply))
+                .unwrap()
+                .checked_mul(U256::from(100))
+                .unwrap()
+                .checked_mul(U256::from(row[usd1].as_u64().unwrap()))
+                .unwrap()
+                .checked_mul(U256::from(row[usdt].as_u64().unwrap()))
+                .unwrap()
+                .checked_div(denominator)
+                .unwrap();
+            let expected = U256::from(expected);
+            let difference = if converted >= expected {
+                converted.checked_sub(expected).unwrap()
+            } else {
+                expected.checked_sub(converted).unwrap()
+            };
+            assert!(difference.checked_mul(U256::from(100)).unwrap() <= expected);
+        }
+    }
+
     #[tokio::test]
     async fn intraday_high_checks_interval_identity_and_bucket_alignment() {
         const SOL: &str = "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump";

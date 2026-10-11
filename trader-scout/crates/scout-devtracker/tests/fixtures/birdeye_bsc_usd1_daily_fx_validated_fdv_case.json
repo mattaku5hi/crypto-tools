@@ -1,0 +1,21 @@
+{
+  "chain": "bsc",
+  "network_id": 56,
+  "token": "0xfd74b6b00d620b1db96985f92be6a3b98e7d4444",
+  "quote_token": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+  "token_decimals": 18,
+  "quote_decimals": 18,
+  "provider_price_usd": "0.00010094846571056154",
+  "supply_tokens": "1000000000",
+  "expected_fdv_cents": 10094846,
+  "usd1_raw": "1708178239801737790184",
+  "token_raw": "16920082434303050871644513",
+  "usd1_usdt_low_1e4": 9995,
+  "usd1_usdt_high_1e4": 10002,
+  "usdt_usd_low_1e5": 99700,
+  "usdt_usd_high_1e5": 99927,
+  "daily_volume_1e2": 18038557,
+  "daily_turnover_1e5": 18035199602,
+  "minute_zero_volume_excluded": true,
+  "quality": "Same-day actual-trade daily stablecoin FX sensitivity at both endpoints; no peg/instantaneous/global FX bound. Failed empty-minute and five-minute bracket retained. Known provider/pool window, not canonical lifetime ATH."
+}

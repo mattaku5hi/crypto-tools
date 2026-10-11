@@ -478,3 +478,56 @@ missing-only write policy applies. Coverage is the queried known pools and
 provider window; new canonical lifetime or wallet-PnL completeness is not
 claimed. Variable-supply cases remain unpromoted until the denominator and
 price time can be reconciled without guessing intrabucket order.
+
+The same dated-FX check covers five Robinhood token/WETH cases using a closed
+Coinbase ETH/USD minute at each successful Swap timestamp. Both minute
+low/high conversions stay within 1%. The quote wrapper is an upgradeable
+proxy: verified proxy/implementation bytecode and the EIP1967 implementation
+slot at every observed Swap block establish the same verified aeWETH code;
+its deposit/withdraw paths convert native ETH 1:1. A current proxy address or
+token symbol alone is insufficient. Token clones separately match verified
+Doppler source and their complete mint/burn ledger establishes constant 1B
+supply through the anchor. Retain these source/slot/receipt/FX proofs and
+golden `birdeye_robinhood_swap_fx_validated_fdv_cases.json`. Observations are
+from launch-context pools and may reflect thin markets; source scope and
+`ath_at=NULL` remain unchanged, as do monetary thresholds and wallet fee rules.
+
+## Amendment 15 (2026-10-11) — corroborated alternative-provider windows
+
+When provider highs disagree, do not average them or increase the tolerance.
+A missing numerical ATH may use a separately corroborated GeckoTerminal
+known-pools USD window high under the same source/supply/receipt/dated-FX
+checks as amendment14. Preserve the contradictory Birdeye window separately.
+The three BSC cases use verified invariant 1B supply and registry-gated
+PancakeSwap V2 pool identities/full-range Swap logs. Successful peak receipts
+and block timestamps match the provider's peak day. Known returned curve
+and unsupported-venue provider histories remain in the maximum comparison;
+they do not become supported on-chain DEX claims.
+
+Their WBNB quote matches verified nonproxy wrapping code. Convert the exact
+pool execution ratio with a closed KuCoin BNB/USDT minute and dated Kraken
+USDT/USD low/high observations; both resulting endpoints must be within1%
+of the GeckoTerminal high. Do not assume USDT parity or use a daily BNB price
+for a timestamped Swap. Values stored remain the corroborated provider USD
+high times proven supply, with source
+`geckoterminal-window-supply-swap-fx-validated-v1`, `ath_at=NULL` and a separate
+`ath_price_windows` entry. Apply the existing missing-only write guards;
+known numeric observations, including zero, remain protected.
+
+Golden `geckoterminal_bsc_swap_fx_validated_fdv_cases.json` checks exact
+FDV cents and both FX conversions. This remains observed-window/known-pool
+evidence with thin-market and unindexed-venue gaps, not canonical lifetime
+completeness. USD1 requires dated market evidence; its token name alone does
+not supply a USD exchange rate.
+
+The fourth BSC case instead corroborates Birdeye using a closed, traded
+KuCoin USD1/USDT daily candle and dated Kraken USDT/USD daily low/high. Pair
+and BSC quote-contract identity are verified; both daily-conversion endpoints
+agree within1%. Its zero-volume minute is excluded as an actual trade
+observation, and no five-minute populated-candle bracket was established.
+Daily sensitivity follows amendment14's stablecoin method and does not
+provide an instantaneous or executable FX quote. Store the Birdeye value
+under `birdeye-window-supply-swap-fx-validated-v1`; retain the contrary GT
+window and timing gaps. Golden
+`birdeye_bsc_usd1_daily_fx_validated_fdv_case.json` checks exact FDV and both
+FX steps. The unchanged1% check applies to both ends, without assumed pegs.
