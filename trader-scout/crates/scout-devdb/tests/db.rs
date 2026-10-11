@@ -9,6 +9,7 @@
 )]
 
 use scout_devdb::{AthObservation, AthPriceWindow, DevDb, Launch, Migration};
+use sqlx::Row;
 
 #[tokio::test]
 async fn price_windows_preserve_unknown_fdv_and_replay_without_network_identity_collisions() {
@@ -218,6 +219,156 @@ async fn validated_fallback_ath_only_fills_absent_or_unknown_rows() {
     assert_eq!(row(&chain, "positive").ath_fdv_cents, Some(12_345));
     assert_eq!(row(&chain, "same-token").ath_fdv_cents, Some(111));
     assert_eq!(row(&other_chain, "same-token").ath_fdv_cents, Some(222));
+}
+
+#[tokio::test]
+async fn null_ath_refresh_preserves_known_values_and_original_provenance() {
+    let Some(db) = db().await else { return };
+    let chain = format!("ath-null-refresh-{}", std::process::id());
+    let observation = |token: &str,
+                       ath_fdv_cents: i64,
+                       ath_at: Option<i64>,
+                       source: &str,
+                       observed_at: i64,
+                       holders: Option<i64>,
+                       liquidity_cents: Option<i64>| AthObservation {
+        chain: chain.clone(),
+        token: token.into(),
+        ath_fdv_cents,
+        ath_at,
+        source: source.into(),
+        observed_at,
+        holders,
+        liquidity_cents,
+    };
+    db.upsert_ath(&[
+        observation("zero", 0, Some(110), "codex", 100, Some(10), Some(9_000)),
+        observation(
+            "positive",
+            12_345,
+            Some(120),
+            "codex",
+            100,
+            Some(20),
+            Some(1_000),
+        ),
+        observation(
+            "missing",
+            0,
+            None,
+            "codex-missing",
+            100,
+            Some(40),
+            Some(2_000),
+        ),
+    ])
+    .await
+    .unwrap();
+    db.upsert_missing_ath(&observation(
+        "validated",
+        51_104_374_107,
+        None,
+        "birdeye-window-supply-validated-v1",
+        100,
+        Some(30),
+        Some(3_000),
+    ))
+    .await
+    .unwrap();
+
+    let refreshes = [
+        observation("zero", 0, None, "codex-missing", 200, None, Some(500)),
+        observation(
+            "positive",
+            0,
+            None,
+            "codex-missing",
+            200,
+            Some(21),
+            Some(4_000),
+        ),
+        observation(
+            "validated",
+            0,
+            None,
+            "codex-missing",
+            200,
+            None,
+            Some(1_000),
+        ),
+        observation("missing", 0, None, "codex-missing", 200, None, None),
+    ];
+    assert_eq!(
+        db.upsert_ath(&refreshes).await.unwrap(),
+        u64::try_from(refreshes.len()).unwrap()
+    );
+    let stale: Vec<AthObservation> = refreshes
+        .iter()
+        .map(|row| {
+            let mut older = row.clone();
+            older.observed_at = 199;
+            older
+        })
+        .collect();
+    assert_eq!(db.upsert_ath(&stale).await.unwrap(), 0);
+
+    let url = std::env::var("SCOUT_TEST_DATABASE_URL").unwrap();
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    let rows = sqlx::query(
+        "SELECT token, ath_fdv_cents, ath_at, source, observed_at, holders, max_liquidity_cents
+         FROM ath WHERE chain = $1",
+    )
+    .bind(&chain)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let get = |token: &str| {
+        rows.iter()
+            .find(|row| row.get::<String, _>("token") == token)
+            .unwrap()
+    };
+    let zero = get("zero");
+    assert_eq!(zero.get::<i64, _>("ath_fdv_cents"), 0);
+    assert_eq!(zero.get::<Option<i64>, _>("ath_at"), Some(110));
+    assert_eq!(zero.get::<String, _>("source"), "codex");
+    assert_eq!(zero.get::<i64, _>("observed_at"), 200);
+    assert_eq!(zero.get::<Option<i64>, _>("holders"), Some(10));
+    assert_eq!(
+        zero.get::<Option<i64>, _>("max_liquidity_cents"),
+        Some(9_000)
+    );
+
+    let positive = get("positive");
+    assert_eq!(positive.get::<i64, _>("ath_fdv_cents"), 12_345);
+    assert_eq!(positive.get::<Option<i64>, _>("ath_at"), Some(120));
+    assert_eq!(positive.get::<String, _>("source"), "codex");
+    assert_eq!(positive.get::<i64, _>("observed_at"), 200);
+    assert_eq!(positive.get::<Option<i64>, _>("holders"), Some(21));
+    assert_eq!(
+        positive.get::<Option<i64>, _>("max_liquidity_cents"),
+        Some(4_000)
+    );
+
+    let validated = get("validated");
+    assert_eq!(validated.get::<i64, _>("ath_fdv_cents"), 51_104_374_107);
+    assert_eq!(validated.get::<Option<i64>, _>("ath_at"), None);
+    assert_eq!(
+        validated.get::<String, _>("source"),
+        "birdeye-window-supply-validated-v1"
+    );
+    assert_eq!(validated.get::<i64, _>("observed_at"), 200);
+    assert_eq!(validated.get::<Option<i64>, _>("holders"), Some(30));
+    assert_eq!(
+        validated.get::<Option<i64>, _>("max_liquidity_cents"),
+        Some(3_000)
+    );
+
+    let missing = get("missing");
+    assert_eq!(missing.get::<i64, _>("ath_fdv_cents"), 0);
+    assert_eq!(missing.get::<String, _>("source"), "codex-missing");
+    assert_eq!(missing.get::<i64, _>("observed_at"), 200);
+    assert_eq!(missing.get::<Option<i64>, _>("holders"), Some(40));
+    pool.close().await;
 }
 
 async fn db() -> Option<DevDb> {

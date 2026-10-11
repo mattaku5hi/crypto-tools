@@ -294,6 +294,8 @@ impl DevDb {
 
     /// Record ATH observations; an observation replaces the stored one only
     /// when it is at least as recent. Returns the rows written.
+    /// A `codex-missing` refresh retains any known value and its source while
+    /// updating refresh time and available metadata.
     ///
     /// # Errors
     /// Database failure (the batch is atomic).
@@ -306,9 +308,18 @@ impl DevDb {
                                   max_liquidity_cents)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                  ON CONFLICT (chain, token) DO UPDATE SET
-                    ath_fdv_cents = EXCLUDED.ath_fdv_cents, ath_at = EXCLUDED.ath_at,
-                    source = EXCLUDED.source, observed_at = EXCLUDED.observed_at,
-                    holders = EXCLUDED.holders,
+                    ath_fdv_cents = CASE
+                        WHEN EXCLUDED.source = 'codex-missing' AND ath.source <> 'codex-missing'
+                        THEN ath.ath_fdv_cents ELSE EXCLUDED.ath_fdv_cents END,
+                    ath_at = CASE
+                        WHEN EXCLUDED.source = 'codex-missing' AND ath.source <> 'codex-missing'
+                        THEN ath.ath_at ELSE EXCLUDED.ath_at END,
+                    source = CASE
+                        WHEN EXCLUDED.source = 'codex-missing' AND ath.source <> 'codex-missing'
+                        THEN ath.source ELSE EXCLUDED.source END,
+                    observed_at = EXCLUDED.observed_at,
+                    holders = CASE WHEN EXCLUDED.source = 'codex-missing'
+                        THEN COALESCE(EXCLUDED.holders, ath.holders) ELSE EXCLUDED.holders END,
                     max_liquidity_cents = GREATEST(ath.max_liquidity_cents, EXCLUDED.max_liquidity_cents)
                  WHERE EXCLUDED.observed_at >= ath.observed_at",
             )

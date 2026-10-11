@@ -445,3 +445,11 @@ storage primitive cannot establish it. Golden fixture
 `birdeye_validated_fdv_case.json` checks the exact floored 51,104,374,107 cents;
 the database test checks replacement guards and maximum liquidity retention.
 No broad automatic promotion of the other Birdeye windows is enabled.
+
+A later `codex-missing` refresh must not erase a previously known numeric ATH,
+including this validated fallback. It advances `observed_at` to record the
+latest refresh attempt, while retaining the prior `ath_fdv_cents`, `ath_at`,
+and `source` as the original value and window proof. A null incoming holder
+count also retains the previous holder count; observed maximum liquidity
+remains a high-water mark. Thus refresh time is not the observation time or
+provenance of a retained ATH value.
