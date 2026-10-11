@@ -2,8 +2,9 @@
 
 B9.2 is implemented and locally exercised. No VPS deployment or production
 restart/restore occurred. GitHub release workflow execution remains pending.
-The current transferable package includes the four later guarded Solana
-FDV records; the earlier round-trip below remains a separately dated proof.
+The current transferable package includes four guarded Solana FDV records
+and the later Base 67d5 record. Earlier round-trips below are separately dated
+proofs; the latest package is described in the final section.
 
 The public package carries four binaries, runtime Compose files, the Bookworm
 runtime Dockerfile, example config/env and the stdlib Python state verifier.
@@ -100,3 +101,33 @@ a GitHub workflow run, VPS deployment or live rootless-Docker startup.
 Private manifests are in
 `.scout-data/checks/2026-10-11/b9-2-portable-current/`; snapshot/restore manifests
 are `.scout-data/diagnostics/schema10-four-solana-{snapshot,restore}-manifest.json`.
+
+## Current package after Base 67d5
+
+The latest package is
+`.scout-data/deployment/2026-10-11-schema10-five-scoped/trader-scout-state-schema10-20261011T183937Z-five-scoped.tar`.
+It has 39 files, 2,842,726,400 bytes, SHA-256
+`33919254447f4edceea78fb70cf40f0684aa31b87b1084775b343f020e2e7d87`.
+Database as-of is 18:39:37.402419 UTC; the 36 exports are separately dated
+18:42:32.692970 UTC. Source commit is `de3fd42`. Verification, extraction,
+independent file hashes and 0600/0700 permissions passed in 19.82 seconds.
+Configuration uses the relative `exports` path; credentials remain separate.
+
+The included dump is 2,842,272,900 bytes, SHA-256
+`998cf85e1910a0863f5f86631fa274cd6c9749e958245239a48334f4606a033a`.
+Full isolated PostgreSQL 16 restore passed in 459.63 seconds under the same
+1 GiB/one-CPU/no-network limits. It verified 28,303,621 launches,
+194,715 migrations, 1,357,128 ATH rows, 941 cursors, 229 price windows,
+schema 1–10, all 100 exact source observations and application quota 7+97.
+The frozen cohort is 430 numeric/249 unknown, including three absent ATH
+rows. All four Solana values and the exact new Base row/window match their
+guarded-write proofs. Container and volume cleanup passed.
+
+All four current CLI binaries passed Bookworm `--help`; the newly rebuilt
+daemon also passed isolated startup/export/clean-stop runtime smoke from
+an arbitrary `/tmp` directory. No provider requests, Telegram sends, production
+restart/restore, VPS deployment or GitHub workflow execution occurred in these
+checks. Package verification checked dump byte identity against the full
+restore proof, without repeating that restore. Manifests are under
+`.scout-data/checks/2026-10-11/b9-2-portable-five-scoped/` and
+`.scout-data/diagnostics/schema10-five-scoped-{snapshot,restore}-manifest.json`.

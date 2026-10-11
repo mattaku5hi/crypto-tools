@@ -3,13 +3,27 @@
 Годовые launch/migration facts для настроенных источников сохранены, но полное
 числовое ATH-покрытие не завершено.
 
-## Текущий аудит — 18:03 UTC
+Текущие завершённые изменения и проверки приведены в конце документа;
+следующая открытая задача — B8.4. B9.1 ещё требует запуска GitHub workflow,
+B9 требует фактического развёртывания на выбранном сервере.
 
-В frozen cohort из 679 ранее unknown строк теперь **429 числовых значений**:
-334 Codex, 72 Birdeye, 19 GeckoTerminal и 4 Solana Tracker; осталось 250
+## Текущий аудит — 18:38 UTC
+
+В frozen cohort из 679 ранее unknown строк теперь **430 числовых значений**:
+334 Codex, 72 Birdeye, 20 GeckoTerminal и 4 Solana Tracker; осталось 249
 unknown, включая 3 строки без `ath`. Все 13
 BSC-пропусков закрыты. Это адресное заполнение, не доказательство полноты всех
 токенов сети или канонического lifetime ATH.
+
+В 18:38 UTC guarded missing-only записан Base-токен 67d5: `1440697915`
+FDV cents по GeckoTerminal, 9 дневных candles, `ath_at=NULL`. Политика
+Amendment 22 допускает пустую историю только у известного пула с полным
+creation-to-anchor Swap scan и нулём Swap событий; начальный Initialize price
+не используется. Четыре настроенных PoolManager pools — ограниченный scope,
+не все рынки Base. Независимый same-day USDC/FX check прошёл, но Birdeye
+расхождение примерно 14.4× сохранено как unresolved, без усреднения. В БД
+сохранены holders 1424 и `max_liquidity_cents=0`; новые provider requests не
+делались. Запись: `.scout-data/diagnostics/base-67d5-guarded-promotion-2026-10-11/manifest.json`.
 
 Четыре Solana Tracker значения прошли независимую проверку цены и supply:
 8Cc — `$47,952.52`, PEC — `$65,651.14`, 5b2 — `$121,337.50`, 7DGZ —
@@ -21,38 +35,60 @@ BSC-пропусков закрыты. Это адресное заполнен�
 runner lists. Методика двух последних проверок: [Solana price audit](2026-10-11-solana-five-low-burn-price-corroboration.md);
 source-price/supply history: [supply audit](2026-10-11-solana-low-burn-peak-supply-history.md).
 
-Schema-10 snapshot с четырьмя записями снят в 17:51:08 UTC и полностью
+Checkpoint до записи 67d5: schema-10 snapshot с четырьмя Solana Tracker
+записями снят в 17:51:08 UTC и полностью
 восстановлен в изолированной PostgreSQL за 490.13 секунды при лимитах 1 GiB,
 1 CPU и без сети. Restore подтвердил 28,300,208 launches, 194,654 migrations,
 1,357,128 ATH rows, 941 cursors, 100 source observations, quota ledger 104,
-и cohort 679/429/250/3 absent. Manifest: `.scout-data/diagnostics/schema10-four-solana-snapshot-manifest.json`;
+и cohort 679/429/250/3 absent. Это checkpoint 429/250, предшествующий 67d5;
+его manifests остаются историей, не подтверждением текущего состояния.
+Manifest: `.scout-data/diagnostics/schema10-four-solana-snapshot-manifest.json`;
 [restore manifest](../../../.scout-data/diagnostics/schema10-four-solana-restore-manifest.json).
-Текущие 36 export files собраны в 18:05 UTC. После commit `7bd0635` собраны
-все четыре CLI release binaries; local isolated runtime smoke прошёл без
+36 export files в 18:05 UTC также предшествуют записи 67d5. После commit
+`7bd0635` собраны все четыре CLI release binaries; local isolated runtime smoke прошёл без
 provider calls, host ports или production writes и не был GitHub/Bookworm
 build ([manifest](../../../.scout-data/checks/2026-10-11/b9-2-portable-current/runtime-smoke-manifest.json)).
-Новый private bundle с этими данными проверен и извлечён: 39 files,
+Предыдущий private bundle проверен и извлечён: 39 files,
 2,842,306,560 bytes, SHA-256
 `defd186671ad8c9fc5a0fe23271d2fe6ab1b1a957ac2a1937796a33492dfe344`.
-Dump byte-identical восстановленному snapshot; config использует относительный
-путь `exports`, секреты передаются отдельно. Подробности и пути:
+Он соответствует checkpoint до 67d5. Новый snapshot на 18:39:37 UTC полностью
+восстановлен за 459.63 s при 1 GiB/1 CPU/no network: 28,303,621 launches,
+194,715 migrations, 1,357,128 ATH rows, 941 cursors, 229 price windows,
+100 exact observations, quota 7+97 и frozen 430/249 проверены. Все пять
+guarded values и новый GT window совпали; test container/volume удалены.
+Из него собран 39-file private bundle (2,842,726,400 bytes, SHA-256
+`33919254447f4edceea78fb70cf40f0684aa31b87b1084775b343f020e2e7d87`);
+verify/extract/independent hashes прошли за 19.82 s. Current release binaries
+source de3fd42 прошли Bookworm help и isolated runtime smoke. Config
+использует относительный путь `exports`, секреты передаются отдельно.
+Подробности и пути:
 [portable validation](2026-10-11-portable-deployment-validation.md).
 
 | Сеть | Числовые значения из исходных unknown | Осталось unknown |
 |---|---:|---:|
-| Base | 396 / 503 | 107 |
+| Base | 397 / 503 | 106 |
 | BSC | 13 / 13 | 0 |
 | Robinhood | 6 / 53 | 47 |
 | Solana | 14 / 110 | 96 |
-| Всего | 429 / 679 | 250 |
+| Всего | 430 / 679 | 249 |
 
-Свежие файлы: `inputs/results/devtracker-exports-2026-10-11T180500Z/`.
+Актуальный экспорт на 18:42 UTC:
+`inputs/results/devtracker-exports-2026-10-11T184232Z/`.
 Топ по миграциям содержит SOL 413, BSC 75, Robinhood 12, Base 0;
 топ по раннерам — SOL 36, BSC 11, Robinhood 12, Base 12.
-Existing BSC wallet PnL отдельно проверен: 355 rows в
+BSC wallet PnL отдельно проверен: 355 rows в
 `inputs/results/bsc_k2_human_pnl30d_by_pnl.{csv,json}`, сортировка exact-decimal
 realized USD DESC. Это exploratory known-subset PnL с per-wallet windows
 и coverage gaps, без применения `wallet-rank` quality gates.
+
+После записи 67d5 остаётся 91 potentially relevant gap: 5 Base с известными
+holders≥100 и 86 с holders=NULL. Ещё 158 имеют known holders<100.
+[Датированный triage](2026-10-11-remaining-ath-triage.md) сохраняет 250-row
+checkpoint до этой записи. RH30 empty-window tokens имеют initialized
+Doppler pools без наблюдённых Swap в audited scope; это отсутствие цены,
+не числовой ноль и не доказательство отсутствия других рынков.
+[RH protocol audit](2026-10-11-rh-doppler-empty-window-protocol-audit.md),
+[Base price-kind recheck](2026-10-11-base-prior10-boundary-price-recheck.md).
 
 ## Исторический checkpoint: 17:12 UTC
 
@@ -70,11 +106,11 @@ ATH-eligibility. Не все signer aliases и новые devs входят в �
 
 | Сеть | Unknown до прохода | Новые числовые Codex | Проверенные альтернативные FDV | Осталось unknown |
 |---|---:|---:|---:|---:|
-| Base | 503 | 324 | 56 Birdeye + 16 GeckoTerminal | 107 |
+| Base | 503 | 324 | 56 Birdeye + 17 GeckoTerminal | 106 |
 | BSC | 13 | 0 | 10 Birdeye + 3 GeckoTerminal | 0 |
 | Robinhood | 53 | 0 | 6 | 47 |
-| Solana | 110 | 10 | 2 Solana Tracker | 98 |
-| Всего | 679 | 334 | 93 | 252 |
+| Solana | 110 | 10 | 4 Solana Tracker | 96 |
+| Всего | 679 | 334 | 96 | 249 |
 
 Шесть ручных Codex attempts дали 334 числовых наблюдения. Из тех же
 сохранённых ответов дополнительно перенесены holders/liquidity для 281
@@ -326,13 +362,16 @@ raw hashes/все Swap ratios и записал5 alternate-GT FDV; осталь�
 USDC pools, receipts/header/decimals и same-day FX сохранены в proof v2.
 Предварительный v1 proof имел неправильные observation/window metadata;
 он не использовался для записи, исправленный v2 хранится отдельно.
-Остальные6 остаются unknown. У67d все6 native-pool события после dated FX
-ниже USDC пика, но у одного известного USDC пула пустая GT история;
-nonempty-history gate для alternate GT не ослаблен. У fec3 GT день пика
+На этом checkpoint остальные6 оставались unknown. У67d все6 native-pool
+события после dated FX ниже USDC пика, но у одного известного USDC пула пустая
+GT история; nonempty-history gate для alternate GT ещё сохранялся. У fec3 GT день пика
 не совпадает с on-chain максимумом; соседний день не устранил расхождение.
 Подробнее: [prior10](2026-10-11-base-clanker-prior10-onchain.md),
 [native/date follow-up](2026-10-11-base-clanker-prior10-followup.md),
 [all-six native bound](2026-10-11-base-clanker-67d5-native-fx-bound.md).
+В 18:38 UTC 67d5 был закрыт отдельным guarded missing-only GeckoTerminal
+window write по Amendment 22; пять остальных кандидатов этой группы не
+переносятся без своей независимой проверки.
 Offline сверка669 cached logs (660 nonzero opposite-delta Swaps) через
 post-swap `sqrtPriceX96` отделила marginal spot от execution ratio. У3607
 совпадение с Birdeye наMay3 не является общим максимумом: более высокий
@@ -503,3 +542,80 @@ private state bundle и передачу на сервер.
 - `docs/{DEV-TRACKER.md,PROJECT-GUIDE.md,TICKETS.md}`,
   `docs/adr/ADR-021-dev-tracker-facts-and-storage.md`.
 - `docs/p0/measurements/2026-10-11-{birdeye-fdv-policy,devtracker-compact-memory,remaining-ath-crosscheck,ath-completion-progress}.md`.
+
+## Зафиксированные файлы и проверки продолжения
+
+Коммиты: `be442ee`, `8787c5b`, `b21db97`, `974a015`, `54472c5`, `7bd0635`, `cbb5997`, `6c7170e`, `de3fd42`. Текущий
+код прошёл workspace fmt, Clippy all-targets/all-features с `-D warnings`,
+1 213 offline tests с отдельной `scout_test`, и release build `--locked`
+для всех четырёх CLI. Python/shell/Compose проверки переноса, Bookworm
+help/runtime smoke, полное restore и bundle checks описаны отдельно выше.
+Known-credential scan прошёл для публичных файлов и выбранного приватного
+пакета; это не заявляет secret scan декомпрессированного PostgreSQL dump.
+
+Изменённые файлы этой цепочки (workflow расположен в родительском git root):
+
+- `.github/workflows/trader-scout-release.yml`
+- `AGENTS.md`
+- `Cargo.lock`
+- `README.md`
+- `bins/dev-tracker/Cargo.toml`
+- `bins/dev-tracker/src/main.rs`
+- `bins/dev-tracker/src/solana_tracker_backfill.rs`
+- `crates/scout-devdb/migrations/0010_provider_ath_observations.sql`
+- `crates/scout-devdb/src/lib.rs`
+- `crates/scout-devdb/tests/db.rs`
+- `crates/scout-devtracker/Cargo.toml`
+- `crates/scout-devtracker/src/birdeye.rs`
+- `crates/scout-devtracker/src/lib.rs`
+- `crates/scout-devtracker/src/solana_tracker_ath.rs`
+- `crates/scout-devtracker/tests/fixtures/geckoterminal_base_zero_swap_pool_fdv_case.json`
+- `crates/scout-devtracker/tests/fixtures/solana_tracker_ath_48.json`
+- `crates/scout-devtracker/tests/fixtures/solana_tracker_ath_81.json`
+- `crates/scout-devtracker/tests/fixtures/solana_tracker_ath_jc.json`
+- `crates/scout-devtracker/tests/fixtures/solana_tracker_peak_supply_fdv_bounds.json`
+- `crates/scout-devtracker/tests/fixtures/solana_tracker_scoped_spot_supply_cases.json`
+- `crates/scout-devtracker/tests/fixtures/solana_tracker_supply_fdv_cent_bounds.json`
+- `crates/scout-devtracker/tests/fixtures/solana_tracker_two_price_gate_cases.json`
+- `deploy/.env.example`
+- `deploy/package-release.sh`
+- `deploy/portable/.dockerignore`
+- `deploy/portable/README.md`
+- `deploy/portable/compose.compact.yml`
+- `deploy/portable/compose.yml`
+- `deploy/portable/prepare-runtime.sh`
+- `deploy/portable/runtime.Dockerfile`
+- `deploy/state_bundle.py`
+- `deploy/test_prepare_runtime.py`
+- `deploy/test_state_bundle.py`
+- `docs/DEV-TRACKER.md`
+- `docs/PROJECT-GUIDE.md`
+- `docs/TICKETS.md`
+- `docs/adr/ADR-021-dev-tracker-facts-and-storage.md`
+- `docs/p0/measurements/2026-10-11-ath-completion-progress.md`
+- `docs/p0/measurements/2026-10-11-ath-free-provider-recheck.md`
+- `docs/p0/measurements/2026-10-11-base-e465-gt-crosscheck.md`
+- `docs/p0/measurements/2026-10-11-base-e465-onchain-fdv-certificate.md`
+- `docs/p0/measurements/2026-10-11-base-e465-supply-source-audit.md`
+- `docs/p0/measurements/2026-10-11-base-prior10-boundary-price-recheck.md`
+- `docs/p0/measurements/2026-10-11-base-robinhood-ath-free-source-followup.md`
+- `docs/p0/measurements/2026-10-11-base-six-triage-67d5-gt-source-audit.md`
+- `docs/p0/measurements/2026-10-11-base-zora-14-boundary-audit.md`
+- `docs/p0/measurements/2026-10-11-current-top-runner-ath-gap-audit.md`
+- `docs/p0/measurements/2026-10-11-empty-cohort-v4-quote-route-audit.md`
+- `docs/p0/measurements/2026-10-11-empty-cohort-v4-scope-audit.md`
+- `docs/p0/measurements/2026-10-11-empty-window-pool-discovery.md`
+- `docs/p0/measurements/2026-10-11-portable-deployment-validation.md`
+- `docs/p0/measurements/2026-10-11-pump-coins-v2-ath-fields.md`
+- `docs/p0/measurements/2026-10-11-remaining-ath-triage.md`
+- `docs/p0/measurements/2026-10-11-rh-doppler-empty-window-protocol-audit.md`
+- `docs/p0/measurements/2026-10-11-solana-8cc-migration-pool-spot-corroboration.md`
+- `docs/p0/measurements/2026-10-11-solana-8cc-quote-reserve-inference.md`
+- `docs/p0/measurements/2026-10-11-solana-cent-bound-price-check.md`
+- `docs/p0/measurements/2026-10-11-solana-five-low-burn-price-corroboration.md`
+- `docs/p0/measurements/2026-10-11-solana-low-burn-peak-supply-history.md`
+- `docs/p0/measurements/2026-10-11-solana-pec-migration-spot-corroboration.md`
+- `docs/p0/measurements/2026-10-11-solana-remaining-birth-receipts.md`
+- `docs/p0/measurements/2026-10-11-solana-remaining-mint-audit.md`
+- `docs/p0/measurements/2026-10-11-solana-runner-potential-supply-window-audit.md`
+- `docs/p0/measurements/2026-10-11-solana-tracker-100-source-observations.md`

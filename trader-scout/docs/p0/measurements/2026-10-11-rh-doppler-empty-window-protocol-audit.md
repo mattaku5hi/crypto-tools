@@ -1,0 +1,33 @@
+# Robinhood empty ATH windows: Doppler/v4 protocol audit
+
+As of 2026-10-11, the frozen empty-window set contains 30 Robinhood Chain (chain ID 4663) Doppler tokens. The configured Uniswap v4 audit found one initialized pool per token and zero Swap events in those pools from initialization through its pinned anchor. This report checks whether the observed launch path was mislabeled as another protocol and whether a small independent market index finds current pairs. It does not claim a complete scan of every Robinhood DEX or historical market.
+
+## Findings
+
+All 30 archived `Initialize` events come from the configured Robinhood v4 PoolManager (`0x8366a39cc670b4001a1121b8f6a443a643e40951`). The decoded `hooks` field is the same address for all 30: `0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544`. Doppler's official deployment table identifies that address as its Robinhood-mainnet `DopplerHookInitializer` at commit `bda077cf`; it lists Robinhood mainnet separately from Base Sepolia testnet. Every pool's fee field is `0x800000`, Uniswap v4's dynamic-fee sentinel, rather than a static fee amount. The full event-to-token map and raw-file hashes are in [the decoded Initialize crosscheck](../../../.scout-data/diagnostics/rh-doppler-empty-window-protocol-audit-2026-10-11/initialize-hook-crosscheck.json).
+
+Three exact creation receipts corroborate the event path. Each successful receipt contains the official Doppler hook's token/numeraire `Create` event, a v4 `Initialize`, and one or more v4 `ModifyLiquidity` events. The three quotes are: `0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea`, Robinhood WETH `0x0bd7d308f8e1639fab988df18a8011f41eacad73`, and `0x5fc5360d0400a0fd4f2af552add042d716f1d168`. This confirms seeded v4 liquidity for these samples, not a trade. The receipts contain no v4 Swap; the wider frozen-pool scan likewise reports no Swap for any of the 30 configured initial pools.
+
+To check plausible alternate venues, I queried both official Robinhood Uniswap factories for each of those three tokens against its exact Doppler numeraire. All 12 v3 `getPool` calls (fee tiers 100, 500, 3,000, and 10,000) returned zero addresses; all three v2 `getPair` calls returned the zero address at the pinned RH anchor. The official DEX Screener token-pairs endpoint also returned HTTP 200 with an empty pair list for each of the same three token addresses (`robinhood` network path). The v2 probe's first request manifest retains three failed attempts caused by a malformed factory-address literal; those returned JSON-RPC invalid-parameter errors and are excluded from the successful result. The corrected three-call batch is separately preserved. These are small exact-numeraire/current-index checks, not evidence that every token on the chain is indexed or that historical pools never existed.
+
+These observations explain the empty windows for the tested scope: the configured v4 pools were initialized and seeded but have no observed swaps, while two bounded checks did not find alternate pairs for three examples. They do **not** explain every provider's internal indexing behavior, prove no trades occurred elsewhere, or produce a traded price/ATH. A v4 initialization price is a pool state, not an executed trade; moreover two of the three sampled numeraire addresses have no established USD route here. No supply or FDV claim is made.
+
+## Scope and reproducibility
+
+- The 30-token input is the Robinhood subset of the frozen empty-window input used by the configured-v4 audit. The full audit used both indexed currency positions and records successful zero-Swap queries through its saved anchor; see [the full configured-v4 report](2026-10-11-empty-cohort-v4-scope-audit.md) and [raw audit manifest](../../../.scout-data/diagnostics/empty-cohort-v4-scope-2026-10-11/manifest.json).
+- The 30-way hook/fee decode was offline: no additional RPC was used. Its archived Initialize raw files and hashes are listed in the sidecar above.
+- Three receipt calls, 12 v3 `getPool` calls, and the corrected three-call v2 `getPair` batch are archived with request parameters and raw-response SHA-256 values in `.scout-data/diagnostics/rh-doppler-empty-init-receipts-2026-10-11/`, `.scout-data/diagnostics/rh-doppler-v3-pair-route-probe-2026-10-11/`, and `.scout-data/diagnostics/rh-doppler-v2-pair-route-probe-2026-10-11/`.
+- Three unauthenticated current pair-index GETs are archived in `.scout-data/diagnostics/rh-doppler-empty-dexscreener-2026-10-11/`. The exact endpoint is documented by [DEX Screener's API reference](https://docs.dexscreener.com/api/reference); its pair schema provides current pair fields, not a historical candle/ATH series.
+- No Codex, Solana Tracker, Birdeye, database writes, or production changes were made for this audit.
+
+## What remains unknown
+
+The launch receipts and zero-swap scan cover the canonical Doppler v4 initial pools, not all possible later migrations or other DEX factories. The v3 probe checks only three tokens paired with their initial numeraire at four factory fee tiers. The current pair lookup checks only those same three tokens and has no historical-retention semantics. Closing the gap would require indexed discovery or bounded factory/migration-event scans for the other candidate addresses and quote assets, then actual swap evidence plus a verified historical USD conversion. Until then their ATH/FDV should remain unknown rather than being set to zero or inferred from initial pool state.
+
+## Primary protocol references
+
+- Doppler [official contract addresses and deployments](https://docs.doppler.lol/reference/contract-addresses) identify Robinhood mainnet, chain-specific contracts and commit `bda077cf`; they warn that unlisted deployments are noncanonical.
+- Doppler's [Airlock source](https://github.com/whetstoneresearch/doppler/blob/bda077cf/src/Airlock.sol) documents `Create` and `Migrate` events and that initializer variants can be v3 or v4. The receipt's actual v4 `Initialize` and hook address are therefore the protocol evidence; the launchpad label alone is not.
+- Uniswap's [Robinhood v3 deployment page](https://developers.uniswap.org/docs/protocols/v3/deployments/v3-robinhood-chain-deployments) publishes the canonical factory address and the `getPool` discovery method.
+- Uniswap's [deployment directory](https://developers.uniswap.org/deployments) lists the Robinhood UniswapV2Factory; the [v2 deployments page](https://developers.uniswap.org/docs/protocols/v2/deployments) is the first-party deployment reference.
+- Uniswap v4 core's [`LPFeeLibrary`](https://github.com/Uniswap/v4-core/blob/main/src/libraries/LPFeeLibrary.sol) defines `DYNAMIC_FEE_FLAG = 0x800000`; the value is a sentinel, not a numeric fee tier.
