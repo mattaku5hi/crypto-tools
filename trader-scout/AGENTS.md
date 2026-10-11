@@ -40,6 +40,7 @@
 - A slow independent ATH cadence must not extend the facts progress watchdog: `bins/dev-tracker/src/main.rs` still wakes for 30-minute facts / 60-minute derivation.
 - Codex `createdAt` filter and returned date can disagree: `crates/scout-devtracker/src/ath.rs` retains valid ATH with date-gap provenance; completed index pagination is not verified first-pair membership (ADR-021 amendment 8).
 - `backfill --days` в `bins/dev-tracker/src/backfill.rs` переводит дни в приблизительный block span: проверять timestamp нижнего блока и указывать фактический scope; BSC может читать запас истории, `since_days` ограничивает период деривации отдельно.
+- Sourcify source audits: v2 API — `https://sourcify.dev/server/v2/contract/{chain_id}/0x{address}?fields=all`; HTML404 с `repo.sourcify.dev` или адресом без `0x` не означает отсутствие verified source.
 
 Следовать `docs/ROADMAP.md`. Не писать все CLI отдельно. Сначала контракт данных и hand-checked corpus; затем сквозной ограниченный slice, расширение сетей/DEX и оптимизация по профилю. После каждой задачи: перечислить измененные файлы, выполненные проверки, полученные результаты, ограничения и следующий task ID. Фиксировать изменения небольшими законченными коммитами, когда среда действительно дает доступ к git.
 

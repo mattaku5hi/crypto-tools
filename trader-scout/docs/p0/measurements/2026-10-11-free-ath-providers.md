@@ -174,6 +174,24 @@ One keyless candle request followed the official OHLCV path and parameters. Exac
 
 ## Файлы, проверки и ограничения исследования
 
+Продолжение 2026-10-11: найден keyless [StockKit Market API](https://docs.stockkit.dev/products/market-api/)
+для Robinhood stock tokens. `/v1/stats/NVDA` связывает инструмент с точным
+контрактом на4663; `/v1/history/NVDA?interval=5m&limit=300` возвращает
+5-minute samples NVDA/USDG из выбранного Uniswap v3 пула. Проверенный
+index history начинается2026-09-16, поэтому August26 этот API не покрывает;
+USDG quote также требует независимого FX, а samples могут пропустить пик.
+Это дополнительный источник для stock quote, не ATH API всех meme-токенов.
+
+Для August26 удалось проверить уже существовавший пул через archive RPC,
+успешные receipts ближайших сделок и verified runtime; dated traded
+[Kraken USDG/USD](https://api.kraken.com/0/public/OHLC?pair=USDGUSD&interval=1440&since=1787616000)
+после exact Paxos/RH contract-identity проверки подтвердил SMOGGY3 USD level.
+Исторические [Chainlink rounds](https://reference-data-directory.vercel.app/feeds-robinhood-mainnet.json)
+также доступны бесплатно, но проверенные marks оказались слишком старыми
+и в этом FDV не использованы. Details, request budgets и SHA сохранены в
+[Robinhood audit](2026-10-11-robinhood-ath-supply-source-audit.md).
+Ни один из этих результатов не доказывает полное годовое/lifetime покрытие.
+
 - Новый файл: `docs/p0/measurements/2026-10-11-free-ath-providers.md`.
 - Проверены official provider docs/pricing/network lists; проведено четыре unauthenticated public GeckoTerminal GET probes для network list и SOL/USDC OHLCV, sibling agent отдельно проверил последнюю страницу `/networks`; один no-auth Mobula request подтвердил отказ Free ATH endpoint; CMC: две keyless platform-list GET (дубликат для разбора уже полученного body) и одна old-candle GET (403). Дополнительный pass по DEXTools, DexGuru, DeFiLlama, GoldRush, Bitquery и The Graph использовал только official docs/pricing; их API не вызывались. Это перечень первого прохода: позже Birdeye, DexPaprika, Coinranking и CoinGecko core проверены живыми запросами; новые отчёты выше фиксируют requests и ограничения.
 - Этот research pass не менял ATH, код или задачи. Последующие Codex backfill jobs описаны отдельно в отчёте результатов; их расход не входит в provider probes. Исследование не измеряет production latency, coverage всех адресов или права распространения данных.
