@@ -1,0 +1,22 @@
+# PEC migration-time PumpSwap spot corroboration (2026-10-11)
+
+This read-only audit examines PEC (`PECazcZMchmn86TfUVDVKeAtVaiKSJFQCZ9BvZfh3km`) around its Solana Tracker point high. The migration signature came from a read-only query of the migration ledger; six bounded Helius `getTransaction` requests then decoded that transaction and nearby pool states. Two signature-page responses, the Coinbase minute, supply proof, pool metadata and event IDL were reused from prior diagnostics. No ST/Birdeye request, DB write or canonical ATH/FDV write was made.
+
+The ledger identifies migration transaction `4bZNE3vQbM9rBM9XiYBxMc2yB7gpBXWBi7X2hvDNyVDjkRoRcibqD36Mtc4iQpXK6pPBCUbrxPMc9Rj8PmHbAy8A`, slot `378867122`, block time `1762660114` (2025-11-09 03:48:34 UTC), transaction index 895. Its Pump core `Migrate` is followed by Pump AMM `CreatePoolEvent` for pool `ChU1E8E4eXn3EwshvP3h18XHiYDCwQwRu9J1r4vFSkzS`, target base / wSOL quote. The event declares 6 and 9 decimals, respectively, and initial balances of `206900000000000` target raw units and `84990359057` wSOL lamports. The same migration transaction emits an initial AMM `BuyEvent`, whose pre-reserves match those amounts exactly.
+
+Three subsequent successful pool buys occurred in the same slot at transaction indexes 1041 and 1044 (the migration is index 895). Their event pre-reserves equal the previous post-transaction vault balances, and their post-vault changes reconcile exactly to the event's `base_amount_out` and `quote_amount_in_with_lp_fee`. The first post-migration Buy charged 2 bps LP fee, 93 bps protocol fee and 30 bps creator fee; event quote amounts reconcile to the user amount. The second Buy has the same fee schedule. The event payloads are 408 bytes and end at `ix_name`; they contain no virtual-quote field. The exact CPMM reserve interval check is recorded in the machine-readable analysis and brackets each observed pre-swap quote vault. It is a rounding consistency check, not a claim of an unobserved reserve.
+
+The post-initial-Buy reserve spot is `$0.00006470551698827528–$0.00006478865397528322` per token after applying Coinbase's 03:48 UTC SOL-USD low/high of `$155.66–$155.86`. That state is 1.44%–1.31% below ST's `$0.00006565114747464346` point and fails the strict 1% gate. The next two post-buy states are closer:
+
+| State | Block time / transaction index | Spot USD per token | Difference from ST point |
+|---|---|---:|---:|
+| Same-slot Buy 1 post-state | 1762660114 / 1041 | `$0.0000651674247541–$0.0000652511552241` | `−0.737%` to `−0.609%` |
+| Same-slot Buy 2 post-state | 1762660114 / 1044 | `$0.0000656342961374–$0.0000657186264678` | `−0.0257%` to `+0.1028%` |
+
+Both spot ranges satisfy the existing 1% comparison at both FX endpoints. The ST point timestamp is `1762660115868` ms (03:48:35.868 UTC), 1.868 seconds after migration block time. The first following successful pool sell has transaction index 1046 and block time `1762660115`; its post-state is around `$0.00004073–$0.00004078`. Since Solana transaction timestamps are only recorded here at whole-second precision, the sell's ordering relative to the ST millisecond observation cannot be established. The intermediate Buy states are strong nearby corroboration, while exact state-at-observation timing remains unresolved.
+
+The mint's birth supply was 1 billion tokens (raw `1000000000000000`, 6 decimals). A later finalized snapshot reports `999999940322002` raw units, a burn difference of 59.677998 tokens. These bounds are relevant to valuation at the observed point but do not establish all-time price completeness. Solana Tracker's own recorded window remains unknown, and this measurement does not establish lifetime/all-pool ATH coverage. Keep the case as corroborating price evidence with the noted time-ordering gap; no canonical ATH/FDV promotion is made here.
+
+## Evidence
+
+The full event, vault, FX and comparison derivation is `.scout-data/diagnostics/solana-pec-migration-firstbuy-2026-10-11/derived-analysis.json`; the sibling manifest records raw request/response hashes, six-call budget and source hashes. Coinbase raw body SHA-256: `82866226c88de69ef66470d2e55d1d134a201fa568e9d8843293949c8e1bae5b`. ST response SHA-256: `b7bb1853a5ac11a3080e063fb393cdb70ec75a80fd8184598b5e064181f51c24`. Supply-join SHA-256: `2f260bbd0af32861f15e2eb3d4edc156642feb4e52abe183a41b60f077a396e3`. Pinned Pump AMM IDL SHA-256: `b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b`.

@@ -648,3 +648,63 @@ of 22,731,099 to 23,536,979 cents; the interval does not collapse, so its
 provider peak cannot be assigned one exact FDV cent value by this method.
 Fixture `solana_tracker_supply_fdv_cent_bounds.json` pins the inputs and the
 source join hash. These arithmetic examples do not promote or write ATH facts.
+
+## Amendment 19 (2026-10-11) — corroborate scoped Solana Tracker prices with AMM spots
+
+Two source-specific observations have additional timestamp-adjacent spot
+evidence beyond the supply bounds in Amendment 18. The 8Cc Solana Tracker price is
+`0.000047952524582282125` at `1771704112806` ms. The verified migration
+transaction creates the exact target/WSOL pool and executes its initial AMM Buy;
+the post-Buy vault balances are `98956567965` lamports and
+`177704238872329` target raw units. The same-minute closed Coinbase SOL-USD
+candle is `$86.09–$86.14`. Exact reserve-ratio conversion places both endpoints
+within 1% of the provider point, with the provider timestamp 1.806 seconds
+after the transaction's one-second-resolution block time. This is an
+independent, timestamp-adjacent spot check, not an execution-average price.
+The initial Buy also reconciles against its fee-free `quote_amount_in`: with
+post-Buy base reserve `177704238872329`, base output `29195761127671`, and
+pre-Buy quote reserve `84990359206`, the exact integer-rounding interval
+`[(quote_in−1) × post_base / base_out, quote_in × post_base / base_out]`
+contains the recorded pre-Buy quote reserve.
+
+For this observation only, the verified birth/current supplies (`1000000000000000`
+and `999999927688911` raw units at 6 decimals) give equal lower and upper
+provider-price FDV floors of `4795252` cents. A finalized current-supply
+snapshot follows the price record; the birth receipt and monotonic-supply
+preconditions are recorded in the source evidence. The later same-pool state is
+a negative control: its spot is about `$0.00000369`, far outside the 1%
+comparison. This prevents substituting an unrelated later trade state for the
+migration-time pool observation.
+
+The PEC Solana Tracker point is `0.00006565114747464346` at
+`1762660115868` ms. Its initial migration Buy state is outside the strict 1%
+spot comparison. Two subsequent same-slot PumpSwap Buy post-states in the same
+minute both meet the comparison at both Coinbase endpoints; the later is
+`$0.0000656342961374–$0.0000657186264678` per token. The provider timestamp is
+1.868 seconds after the integer block time of these buys. A first sell has the
+same integer block-time second as the provider point, so its exact ordering
+relative to the provider's millisecond timestamp remains unknown. This is
+nearby price corroboration, not proof of the exact pool state at that instant.
+PEC's birth/current-supply endpoints independently floor to `6565114` cents.
+
+The source name for this narrowly corroborated record is
+`solana-tracker-window-supply-bounds-pool-fx-validated-v1`. It retains
+`ath_at=NULL`, `provider-recording-window-unknown`, and unknown market-wide
+scope. This does not establish lifetime price history, complete pool coverage,
+or canonical ATH/FDV completeness. The provider's `highest_market_cap` and
+Pump `/coins-v2` `ath_market_cap` remain source-only fields and are not the
+candidate's FDV basis. Fixture
+`solana_tracker_scoped_spot_supply_cases.json` checks both exact supply bounds,
+timestamp relationships, CPMM rounding intervals, both FX endpoints, and the
+8Cc later-spot negative control. The full source reconciliations are in
+[`2026-10-11-solana-8cc-migration-pool-spot-corroboration.md`](../p0/measurements/2026-10-11-solana-8cc-migration-pool-spot-corroboration.md).
+[`2026-10-11-solana-pec-migration-spot-corroboration.md`](../p0/measurements/2026-10-11-solana-pec-migration-spot-corroboration.md).
+These records preserve `ath_at=NULL`, unknown provider recording window, and
+unknown market scope. They add no automatic promotion and change no runner
+gates.
+
+These two manually reviewed candidates may fill only existing `codex-missing`
+zero-sentinel rows, guarded by matching stored provider price, timestamp, pool
+and response hash. Preserve holders/liquidity and every already-known numeric
+observation, including genuine zero. This selects an observed-provider-scope
+FDV under the checks above; it does not upgrade either record's completeness.

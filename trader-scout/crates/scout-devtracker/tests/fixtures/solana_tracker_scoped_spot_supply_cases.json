@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "source": "solana-tracker-window-supply-bounds-pool-fx-validated-v1",
+      "chain": "solana-mainnet",
+      "token": "8CcYviLTUTnWjoVpa2nW8bHS9mgqDumbqeVqUDfVpump",
+      "ath_at": null,
+      "fdv_cents": 4795252,
+      "provider_scope": "provider-recording-window-unknown",
+      "market_scope": "unknown",
+      "source_evidence_sha256": "24b21422e43dace5ced5416bf7962dba68a8943bee4c0dc42ce123d6e20bf5c0",
+      "provider": {
+        "price_usd": "0.000047952524582282125",
+        "timestamp_ms": 1771704112806,
+        "pool_id": "CTNhVdyC93jLs9NxJ7f5asMWzbqap3fVruTdwQ45tpch"
+      },
+      "supply": {
+        "decimals": 6,
+        "birth_raw": 1000000000000000,
+        "current_raw": 999999927688911,
+        "snapshot_unix_seconds": 1791729346,
+        "source_join_sha256": "2f260bbd0af32861f15e2eb3d4edc156642feb4e52abe183a41b60f077a396e3"
+      },
+      "spot": {
+        "pool_id": "CTNhVdyC93jLs9NxJ7f5asMWzbqap3fVruTdwQ45tpch",
+        "base_mint": "8CcYviLTUTnWjoVpa2nW8bHS9mgqDumbqeVqUDfVpump",
+        "base_decimals": 6,
+        "quote_mint": "So11111111111111111111111111111111111111112",
+        "quote_decimals": 9,
+        "slot": 401817019,
+        "transaction_index": 1232,
+        "block_time_unix_seconds": 1771704111,
+        "base_vault_address": "2bCX3NBaTqkyT1si57Aeu9QCaHBQjv9xEsXm2CTNv3kR",
+        "quote_vault_address": "B6zXPpSibC5DMQg9Za8Dvrg6KyEyU4cHxnDzF9qLvpTc",
+        "pre_quote_raw": 84990359206,
+        "quote_amount_in_raw": 13963416075,
+        "base_amount_out_raw": 29195761127671,
+        "coinbase_minute_start_unix_seconds": 1771704060,
+        "coinbase_sol_usd_low": "86.09",
+        "coinbase_sol_usd_high": "86.14",
+        "coinbase_response_sha256": "1a8956f2be838e0154e1d46498fe0a8be4383779b4232a98ad44b2d407e03aac",
+        "post_quote_raw": 98956567965,
+        "post_base_raw": 177704238872329
+      },
+      "negative_control": {
+        "post_quote_raw": 27472580741,
+        "post_base_raw": 640635656533018
+      }
+    },
+    {
+      "source": "solana-tracker-window-supply-bounds-pool-fx-validated-v1",
+      "chain": "solana-mainnet",
+      "token": "PECazcZMchmn86TfUVDVKeAtVaiKSJFQCZ9BvZfh3km",
+      "ath_at": null,
+      "fdv_cents": 6565114,
+      "provider_scope": "provider-recording-window-unknown",
+      "market_scope": "unknown",
+      "source_evidence_sha256": "f91052b814ab7cd02a79a96f256d30a573a2358c8b6f2d0f361826570397c868",
+      "provider": {
+        "price_usd": "0.00006565114747464346",
+        "timestamp_ms": 1762660115868,
+        "pool_id": "ChU1E8E4eXn3EwshvP3h18XHiYDCwQwRu9J1r4vFSkzS"
+      },
+      "supply": {
+        "decimals": 6,
+        "birth_raw": 1000000000000000,
+        "current_raw": 999999940322002,
+        "snapshot_unix_seconds": 1791729346,
+        "source_join_sha256": "2f260bbd0af32861f15e2eb3d4edc156642feb4e52abe183a41b60f077a396e3"
+      },
+      "spot": {
+        "pool_id": "ChU1E8E4eXn3EwshvP3h18XHiYDCwQwRu9J1r4vFSkzS",
+        "base_mint": "PECazcZMchmn86TfUVDVKeAtVaiKSJFQCZ9BvZfh3km",
+        "base_decimals": 6,
+        "quote_mint": "So11111111111111111111111111111111111111112",
+        "quote_decimals": 9,
+        "slot": 378867122,
+        "transaction_index": 1044,
+        "block_time_unix_seconds": 1762660114,
+        "pre_quote_raw": 85800981324,
+        "quote_amount_in_raw": 306767797,
+        "base_amount_out_raw": 730140186915,
+        "coinbase_minute_start_unix_seconds": 1762660080,
+        "coinbase_sol_usd_low": "155.66",
+        "coinbase_sol_usd_high": "155.86",
+        "post_quote_raw": 86107810475,
+        "post_base_raw": 204215517912775
+      },
+      "timing_note": "Two same-slot post-migration buys bracket the provider point closely; a first sell has the same integer blockTime second as the ST millisecond timestamp, so exact order is unresolved."
+    }
+  ]
+}

@@ -1249,6 +1249,133 @@ mod tests {
     }
 
     #[test]
+    fn solana_tracker_spot_supply_cases_are_correlated() {
+        use alloy_primitives::U256;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_scoped_spot_supply_cases.json"
+        ))
+        .unwrap();
+        let evidence_hashes = [
+            "24b21422e43dace5ced5416bf7962dba68a8943bee4c0dc42ce123d6e20bf5c0",
+            "f91052b814ab7cd02a79a96f256d30a573a2358c8b6f2d0f361826570397c868",
+        ];
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), evidence_hashes.len());
+        for (case, evidence_hash) in cases.iter().zip(evidence_hashes) {
+            assert_eq!(
+                case["source"],
+                "solana-tracker-window-supply-bounds-pool-fx-validated-v1"
+            );
+            assert_eq!(case["chain"], "solana-mainnet");
+            assert!(case["ath_at"].is_null());
+            assert_eq!(case["provider_scope"], "provider-recording-window-unknown");
+            assert_eq!(case["market_scope"], "unknown");
+            assert_eq!(case["source_evidence_sha256"], evidence_hash);
+
+            let provider = &case["provider"];
+            let price = ExactDecimal::parse(provider["price_usd"].as_str().unwrap()).unwrap();
+            let supply = &case["supply"];
+            assert!(
+                supply["snapshot_unix_seconds"].as_u64().unwrap() * 1_000
+                    >= provider["timestamp_ms"].as_u64().unwrap()
+            );
+            let bounds = fdv_cent_bounds_for_nonincreasing_supply(
+                price,
+                u128::from(supply["birth_raw"].as_u64().unwrap()),
+                u128::from(supply["current_raw"].as_u64().unwrap()),
+                u8::try_from(supply["decimals"].as_u64().unwrap()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                (bounds.lower_cents, bounds.upper_cents),
+                (
+                    case["fdv_cents"].as_i64().unwrap(),
+                    case["fdv_cents"].as_i64().unwrap()
+                )
+            );
+
+            let pool = &case["spot"];
+            assert_eq!(pool["pool_id"], provider["pool_id"]);
+            assert_eq!(pool["base_mint"], case["token"]);
+            assert_eq!(
+                pool["quote_mint"],
+                "So11111111111111111111111111111111111111112"
+            );
+            let at_ms = provider["timestamp_ms"].as_u64().unwrap();
+            assert!(
+                at_ms.abs_diff(pool["block_time_unix_seconds"].as_u64().unwrap() * 1_000) <= 2_000
+            );
+            assert_eq!(
+                at_ms.div_euclid(60_000),
+                pool["coinbase_minute_start_unix_seconds"]
+                    .as_u64()
+                    .unwrap()
+                    .div_euclid(60)
+            );
+
+            let raw = |value: &serde_json::Value| U256::from(value.as_u64().unwrap());
+            let pow10 = |n: u32| {
+                (0..n)
+                    .try_fold(U256::from(1), |v, _| v.checked_mul(U256::from(10)))
+                    .unwrap()
+            };
+            let within_one_percent = |quote: U256, base: U256, fx_text: &str| {
+                let fx = ExactDecimal::parse(fx_text).unwrap();
+                let lhs = quote
+                    .checked_mul(U256::from(fx.coefficient))
+                    .and_then(|value| value.checked_mul(pow10(u32::try_from(price.scale).unwrap())))
+                    .unwrap();
+                let quote_base_scale = pool["quote_decimals"]
+                    .as_u64()
+                    .unwrap()
+                    .checked_sub(pool["base_decimals"].as_u64().unwrap())
+                    .unwrap();
+                let scale = u32::try_from(quote_base_scale)
+                    .unwrap()
+                    .checked_add(u32::try_from(fx.scale).unwrap())
+                    .unwrap();
+                let rhs = base
+                    .checked_mul(pow10(scale))
+                    .and_then(|value| value.checked_mul(U256::from(price.coefficient)))
+                    .unwrap();
+                let delta = if lhs >= rhs {
+                    lhs.checked_sub(rhs).unwrap()
+                } else {
+                    rhs.checked_sub(lhs).unwrap()
+                };
+                delta.checked_mul(U256::from(100)).unwrap() <= rhs
+            };
+
+            let input = raw(&pool["quote_amount_in_raw"]);
+            let post_base = raw(&pool["post_base_raw"]);
+            let output = raw(&pool["base_amount_out_raw"]);
+            let actual_pre = raw(&pool["pre_quote_raw"]).checked_mul(output).unwrap();
+            let lower = input
+                .checked_sub(U256::from(1))
+                .unwrap()
+                .checked_mul(post_base)
+                .unwrap();
+            let upper = input.checked_mul(post_base).unwrap();
+            assert!(lower <= actual_pre && actual_pre <= upper);
+            for fx in ["coinbase_sol_usd_low", "coinbase_sol_usd_high"] {
+                assert!(within_one_percent(
+                    raw(&pool["post_quote_raw"]),
+                    post_base,
+                    pool[fx].as_str().unwrap()
+                ));
+                if let Some(negative) = case.get("negative_control") {
+                    assert!(!within_one_percent(
+                        raw(&negative["post_quote_raw"]),
+                        raw(&negative["post_base_raw"]),
+                        pool[fx].as_str().unwrap()
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn validated_supply_case_has_exact_fdv_without_claiming_ath_time() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../tests/fixtures/birdeye_validated_fdv_case.json"
