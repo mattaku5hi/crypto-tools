@@ -324,3 +324,21 @@ of millions of candidates. Helius (Solana) and Alchemy/Infura (BSC/Base)
 continue chain facts independently. See the
 [free ATH provider research](p0/measurements/2026-10-11-free-ath-providers.md)
 for qualified historical/forward supplements to Codex.
+
+### Targeted Base runner ATH backfill
+
+`dev-tracker backfill --chains base --phases ath --ath-runners-from-index`
+uses `config/dev-tracker.toml` (override with `--ath-index-config`) to read
+the current `top_runners` minimum ATH, maximum plausible ATH and minimum
+holders. It enumerates Codex's all-time Base mainnet index with those filters,
+then stores observations only for Base launch tokens already in PostgreSQL.
+This mode has a separate cursor for each filter configuration and uses
+`--ath-requests` as its request-attempt budget. It makes no automatic retries.
+
+The mode removes the daily first-pair `createdAt` bound used by
+`--ath-from-index`; it is still a filtered provider enumeration, not a complete
+historical ATH index. `complete=true` means Codex returned a short page for
+that filter. Index changes can affect offset pagination; saturation at 10,000
+results is reported as incomplete. Unknown tokens remain unknown and do not
+receive zero ATH. Category derivation still uses its configured `since_days`
+launch-history scope. See ADR-021 amendment 10 for cursor and coverage details.

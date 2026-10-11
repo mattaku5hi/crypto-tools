@@ -62,6 +62,12 @@ pub struct BackfillArgs {
     /// Enumerate positive Base ATH from Codex's first-pair index by closed UTC day.
     #[arg(long)]
     ath_from_index: bool,
+    /// Enumerate Base tokens matching the configured runner ATH/holder gates.
+    #[arg(long)]
+    ath_runners_from_index: bool,
+    /// Config whose top_runners thresholds define the provider index filter.
+    #[arg(long, default_value = "config/dev-tracker.toml")]
+    ath_index_config: String,
 }
 
 impl BackfillArgs {
@@ -86,15 +92,22 @@ impl BackfillArgs {
 /// continues (rerun to retry what is left).
 pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
     let chains = a.chains();
-    if a.ath_from_index && (chains != ["base"] || !a.has("ath")) {
-        return Err("--ath-from-index requires --chains base and the ath phase".into());
+    if (a.ath_from_index || a.ath_runners_from_index) && (chains != ["base"] || !a.has("ath")) {
+        return Err("Base ATH index modes require --chains base and the ath phase".into());
+    }
+    if a.ath_from_index && a.ath_runners_from_index {
+        return Err("--ath-from-index and --ath-runners-from-index are separate modes".into());
     }
     // every chain is its own task (and every Solana day, below): the
     // multi-threaded runtime spreads the JSON decoding over the cores; one
     // `join!` would run them all on one thread (measured: Solana's page
     // decoding starved the EVM steps to one per two minutes)
     let mut tasks = Vec::new();
-    for chain in chains.iter().filter(|c| c.as_str() != "solana") {
+    for chain in chains
+        .iter()
+        .filter(|c| c.as_str() != "solana")
+        .filter(|_| a.has("logs") || a.has("identity"))
+    {
         let (db, a, chain) = (db.clone(), a.clone(), chain.clone());
         tasks.push((
             chain.clone(),
@@ -117,7 +130,46 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
         }
     }
     if a.has("ath") {
-        if a.ath_from_index {
+        if a.ath_runners_from_index {
+            let cfg = read_config(&a.ath_index_config)?;
+            let thresholds = &cfg.top_runners;
+            let filter = scout_devtracker::ath::RunnerAthIndexFilter {
+                min_ath_usd: thresholds.runner_ath_usd,
+                max_ath_usd: thresholds.max_plausible_ath_usd,
+                min_holders: thresholds.min_holders,
+            };
+            let key = std::env::var(CODEX_ENV)
+                .map_err(|_| format!("--ath-runners-from-index requires {CODEX_ENV}"))?;
+            let as_of = now();
+            let report = scout_devtracker::ath::backfill_base_runner_ath_from_index(
+                db,
+                key.trim(),
+                filter,
+                a.ath_requests,
+                as_of,
+            )
+            .await
+            .map_err(|error| format!("base runner ATH index: {error}"))?;
+            eprintln!(
+                "dev-tracker: backfill Base all-time Codex runner filter ATH ${}..${}, holders >= {} (as-of {}): complete={}, {} requests, {} provider rows, {} tracked observations, next offset {}, quality=provider-filtered-index-only/full-lifetime-ATH-unproven/mutable-offset-order, annual derivation scope remains since_days, {} budget remaining",
+                report.min_ath_usd,
+                report.max_ath_usd,
+                report.min_holders,
+                as_of,
+                report.complete,
+                report.requests,
+                report.provider_rows,
+                report.tracked_rows,
+                report.next_offset,
+                a.ath_requests.saturating_sub(report.requests)
+            );
+            if !report.complete {
+                return Err(
+                    "Base runner ATH index pass stopped at its request budget; rerun to resume"
+                        .into(),
+                );
+            }
+        } else if a.ath_from_index {
             let key = std::env::var(CODEX_ENV)
                 .map_err(|_| format!("--ath-from-index requires {CODEX_ENV}"))?;
             let as_of = now();

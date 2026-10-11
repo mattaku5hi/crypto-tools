@@ -304,3 +304,39 @@ quotes or limited candle history are not silently substituted for full ATH.
 Config regression failed before the new field existed, then passed. Tests
 cover legacy/default TOML, invalid zero cadence, independent ATH deadline,
 ATH-only wake, disabled budget and unchanged 90-minute default watchdog.
+
+## Amendment 10 (2026-10-11) — all-time filtered Base runner enumeration
+
+The separate opt-in `backfill --chains base --phases ath
+--ath-runners-from-index` enumerates Codex Base mainnet tokens with
+`athFdv >= top_runners.runner_ath_usd`,
+`athFdv <= top_runners.max_plausible_ath_usd`, and
+`holders >= top_runners.min_holders` from the selected
+`--ath-index-config` (default `config/dev-tracker.toml`). It sets
+`includeScams:true`, orders by `createdAt ASC`, and does not send a
+`createdAt` range. This is an all-time provider-index filter pass; the current
+holder count and current index membership can change.
+
+The pass stores only rows matching already tracked Base launch tokens. It
+uses a separate filter-identity cursor, advances by raw provider page length,
+and checkpoints only after idempotent ATH writes. Unknown database membership
+does not change pagination or create a zero/missing ATH observation. Different
+thresholds use separate cursors. A full provider page at the 10,000 offset cap
+is an explicit saturation error; it does not prove natural completion. The
+shared Codex request budget is reserved before every request, with no retries
+in this mode. Response bodies remain bounded.
+
+`complete=true` means only that the provider-filtered enumeration reached a
+short page. Mutable offset ordering can still skip or repeat rows as Codex's
+index changes. It does not establish full-lifetime ATH coverage, an immutable
+snapshot, or absence of qualifying tokens outside the provider index. Annual
+category derivation remains independently scoped by `since_days` from tracked
+launch facts. Unknown or unindexed tokens remain unknown, never zero. The
+public five-row response fixture
+`crates/scout-devtracker/tests/fixtures/codex_base_runner_filter_2026-10-11.json`
+records the observed provider shape without credentials.
+
+This is a targeted candidate-enumeration aid for runner analysis. It does not
+change the runner definition, ATH policy, or statistical interpretation; the
+filter itself selects high-ATH tokens and therefore cannot be treated as an
+unbiased sample of all launches.

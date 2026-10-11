@@ -30,6 +30,9 @@ const BASE_INDEX_FILTER: &str = "base-positive-ath-created-at-v1";
 const BASE_INDEX_NETWORK: u64 = 8453;
 const BASE_INDEX_MAX_OFFSET: usize = 10_000;
 const BASE_INDEX_MAX_BODY: usize = 4 * 1024 * 1024;
+const BASE_RUNNERS_INDEX_KEY: &str = "ath-runners:codex:base:v1";
+const BASE_RUNNERS_INDEX_PAGE_SIZE: usize = 200;
+const BASE_RUNNERS_INDEX_MAX_OFFSET: usize = 10_000;
 const UTC_DAY: i64 = 86_400;
 const MAX_DATE_MISMATCH_EXAMPLES: usize = 4;
 
@@ -96,6 +99,10 @@ pub enum AthError {
     EmptyIndexBudget,
     #[error("Base ATH index only supports chain `base`, got `{0}`")]
     IndexChain(String),
+    #[error("Codex runner index cursor is incompatible or malformed")]
+    InvalidRunnerIndexCursor,
+    #[error("Codex runner index reached {max_results} rows without proving the natural end")]
+    RunnerIndexSaturated { max_results: usize },
     #[error("{0}")]
     Db(#[from] DevDbError),
 }
@@ -120,6 +127,35 @@ pub struct AthIndexReport {
     pub complete: bool,
     pub window_start: i64,
     pub window_end: i64,
+}
+
+/// Integer-USD filters matching the current `top_runners` candidate gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunnerAthIndexFilter {
+    pub min_ath_usd: i64,
+    pub max_ath_usd: i64,
+    pub min_holders: i64,
+}
+
+/// All-time Base provider-filtered runner candidate enumeration.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerAthIndexReport {
+    pub requests: usize,
+    pub provider_rows: usize,
+    pub tracked_rows: usize,
+    pub complete: bool,
+    pub next_offset: usize,
+    pub min_ath_usd: i64,
+    pub max_ath_usd: i64,
+    pub min_holders: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RunnerIndexCursor {
+    version: u8,
+    filter: String,
+    offset: usize,
+    complete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -599,6 +635,299 @@ async fn save_index_cursor(
     Ok(())
 }
 
+/// Enumerate Codex's all-time Base token index after applying the configured
+/// runner ATH and holder filters, then store observations for known launches.
+/// The provider's first-pair `createdAt` is ordered for pagination only; it
+/// does not bound the enumeration or define the annual derivation scope.
+///
+/// # Errors
+/// Provider, database, malformed cursor/response, or provider offset cap.
+pub async fn backfill_base_runner_ath_from_index(
+    db: &DevDb,
+    codex_key: &str,
+    filter: RunnerAthIndexFilter,
+    max_requests: usize,
+    now: i64,
+) -> Result<RunnerAthIndexReport, AthError> {
+    backfill_base_runner_ath_from_index_at(
+        db,
+        codex_key,
+        filter,
+        max_requests,
+        now,
+        CODEX_URL,
+        IndexConfig {
+            page_size: BASE_RUNNERS_INDEX_PAGE_SIZE,
+            max_offset: BASE_RUNNERS_INDEX_MAX_OFFSET,
+            ..IndexConfig::PRODUCTION
+        },
+        BASE_RUNNERS_INDEX_KEY,
+        CODEX_REQUEST_BUDGET_KEY,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn backfill_base_runner_ath_from_index_at(
+    db: &DevDb,
+    codex_key: &str,
+    filter: RunnerAthIndexFilter,
+    max_requests: usize,
+    now: i64,
+    endpoint: &str,
+    config: IndexConfig,
+    cursor_prefix: &str,
+    budget_key: &str,
+) -> Result<RunnerAthIndexReport, AthError> {
+    let min_cents = filter
+        .min_ath_usd
+        .checked_mul(100)
+        .ok_or(AthError::InvalidRunnerIndexCursor)?;
+    let max_cents = filter
+        .max_ath_usd
+        .checked_mul(100)
+        .ok_or(AthError::InvalidRunnerIndexCursor)?;
+    if filter.min_ath_usd <= 0
+        || filter.max_ath_usd < filter.min_ath_usd
+        || filter.min_holders < 0
+        || max_requests == 0
+        || config.page_size == 0
+        || config.max_offset < config.page_size
+        || config.max_body == 0
+    {
+        return Err(AthError::InvalidRunnerIndexCursor);
+    }
+    let filter_id = format!(
+        "base-runner-ath-holders-v1:{}:{}:{}",
+        filter.min_ath_usd, filter.max_ath_usd, filter.min_holders
+    );
+    let cursor_key = format!("{cursor_prefix}:{filter_id}");
+    let mut cursor = match db.cursor(&cursor_key).await? {
+        Some(position) => {
+            let cursor: RunnerIndexCursor =
+                serde_json::from_str(&position).map_err(|_| AthError::InvalidRunnerIndexCursor)?;
+            validate_runner_index_cursor(&cursor, &filter_id, config)?;
+            cursor
+        }
+        None => RunnerIndexCursor {
+            version: 1,
+            filter: filter_id,
+            offset: 0,
+            complete: false,
+        },
+    };
+    let mut report = RunnerAthIndexReport {
+        next_offset: cursor.offset,
+        min_ath_usd: filter.min_ath_usd,
+        max_ath_usd: filter.max_ath_usd,
+        min_holders: filter.min_holders,
+        complete: cursor.complete,
+        ..RunnerAthIndexReport::default()
+    };
+    if cursor.complete {
+        return Ok(report);
+    }
+    if cursor.offset >= config.max_offset {
+        return Err(AthError::RunnerIndexSaturated {
+            max_results: config.max_offset,
+        });
+    }
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|error| AthError::Http(error.to_string()))?;
+    let mut last_request = None;
+    while report.requests < max_requests {
+        let query = runner_index_query(filter, cursor.offset, config.page_size);
+        let value = match request_graphql(
+            db,
+            &http,
+            codex_key,
+            endpoint,
+            &query,
+            now,
+            config.max_body,
+            0,
+            config.minimum_interval,
+            Some(max_requests),
+            budget_key,
+            &mut report.requests,
+            &mut last_request,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(AthError::PassBudgetExhausted(_)) => break,
+            Err(error) => return Err(error),
+        };
+        let rows = parse_runner_index_page(
+            &value,
+            now,
+            config.page_size,
+            min_cents,
+            max_cents,
+            filter.min_holders,
+        )?;
+        let page_len = rows.len();
+        report.provider_rows = report
+            .provider_rows
+            .checked_add(rows.len())
+            .ok_or(AthError::InvalidRunnerIndexCursor)?;
+        let tokens: Vec<String> = rows.iter().map(|row| row.token.clone()).collect();
+        let known = db.known_launch_tokens("base", &tokens).await?;
+        let known: std::collections::BTreeMap<String, String> = known
+            .into_iter()
+            .map(|token| (token.to_ascii_lowercase(), token))
+            .collect();
+        let observations: Vec<AthObservation> = rows
+            .into_iter()
+            .filter_map(|row| {
+                known
+                    .get(&row.token.to_ascii_lowercase())
+                    .map(|token| AthObservation {
+                        token: token.clone(),
+                        ..row
+                    })
+            })
+            .collect();
+        report.tracked_rows = report
+            .tracked_rows
+            .checked_add(observations.len())
+            .ok_or(AthError::InvalidRunnerIndexCursor)?;
+        db.upsert_ath(&observations).await?;
+
+        // `provider_rows` is cumulative, so use the page's own length for
+        // offset progression even when no row maps to a tracked launch.
+        if page_len == config.page_size {
+            let next = cursor
+                .offset
+                .checked_add(page_len)
+                .ok_or(AthError::InvalidRunnerIndexCursor)?;
+            if next >= config.max_offset {
+                cursor.offset = next;
+                save_runner_index_cursor(db, &cursor_key, &cursor, now).await?;
+                return Err(AthError::RunnerIndexSaturated {
+                    max_results: config.max_offset,
+                });
+            }
+            cursor.offset = next;
+        } else {
+            cursor.complete = true;
+        }
+        save_runner_index_cursor(db, &cursor_key, &cursor, now).await?;
+        report.next_offset = cursor.offset;
+        report.complete = cursor.complete;
+        if cursor.complete {
+            break;
+        }
+    }
+    Ok(report)
+}
+
+fn validate_runner_index_cursor(
+    cursor: &RunnerIndexCursor,
+    filter: &str,
+    config: IndexConfig,
+) -> Result<(), AthError> {
+    if cursor.version != 1
+        || cursor.filter != filter
+        || cursor.offset > config.max_offset
+        || (cursor.complete && cursor.offset >= config.max_offset)
+        || !cursor.offset.is_multiple_of(config.page_size)
+    {
+        return Err(AthError::InvalidRunnerIndexCursor);
+    }
+    Ok(())
+}
+
+async fn save_runner_index_cursor(
+    db: &DevDb,
+    key: &str,
+    cursor: &RunnerIndexCursor,
+    now: i64,
+) -> Result<(), AthError> {
+    let position = serde_json::to_string(cursor).map_err(|_| AthError::InvalidRunnerIndexCursor)?;
+    db.set_cursor(key, &position, now).await?;
+    Ok(())
+}
+
+fn runner_index_query(filter: RunnerAthIndexFilter, offset: usize, page_size: usize) -> String {
+    format!(
+        "{{ filterTokens(filters: {{network: [{BASE_INDEX_NETWORK}], isTestnet: false, includeScams: true, athFdv: {{gte: {}, lte: {}}}, holders: {{gte: {}}}}}, rankings: [{{attribute: createdAt, direction: ASC}}], limit: {page_size}, offset: {offset}) {{ results {{ createdAt token {{ address networkId extrema {{ athFdv athFdvTimestamp }} }} holders liquidity }} }} }}",
+        filter.min_ath_usd, filter.max_ath_usd, filter.min_holders
+    )
+}
+
+fn parse_runner_index_page(
+    value: &Value,
+    as_of: i64,
+    page_size: usize,
+    min_cents: i64,
+    max_cents: i64,
+    min_holders: i64,
+) -> Result<Vec<AthObservation>, AthError> {
+    let results = value
+        .pointer("/data/filterTokens/results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AthError::MalformedIndex("missing results array".into()))?;
+    if results.len() > page_size {
+        return Err(AthError::MalformedIndex(
+            "page exceeded requested limit".into(),
+        ));
+    }
+    results
+        .iter()
+        .map(|result| {
+            let _created_at = result
+                .get("createdAt")
+                .and_then(Value::as_i64)
+                .filter(|timestamp| *timestamp >= 0)
+                .ok_or_else(|| AthError::MalformedIndex("missing/invalid createdAt".into()))?;
+            let token = result
+                .pointer("/token/address")
+                .and_then(Value::as_str)
+                .filter(|address| valid_evm_address(address))
+                .ok_or_else(|| AthError::MalformedIndex("invalid token address".into()))?;
+            let network = result
+                .pointer("/token/networkId")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| AthError::MalformedIndex("missing token networkId".into()))?;
+            if network != BASE_INDEX_NETWORK {
+                return Err(AthError::WrongIndexNetwork { actual: network });
+            }
+            let ath = result
+                .pointer("/token/extrema/athFdv")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AthError::MalformedIndex("missing ATH".into()))?;
+            let cents = usd_to_cents(ath)
+                .filter(|_| {
+                    decimal_within_usd_range(
+                        ath,
+                        min_cents.div_euclid(100),
+                        max_cents.div_euclid(100),
+                    )
+                })
+                .ok_or_else(|| AthError::MalformedIndex("ATH outside runner filter".into()))?;
+            let holders = optional_integer(result.get("holders"))?
+                .filter(|holders| *holders >= min_holders)
+                .ok_or_else(|| {
+                    AthError::MalformedIndex("holders missing or below filter".into())
+                })?;
+            Ok(AthObservation {
+                chain: "base".into(),
+                token: token.to_ascii_lowercase(),
+                ath_fdv_cents: cents,
+                ath_at: optional_integer(result.pointer("/token/extrema/athFdvTimestamp"))?,
+                source: "codex-runner-index".into(),
+                observed_at: as_of,
+                holders: Some(holders),
+                liquidity_cents: optional_decimal_cents(result.get("liquidity"))?,
+            })
+        })
+        .collect()
+}
+
 fn index_query(interval: &IndexInterval, page_size: usize) -> String {
     format!(
         "{{ filterTokens(filters: {{network: [{BASE_INDEX_NETWORK}], isTestnet: false, includeScams: true, createdAt: {{gte: {}, lt: {}}}, athFdv: {{gt: 0}}}}, rankings: [{{attribute: createdAt, direction: ASC}}], limit: {page_size}, offset: {}) {{ results {{ createdAt token {{ address networkId extrema {{ athFdv athFdvTimestamp }} }} holders liquidity }} }} }}",
@@ -735,6 +1064,17 @@ fn positive_decimal(value: &str) -> bool {
         .bytes()
         .any(|digit| digit.is_ascii_digit() && digit != b'0')
         && usd_to_cents(value).is_some()
+}
+
+fn decimal_within_usd_range(value: &str, min_usd: i64, max_usd: i64) -> bool {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    let Some(whole) = whole.parse::<i64>().ok() else {
+        return false;
+    };
+    if whole < min_usd || whole > max_usd {
+        return false;
+    }
+    whole < max_usd || fraction.bytes().all(|digit| digit == b'0')
 }
 
 fn valid_evm_address(value: &str) -> bool {
@@ -957,6 +1297,47 @@ mod tests {
         offsets: Arc<Mutex<Vec<usize>>>,
     }
 
+    struct RunnerIndexPages {
+        rows: Value,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Respond for RunnerIndexPages {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let query = body["query"].as_str().unwrap().to_string();
+            self.calls.lock().unwrap().push(query.clone());
+            let offset = query
+                .rsplit("offset: ")
+                .next()
+                .unwrap()
+                .split(')')
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            let limit = query
+                .split("limit: ")
+                .nth(1)
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            let rows = self.rows.as_array().unwrap();
+            let page = rows
+                .iter()
+                .skip(offset)
+                .take(limit)
+                .cloned()
+                .collect::<Vec<_>>();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"filterTokens": {"results": page}}
+            }))
+        }
+    }
+
     impl Respond for DateMismatchPages {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -1057,6 +1438,389 @@ mod tests {
         assert!(query.contains("createdAt: {gte: 10, lt: 20}"));
         assert!(query.contains("athFdv: {gt: 0}"));
         assert!(query.contains("offset: 200"));
+    }
+
+    #[test]
+    fn runner_index_query_is_all_time_and_exact_cents_filter_is_enforced() {
+        let filter = RunnerAthIndexFilter {
+            min_ath_usd: 500_000,
+            max_ath_usd: 10_000_000_000,
+            min_holders: 100,
+        };
+        let query = runner_index_query(filter, 400, 200);
+        assert!(query.contains("network: [8453]"));
+        assert!(query.contains("isTestnet: false"));
+        assert!(query.contains("includeScams: true"));
+        assert!(query.contains("athFdv: {gte: 500000, lte: 10000000000}"));
+        assert!(query.contains("holders: {gte: 100}"));
+        assert!(query.contains("rankings: [{attribute: createdAt, direction: ASC}]"));
+        assert!(!query.contains("createdAt: {gte:"));
+
+        let row = |address: &str, ath: &str, holders: Value| {
+            json!({
+                "createdAt": 1_690_997_881,
+                "token": {"address": address, "networkId": BASE_INDEX_NETWORK,
+                    "extrema": {"athFdv": ath, "athFdvTimestamp": 1_778_068_501}},
+                "holders": holders,
+                "liquidity": "19626"
+            })
+        };
+        let page = |row| json!({"data":{"filterTokens":{"results":[row]}}});
+        for ath in ["500000", "10000000000"] {
+            let parsed = parse_runner_index_page(
+                &page(row(&token_address(1), ath, json!(100))),
+                1_800,
+                5,
+                50_000_000,
+                1_000_000_000_000,
+                100,
+            )
+            .unwrap();
+            assert_eq!(parsed[0].holders, Some(100));
+        }
+        assert!(
+            parse_runner_index_page(
+                &page(row(&token_address(1), "500000.001", json!(100))),
+                1_800,
+                5,
+                50_000_000,
+                1_000_000_000_000,
+                100,
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_runner_index_page(
+                &page(row(&token_address(1), "499999.999", json!(100))),
+                1_800,
+                5,
+                50_000_000,
+                1_000_000_000_000,
+                100,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_runner_index_page(
+                &page(row(&token_address(1), "10000000000.001", json!(100))),
+                1_800,
+                5,
+                50_000_000,
+                1_000_000_000_000,
+                100,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_runner_index_page(
+                &page(row(&token_address(1), "500000", Value::Null)),
+                1_800,
+                5,
+                50_000_000,
+                1_000_000_000_000,
+                100,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn runner_index_parser_rejects_wrong_network_addresses_and_invalid_timestamps() {
+        let valid = json!({
+            "createdAt": 1_690_997_881,
+            "token": {"address": token_address(1), "networkId": BASE_INDEX_NETWORK,
+                "extrema": {"athFdv": "500000", "athFdvTimestamp": 1_778_068_501}},
+            "holders": 100,
+            "liquidity": "1"
+        });
+        let parse = |row: Value| {
+            parse_runner_index_page(
+                &json!({"data":{"filterTokens":{"results":[row]}}}),
+                1_800,
+                5,
+                50_000_000,
+                1_000_000_000_000,
+                100,
+            )
+        };
+        let mut row = valid.clone();
+        row["token"]["networkId"] = json!(56);
+        assert!(matches!(
+            parse(row),
+            Err(AthError::WrongIndexNetwork { actual: 56 })
+        ));
+        let mut row = valid.clone();
+        row["token"]["address"] = json!("bad-address");
+        assert!(matches!(parse(row), Err(AthError::MalformedIndex(_))));
+        let mut row = valid.clone();
+        row["createdAt"] = json!(-1);
+        assert!(matches!(parse(row), Err(AthError::MalformedIndex(_))));
+        let mut row = valid.clone();
+        row["createdAt"] = json!(1.5);
+        assert!(matches!(parse(row), Err(AthError::MalformedIndex(_))));
+        let mut row = valid.clone();
+        row["token"]["extrema"]["athFdvTimestamp"] = json!(-1);
+        assert!(matches!(parse(row), Err(AthError::MalformedIndex(_))));
+        let mut row = valid.clone();
+        row["holders"] = json!(100.5);
+        assert!(matches!(parse(row), Err(AthError::MalformedIndex(_))));
+    }
+
+    #[tokio::test]
+    async fn runner_index_resumes_by_provider_rows_and_scopes_cursor_to_filter() {
+        let Some(db) = isolated_db().await else {
+            return;
+        };
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/codex_base_runner_filter_2026-10-11.json"
+        ))
+        .unwrap();
+        let rows = fixture
+            .pointer("/data/filterTokens/results")
+            .unwrap()
+            .clone();
+        let first_token = rows[0]["token"]["address"].as_str().unwrap().to_string();
+        let pid = std::process::id();
+        db.insert_launches(&[Launch {
+            chain: "base".into(),
+            token: first_token.clone(),
+            launchpad: "zora".into(),
+            creator: format!("runner-index-{pid}"),
+            created_block: 1,
+            created_at: 1,
+            tx_hash: format!("runner-index-{pid}"),
+            source: "test".into(),
+        }])
+        .await
+        .unwrap();
+        let filter = RunnerAthIndexFilter {
+            min_ath_usd: 500_000,
+            max_ath_usd: 10_000_000_000,
+            min_holders: 100,
+        };
+        let config = IndexConfig {
+            page_size: 2,
+            max_offset: 10,
+            max_body: BASE_INDEX_MAX_BODY,
+            minimum_interval: Duration::ZERO,
+        };
+        let prefix = format!("runner-index-cursor:{pid}");
+        let budget = format!("runner-index-budget:{pid}");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(RunnerIndexPages {
+                rows: rows.clone(),
+                calls: calls.clone(),
+            })
+            .mount(&server)
+            .await;
+        let first = backfill_base_runner_ath_from_index_at(
+            &db,
+            "fixture-key",
+            filter,
+            1,
+            1_800_000_000,
+            &server.uri(),
+            config,
+            &prefix,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert!(!first.complete);
+        assert_eq!(first.provider_rows, 2);
+        assert_eq!(first.tracked_rows, 1);
+        assert_eq!(first.next_offset, 2);
+
+        let resumed = backfill_base_runner_ath_from_index_at(
+            &db,
+            "fixture-key",
+            filter,
+            10,
+            1_800_000_001,
+            &server.uri(),
+            config,
+            &prefix,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert!(resumed.complete);
+        assert_eq!(resumed.provider_rows, 3);
+        assert_eq!(resumed.tracked_rows, 0);
+        assert_eq!(resumed.next_offset, 4);
+        {
+            let queries = calls.lock().unwrap();
+            assert_eq!(queries.len(), 3);
+            assert!(queries[0].contains("offset: 0"));
+            assert!(queries[1].contains("offset: 2"));
+            assert!(queries[2].contains("offset: 4"));
+        }
+
+        let complete_server = MockServer::start().await;
+        let complete = backfill_base_runner_ath_from_index_at(
+            &db,
+            "fixture-key",
+            filter,
+            10,
+            1_800_000_002,
+            &complete_server.uri(),
+            config,
+            &prefix,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert!(complete.complete);
+        assert_eq!(complete.requests, 0);
+        assert!(
+            complete_server
+                .received_requests()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let different_filter = RunnerAthIndexFilter {
+            min_ath_usd: 1_000_000,
+            ..filter
+        };
+        let isolated_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"filterTokens": {"results": []}}
+            })))
+            .mount(&isolated_server)
+            .await;
+        let isolated = backfill_base_runner_ath_from_index_at(
+            &db,
+            "fixture-key",
+            different_filter,
+            1,
+            1_800_000_003,
+            &isolated_server.uri(),
+            config,
+            &prefix,
+            &budget,
+        )
+        .await
+        .unwrap();
+        assert!(isolated.complete);
+        assert_eq!(isolated.requests, 1);
+        let query = isolated_server.received_requests().await.unwrap();
+        let request: Value = serde_json::from_slice(&query[0].body).unwrap();
+        assert!(request["query"].as_str().unwrap().contains("gte: 1000000"));
+    }
+
+    #[tokio::test]
+    async fn runner_index_errors_do_not_advance_and_offset_cap_is_not_complete() {
+        let Some(db) = isolated_db().await else {
+            return;
+        };
+        let filter = RunnerAthIndexFilter {
+            min_ath_usd: 500_000,
+            max_ath_usd: 10_000_000_000,
+            min_holders: 100,
+        };
+        let config = IndexConfig {
+            page_size: 1,
+            max_offset: 2,
+            max_body: BASE_INDEX_MAX_BODY,
+            minimum_interval: Duration::ZERO,
+        };
+        let pid = std::process::id();
+        let error_prefix = format!("runner-index-malformed:{pid}");
+        let malformed_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"filterTokens": {"results": [{
+                    "createdAt": 1,
+                    "token": {"address": token_address(90), "networkId": BASE_INDEX_NETWORK,
+                        "extrema": {"athFdv": "499999.99"}},
+                    "holders": 100
+                }]}}
+            })))
+            .mount(&malformed_server)
+            .await;
+        assert!(matches!(
+            backfill_base_runner_ath_from_index_at(
+                &db,
+                "fixture-key",
+                filter,
+                1,
+                1_800_000_000,
+                &malformed_server.uri(),
+                config,
+                &error_prefix,
+                &format!("runner-index-malformed-budget:{pid}"),
+            )
+            .await,
+            Err(AthError::MalformedIndex(_))
+        ));
+        let key = format!("{error_prefix}:base-runner-ath-holders-v1:500000:10000000000:100");
+        assert!(db.cursor(&key).await.unwrap().is_none());
+
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/codex_base_runner_filter_2026-10-11.json"
+        ))
+        .unwrap();
+        let rows = fixture
+            .pointer("/data/filterTokens/results")
+            .unwrap()
+            .clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let capped_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(RunnerIndexPages {
+                rows,
+                calls: calls.clone(),
+            })
+            .mount(&capped_server)
+            .await;
+        let cap_prefix = format!("runner-index-cap:{pid}");
+        let cap_budget = format!("runner-index-cap-budget:{pid}");
+        assert!(matches!(
+            backfill_base_runner_ath_from_index_at(
+                &db,
+                "fixture-key",
+                filter,
+                10,
+                1_800_000_001,
+                &capped_server.uri(),
+                config,
+                &cap_prefix,
+                &cap_budget,
+            )
+            .await,
+            Err(AthError::RunnerIndexSaturated { max_results: 2 })
+        ));
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        let cap_key = format!("{cap_prefix}:base-runner-ath-holders-v1:500000:10000000000:100");
+        let saved: RunnerIndexCursor =
+            serde_json::from_str(&db.cursor(&cap_key).await.unwrap().unwrap()).unwrap();
+        assert_eq!(saved.offset, 2);
+        assert!(!saved.complete);
+        let mut invalid_complete = saved.clone();
+        invalid_complete.complete = true;
+        assert!(validate_runner_index_cursor(&invalid_complete, &saved.filter, config).is_err());
+        let empty_server = MockServer::start().await;
+        assert!(matches!(
+            backfill_base_runner_ath_from_index_at(
+                &db,
+                "fixture-key",
+                filter,
+                10,
+                1_800_000_002,
+                &empty_server.uri(),
+                config,
+                &cap_prefix,
+                &cap_budget,
+            )
+            .await,
+            Err(AthError::RunnerIndexSaturated { max_results: 2 })
+        ));
+        assert!(empty_server.received_requests().await.unwrap().is_empty());
     }
 
     #[test]
