@@ -217,19 +217,27 @@ impl ExactDecimal {
 
     /// Floor USD price × validated whole-token supply into integer cents.
     /// Overflow returns `None`; no rounding or float conversion is performed.
-    #[allow(clippy::integer_division)]
     pub fn fdv_cents_for_supply(self, supply: u128) -> Option<i64> {
-        let mut numerator = self.coefficient.checked_mul(supply)?.checked_mul(100)?;
-        if self.scale < 0 {
-            numerator = numerator.checked_mul(10u128.checked_pow(self.scale.unsigned_abs())?)?;
+        self.fdv_cents_for_raw_supply(supply, 0)
+    }
+
+    /// Floor USD price × a raw token supply, scaled by the mint's decimals,
+    /// into integer cents. Overflow returns `None`.
+    #[allow(clippy::integer_division)]
+    pub fn fdv_cents_for_raw_supply(self, raw_supply: u128, supply_decimals: u8) -> Option<i64> {
+        let mut numerator = self.coefficient.checked_mul(raw_supply)?.checked_mul(100)?;
+        let effective_scale = self.scale.checked_add(i32::from(supply_decimals))?;
+        if effective_scale < 0 {
+            numerator =
+                numerator.checked_mul(10u128.checked_pow(effective_scale.unsigned_abs())?)?;
         }
-        let cents = if self.scale > 0 {
+        let cents = if effective_scale > 0 {
             // 10^39 exceeds u128::MAX, so every representable numerator is
             // strictly below the denominator at these scales.
-            if self.scale > 38 {
+            if effective_scale > 38 {
                 return Some(0);
             }
-            numerator / 10u128.checked_pow(u32::try_from(self.scale).ok()?)?
+            numerator / 10u128.checked_pow(u32::try_from(effective_scale).ok()?)?
         } else {
             numerator
         };
@@ -254,6 +262,42 @@ impl ExactDecimal {
             order => order,
         }
     }
+}
+
+/// Integer-cent FDV bounds from one provider price and a nonincreasing supply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FdvCentBounds {
+    pub lower_cents: i64,
+    pub upper_cents: i64,
+}
+
+impl FdvCentBounds {
+    /// True only when both exact endpoint calculations floor to the same cent.
+    pub fn is_same_cent(self) -> bool {
+        self.lower_cents == self.upper_cents
+    }
+}
+
+/// Bound price × supply FDV cents when supply has only decreased since birth.
+///
+/// This proves one rounded value only when the initial and current raw supplies
+/// are verified, `0 < current_supply <= initial_supply`, decimals are correct,
+/// and the current supply snapshot is at or after the provider maximum-price
+/// record. It does not prove that the price scope is complete or independently
+/// validate the provider price.
+pub fn fdv_cent_bounds_for_nonincreasing_supply(
+    price: ExactDecimal,
+    initial_supply: u128,
+    current_supply: u128,
+    supply_decimals: u8,
+) -> Option<FdvCentBounds> {
+    if current_supply == 0 || current_supply > initial_supply {
+        return None;
+    }
+    Some(FdvCentBounds {
+        lower_cents: price.fdv_cents_for_raw_supply(current_supply, supply_decimals)?,
+        upper_cents: price.fdv_cents_for_raw_supply(initial_supply, supply_decimals)?,
+    })
 }
 
 /// Birdeye adapter errors. HTTP status bodies are intentionally not retained.
@@ -1149,6 +1193,59 @@ mod tests {
                 .fdv_cents_for_supply(u128::MAX),
             None
         );
+    }
+
+    #[test]
+    fn tracker_price_and_monotonic_raw_supply_golden_cent_bounds() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_supply_fdv_cent_bounds.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["source_evidence_sha256"],
+            "68e59f339adf34437c6cb02df283d2f6becb69475a7cbed5cb982ccfd4fe21e1"
+        );
+        assert_eq!(
+            fixture["provider_scope"],
+            "provider-recording-window-unknown"
+        );
+        let snapshot_at_ms = fixture["supply_snapshot_at_unix_seconds"]
+            .as_u64()
+            .unwrap()
+            .checked_mul(1_000)
+            .unwrap();
+
+        for case in fixture["cases"].as_array().unwrap() {
+            assert!(snapshot_at_ms >= case["provider_maximum_timestamp_ms"].as_u64().unwrap());
+            let price = ExactDecimal::parse(case["price_usd"].as_str().unwrap()).unwrap();
+            let initial = case["initial_raw_supply"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            let current = case["current_raw_supply"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            let decimals = u8::try_from(fixture["supply_decimals"].as_u64().unwrap()).unwrap();
+            let bounds =
+                fdv_cent_bounds_for_nonincreasing_supply(price, initial, current, decimals)
+                    .unwrap();
+            assert_eq!(bounds.lower_cents, case["lower_cents"].as_i64().unwrap());
+            assert_eq!(bounds.upper_cents, case["upper_cents"].as_i64().unwrap());
+            assert_eq!(bounds.is_same_cent(), case["same_cent"].as_bool().unwrap());
+        }
+    }
+
+    #[test]
+    fn raw_supply_fdv_bounds_reject_invalid_supply_and_overflow() {
+        let price = ExactDecimal::parse("1").unwrap();
+        assert!(fdv_cent_bounds_for_nonincreasing_supply(price, 1, 0, 6).is_none());
+        assert!(fdv_cent_bounds_for_nonincreasing_supply(price, 1, 2, 6).is_none());
+        assert!(fdv_cent_bounds_for_nonincreasing_supply(price, 0, 1, 6).is_none());
+        assert!(price.fdv_cents_for_raw_supply(u128::MAX, 0).is_none());
+        assert!(price.fdv_cents_for_raw_supply(u128::MAX, u8::MAX).is_none());
     }
 
     #[test]

@@ -620,3 +620,31 @@ Sanitized 48, 81 and JC responses are frozen in
 Adapter tests preserve exact values and nulls and reject malformed decimals,
 timestamps and pool ids. A `scout_test` database test checks network-keyed
 storage, unknown-field retention and separation from the ATH candidate table.
+
+## Amendment 18 (2026-10-11) — bound FDV cents for a decreasing supply
+
+`ExactDecimal::fdv_cents_for_raw_supply` multiplies an exact USD price by raw
+token supply and divides by `10^decimals`, flooring only after conversion to
+cents. `fdv_cent_bounds_for_nonincreasing_supply` evaluates current supply for
+the lower endpoint and birth supply for the upper endpoint. A single rounded
+cent value is established only if both independently checked endpoint floors
+are equal.
+
+The bound requires validated birth and current supplies, correct decimals,
+irreversible mint-authority revocation during the verified creation transaction,
+no supply-changing
+mint extensions or other rebase/mint paths, and a current snapshot later than
+the provider's maximum-price timestamp. The snapshot need not postdate every
+other provider record: the lower endpoint uses current supply as a lower bound on supply at the
+maximum-price observation, and the upper endpoint uses birth supply. The helper
+checks arithmetic and `0 < current <= initial`; callers must establish those
+historical conditions. An unknown provider window remains unknown: this bound
+does not establish lifetime or market-wide price completeness, validate the
+price independently, provide an ATH timestamp, or change runner eligibility.
+
+The frozen Solana Tracker examples `8Cc` and `PEC` have equal bounds of
+4,795,252 and 6,565,114 cents respectively. The JC negative control has bounds
+of 22,731,099 to 23,536,979 cents; the interval does not collapse, so its
+provider peak cannot be assigned one exact FDV cent value by this method.
+Fixture `solana_tracker_supply_fdv_cent_bounds.json` pins the inputs and the
+source join hash. These arithmetic examples do not promote or write ATH facts.
