@@ -78,8 +78,14 @@ market scope и возможными thin-market peaks. Проверка одн�
 ## Solana и Robinhood: что не закрыто
 
 Три Solana и шесть Robinhood positive price windows имеют по одной
-свече. Для Solana не доказан исторический supply: обычный pump.fun и
-Mayhem нельзя свести к предполагаемому 1B.
+свече. Последние шесть finalized Helius RPC-проверок показали у трёх
+Solana-токенов initial mint 1B и отзыв mint authority в creation transaction,
+но текущий supply ниже: 951,113,325.932600 / 966,411,236.949771 /
+965,761,089.271256. Все три — Token-2022 с расширениями. Время burn относительно
+дневного high не восстановлено, расширения не декодировались; исторический
+denominator остаётся неизвестным. Обычный pump.fun и Mayhem также нельзя
+в целом свести к предполагаемому 1B. Raw/SHA и account/transaction evidence:
+`.scout-data/diagnostics/solana-pump-mint-supply-proof-2026-10-11/manifest.json`.
 
 Шесть Robinhood-токенов относятся к Doppler, не Pons/Flap. На block
 85,674,112 все сообщают 1B, decimals=18; token-scoped Transfer ledger
