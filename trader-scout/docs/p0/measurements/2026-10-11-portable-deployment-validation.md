@@ -106,7 +106,8 @@ are `.scout-data/diagnostics/schema10-four-solana-{snapshot,restore}-manifest.js
 
 The latest package is
 `.scout-data/deployment/2026-10-11-schema10-five-scoped/trader-scout-state-schema10-20261011T183937Z-five-scoped.tar`.
-It has 39 files, 2,842,726,400 bytes, SHA-256
+It has 39 payload files plus the retained `manifest.json` (40 tar entries),
+2,842,726,400 bytes, SHA-256
 `33919254447f4edceea78fb70cf40f0684aa31b87b1084775b343f020e2e7d87`.
 Database as-of is 18:39:37.402419 UTC; the 36 exports are separately dated
 18:42:32.692970 UTC. Source commit is `de3fd42`. Verification, extraction,

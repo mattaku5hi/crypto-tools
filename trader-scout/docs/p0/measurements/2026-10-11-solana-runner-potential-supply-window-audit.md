@@ -17,3 +17,25 @@ The sidecar retains raw chart SHA-256 `e0d4399401ee02baacab63fe217b42c6598b26564
 ## Remaining proof
 
 To claim a provider-window FDV maximum, the price source must provide a coverage-complete high series for the full relevant recording interval (or document that omitted buckets are complete no-trade buckets), and those highs must be joined against supply at each bucket with ordering uncertainty bounded. Otherwise a verified on-chain all-pool price scan with supported quote-to-USD conversion and complete pool scope is needed. This audit does not resolve that gap for 48vcic or 81kia, and does not assert a lifetime ATH for any candidate.
+
+## Reported-source upper bounds and runner priority
+
+The three higher-priority Solana rows have verified birth supply of 1B,
+6 decimals and no post-birth minting. Multiplying each reported Tracker
+maximum price by that supply gives the following conservative maximum FDV
+bounds **conditional on that provider's reported price scope**:
+
+| Mint prefix | Exact reported-scope upper bound in USD | Floor cents |
+|---|---:|---:|
+| 48vcic | 132428.78993078837 | 13242878 |
+| 81kia | 94311.16993278875 | 9431116 |
+| JCd8kQp | 235369.79981208752 | 23536979 |
+
+All three are below the existing $500,000 runner threshold in the reported
+scope, even at birth supply. This helps prioritize the five remaining Base
+cases with known holders and larger saved price highs. It does not validate
+the prices, extend provider coverage, establish the actual annual/lifetime
+maximum, close the exact numeric FDV gaps, or alter eligibility rules.
+The exact-fraction certificate and source hashes are in
+`.scout-data/diagnostics/solana-three-reported-source-runner-upper-bounds-2026-10-11.json`;
+it required no API calls or database writes.
