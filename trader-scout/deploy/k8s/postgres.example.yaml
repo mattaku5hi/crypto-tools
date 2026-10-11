@@ -34,6 +34,10 @@ spec:
           ports: [{ containerPort: 5432 }]
           volumeMounts:
             - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 512Mi }
   volumeClaimTemplates:
     - metadata: { name: data }
       spec:
