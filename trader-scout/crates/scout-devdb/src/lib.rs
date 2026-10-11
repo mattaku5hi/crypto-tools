@@ -21,6 +21,12 @@ pub enum DevDbError {
     CodexRequestBudgetExhausted,
     #[error("Codex request budget cursor is not a non-negative integer")]
     InvalidCodexRequestBudget,
+    #[error("provider request budget configuration is invalid")]
+    InvalidProviderRequestBudget,
+    #[error("provider request budget settings differ from the persisted monthly baseline")]
+    ProviderRequestBudgetConfigMismatch,
+    #[error("provider request budget is exhausted")]
+    ProviderRequestBudgetExhausted,
 }
 
 /// Shared opt-in monthly request budget cursor for every Codex call path.
@@ -40,6 +46,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (7, include_str!("../migrations/0007_alerts.sql")),
     (8, include_str!("../migrations/0008_launches_by_time.sql")),
     (9, include_str!("../migrations/0009_ath_price_windows.sql")),
+    (
+        10,
+        include_str!("../migrations/0010_provider_ath_observations.sql"),
+    ),
 ];
 
 /// Rows per `INSERT … SELECT FROM UNNEST` statement.
@@ -102,6 +112,33 @@ pub struct AthPriceWindow {
     pub last_candle_at: Option<i64>,
     pub returned_candles: i32,
     pub observed_at: i64,
+}
+
+/// Provider-reported ATH extrema, separate from candle windows and ATH FDV.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AthPriceObservation {
+    pub chain: String,
+    pub token: String,
+    pub source: String,
+    pub highest_price_usd: Option<String>,
+    pub timestamp_ms: Option<i64>,
+    pub pool_id: Option<String>,
+    pub highest_market_cap_usd: Option<String>,
+    pub observed_at: i64,
+    pub response_sha256: String,
+    pub scope: String,
+}
+
+/// Reservation request for an explicit application-level provider allocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRequestBudget {
+    pub provider: String,
+    pub quota_group: String,
+    pub billing_period: String,
+    pub application_limit: i64,
+    pub prior_usage: i64,
+    pub key_fingerprint: String,
+    pub now: i64,
 }
 
 /// What is known about a creator address (ADR-021 amendment 1).
@@ -428,6 +465,196 @@ impl DevDb {
         .fetch_optional(&self.pool)
         .await?
         .is_some())
+    }
+
+    /// Insert or update a provider-reported ATH price observation.
+    ///
+    /// # Errors
+    /// Database failure or schema constraint violation.
+    pub async fn upsert_ath_price_observation(
+        &self,
+        row: &AthPriceObservation,
+    ) -> Result<u64, DevDbError> {
+        Ok(sqlx::query(
+            "INSERT INTO ath_price_observations
+                (chain, token, source, highest_price_usd, timestamp_ms, pool_id,
+                 highest_market_cap_usd, observed_at, response_sha256, scope)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+             ON CONFLICT (chain,token,source) DO UPDATE SET
+                highest_price_usd=EXCLUDED.highest_price_usd,
+                timestamp_ms=EXCLUDED.timestamp_ms, pool_id=EXCLUDED.pool_id,
+                highest_market_cap_usd=EXCLUDED.highest_market_cap_usd,
+                observed_at=EXCLUDED.observed_at, response_sha256=EXCLUDED.response_sha256,
+                scope=EXCLUDED.scope
+             WHERE EXCLUDED.observed_at >= ath_price_observations.observed_at",
+        )
+        .bind(&row.chain)
+        .bind(&row.token)
+        .bind(&row.source)
+        .bind(&row.highest_price_usd)
+        .bind(row.timestamp_ms)
+        .bind(&row.pool_id)
+        .bind(&row.highest_market_cap_usd)
+        .bind(row.observed_at)
+        .bind(&row.response_sha256)
+        .bind(&row.scope)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
+    /// Whether a provider ATH observation is already saved for this asset.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn has_ath_price_observation(
+        &self,
+        chain: &str,
+        token: &str,
+        source: &str,
+    ) -> Result<bool, DevDbError> {
+        Ok(sqlx::query(
+            "SELECT 1 FROM ath_price_observations WHERE chain=$1 AND token=$2 AND source=$3",
+        )
+        .bind(chain)
+        .bind(token)
+        .bind(source)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some())
+    }
+
+    /// Read one provider ATH observation for audit/testing.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn ath_price_observation(
+        &self,
+        chain: &str,
+        token: &str,
+        source: &str,
+    ) -> Result<Option<AthPriceObservation>, DevDbError> {
+        let row = sqlx::query(
+            "SELECT highest_price_usd,timestamp_ms,pool_id,highest_market_cap_usd,observed_at,
+                    response_sha256,scope
+             FROM ath_price_observations WHERE chain=$1 AND token=$2 AND source=$3",
+        )
+        .bind(chain)
+        .bind(token)
+        .bind(source)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| AthPriceObservation {
+            chain: chain.to_owned(),
+            token: token.to_owned(),
+            source: source.to_owned(),
+            highest_price_usd: row.get("highest_price_usd"),
+            timestamp_ms: row.get("timestamp_ms"),
+            pool_id: row.get("pool_id"),
+            highest_market_cap_usd: row.get("highest_market_cap_usd"),
+            observed_at: row.get("observed_at"),
+            response_sha256: row.get("response_sha256"),
+            scope: row.get("scope"),
+        }))
+    }
+
+    /// Atomically reserve one attempt from an explicit application allocation.
+    /// `prior_usage` is a caller-confirmed count already charged to this
+    /// application's budget for the month, not provider-account usage.
+    /// Credential rotation does not create a new quota group.
+    ///
+    /// # Errors
+    /// Database failure, invalid settings, changed baseline, or exhausted cap.
+    pub async fn reserve_provider_request_budget(
+        &self,
+        request: &ProviderRequestBudget,
+    ) -> Result<i64, DevDbError> {
+        let valid_period = request.billing_period.len() == 7
+            && request.billing_period.as_bytes().get(4) == Some(&b'-')
+            && request
+                .billing_period
+                .bytes()
+                .enumerate()
+                .all(|(i, b)| i == 4 || b.is_ascii_digit())
+            && request
+                .billing_period
+                .get(5..)
+                .and_then(|m| m.parse::<u8>().ok())
+                .is_some_and(|m| (1..=12).contains(&m));
+        if request.provider.is_empty()
+            || request.quota_group.is_empty()
+            || !valid_period
+            || request.application_limit <= 0
+            || request.prior_usage < 0
+            || request.prior_usage > request.application_limit
+            || request.key_fingerprint.len() != 64
+            || !request
+                .key_fingerprint
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(DevDbError::InvalidProviderRequestBudget);
+        }
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO provider_request_budgets
+                (provider,quota_group,billing_period,application_limit,
+                 prior_application_usage,reserved_attempts,current_key_fingerprint,updated_at)
+             VALUES ($1,$2,$3,$4,$5,0,$6,$7)
+             ON CONFLICT (provider,quota_group,billing_period) DO NOTHING",
+        )
+        .bind(&request.provider)
+        .bind(&request.quota_group)
+        .bind(&request.billing_period)
+        .bind(request.application_limit)
+        .bind(request.prior_usage)
+        .bind(&request.key_fingerprint)
+        .bind(request.now)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query(
+            "SELECT application_limit,prior_application_usage,reserved_attempts
+             FROM provider_request_budgets
+             WHERE provider=$1 AND quota_group=$2 AND billing_period=$3 FOR UPDATE",
+        )
+        .bind(&request.provider)
+        .bind(&request.quota_group)
+        .bind(&request.billing_period)
+        .fetch_one(&mut *tx)
+        .await?;
+        let saved_limit: i64 = row.get("application_limit");
+        let saved_prior: i64 = row.get("prior_application_usage");
+        let reserved: i64 = row.get("reserved_attempts");
+        if saved_limit != request.application_limit || saved_prior != request.prior_usage {
+            return Err(DevDbError::ProviderRequestBudgetConfigMismatch);
+        }
+        if request
+            .prior_usage
+            .checked_add(reserved)
+            .is_none_or(|used| used >= request.application_limit)
+        {
+            tx.commit().await?;
+            return Err(DevDbError::ProviderRequestBudgetExhausted);
+        }
+        let new_reserved = reserved
+            .checked_add(1)
+            .ok_or(DevDbError::InvalidProviderRequestBudget)?;
+        sqlx::query(
+            "UPDATE provider_request_budgets SET reserved_attempts=$4,
+             current_key_fingerprint=$5, updated_at=$6
+             WHERE provider=$1 AND quota_group=$2 AND billing_period=$3",
+        )
+        .bind(&request.provider)
+        .bind(&request.quota_group)
+        .bind(&request.billing_period)
+        .bind(new_reserved)
+        .bind(&request.key_fingerprint)
+        .bind(request.now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(request.application_limit - request.prior_usage - new_reserved)
     }
 
     /// Return the tracked tokens from a provider page (maximum 200).

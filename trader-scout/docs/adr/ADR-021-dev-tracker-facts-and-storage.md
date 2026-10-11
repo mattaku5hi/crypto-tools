@@ -575,3 +575,48 @@ two quote legs, canonical time bracket, both FX endpoints and FDV floor.
 This corroborates a provider-window USD level in the identified pools;
 the trades are not simultaneous fiat executions, a guaranteed global FX
 bound, a redemption guarantee, or a canonical lifetime ATH proof.
+
+## Amendment 17 (2026-10-11) — retain Solana Tracker provider ATH observations
+
+The explicit `solana-tracker-ath` command may save the provider's `highest_price`,
+millisecond timestamp, pool id and `highest_market_cap` in a separate
+`ath_price_observations` table. Decimal JSON numbers are parsed exactly;
+missing or null fields remain null. The response hash, observation time and
+fixed scope `provider-recording-window-unknown` are retained. These fields are
+not mapped into `ath_price_windows` (which means a requested candle interval)
+or `ath` (which means the selected monetary ATH-FDV record). No price-times-
+supply calculation or runner eligibility change is implied.
+
+Provider-reported ATH means only the provider's recorded history; API contract
+does not promise chain-lifetime tracking or complete market-wide pool coverage.
+The command is opt-in, outside the daemon, sequential at no more than one
+request per second, with a per-run attempt ceiling, 2 MiB response cap, no
+automatic retries, and exact-observation skip on resume. Access denial,
+payment rejection or rate limiting stops the pass.
+
+Every request first reserves from a durable, owner-selected *application*
+monthly allocation keyed by the stable quota group `owner-soltracker`, not by
+credential fingerprint alone. The monthly app cap and confirmed prior app
+usage must be supplied and match the persisted baseline; the cap is at most
+250. The known prior seven requests are app usage only, not a statement about
+the provider account's monthly usage or remaining quota. Key fingerprints are
+stored only as request provenance, and key values never enter URLs, database fields,
+or output. Failed HTTP attempts count against the app allocation. This ledger
+does not claim to include requests outside the tracked app; coordinate them
+when choosing the allocation and prior-use baseline.
+
+Example invocation (the JSON file must contain only already-tracked Solana
+mints; set `SCOUT_SOLANA_TRACKER_API_KEY` in the process environment and choose
+a private/raw-data directory):
+`dev-tracker solana-tracker-ath --tokens solana-mints.json --raw-dir .scout-data/solana-tracker-ath-raw --max-requests 100 --billing-month 2026-10 --application-monthly-limit 250 --prior-application-usage 7`.
+The command is not part of daemon startup or ATH-FDV derivation.
+Successful 2xx response bodies are archived before validation under filenames
+derived from the token and response hashes. Bodies are capped at 2 MiB and
+scanned for the configured key before writing; malformed bodies remain
+available for review but do not become observations.
+
+Sanitized 48, 81 and JC responses are frozen in
+`crates/scout-devtracker/tests/fixtures/solana_tracker_ath_{48,81,jc}.json`.
+Adapter tests preserve exact values and nulls and reject malformed decimals,
+timestamps and pool ids. A `scout_test` database test checks network-keyed
+storage, unknown-field retention and separation from the ATH candidate table.

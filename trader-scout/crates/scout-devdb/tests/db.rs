@@ -8,7 +8,10 @@
     clippy::indexing_slicing
 )]
 
-use scout_devdb::{AthObservation, AthPriceWindow, DevDb, Launch, Migration};
+use scout_devdb::{
+    AthObservation, AthPriceObservation, AthPriceWindow, DevDb, Launch, Migration,
+    ProviderRequestBudget,
+};
 use sqlx::Row;
 
 #[tokio::test]
@@ -96,6 +99,133 @@ async fn price_windows_preserve_unknown_fdv_and_replay_without_network_identity_
             .ath_fdv_cents,
         Some(123_456)
     );
+}
+
+#[tokio::test]
+async fn provider_ath_price_observations_preserve_nulls_and_never_touch_ath() {
+    let Some(db) = db().await else { return };
+    let chain = format!("tracker-price-{}", std::process::id());
+    let row = AthPriceObservation {
+        chain: chain.clone(),
+        token: "mint-a".into(),
+        source: "solana-tracker-ath-test".into(),
+        highest_price_usd: Some("0.00000000000000000012345678901234567890".into()),
+        timestamp_ms: Some(1_791_672_254_212),
+        pool_id: Some("4QnxqajHAqiKuTZjfsfkBA8qSxb7AY4p8axVZeNmVNuq".into()),
+        highest_market_cap_usd: None,
+        observed_at: 100,
+        response_sha256: "a".repeat(64),
+        scope: "provider-recording-window-unknown".into(),
+    };
+    db.insert_launches(&[launch(&chain, "mint-a", "dev", 1)])
+        .await
+        .unwrap();
+    db.insert_migrations(&[Migration {
+        chain: chain.clone(),
+        token: "mint-a".into(),
+        launchpad: "test".into(),
+        migrated_block: 1,
+        migrated_at: 1,
+        tx_hash: "migration".into(),
+        pool: None,
+        source: "test".into(),
+    }])
+    .await
+    .unwrap();
+    assert_eq!(
+        db.ath_candidates(&chain, 100, 10).await.unwrap(),
+        ["mint-a"]
+    );
+    assert_eq!(db.upsert_ath_price_observation(&row).await.unwrap(), 1);
+    assert!(
+        db.has_ath_price_observation(&chain, "mint-a", "solana-tracker-ath-test")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !db.has_ath_price_observation("different-chain", "mint-a", "solana-tracker-ath-test")
+            .await
+            .unwrap()
+    );
+
+    let saved = db
+        .ath_price_observation(&chain, "mint-a", "solana-tracker-ath-test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.highest_price_usd, row.highest_price_usd);
+    assert_eq!(saved.highest_market_cap_usd, None);
+    assert_eq!(saved.timestamp_ms, row.timestamp_ms);
+    assert_eq!(saved.pool_id, row.pool_id);
+    assert_eq!(saved.scope, "provider-recording-window-unknown");
+    assert_eq!(
+        db.ath_candidates(&chain, 100, 10).await.unwrap(),
+        ["mint-a"]
+    );
+}
+
+#[tokio::test]
+async fn application_quota_is_atomic_persistent_and_shared_across_key_rotation() {
+    let Some(db) = db().await else { return };
+    let group = format!("test-owner-group-{}", std::process::id());
+    let provider = "solana-tracker-test";
+    let period = "2026-10";
+    let fingerprints = ["a".repeat(64), "b".repeat(64)];
+    let calls = (0..4).map(|i| {
+        let db = db.clone();
+        let group = group.clone();
+        let fingerprint = fingerprints[i % fingerprints.len()].clone();
+        async move {
+            db.reserve_provider_request_budget(&ProviderRequestBudget {
+                provider: provider.into(),
+                quota_group: group,
+                billing_period: period.into(),
+                application_limit: 4,
+                prior_usage: 1,
+                key_fingerprint: fingerprint,
+                now: 100,
+            })
+            .await
+        }
+    });
+    let results = futures::future::join_all(calls).await;
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 3);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(
+                result,
+                Err(scout_devdb::DevDbError::ProviderRequestBudgetExhausted)
+            ))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        db.reserve_provider_request_budget(&ProviderRequestBudget {
+            provider: provider.into(),
+            quota_group: group.clone(),
+            billing_period: period.into(),
+            application_limit: 4,
+            prior_usage: 1,
+            key_fingerprint: "a".into(),
+            now: 100,
+        })
+        .await,
+        Err(scout_devdb::DevDbError::InvalidProviderRequestBudget)
+    ));
+    assert!(matches!(
+        db.reserve_provider_request_budget(&ProviderRequestBudget {
+            provider: provider.into(),
+            quota_group: group,
+            billing_period: period.into(),
+            application_limit: 5,
+            prior_usage: 1,
+            key_fingerprint: fingerprints[0].clone(),
+            now: 101,
+        })
+        .await,
+        Err(scout_devdb::DevDbError::ProviderRequestBudgetConfigMismatch)
+    ));
 }
 
 #[tokio::test]

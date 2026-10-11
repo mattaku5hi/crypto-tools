@@ -8,6 +8,7 @@
 
 mod backfill;
 mod birdeye_backfill;
+mod solana_tracker_backfill;
 
 use std::collections::BTreeSet;
 use std::process::ExitCode;
@@ -46,6 +47,8 @@ enum Cmd {
     Migrate,
     /// Save bounded Birdeye USD candle windows for tracked tokens; separate from ATH FDV.
     BirdeyePrices(birdeye_backfill::BirdeyePricesArgs),
+    /// Save bounded Solana Tracker provider ATH price observations, separate from ATH FDV.
+    SolanaTrackerAth(solana_tracker_backfill::SolanaTrackerAthArgs),
     /// One ingestion pass over the sources of the given chains.
     Ingest {
         /// Comma-separated: solana, bsc, base, robinhood.
@@ -932,6 +935,10 @@ async fn run(args: Args) -> Result<(), String> {
         Cmd::BirdeyePrices(a) => {
             db.migrate().await.map_err(|e| e.to_string())?;
             birdeye_backfill::run(&db, a).await?;
+        }
+        Cmd::SolanaTrackerAth(a) => {
+            db.migrate().await.map_err(|e| e.to_string())?;
+            solana_tracker_backfill::run(&db, a).await?;
         }
         Cmd::Ingest {
             chains,

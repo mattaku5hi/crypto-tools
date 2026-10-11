@@ -45,6 +45,7 @@
 - Solana Tracker Data API: у предоставленного Free key лимит2500 requests/month (owner,2026-10-11), а не рекламные10000; ключ `SCOUT_SOLANA_TRACKER_API_KEY` отделён от Solana RPC (`docs/p0/measurements/2026-10-11-solana-tracker-ath-keyed-probe.md`).
 - PumpSwap spot использует signed real+virtual quote reserves; post-vq меняется при удержании комиссий, а `BoostBuyAndBurn` не является покупкой кошелька (`crates/scout-dex-solana/src/pump_amm_event.rs`, `docs/p0/measurements/2026-10-11-solana-virtual-reserve-source-audit.md`).
 - Solana Tracker chart: сохранять exact wire query и проверять scale/epoch; price-default control без `timezone` дал правильные UTC метки, explicit `timezone=UTC` сдвинул их на−7200s (`docs/p0/measurements/2026-10-11-solana-jc-chart-supply-bounds.md`).
+- Не искать текст по `.env*`/secret files: `rg` ограничивать конкретными source/docs каталогами; credentials читать только внутри процесса по exact variable и никогда не выводить URL/header/exception с ключом.
 
 Следовать `docs/ROADMAP.md`. Не писать все CLI отдельно. Сначала контракт данных и hand-checked corpus; затем сквозной ограниченный slice, расширение сетей/DEX и оптимизация по профилю. После каждой задачи: перечислить измененные файлы, выполненные проверки, полученные результаты, ограничения и следующий task ID. Фиксировать изменения небольшими законченными коммитами, когда среда действительно дает доступ к git.
 

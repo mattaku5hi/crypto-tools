@@ -13,6 +13,7 @@ pub mod heartbeat;
 pub mod identity;
 pub mod solana_fallback;
 pub mod solana_ingest;
+pub mod solana_tracker_ath;
 pub mod telegram;
 
 use std::collections::BTreeMap;

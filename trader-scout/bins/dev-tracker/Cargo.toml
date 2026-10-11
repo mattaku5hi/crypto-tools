@@ -20,5 +20,7 @@ scout-providers.workspace = true
 scout-rpc.workspace = true
 clap.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["signal", "io-util"] }
+tokio = { workspace = true, features = ["signal", "io-util", "fs"] }
 futures.workspace = true
+bs58.workspace = true
+sha2.workspace = true
