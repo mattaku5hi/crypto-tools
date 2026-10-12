@@ -79,6 +79,35 @@ class MoneyTests(unittest.TestCase):
 
 
 class WalletTests(unittest.TestCase):
+    def test_owned_tab_reuses_navigation_and_closes_two_overlays_before_next_search(self):
+        class MockKeyboard:
+            def __init__(self):
+                self.presses = []
+
+            def press(self, key):
+                self.presses.append(key)
+
+        class MockPage:
+            def __init__(self):
+                self.keyboard = MockKeyboard()
+                self.navigations = []
+
+            def set_default_timeout(self, timeout):
+                pass
+
+            def on(self, event, callback):
+                pass
+
+            def goto(self, url, **kwargs):
+                self.navigations.append((url, kwargs))
+
+        page = MockPage()
+        adapter = BrowserAdapter(page)
+        adapter._prepare_page_for_search()
+        adapter._prepare_page_for_search()
+        self.assertEqual(len(page.navigations), 1)
+        self.assertEqual(page.keyboard.presses, ["Escape", "Escape"])
+
     def test_cdp_attach_creates_owned_tab_without_launching_browser(self):
         class MockContext:
             pages = [object()]

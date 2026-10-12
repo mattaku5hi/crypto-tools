@@ -422,10 +422,19 @@ class BrowserAdapter:
     def __init__(self, page: Any):
         self.page = page
         self.page.set_default_timeout(10_000)
+        self._has_navigated = False
         self._expected_wallet: dict[str, Any] | None = None
         self._matching_responses: list[Any] = []
         self._stop_reason: str | None = None
         self.page.on("response", self._observe_response)
+
+    def _prepare_page_for_search(self) -> None:
+        if not self._has_navigated:
+            self.page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=20_000)
+            self._has_navigated = True
+            return
+        self.page.keyboard.press("Escape")
+        self.page.keyboard.press("Escape")
 
     @staticmethod
     def _matches_wallet_request(request: Any, wallet: dict[str, Any]) -> bool:
@@ -485,7 +494,7 @@ class BrowserAdapter:
 
     def _locate_search_input(self, wallet: dict[str, Any]) -> Any:
         self._raise_if_stopped()
-        self.page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=20_000)
+        self._prepare_page_for_search()
         search_button = self.page.get_by_text("Search by token or CA", exact=True)
         search_button.first.wait_for(state="visible", timeout=15_000)
         if search_button.count() != 1:
