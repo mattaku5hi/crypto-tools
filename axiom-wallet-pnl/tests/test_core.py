@@ -33,11 +33,19 @@ from axiom_pnl import (
     threshold_metrics,
     read_wallets,
     validate_cdp_url,
+    validate_delay_seconds,
     write_outputs,
 )
 
 
 class MoneyTests(unittest.TestCase):
+    def test_delay_bounds_are_finite_and_inclusive(self):
+        self.assertEqual(validate_delay_seconds("2"), 2.0)
+        self.assertEqual(validate_delay_seconds("120"), 120.0)
+        for bad in ("1.99", "120.01", "nan", "inf", "nope"):
+            with self.subTest(bad=bad), self.assertRaises(InputError):
+                validate_delay_seconds(bad)
+
     def test_exact_thresholds_and_rounded_boundary_are_distinguished(self):
         self.assertEqual(classify_amount(parse_amount("10000"), Decimal("10000")), "PASS")
         self.assertEqual(classify_amount(parse_ui_amount("$10000"), Decimal("10000")), "UNKNOWN")
@@ -479,6 +487,28 @@ class EvaluationTests(unittest.TestCase):
             passed = json.loads((out / "passed.json").read_text())
         self.assertEqual(len(all_rows), 3)
         self.assertEqual([row["wallet"] for row in passed], ["a"])
+
+    def test_passed_exports_sort_max_total_descending_and_all_exports_keep_input_order(self):
+        rows = [
+            {"wallet": "pass-low", "status": "PASS", "pnl_max_total": {"raw": "$40K", "lower": "39500", "upper_exclusive": "40500", "exact": False}},
+            {"wallet": "fail-high", "status": "FAIL", "pnl_max_total": {"raw": "$900K", "lower": "899500", "upper_exclusive": "900500", "exact": False}},
+            {"wallet": "pass-high", "status": "PASS", "pnl_max_total": {"raw": "$90K", "lower": "89500", "upper_exclusive": "90500", "exact": False}},
+            {"wallet": "unknown", "status": "UNKNOWN"},
+            {"wallet": "pass-missing", "status": "PASS"},
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            out = Path(temp)
+            write_outputs(out, rows, {"as_of": "now"}, planned_count=len(rows))
+            passed_json = json.loads((out / "passed.json").read_text())
+            all_jsonl = [json.loads(line) for line in (out / "all.jsonl").read_text().splitlines()]
+            with (out / "passed.csv").open(newline="", encoding="utf-8") as source:
+                passed_csv = list(csv.DictReader(source))
+            with (out / "all.csv").open(newline="", encoding="utf-8") as source:
+                all_csv = list(csv.DictReader(source))
+        self.assertEqual([row["wallet"] for row in passed_json], ["pass-high", "pass-low", "pass-missing"])
+        self.assertEqual([row["wallet"] for row in passed_csv], ["pass-high", "pass-low", "pass-missing"])
+        self.assertEqual([row["wallet"] for row in all_jsonl], [row["wallet"] for row in rows])
+        self.assertEqual([row["wallet"] for row in all_csv], [row["wallet"] for row in rows])
 
     def test_csv_flattens_metric_interval_for_manual_review(self):
         with tempfile.TemporaryDirectory() as temp:

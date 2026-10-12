@@ -7,6 +7,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -43,6 +44,16 @@ class InputError(ValueError):
 
 class ResumeError(ValueError):
     pass
+
+
+def validate_delay_seconds(value: Any) -> float:
+    try:
+        delay = float(value)
+    except (TypeError, ValueError) as exc:
+        raise InputError("delay must be between 2 and 120 seconds") from exc
+    if not math.isfinite(delay) or not 2 <= delay <= 120:
+        raise InputError("delay must be between 2 and 120 seconds")
+    return delay
 
 
 @dataclass(frozen=True)
@@ -771,6 +782,18 @@ def write_outputs(
 ) -> None:
     ensure_private_directory(out_dir)
     passed = [row for row in rows if row.get("status") == "PASS"]
+    def passed_sort_key(row: dict[str, Any]) -> tuple[bool, Decimal]:
+        metric = row.get("pnl_max_total")
+        lower = metric.get("lower") if isinstance(metric, dict) else None
+        try:
+            amount = Decimal(str(lower))
+        except (InvalidOperation, TypeError):
+            return True, Decimal(0)
+        if not amount.is_finite():
+            return True, Decimal(0)
+        return False, -amount
+
+    passed.sort(key=passed_sort_key)
     if planned_count is not None:
         manifest["planned_wallet_count"] = planned_count
     planned = manifest.get("planned_wallet_count", len(rows))
@@ -879,6 +902,7 @@ def command_collect(args: argparse.Namespace) -> int:
         cdp_url = validate_cdp_url(args.cdp_url)
         wallets = read_wallets(Path(args.input), args.chain)
         thresholds = threshold_metrics(args.min_30d_usd, args.min_max_usd)
+        delay_seconds = validate_delay_seconds(getattr(args, "delay_seconds", "2"))
         out_dir = Path(args.out).expanduser().resolve()
         manifest = load_manifest(out_dir, args.as_of, args.chain, thresholds)
         bind_input_identity(manifest, wallets)
@@ -989,7 +1013,7 @@ def command_collect(args: argparse.Namespace) -> int:
             write_outputs(out_dir, ordered, manifest, planned_count=len(wallets))
             print(f"{wallet['chain']} {wallet['wallet']}: {row['status']}")
             if index + 1 < len(pending):
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(int(delay_seconds * 1000))
     finally:
         if created_page and page is not None:
             try:
@@ -1022,6 +1046,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--as-of", help="fixed UTC timestamp; resumes must use the checkpoint's value")
     collect.add_argument("--min-30d-usd", default="10000", help="minimum for both 30d PnL metrics")
     collect.add_argument("--min-max-usd", default="30000", help="minimum for both Max PnL metrics")
+    collect.add_argument("--delay-seconds", default="2", help="pause between wallets (2-120 seconds)")
     collect.add_argument("--resume", action="store_true")
     collect.set_defaults(func=command_collect)
     return parser
