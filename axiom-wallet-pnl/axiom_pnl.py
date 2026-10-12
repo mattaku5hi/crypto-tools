@@ -207,11 +207,35 @@ def read_wallets(path: Path, default_chain: str | None) -> list[dict[str, Any]]:
     return normalized
 
 
-def config_fingerprint(as_of: str, chain: str | None) -> str:
+def threshold_metrics(
+    min_30d_usd: Decimal | str | None = None, min_max_usd: Decimal | str | None = None
+) -> tuple[tuple[str, Decimal], ...]:
+    values = (
+        ("pnl_30d_total", min_30d_usd if min_30d_usd is not None else WINDOW_30D_USD),
+        ("pnl_30d_realized", min_30d_usd if min_30d_usd is not None else WINDOW_30D_USD),
+        ("pnl_max_total", min_max_usd if min_max_usd is not None else MAX_USD),
+        ("pnl_max_realized", min_max_usd if min_max_usd is not None else MAX_USD),
+    )
+    result = []
+    for key, value in values:
+        try:
+            amount = value if isinstance(value, Decimal) else Decimal(str(value))
+        except InvalidOperation as exc:
+            raise InputError("PnL thresholds must be finite positive decimals") from exc
+        if not amount.is_finite() or amount <= 0:
+            raise InputError("PnL thresholds must be finite positive decimals")
+        result.append((key, amount))
+    return tuple(result)
+
+
+def config_fingerprint(
+    as_of: str, chain: str | None, thresholds: tuple[tuple[str, Decimal], ...] | None = None
+) -> str:
+    thresholds = thresholds or METRICS
     config = {
         "as_of": as_of,
         "chain_default": chain,
-        "thresholds": {key: decimal_string(value) for key, value in METRICS},
+        "thresholds": {key: decimal_string(value) for key, value in thresholds},
         "source_policy": SOURCE_POLICY,
         "software_version": VERSION,
     }
@@ -233,14 +257,18 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def load_manifest(path: Path, requested_as_of: str | None, chain: str | None) -> dict[str, Any]:
+def load_manifest(
+    path: Path, requested_as_of: str | None, chain: str | None,
+    thresholds: tuple[tuple[str, Decimal], ...] | None = None,
+) -> dict[str, Any]:
+    thresholds = thresholds or METRICS
     manifest_path = path / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         as_of = manifest.get("as_of")
         if requested_as_of and requested_as_of != as_of:
             raise ResumeError("--as-of differs from checkpoint; use a new output directory")
-        expected = config_fingerprint(as_of, chain)
+        expected = config_fingerprint(as_of, chain, thresholds)
         if manifest.get("config_fingerprint") != expected:
             raise ResumeError("threshold, source policy, chain default, or as-of changed; use a new output directory")
         return manifest
@@ -253,9 +281,9 @@ def load_manifest(path: Path, requested_as_of: str | None, chain: str | None) ->
         "finality": "not_applicable_axiom_analytics",
         "as_of": as_of,
         "scope": {"pnl_30d": "Axiom 30d Performance window; API timeOffsetMinutes=-180", "pnl_max": "Axiom Max (allTime) range"},
-        "thresholds_usd": {key: decimal_string(value) for key, value in METRICS},
+        "thresholds_usd": {key: decimal_string(value) for key, value in thresholds},
         "chain_default": chain,
-        "config_fingerprint": config_fingerprint(as_of, chain),
+        "config_fingerprint": config_fingerprint(as_of, chain, thresholds),
         "status": "in_progress",
         "as_of_semantics": "run start; wallet snapshots are collected live and sequentially",
         "planned_wallet_count": 0,
@@ -266,7 +294,10 @@ def load_manifest(path: Path, requested_as_of: str | None, chain: str | None) ->
     }
 
 
-def evaluate_snapshot(wallet: dict[str, Any], snapshot: dict[str, Any], collected_at: str) -> dict[str, Any]:
+def evaluate_snapshot(
+    wallet: dict[str, Any], snapshot: dict[str, Any], collected_at: str,
+    thresholds: tuple[tuple[str, Decimal], ...] | None = None,
+) -> dict[str, Any]:
     """Convert a normalized snapshot into reviewable metrics and a four-gate result."""
     row: dict[str, Any] = {
         **wallet,
@@ -284,7 +315,7 @@ def evaluate_snapshot(wallet: dict[str, Any], snapshot: dict[str, Any], collecte
         "raw_ui_values": snapshot.get("raw_ui_values"),
     }
     results: dict[str, str] = {}
-    for key, threshold in METRICS:
+    for key, threshold in (thresholds or METRICS):
         value = snapshot.get(key)
         try:
             amount = parse_ui_amount(value) if key in {"pnl_30d_total", "pnl_max_total"} else parse_amount(value)
@@ -311,6 +342,25 @@ def evaluate_snapshot(wallet: dict[str, Any], snapshot: dict[str, Any], collecte
     else:
         row["reason"] = "one or more PnL values are missing or uncertain at a threshold"
     return row
+
+
+def rescore_existing_row(
+    row: dict[str, Any], thresholds: tuple[tuple[str, Decimal], ...]
+) -> dict[str, Any]:
+    """Reapply thresholds to a saved row without changing its observed evidence."""
+    ui = row.get("raw_ui_values") or {}
+    api_snapshot: dict[str, Any] = {
+        "wallet_match": row.get("wallet_match"),
+        "period_match": row.get("period_match"),
+        "source": row.get("source", SOURCE_POLICY),
+        "provenance": row.get("provenance"),
+        "retryable": row.get("retryable", False),
+    }
+    for key in ("pnl_30d_realized", "pnl_max_realized"):
+        saved = row.get(key)
+        api_snapshot[key] = saved.get("raw") if isinstance(saved, dict) else saved
+    snapshot = merge_metrics_snapshot(api_snapshot, ui)
+    return evaluate_snapshot(row, snapshot, row.get("collected_at") or "", thresholds)
 
 
 def merge_metrics_snapshot(api_snapshot: dict[str, Any], ui_values: dict[str, str]) -> dict[str, Any]:
@@ -791,8 +841,9 @@ def command_collect(args: argparse.Namespace) -> int:
     try:
         cdp_url = validate_cdp_url(args.cdp_url)
         wallets = read_wallets(Path(args.input), args.chain)
+        thresholds = threshold_metrics(args.min_30d_usd, args.min_max_usd)
         out_dir = Path(args.out).expanduser().resolve()
-        manifest = load_manifest(out_dir, args.as_of, args.chain)
+        manifest = load_manifest(out_dir, args.as_of, args.chain, thresholds)
         bind_input_identity(manifest, wallets)
     except (InputError, ResumeError, OSError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
@@ -843,7 +894,7 @@ def command_collect(args: argparse.Namespace) -> int:
         for index, wallet in enumerate(pending):
             try:
                 snapshot = adapter.collect(wallet)
-                row = evaluate_snapshot(wallet, snapshot, now_utc())
+                row = evaluate_snapshot(wallet, snapshot, now_utc(), thresholds)
             except StopCollection as exc:
                 row = {
                     **wallet,
@@ -932,6 +983,8 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--out", required=True)
     collect.add_argument("--chain", choices=("solana", "bsc"))
     collect.add_argument("--as-of", help="fixed UTC timestamp; resumes must use the checkpoint's value")
+    collect.add_argument("--min-30d-usd", default="10000", help="minimum for both 30d PnL metrics")
+    collect.add_argument("--min-max-usd", default="30000", help="minimum for both Max PnL metrics")
     collect.add_argument("--resume", action="store_true")
     collect.set_defaults(func=command_collect)
     return parser

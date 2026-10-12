@@ -19,6 +19,7 @@ from axiom_pnl import (
     load_manifest,
     connect_cdp,
     evaluate_snapshot,
+    rescore_existing_row,
     extract_performance_ui,
     normalize_wallet,
     wallet_tab_needs_click,
@@ -27,6 +28,7 @@ from axiom_pnl import (
     merge_metrics_snapshot,
     parse_amount,
     parse_ui_amount,
+    threshold_metrics,
     read_wallets,
     validate_cdp_url,
     write_outputs,
@@ -51,6 +53,14 @@ class MoneyTests(unittest.TestCase):
         self.assertEqual((sub_thousand.lower, sub_thousand.upper), (Decimal("10.445"), Decimal("10.455")))
         self.assertFalse(sub_thousand.exact)
         self.assertTrue(parse_amount("10.45").exact)
+
+    def test_thresholds_are_exact_finite_positive_decimals(self):
+        thresholds = dict(threshold_metrics("5000.00", "15000"))
+        self.assertEqual(thresholds["pnl_30d_total"], Decimal("5000.00"))
+        self.assertEqual(thresholds["pnl_max_realized"], Decimal("15000"))
+        for bad in ("0", "-1", "NaN", "Infinity", "not-money"):
+            with self.subTest(bad=bad), self.assertRaises(InputError):
+                threshold_metrics(bad, "15000")
 
     def test_negative_values_remain_negative(self):
         amount = parse_amount("-$12.50")
@@ -284,6 +294,41 @@ $999.0K"""
         self.assertIsNone(snapshot["period_match"])
 
 class EvaluationTests(unittest.TestCase):
+    def test_custom_threshold_boundaries_apply_to_all_four_metrics(self):
+        thresholds = threshold_metrics("5000", "15000")
+        wallet = {"wallet": "w", "chain": "bsc"}
+        snapshot = {
+            "wallet_match": True, "period_match": True,
+            "pnl_30d_total": "$5000", "pnl_30d_realized": Decimal("5000"),
+            "pnl_max_total": "$15000", "pnl_max_realized": Decimal("15000"),
+        }
+        row = evaluate_snapshot(wallet, snapshot, "now", thresholds)
+        self.assertEqual(row["pnl_30d_total_status"], "UNKNOWN")
+        self.assertEqual(row["pnl_max_total_status"], "UNKNOWN")
+        snapshot["pnl_30d_total"] = "$5001"
+        snapshot["pnl_max_total"] = "$15001"
+        self.assertEqual(evaluate_snapshot(wallet, snapshot, "now", thresholds)["status"], "PASS")
+
+    def test_saved_rows_can_be_rescored_without_losing_evidence(self):
+        wallet = {"wallet": "w", "chain": "bsc", "label": "keep"}
+        ui = {
+            "pnl_30d_total": "$5.1K", "pnl_30d_realized": "$5.1K",
+            "pnl_max_total": "$15.5K", "pnl_max_realized": "$15.5K",
+        }
+        initial = evaluate_snapshot(wallet, {
+            "wallet_match": True, "period_match": True,
+            "pnl_30d_total": ui["pnl_30d_total"], "pnl_30d_realized": Decimal("5100"),
+            "pnl_max_total": ui["pnl_max_total"], "pnl_max_realized": Decimal("15500"),
+            "raw_ui_values": ui, "provenance": {"native_token": "bnb"},
+        }, "2026-10-12T10:00:00Z")
+        rescored = rescore_existing_row(initial, threshold_metrics("5000", "15000"))
+        self.assertEqual(rescored["status"], "PASS")
+        self.assertEqual(rescored["wallet"], "w")
+        self.assertEqual(rescored["label"], "keep")
+        self.assertEqual(rescored["collected_at"], "2026-10-12T10:00:00Z")
+        self.assertEqual(rescored["raw_ui_values"], ui)
+        self.assertEqual(rescored["provenance"], {"native_token": "bnb"})
+
     def test_all_four_conditions_required_and_unknown_is_preserved(self):
         wallet = {"chain": "bsc", "wallet": "0x" + "a" * 40}
         base = {
@@ -347,6 +392,8 @@ class EvaluationTests(unittest.TestCase):
                 load_manifest(out, None, "solana")
             with self.assertRaises(ResumeError):
                 load_manifest(out, "2026-10-13T00:00:00Z", "bsc")
+            with self.assertRaises(ResumeError):
+                load_manifest(out, None, "bsc", threshold_metrics("5000", "15000"))
 
     def test_resume_rejects_changed_wallet_identity_or_order(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -374,7 +421,7 @@ class EvaluationTests(unittest.TestCase):
             write_outputs(out, [row], manifest, planned_count=1)
             args = argparse.Namespace(
                 cdp_url="http://127.0.0.1:9225", input=str(input_path), out=str(out),
-                chain="bsc", as_of=None, resume=True,
+                chain="bsc", as_of=None, resume=True, min_30d_usd="10000", min_max_usd="30000",
             )
             self.assertEqual(command_collect(args), 0)
             self.assertEqual(json.loads((out / "manifest.json").read_text())["status"], "complete")

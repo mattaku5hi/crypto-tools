@@ -36,6 +36,7 @@ JSON принимает массив строк/объектов или объе
 ```sh
 python axiom_pnl.py collect --input wallets.json --cdp-url http://127.0.0.1:9225 --out run-2026-10-12
 python axiom_pnl.py collect --input wallets.csv --chain bsc --cdp-url http://127.0.0.1:9225 --out run-bsc
+python axiom_pnl.py collect --input wallets.csv --chain bsc --min-30d-usd 5000 --min-max-usd 15000 --cdp-url http://127.0.0.1:9225 --out run-bsc-half-thresholds
 python axiom_pnl.py collect --input wallets.json --cdp-url http://127.0.0.1:9225 --out run-2026-10-12 --resume
 ```
 
