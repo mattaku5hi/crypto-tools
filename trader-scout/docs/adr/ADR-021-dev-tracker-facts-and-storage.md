@@ -830,3 +830,38 @@ independent FX endpoints. The source audit is pinned at SHA-256
 `a586689bc26758a2faec06bf66d1b9ce0a118a01c46f0470b0015813404840c5` and
 reported in
 [`2026-10-11-base-six-triage-67d5-gt-source-audit.md`](../p0/measurements/2026-10-11-base-six-triage-67d5-gt-source-audit.md).
+
+## Amendment 23 (2026-10-12) — two-percent independent price corroboration tolerance
+
+The user authorizes a maximum 2% deviation for independent price corroboration.
+This changes only that comparison tolerance. Existing 1% evidence and golden
+checks remain historical records; token identity, UTC-day matching, verified
+supply, pool and history scope, source quality, and all runner gates remain
+unchanged. Compare exact integer/rational values, including both endpoints of
+the dated FX range. A value exactly 2% away passes; the next representable
+amount beyond 2% fails.
+
+For Base token `0x92d95883e79a695ca4afa40d4885b4ef4ac38b07`, the May 3, 2026
+GeckoTerminal returned-pool maximum is `$0.0000100542474772537`. The
+receipt-backed USDC execution ratio converted with Kraken's same-day
+`0.9997–0.9999` USDC/USD range differs by 1.74–1.76% from GeckoTerminal and
+1.78–1.80% from Birdeye. The two provider highs differ by about 0.038%.
+The execution observation is only 45 raw USDC (`0.000045 USDC`),
+so that small notional remains explicit quality context. The post-swap marginal
+spot is a different price kind, about 36% higher, and is not substituted for
+execution price. Eight returned PoolManager pools were scanned over their
+creation-to-anchor ranges, including four zero-Swap USDC histories; this does
+not establish all-market or lifetime price completeness. The independent
+corroboration supports a scoped GeckoTerminal provider-window value only;
+`ath_at` remains unknown. New guarded writes use source
+`geckoterminal-window-supply-swap-fx-validated-v2` to identify the 2% policy;
+the old v1 observations keep their original provenance. No automatic
+promotion or runner-gate change follows.
+
+Golden `geckoterminal_base_two_percent_price_gate_case.json` pins the exact
+candidate inputs and source audit hash, checks both FX endpoints and the
+same-day/supply/pool scope, and tests 1.8%, exact 2%, and 2% plus one integer
+quantum. Its 1% fixtures are unchanged. Audit:
+`.scout-data/diagnostics/base-rh-two-percent-offline-audit-2026-10-12/audit.json`
+(SHA-256 `a018509e9cff9cdf9b5aa24eadf7253534a7e7660714400c18d8bdd5e5f2c206`);
+report: [`2026-10-12-base-rh-two-percent-offline-audit.md`](../p0/measurements/2026-10-12-base-rh-two-percent-offline-audit.md).

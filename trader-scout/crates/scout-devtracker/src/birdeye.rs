@@ -1004,6 +1004,135 @@ mod tests {
     }
 
     #[test]
+    fn geckoterminal_two_percent_candidate_keeps_scope_and_exact_fx_bounds() {
+        use alloy_primitives::U256;
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/geckoterminal_base_two_percent_price_gate_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            row["analysis_sha256"].as_str(),
+            Some("a018509e9cff9cdf9b5aa24eadf7253534a7e7660714400c18d8bdd5e5f2c206")
+        );
+        assert_eq!(row["chain_id"].as_u64(), Some(8453));
+        assert_eq!(
+            row["token"].as_str(),
+            Some("0x92d95883e79a695ca4afa40d4885b4ef4ac38b07")
+        );
+        assert!(row["ath_at"].is_null());
+        assert_eq!(row["utc_day"], row["pool_scan"]["max_day"]);
+        assert_eq!(row["pool_scan"]["initialized"], row["pool_scan"]["scanned"]);
+        assert_eq!(row["pool_scan"]["scanned"].as_u64(), Some(8));
+        assert_eq!(
+            row["pool_scan"]["usdc_empty_history_pools"].as_u64(),
+            Some(4)
+        );
+
+        let supply = row["supply_tokens"]
+            .as_str()
+            .unwrap()
+            .parse::<u128>()
+            .unwrap();
+        let provider_price =
+            ExactDecimal::parse(row["provider_price_usd"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            provider_price.fdv_cents_for_supply(supply),
+            Some(i64::try_from(row["expected_fdv_cents"].as_u64().unwrap()).unwrap())
+        );
+
+        let execution = &row["execution"];
+        assert_eq!(execution["pool"], row["pool_scan"]["max_pool"]);
+        assert_eq!(execution["quote_token"].as_str(), Some("USDC"));
+        assert_eq!(execution["quote_notional_usdc"].as_str(), Some("0.000045"));
+        assert_eq!(execution["onchain_execution_max_day"], row["utc_day"]);
+        assert_eq!(execution["event_day"], row["utc_day"]);
+
+        let provider = ExactDecimal::parse(row["provider_price_usd"].as_str().unwrap()).unwrap();
+        let provider_num = U256::from(provider.coefficient);
+        let provider_den = U256::from(10_u8).pow(U256::from(provider.scale));
+        let within_two_percent =
+            |candidate_num: U256, candidate_den: U256, reference_num: U256, reference_den: U256| {
+                let converted = candidate_num.checked_mul(reference_den).unwrap();
+                let reference = reference_num.checked_mul(candidate_den).unwrap();
+                let difference = if converted >= reference {
+                    converted.checked_sub(reference).unwrap()
+                } else {
+                    reference.checked_sub(converted).unwrap()
+                };
+                difference.checked_mul(U256::from(100)).unwrap()
+                    <= reference.checked_mul(U256::from(2)).unwrap()
+            };
+
+        let quote = execution["quote_raw"]
+            .as_str()
+            .unwrap()
+            .parse::<U256>()
+            .unwrap();
+        let token = execution["token_raw"]
+            .as_str()
+            .unwrap()
+            .parse::<U256>()
+            .unwrap();
+        let price_den = token.checked_mul(U256::from(10_000)).unwrap();
+        for rate in ["usdc_usd_low_1e4", "usdc_usd_high_1e4"] {
+            let price_num = quote
+                .checked_mul(U256::from(1_000_000_000_000_u64))
+                .unwrap()
+                .checked_mul(U256::from(execution[rate].as_u64().unwrap()))
+                .unwrap();
+            assert!(within_two_percent(
+                price_num,
+                price_den,
+                provider_num,
+                provider_den
+            ));
+        }
+
+        // Both directions: 1.8% and 2% pass; one integer quantum beyond
+        // 2% fails. Existing 1% fixture checks remain unchanged.
+        let boundary_reference = U256::from(10_000);
+        for (amount, expected) in [
+            (10_180, true),
+            (10_200, true),
+            (10_201, false),
+            (9_820, true),
+            (9_800, true),
+            (9_799, false),
+        ] {
+            assert_eq!(
+                within_two_percent(
+                    U256::from(amount),
+                    boundary_reference,
+                    boundary_reference,
+                    boundary_reference
+                ),
+                expected
+            );
+        }
+
+        let spot = &row["different_price_kind"];
+        assert_eq!(spot["kind"].as_str(), Some("post_swap_marginal_spot"));
+        assert!(!spot["use_for_execution_corroboration"].as_bool().unwrap());
+        let spot_num = spot["usd_per_token"][0]
+            .as_str()
+            .unwrap()
+            .parse::<U256>()
+            .unwrap();
+        let spot_den = spot["usd_per_token"][1]
+            .as_str()
+            .unwrap()
+            .parse::<U256>()
+            .unwrap();
+        assert!(!within_two_percent(
+            spot_num,
+            spot_den,
+            provider_num,
+            provider_den
+        ));
+    }
+
+    #[test]
     fn geckoterminal_zero_swap_pool_keeps_scoped_fdv_and_unknown_ath() {
         use alloy_primitives::U256;
 
