@@ -34,17 +34,38 @@ from axiom_pnl import (
     read_wallets,
     validate_cdp_url,
     validate_delay_seconds,
+    validate_paced_wallets,
+    delay_after_wallet,
+    update_successful_wallet_count,
     write_outputs,
 )
 
 
 class MoneyTests(unittest.TestCase):
     def test_delay_bounds_are_finite_and_inclusive(self):
+        self.assertEqual(validate_delay_seconds("0"), 0.0)
         self.assertEqual(validate_delay_seconds("2"), 2.0)
         self.assertEqual(validate_delay_seconds("120"), 120.0)
-        for bad in ("1.99", "120.01", "nan", "inf", "nope"):
+        for bad in ("-0.01", "120.01", "nan", "inf", "nope"):
             with self.subTest(bad=bad), self.assertRaises(InputError):
                 validate_delay_seconds(bad)
+
+    def test_paced_wallet_bounds_and_success_only_warmup(self):
+        self.assertEqual(validate_paced_wallets("0"), 0)
+        self.assertEqual(validate_paced_wallets("100000"), 100000)
+        for bad in ("-1", "100001", "1.5", "nope"):
+            with self.subTest(bad=bad), self.assertRaises(InputError):
+                validate_paced_wallets(bad)
+        self.assertEqual(delay_after_wallet(3.0, 0, 100), 3.0)
+        self.assertEqual(delay_after_wallet(0.0, 20, 0), 0.0)
+        successful = 19
+        self.assertEqual(delay_after_wallet(3.0, 20, successful), 3.0)
+        successful = update_successful_wallet_count(successful, "UNKNOWN")
+        self.assertEqual(successful, 19)
+        self.assertEqual(delay_after_wallet(3.0, 20, successful), 3.0)
+        successful = update_successful_wallet_count(successful, "PASS")
+        self.assertEqual(successful, 20)
+        self.assertEqual(delay_after_wallet(3.0, 20, successful), 0.0)
 
     def test_exact_thresholds_and_rounded_boundary_are_distinguished(self):
         self.assertEqual(classify_amount(parse_amount("10000"), Decimal("10000")), "PASS")

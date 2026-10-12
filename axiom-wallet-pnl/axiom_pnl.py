@@ -50,10 +50,34 @@ def validate_delay_seconds(value: Any) -> float:
     try:
         delay = float(value)
     except (TypeError, ValueError) as exc:
-        raise InputError("delay must be between 2 and 120 seconds") from exc
-    if not math.isfinite(delay) or not 2 <= delay <= 120:
-        raise InputError("delay must be between 2 and 120 seconds")
+        raise InputError("delay must be between 0 and 120 seconds") from exc
+    if not math.isfinite(delay) or not 0 <= delay <= 120:
+        raise InputError("delay must be between 0 and 120 seconds")
     return delay
+
+
+def validate_paced_wallets(value: Any) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError) as exc:
+        raise InputError("paced wallet count must be an integer from 0 to 100000") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise InputError("paced wallet count must be an integer from 0 to 100000")
+    if not 0 <= count <= MAX_WALLETS:
+        raise InputError("paced wallet count must be an integer from 0 to 100000")
+    return count
+
+
+def delay_after_wallet(delay_seconds: float, paced_wallets: int, successful_count: int) -> float:
+    if delay_seconds <= 0:
+        return 0.0
+    if paced_wallets == 0 or successful_count < paced_wallets:
+        return delay_seconds
+    return 0.0
+
+
+def update_successful_wallet_count(successful_count: int, status: str) -> int:
+    return successful_count + (status in {"PASS", "FAIL"})
 
 
 @dataclass(frozen=True)
@@ -903,8 +927,10 @@ def command_collect(args: argparse.Namespace) -> int:
         wallets = read_wallets(Path(args.input), args.chain)
         thresholds = threshold_metrics(args.min_30d_usd, args.min_max_usd)
         delay_seconds = validate_delay_seconds(getattr(args, "delay_seconds", "2"))
+        paced_wallets = validate_paced_wallets(getattr(args, "paced_wallets", 0))
         out_dir = Path(args.out).expanduser().resolve()
         manifest = load_manifest(out_dir, args.as_of, args.chain, thresholds)
+        manifest["pacing"] = {"delay_seconds": delay_seconds, "paced_wallets": paced_wallets}
         bind_input_identity(manifest, wallets)
     except (InputError, ResumeError, OSError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
@@ -952,6 +978,7 @@ def command_collect(args: argparse.Namespace) -> int:
         except Exception:
             print("could not attach to the local Yandex Browser session", file=sys.stderr)
             return 2
+        successful_count = 0
         for index, wallet in enumerate(pending):
             try:
                 snapshot = adapter.collect(wallet)
@@ -1012,8 +1039,10 @@ def command_collect(args: argparse.Namespace) -> int:
             ordered = [rows_by_key[(item["chain"], item["wallet"])] for item in wallets if (item["chain"], item["wallet"]) in rows_by_key]
             write_outputs(out_dir, ordered, manifest, planned_count=len(wallets))
             print(f"{wallet['chain']} {wallet['wallet']}: {row['status']}")
-            if index + 1 < len(pending):
-                page.wait_for_timeout(int(delay_seconds * 1000))
+            successful_count = update_successful_wallet_count(successful_count, row["status"])
+            pause = delay_after_wallet(delay_seconds, paced_wallets, successful_count)
+            if index + 1 < len(pending) and pause:
+                page.wait_for_timeout(int(pause * 1000))
     finally:
         if created_page and page is not None:
             try:
@@ -1046,7 +1075,8 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--as-of", help="fixed UTC timestamp; resumes must use the checkpoint's value")
     collect.add_argument("--min-30d-usd", default="10000", help="minimum for both 30d PnL metrics")
     collect.add_argument("--min-max-usd", default="30000", help="minimum for both Max PnL metrics")
-    collect.add_argument("--delay-seconds", default="2", help="pause between wallets (2-120 seconds)")
+    collect.add_argument("--delay-seconds", default="2", help="pause between wallets (0-120 seconds)")
+    collect.add_argument("--paced-wallets", default="0", help="apply delay until this many PASS/FAIL results (0 means always)")
     collect.add_argument("--resume", action="store_true")
     collect.set_defaults(func=command_collect)
     return parser

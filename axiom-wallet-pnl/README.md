@@ -37,7 +37,7 @@ JSON принимает массив строк/объектов или объе
 python axiom_pnl.py collect --input wallets.json --cdp-url http://127.0.0.1:9225 --out run-2026-10-12
 python axiom_pnl.py collect --input wallets.csv --chain bsc --cdp-url http://127.0.0.1:9225 --out run-bsc
 python axiom_pnl.py collect --input wallets.csv --chain bsc --min-30d-usd 5000 --min-max-usd 15000 --cdp-url http://127.0.0.1:9225 --out run-bsc-half-thresholds
-python axiom_pnl.py collect --input wallets.json --delay-seconds 10 --cdp-url http://127.0.0.1:9225 --out run-slower
+python axiom_pnl.py collect --input wallets.json --delay-seconds 3 --paced-wallets 20 --cdp-url http://127.0.0.1:9225 --out run-warmup
 python axiom_pnl.py collect --input wallets.json --cdp-url http://127.0.0.1:9225 --out run-2026-10-12 --resume
 ```
 
@@ -47,7 +47,7 @@ python axiom_pnl.py collect --input wallets.json --cdp-url http://127.0.0.1:9225
 
 `collect` подключается через CDP к уже открытому Yandex Browser на loopback URL и создает собственную вкладку. Он не запускает и не закрывает подключенный браузер. Карточка кошелька выбирается по точной сети, запрос и ответ `/portfolio` сверяются с адресом, а заголовок модального окна и активный период должны совпасть. Нативный `totalPnl` API не используется как USD.
 
-При необходимости входа используйте `login`, войдите вручную и оставьте браузер открытым. `--delay-seconds` задаёт паузу между кошельками (2–120 секунд). Ошибка авторизации, CAPTCHA или rate limit сохраняет checkpoint и останавливает проход; при 429 дождитесь cooldown Axiom перед `--resume`, не пытайтесь обходить лимит увеличением параллелизма. Никакие пароли, cookies, заголовки или HAR не записываются.
+При необходимости входа используйте `login`, войдите вручную и оставьте браузер открытым. `--delay-seconds` задаёт паузу 0–120 секунд; `0` отключает дополнительную паузу. Если указан `--paced-wallets N`, пауза действует, пока текущий запуск не соберёт N результатов PASS/FAIL; UNKNOWN не увеличивает счётчик, а после N дальнейшие паузы отключаются. Если `--paced-wallets` не указан или равен `0`, заданная пауза действует постоянно. После авторизационной ошибки, CAPTCHA или 429 checkpoint сохраняется и проход останавливается; при 429 дождитесь cooldown Axiom перед `--resume`, не возобновляйте сбор для обхода лимита. Никакие пароли, cookies, заголовки или HAR не записываются.
 
 Проверка offline core:
 
