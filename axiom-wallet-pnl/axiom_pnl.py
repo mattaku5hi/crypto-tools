@@ -20,8 +20,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
 
-VERSION = "0.1.0"
-SOURCE_POLICY = "axiom-portfolio-performance-dom-usd-v1"
+VERSION = "0.1.1"
+SOURCE_POLICY = "axiom-performance-ui-rounded-usd-v2"
 WINDOW_30D_USD = Decimal("10000")
 MAX_USD = Decimal("30000")
 MAX_INPUT_BYTES = 16 * 1024 * 1024
@@ -125,6 +125,15 @@ def wallet_tab_needs_click(class_name: str) -> bool:
 
 def search_results_ready(results_visible: bool, matching_card_count: int) -> bool:
     return results_visible and matching_card_count == 1
+
+
+def values_are_stable(previous: dict[str, str] | None, current: dict[str, str]) -> bool:
+    return previous is not None and current == previous
+
+
+def native_token_matches_chain(chain: str, native_token: str) -> bool:
+    expected = {"solana": {"sol"}, "bsc": {"bnb"}}
+    return native_token.lower() in expected.get(chain, set())
 
 
 def classify_amount(amount: Amount, threshold: Decimal) -> str:
@@ -277,7 +286,7 @@ def load_manifest(
         "software_version": VERSION,
         "source_policy": SOURCE_POLICY,
         "decoder_version": SOURCE_POLICY,
-        "price_policy_version": "axiom-published-usd-metrics-v1",
+        "price_policy_version": "axiom-performance-ui-rounded-usd-v2",
         "finality": "not_applicable_axiom_analytics",
         "as_of": as_of,
         "scope": {"pnl_30d": "Axiom 30d Performance window; API timeOffsetMinutes=-180", "pnl_max": "Axiom Max (allTime) range"},
@@ -295,7 +304,7 @@ def load_manifest(
 
 
 def evaluate_snapshot(
-    wallet: dict[str, Any], snapshot: dict[str, Any], collected_at: str,
+    wallet: dict[str, Any], snapshot: dict[str, Any], collected_at: str | None,
     thresholds: tuple[tuple[str, Decimal], ...] | None = None,
 ) -> dict[str, Any]:
     """Convert a normalized snapshot into reviewable metrics and a four-gate result."""
@@ -307,18 +316,21 @@ def evaluate_snapshot(
         "source": snapshot.get("source", SOURCE_POLICY),
         "wallet_match": snapshot.get("wallet_match"),
         "period_match": snapshot.get("period_match"),
-        "source_consistent": snapshot.get("source_consistent", True),
+        "api_ui_consistent": snapshot.get("api_ui_consistent"),
         "status": "UNKNOWN",
         "reason": None,
         "retryable": bool(snapshot.get("retryable", False)),
         "provenance": snapshot.get("provenance"),
         "raw_ui_values": snapshot.get("raw_ui_values"),
     }
+    row.pop("source_consistent", None)
     results: dict[str, str] = {}
     for key, threshold in (thresholds or METRICS):
         value = snapshot.get(key)
         try:
-            amount = parse_ui_amount(value) if key in {"pnl_30d_total", "pnl_max_total"} else parse_amount(value)
+            if not isinstance(value, str) or "$" not in value:
+                raise InputError("UI value is missing a USD marker")
+            amount = parse_ui_amount(value)
         except InputError:
             row[key] = {"raw": None if value is None else str(value), "lower": None, "upper_exclusive": None, "exact": None}
             row[f"{key}_status"] = "UNKNOWN"
@@ -332,8 +344,6 @@ def evaluate_snapshot(
         row["reason"] = "requested wallet identity was not confirmed"
     elif snapshot.get("period_match") is not True:
         row["reason"] = "requested Axiom period was not confirmed"
-    elif snapshot.get("source_consistent", True) is not True:
-        row["reason"] = "Axiom API and Performance UI values did not agree"
     elif all(status == "PASS" for status in results.values()):
         row["status"] = "PASS"
     elif "FAIL" in results.values():
@@ -349,43 +359,69 @@ def rescore_existing_row(
 ) -> dict[str, Any]:
     """Reapply thresholds to a saved row without changing its observed evidence."""
     ui = row.get("raw_ui_values") or {}
+    provenance = dict(row.get("provenance") or {})
+    api_realized = provenance.get("api_realized_usd_pnl")
+    if not isinstance(api_realized, dict):
+        api_realized = {
+            "30d": (row.get("pnl_30d_realized") or {}).get("raw"),
+            "max": (row.get("pnl_max_realized") or {}).get("raw"),
+        }
+        provenance["api_realized_usd_pnl"] = api_realized
     api_snapshot: dict[str, Any] = {
         "wallet_match": row.get("wallet_match"),
         "period_match": row.get("period_match"),
         "source": row.get("source", SOURCE_POLICY),
-        "provenance": row.get("provenance"),
+        "provenance": provenance,
         "retryable": row.get("retryable", False),
+        "api_realized_usd_pnl": api_realized,
     }
-    for key in ("pnl_30d_realized", "pnl_max_realized"):
-        saved = row.get(key)
-        api_snapshot[key] = saved.get("raw") if isinstance(saved, dict) else saved
+    complete_ui = row.get("wallet_match") is True and row.get("period_match") is True
+    for key, _ in METRICS:
+        value = ui.get(key)
+        if not isinstance(value, str) or "$" not in value:
+            complete_ui = False
+            break
+        try:
+            parse_ui_amount(value)
+        except InputError:
+            complete_ui = False
+            break
+    if complete_ui:
+        api_snapshot["retryable"] = False
     snapshot = merge_metrics_snapshot(api_snapshot, ui)
-    return evaluate_snapshot(row, snapshot, row.get("collected_at") or "", thresholds)
+    return evaluate_snapshot(row, snapshot, row.get("collected_at"), thresholds)
 
 
 def merge_metrics_snapshot(api_snapshot: dict[str, Any], ui_values: dict[str, str]) -> dict[str, Any]:
-    """Combine exact realized API amounts and rounded USD Total UI amounts."""
+    """Keep UI metrics authoritative and retain API realized values as diagnostics."""
     snapshot = dict(api_snapshot)
-    snapshot["pnl_30d_total"] = ui_values.get("pnl_30d_total")
-    snapshot["pnl_max_total"] = ui_values.get("pnl_max_total")
+    legacy_api_realized = {
+        "30d": snapshot.get("pnl_30d_realized"),
+        "max": snapshot.get("pnl_max_realized"),
+    }
+    for key, _ in METRICS:
+        snapshot[key] = ui_values.get(key)
     snapshot["raw_ui_values"] = dict(ui_values)
-    consistent = True
-    for api_key, ui_key in (
-        ("pnl_30d_realized", "pnl_30d_realized"),
-        ("pnl_max_realized", "pnl_max_realized"),
-    ):
+    provenance = dict(snapshot.get("provenance") or {})
+    api_realized = snapshot.get("api_realized_usd_pnl") or provenance.get("api_realized_usd_pnl")
+    if not isinstance(api_realized, dict):
+        api_realized = legacy_api_realized
+    provenance["api_realized_usd_pnl"] = api_realized
+    snapshot["provenance"] = provenance
+    checks = []
+    for period, ui_key in (("30d", "pnl_30d_realized"), ("max", "pnl_max_realized")):
         try:
-            api_amount = parse_amount(snapshot.get(api_key))
+            api_value = api_realized.get(period)
+            if api_value is None:
+                continue
+            api_amount = parse_amount(api_value)
             ui_amount = parse_ui_amount(ui_values.get(ui_key))
         except InputError:
-            consistent = False
+            checks.append(False)
             continue
-        if ui_amount.exact:
-            same = api_amount.lower == ui_amount.lower
-        else:
-            same = ui_amount.lower <= api_amount.lower < (ui_amount.upper or ui_amount.lower)
-        consistent = consistent and same
-    snapshot["source_consistent"] = consistent
+        same = ui_amount.lower <= api_amount.lower < (ui_amount.upper or ui_amount.lower)
+        checks.append(same)
+    snapshot["api_ui_consistent"] = all(checks) if checks else None
     return snapshot
 
 
@@ -404,13 +440,15 @@ def extract_performance_ui(text: str, period: str) -> dict[str, str]:
         if len(positions) != 1 or positions[0] + 1 >= len(lines):
             raise InputError(f"Performance section is missing unique {label!r} label/value")
         raw_value = lines[positions[0] + 1]
-        parse_amount(raw_value)
+        if "$" not in raw_value:
+            raise InputError(f"Performance value for {label!r} is missing the USD marker")
+        parse_ui_amount(raw_value)
         result[metric] = raw_value
     return result
 
 
 def map_wallet_metrics_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Map only observed USD realized fields; native-token totalPnl is never USD."""
+    """Retain native-token identity and API realized USD only for diagnostics."""
     portfolio = payload.get("portfolio", payload)
     if not isinstance(portfolio, dict):
         raise InputError("portfolio response has no portfolio object")
@@ -428,23 +466,15 @@ def map_wallet_metrics_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if str(native_token).lower() != str(all_time_native).lower():
         raise InputError("Axiom metrics windows use different native-token units")
     return {
-        "pnl_30d_total": None,
-        "pnl_30d_realized": thirty_day.get("realizedUsdPnl"),
-        "pnl_max_total": None,
-        "pnl_max_realized": all_time.get("realizedUsdPnl"),
-        "source": "Axiom Performance UI + chain-specific metrics API",
+        "source": "Axiom Performance UI; chain-specific metrics API diagnostics",
         "wallet_match": None,
         "period_match": None,
         "provenance": {
             "native_token": native_token,
-            "thirty_day_total_native": thirty_day.get("totalPnl"),
-            "all_time_total_native": all_time.get("totalPnl"),
-            "total_native_unit": native_token,
-            "max_window_source_key": "allTime",
-            "thirty_day_transfer_funded_usd": thirty_day.get("transferFundedUsd"),
-            "thirty_day_transfer_funded_closes": thirty_day.get("transferFundedCloses"),
-            "all_time_transfer_funded_usd": all_time.get("transferFundedUsd"),
-            "all_time_transfer_funded_closes": all_time.get("transferFundedCloses"),
+            "api_realized_usd_pnl": {
+                "30d": thirty_day.get("realizedUsdPnl"),
+                "max": all_time.get("realizedUsdPnl"),
+            },
         },
     }
 
@@ -464,7 +494,6 @@ class BrowserAdapter:
         "solana": re.compile(r"^api[0-9]*\.axiom\.trade$", re.I),
         "bsc": re.compile(r"^bnb-api[0-9]+\.axiom\.trade$", re.I),
     }
-    NATIVE_TOKENS = {"solana": {"sol"}, "bsc": {"bnb"}}
     BADGE_SELECTORS = {"solana": "img[src*='/images/sol-fill.svg']", "bsc": "img[alt='BNB']"}
     HOME_URL = "https://axiom.trade"
     RESPONSE_LIMIT = 2 * 1024 * 1024
@@ -538,7 +567,7 @@ class BrowserAdapter:
             raise CollectionError("Axiom metrics response did not match the observed schema") from exc
         mapped["source"] = f"{urlparse(response.url).hostname}/portfolio + Axiom Performance UI"
         native = str((mapped.get("provenance") or {}).get("native_token") or "").lower()
-        if native not in self.NATIVE_TOKENS[wallet["chain"]]:
+        if not native_token_matches_chain(wallet["chain"], native):
             raise CollectionError("Axiom response native-token identity did not match the selected network")
         return mapped
 
@@ -650,18 +679,26 @@ class BrowserAdapter:
         deadline = time.monotonic() + 8
         section = self.page.get_by_text("Performance", exact=True).locator("xpath=../../..")
         last_error: Exception | None = None
+        previous_values: dict[str, str] | None = None
         while time.monotonic() < deadline:
             self._raise_if_stopped()
             try:
                 class_name = button.get_attribute("class") or ""
                 if not has_css_token(class_name, "text-primaryBlue"):
+                    previous_values = None
                     self.page.wait_for_timeout(100)
                     continue
                 text = section.inner_text()
-                return extract_performance_ui(text, period)
+                values = extract_performance_ui(text, period)
+                if values_are_stable(previous_values, values):
+                    return values
+                previous_values = values
             except Exception as exc:
                 last_error = exc
+                previous_values = None
                 self.page.wait_for_timeout(100)
+                continue
+            self.page.wait_for_timeout(100)
         raise CollectionError(f"Axiom {period} Performance values were not confirmed") from last_error
 
     def _challenge_reason(self) -> str | None:
@@ -690,7 +727,7 @@ class BrowserAdapter:
             snapshot = merge_metrics_snapshot(api_snapshot, ui_values)
             snapshot["wallet_match"] = True
             snapshot["period_match"] = True
-            snapshot["retryable"] = not snapshot.get("source_consistent", False)
+            snapshot["retryable"] = False
             return snapshot
         except StopCollection:
             raise

@@ -22,8 +22,10 @@ from axiom_pnl import (
     rescore_existing_row,
     extract_performance_ui,
     normalize_wallet,
+    native_token_matches_chain,
     wallet_tab_needs_click,
     search_results_ready,
+    values_are_stable,
     map_wallet_metrics_payload,
     merge_metrics_snapshot,
     parse_amount,
@@ -80,6 +82,63 @@ class MoneyTests(unittest.TestCase):
         self.assertFalse(search_results_ready(False, 2))
         self.assertFalse(search_results_ready(True, 2))
         self.assertTrue(search_results_ready(True, 1))
+
+    def test_period_values_require_two_consecutive_fresh_observations(self):
+        stale = {"pnl_30d_total": "$1K", "pnl_30d_realized": "$2K"}
+        fresh = {"pnl_30d_total": "$12K", "pnl_30d_realized": "$13K"}
+        self.assertFalse(values_are_stable(None, stale))
+        self.assertFalse(values_are_stable(stale, fresh))
+        self.assertTrue(values_are_stable(fresh, fresh.copy()))
+
+    def test_period_reader_ignores_first_stale_values_until_fresh_values_repeat(self):
+        stale_text = "Performance\n30d Total PNL\n$1K\n30d Realized PNL\n$2K"
+        fresh_text = "Performance\n30d Total PNL\n$10.1K\n30d Realized PNL\n$10.2K"
+
+        class Button:
+            def count(self):
+                return 1
+
+            def click(self):
+                pass
+
+            def get_attribute(self, name):
+                return "text-primaryBlue"
+
+        class Section:
+            def __init__(self):
+                self.texts = [stale_text, fresh_text, fresh_text]
+
+            def inner_text(self):
+                return self.texts.pop(0)
+
+        class PerformanceLocator:
+            def __init__(self, section):
+                self.section = section
+
+            def locator(self, selector):
+                return self.section
+
+        class Page:
+            def __init__(self):
+                self.section = Section()
+
+            def set_default_timeout(self, timeout):
+                pass
+
+            def on(self, event, callback):
+                pass
+
+            def get_by_role(self, role, name, exact):
+                return Button()
+
+            def get_by_text(self, text, exact):
+                return PerformanceLocator(self.section)
+
+            def wait_for_timeout(self, timeout):
+                pass
+
+        values = BrowserAdapter(Page())._read_period("30d")
+        self.assertEqual(values, {"pnl_30d_total": "$10.1K", "pnl_30d_realized": "$10.2K"})
 
     def test_invalid_and_unknown_values_are_not_zero(self):
         with self.assertRaises(InputError):
@@ -241,8 +300,10 @@ $999.0K"""
         })
         with self.assertRaises(InputError):
             extract_performance_ui("Performance\nTotal Value\n$999K", "Max")
+        with self.assertRaises(InputError):
+            extract_performance_ui("Performance\nTotal Pnl\n10000\nRealized PNL\n$31000", "Max")
 
-    def test_exact_api_realized_is_checked_against_rounded_ui_and_total_is_usd_ui(self):
+    def test_api_realized_is_retained_as_diagnostic_while_ui_is_authoritative(self):
         api = {
             "pnl_30d_realized": Decimal("12345.67"),
             "pnl_max_realized": Decimal("45678.90"),
@@ -257,23 +318,41 @@ $999.0K"""
         }
         snapshot = merge_metrics_snapshot(api, ui)
         self.assertEqual(snapshot["pnl_30d_total"], "+$12.4K")
-        self.assertEqual(snapshot["pnl_30d_realized"], Decimal("12345.67"))
-        self.assertTrue(snapshot["source_consistent"])
+        self.assertEqual(snapshot["pnl_30d_realized"], "+$12.3K")
+        self.assertTrue(snapshot["api_ui_consistent"])
+        self.assertEqual(snapshot["provenance"]["api_realized_usd_pnl"]["30d"], Decimal("12345.67"))
         self.assertEqual(snapshot["raw_ui_values"], ui)
         api["pnl_max_realized"] = Decimal("50000")
-        self.assertFalse(merge_metrics_snapshot(api, ui)["source_consistent"])
+        self.assertFalse(merge_metrics_snapshot(api, ui)["api_ui_consistent"])
 
     def test_ui_realized_interval_accepts_only_values_within_shown_precision(self):
         api = {"pnl_30d_realized": Decimal("-483.4901385943016"), "pnl_max_realized": Decimal("10.454785507825228")}
         ui = {"pnl_30d_realized": "-$483.5", "pnl_max_realized": "+$10.45"}
-        self.assertTrue(merge_metrics_snapshot(api, ui)["source_consistent"])
+        self.assertTrue(merge_metrics_snapshot(api, ui)["api_ui_consistent"])
         api["pnl_30d_realized"] = Decimal("-483.6")
-        self.assertFalse(merge_metrics_snapshot(api, ui)["source_consistent"])
+        self.assertFalse(merge_metrics_snapshot(api, ui)["api_ui_consistent"])
+
+    def test_api_ui_disagreement_does_not_override_displayed_ui_gate_status(self):
+        api = {"wallet_match": True, "period_match": True, "pnl_30d_realized": Decimal("548.949"), "pnl_max_realized": Decimal("1")}
+        ui = {
+            "pnl_30d_total": "+$10.1K", "pnl_30d_realized": "+$10.1K",
+            "pnl_max_total": "+$30.1K", "pnl_max_realized": "+$30.1K",
+        }
+        snapshot = merge_metrics_snapshot(api, ui)
+        self.assertFalse(snapshot["api_ui_consistent"])
+        self.assertEqual(evaluate_snapshot({"wallet": "w"}, snapshot, "now")["status"], "PASS")
         api["pnl_30d_realized"] = Decimal("548.949")
         ui["pnl_30d_realized"] = "+$542.6"
-        self.assertFalse(merge_metrics_snapshot(api, ui)["source_consistent"])
+        diagnostic = merge_metrics_snapshot(api, ui)
+        self.assertFalse(diagnostic["api_ui_consistent"])
+        snapshot = {
+            "wallet_match": True, "period_match": True, "api_ui_consistent": False,
+            "pnl_30d_total": "+$10.1K", "pnl_30d_realized": "+$10.1K",
+            "pnl_max_total": "+$30.1K", "pnl_max_realized": "+$30.1K",
+        }
+        self.assertEqual(evaluate_snapshot({"wallet": "w"}, snapshot, "now")["status"], "PASS")
 
-    def test_maps_only_verified_realized_usd_not_native_total(self):
+    def test_api_mapping_retains_only_native_identity_and_realized_usd_diagnostic(self):
         payload = {
             "portfolio": {
                 "performanceMetrics": {
@@ -285,13 +364,19 @@ $999.0K"""
             },
         }
         snapshot = map_wallet_metrics_payload(payload)
-        self.assertIsNone(snapshot["pnl_30d_total"])
-        self.assertIsNone(snapshot["pnl_max_total"])
-        self.assertEqual(snapshot["pnl_30d_realized"], Decimal("12345.67"))
-        self.assertEqual(snapshot["pnl_max_realized"], Decimal("45678.90"))
-        self.assertEqual(snapshot["provenance"]["thirty_day_total_native"], Decimal("781.15"))
+        self.assertNotIn("pnl_30d_total", snapshot)
+        self.assertNotIn("pnl_30d_realized", snapshot)
+        self.assertEqual(snapshot["provenance"]["api_realized_usd_pnl"]["30d"], Decimal("12345.67"))
+        self.assertEqual(snapshot["provenance"]["api_realized_usd_pnl"]["max"], Decimal("45678.90"))
+        self.assertEqual(snapshot["provenance"]["native_token"], "sol")
+        self.assertNotIn("thirty_day_total_native", snapshot["provenance"])
         self.assertIsNone(snapshot["wallet_match"])
         self.assertIsNone(snapshot["period_match"])
+
+    def test_native_token_must_match_explicit_network(self):
+        self.assertTrue(native_token_matches_chain("solana", "sol"))
+        self.assertTrue(native_token_matches_chain("bsc", "bnb"))
+        self.assertFalse(native_token_matches_chain("bsc", "sol"))
 
 class EvaluationTests(unittest.TestCase):
     def test_custom_threshold_boundaries_apply_to_all_four_metrics(self):
@@ -299,14 +384,18 @@ class EvaluationTests(unittest.TestCase):
         wallet = {"wallet": "w", "chain": "bsc"}
         snapshot = {
             "wallet_match": True, "period_match": True,
-            "pnl_30d_total": "$5000", "pnl_30d_realized": Decimal("5000"),
-            "pnl_max_total": "$15000", "pnl_max_realized": Decimal("15000"),
+            "pnl_30d_total": "$5000", "pnl_30d_realized": "$5000",
+            "pnl_max_total": "$15000", "pnl_max_realized": "$15000",
         }
         row = evaluate_snapshot(wallet, snapshot, "now", thresholds)
         self.assertEqual(row["pnl_30d_total_status"], "UNKNOWN")
+        self.assertEqual(row["pnl_30d_realized_status"], "UNKNOWN")
         self.assertEqual(row["pnl_max_total_status"], "UNKNOWN")
+        self.assertEqual(row["pnl_max_realized_status"], "UNKNOWN")
         snapshot["pnl_30d_total"] = "$5001"
+        snapshot["pnl_30d_realized"] = "$5001"
         snapshot["pnl_max_total"] = "$15001"
+        snapshot["pnl_max_realized"] = "$15001"
         self.assertEqual(evaluate_snapshot(wallet, snapshot, "now", thresholds)["status"], "PASS")
 
     def test_saved_rows_can_be_rescored_without_losing_evidence(self):
@@ -317,43 +406,69 @@ class EvaluationTests(unittest.TestCase):
         }
         initial = evaluate_snapshot(wallet, {
             "wallet_match": True, "period_match": True,
-            "pnl_30d_total": ui["pnl_30d_total"], "pnl_30d_realized": Decimal("5100"),
-            "pnl_max_total": ui["pnl_max_total"], "pnl_max_realized": Decimal("15500"),
+            "pnl_30d_total": ui["pnl_30d_total"], "pnl_30d_realized": ui["pnl_30d_realized"],
+            "pnl_max_total": ui["pnl_max_total"], "pnl_max_realized": ui["pnl_max_realized"],
             "raw_ui_values": ui, "provenance": {"native_token": "bnb"},
         }, "2026-10-12T10:00:00Z")
+        initial["pnl_30d_realized"] = {"raw": "5100.125", "lower": "5100.125", "upper_exclusive": "5100.125", "exact": True}
+        initial["pnl_max_realized"] = {"raw": "15500.25", "lower": "15500.25", "upper_exclusive": "15500.25", "exact": True}
+        initial["source_consistent"] = False
         rescored = rescore_existing_row(initial, threshold_metrics("5000", "15000"))
         self.assertEqual(rescored["status"], "PASS")
         self.assertEqual(rescored["wallet"], "w")
         self.assertEqual(rescored["label"], "keep")
         self.assertEqual(rescored["collected_at"], "2026-10-12T10:00:00Z")
         self.assertEqual(rescored["raw_ui_values"], ui)
-        self.assertEqual(rescored["provenance"], {"native_token": "bnb"})
+        self.assertEqual(rescored["provenance"]["native_token"], "bnb")
+        self.assertEqual(rescored["provenance"]["api_realized_usd_pnl"], {"30d": "5100.125", "max": "15500.25"})
+        self.assertNotIn("source_consistent", rescored)
+        retryable_v1 = dict(initial, retryable=True, collected_at=None)
+        migrated = rescore_existing_row(retryable_v1, threshold_metrics("5000", "15000"))
+        self.assertFalse(migrated["retryable"])
+        self.assertIsNone(migrated["collected_at"])
+        incomplete_v1 = dict(retryable_v1, raw_ui_values={**ui, "pnl_max_total": None})
+        self.assertTrue(rescore_existing_row(incomplete_v1, threshold_metrics("5000", "15000"))["retryable"])
 
     def test_all_four_conditions_required_and_unknown_is_preserved(self):
         wallet = {"chain": "bsc", "wallet": "0x" + "a" * 40}
         base = {
             "wallet_match": True,
             "period_match": True,
-            "pnl_30d_total": "10001",
-            "pnl_30d_realized": "10000",
-            "pnl_max_total": "30001",
-            "pnl_max_realized": "30000",
+            "pnl_30d_total": "$10001",
+            "pnl_30d_realized": "$10001",
+            "pnl_max_total": "$30001",
+            "pnl_max_realized": "$30001",
         }
         passed = evaluate_snapshot(wallet, base, "2026-10-12T00:00:00Z")
         self.assertEqual(passed["status"], "PASS")
-        base["pnl_max_realized"] = "29999"
+        base["pnl_max_realized"] = "$29999"
         self.assertEqual(evaluate_snapshot(wallet, base, "now")["status"], "FAIL")
-        base["pnl_max_realized"] = "30K"
+        base["pnl_max_realized"] = "$30K"
         row = evaluate_snapshot(wallet, base, "now")
         self.assertEqual(row["status"], "UNKNOWN")
-        self.assertEqual(row["pnl_max_realized"]["raw"], "30K")
+        self.assertEqual(row["pnl_max_realized"]["raw"], "$30K")
 
     def test_wallet_and_period_must_be_confirmed_before_accepting_values(self):
-        snapshot = {"wallet_match": False, "period_match": True, **{key: "999999" for key, _ in __import__("axiom_pnl").METRICS}}
+        snapshot = {"wallet_match": False, "period_match": True, **{key: "$999999" for key, _ in __import__("axiom_pnl").METRICS}}
         row = evaluate_snapshot({}, snapshot, "now")
         self.assertEqual(row["status"], "UNKNOWN")
         self.assertIn("wallet", row["reason"])
-        self.assertEqual(row["pnl_30d_total"]["raw"], "999999")
+        self.assertEqual(row["pnl_30d_total"]["raw"], "$999999")
+        snapshot["wallet_match"] = True
+        snapshot["period_match"] = False
+        row = evaluate_snapshot({}, snapshot, "now")
+        self.assertEqual(row["status"], "UNKNOWN")
+        self.assertIn("period", row["reason"])
+
+    def test_ui_metric_without_explicit_usd_marker_is_unknown(self):
+        snapshot = {
+            "wallet_match": True, "period_match": True,
+            "pnl_30d_total": "100000", "pnl_30d_realized": "$100000",
+            "pnl_max_total": "$100000", "pnl_max_realized": "$100000",
+        }
+        row = evaluate_snapshot({"wallet": "w"}, snapshot, "now")
+        self.assertEqual(row["pnl_30d_total_status"], "UNKNOWN")
+        self.assertEqual(row["status"], "UNKNOWN")
 
     def test_outputs_include_failed_and_unknown_rows(self):
         with tempfile.TemporaryDirectory() as temp:
