@@ -26,6 +26,7 @@ from axiom_pnl import (
     map_wallet_metrics_payload,
     merge_metrics_snapshot,
     parse_amount,
+    parse_ui_amount,
     read_wallets,
     validate_cdp_url,
     write_outputs,
@@ -35,11 +36,21 @@ from axiom_pnl import (
 class MoneyTests(unittest.TestCase):
     def test_exact_thresholds_and_rounded_boundary_are_distinguished(self):
         self.assertEqual(classify_amount(parse_amount("10000"), Decimal("10000")), "PASS")
+        self.assertEqual(classify_amount(parse_ui_amount("$10000"), Decimal("10000")), "UNKNOWN")
+        self.assertEqual(classify_amount(parse_ui_amount("$10001"), Decimal("10000")), "PASS")
         self.assertEqual(classify_amount(parse_amount("9.9K"), Decimal("10000")), "FAIL")
         self.assertEqual(classify_amount(parse_amount("9.99K"), Decimal("10000")), "FAIL")
         self.assertEqual(classify_amount(parse_amount("9.9999K"), Decimal("10000")), "FAIL")
         self.assertEqual(classify_amount(parse_amount("10K"), Decimal("10000")), "UNKNOWN")
         self.assertEqual(parse_amount("9.99K").as_json()["raw"], "9.99K")
+
+    def test_ui_rounding_uses_display_precision_for_signed_and_decimal_values(self):
+        negative = parse_ui_amount("-$483.5")
+        self.assertEqual((negative.lower, negative.upper), (Decimal("-483.55"), Decimal("-483.45")))
+        sub_thousand = parse_ui_amount("+$10.45")
+        self.assertEqual((sub_thousand.lower, sub_thousand.upper), (Decimal("10.445"), Decimal("10.455")))
+        self.assertFalse(sub_thousand.exact)
+        self.assertTrue(parse_amount("10.45").exact)
 
     def test_negative_values_remain_negative(self):
         amount = parse_amount("-$12.50")
@@ -213,6 +224,16 @@ $999.0K"""
         api["pnl_max_realized"] = Decimal("50000")
         self.assertFalse(merge_metrics_snapshot(api, ui)["source_consistent"])
 
+    def test_ui_realized_interval_accepts_only_values_within_shown_precision(self):
+        api = {"pnl_30d_realized": Decimal("-483.4901385943016"), "pnl_max_realized": Decimal("10.454785507825228")}
+        ui = {"pnl_30d_realized": "-$483.5", "pnl_max_realized": "+$10.45"}
+        self.assertTrue(merge_metrics_snapshot(api, ui)["source_consistent"])
+        api["pnl_30d_realized"] = Decimal("-483.6")
+        self.assertFalse(merge_metrics_snapshot(api, ui)["source_consistent"])
+        api["pnl_30d_realized"] = Decimal("548.949")
+        ui["pnl_30d_realized"] = "+$542.6"
+        self.assertFalse(merge_metrics_snapshot(api, ui)["source_consistent"])
+
     def test_maps_only_verified_realized_usd_not_native_total(self):
         payload = {
             "portfolio": {
@@ -239,9 +260,9 @@ class EvaluationTests(unittest.TestCase):
         base = {
             "wallet_match": True,
             "period_match": True,
-            "pnl_30d_total": "10000",
+            "pnl_30d_total": "10001",
             "pnl_30d_realized": "10000",
-            "pnl_max_total": "30000",
+            "pnl_max_total": "30001",
             "pnl_max_realized": "30000",
         }
         passed = evaluate_snapshot(wallet, base, "2026-10-12T00:00:00Z")

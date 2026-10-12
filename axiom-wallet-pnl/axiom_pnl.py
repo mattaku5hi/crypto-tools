@@ -66,7 +66,7 @@ def decimal_string(value: Decimal) -> str:
 
 
 def parse_amount(value: Any) -> Amount:
-    """Parse exact numeric values or a rounded UI string without inventing precision."""
+    """Parse exact values; suffixed numeric strings retain rounded interval semantics."""
     if value is None or isinstance(value, bool):
         raise InputError("missing or invalid money value")
     raw = str(value)
@@ -94,6 +94,25 @@ def parse_amount(value: Any) -> Amount:
     # can lie half a displayed unit on either side; upper is exclusive.
     half = quantum / Decimal(2)
     return Amount(raw, lower - half, lower + half, False)
+
+
+def parse_ui_amount(value: Any) -> Amount:
+    """Parse a displayed Axiom money string as rounded at its shown precision."""
+    if not isinstance(value, str):
+        raise InputError("UI money value must be a string")
+    parsed = parse_amount(value)
+    normalized = re.sub(r"^\s*([+-])\s*\$", r"\1", value)
+    match = MONEY_RE.fullmatch(normalized)
+    if not match:
+        raise InputError("unrecognized UI money value")
+    number = Decimal(match.group(1))
+    suffix = (match.group(2) or "").upper()
+    multiplier = {"": Decimal(1), "K": Decimal(1000), "M": Decimal(1000000), "B": Decimal(1000000000)}[suffix]
+    center = number * multiplier
+    places = max(0, -number.as_tuple().exponent)
+    quantum = Decimal(1).scaleb(-places) * multiplier
+    half = quantum / Decimal(2)
+    return Amount(parsed.raw, center - half, center + half, False)
 
 
 def has_css_token(class_name: str, token: str) -> bool:
@@ -268,7 +287,7 @@ def evaluate_snapshot(wallet: dict[str, Any], snapshot: dict[str, Any], collecte
     for key, threshold in METRICS:
         value = snapshot.get(key)
         try:
-            amount = parse_amount(value)
+            amount = parse_ui_amount(value) if key in {"pnl_30d_total", "pnl_max_total"} else parse_amount(value)
         except InputError:
             row[key] = {"raw": None if value is None else str(value), "lower": None, "upper_exclusive": None, "exact": None}
             row[f"{key}_status"] = "UNKNOWN"
@@ -307,7 +326,7 @@ def merge_metrics_snapshot(api_snapshot: dict[str, Any], ui_values: dict[str, st
     ):
         try:
             api_amount = parse_amount(snapshot.get(api_key))
-            ui_amount = parse_amount(ui_values.get(ui_key))
+            ui_amount = parse_ui_amount(ui_values.get(ui_key))
         except InputError:
             consistent = False
             continue
