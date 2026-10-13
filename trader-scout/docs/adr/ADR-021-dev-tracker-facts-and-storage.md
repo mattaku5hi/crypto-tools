@@ -917,3 +917,249 @@ history. Golden `zora_route_fx_window_case.json` pins the same-transaction raw
 amounts, exact rational 24-decimal floor, both FX endpoints, supply, and
 coverage limits. Certificate SHA-256:
 `941113c79a66900a52f079de7cdbcbd3638f2d4fba60c36858e24d8626778b56`.
+
+## Amendment 25 (2026-10-13) — Solana Tracker peak-time supply with daily-high corroboration
+
+Two Solana Tracker maximum-price records pass the existing 2% comparison
+against a GeckoTerminal daily high for the same UTC day and token pool. The
+comparison is between source-recorded prices, not an execution ratio. Complete
+mint-signature and successful full-transaction histories reach each token's
+birth, agree on their signature sets, contain no post-birth mint, and reconcile
+all burns to finalized snapshot supply. At the respective provider price
+seconds, neither token had burned supply: peak supply equals birth supply of
+`2000000000000000` raw units at six decimals. The first burns followed 19 and
+54 seconds after the respective provider timestamps. Exact price-times-supply
+floors at both peak and birth supply therefore agree at `6804467` and `6804889`
+cents. This supports those maximum FDVs only within the unknown Solana Tracker
+recording window. Keep `ath_at=NULL`; it does not establish lifetime ATH or
+complete market coverage.
+
+The BQJF control also passes the same-day daily-high price comparison and has
+complete birth-to-snapshot supply history, but burns preceded its maximum-price
+second. Its selected peak-time FDV is `834066` cents while the birth-supply
+upper endpoint is `1621320` cents. The selected peak FDV cannot be called the
+provider-window maximum: an earlier lower price could have coincided with the
+higher pre-burn supply. This keeps the peak-time arithmetic distinct from the
+provider-scope maximum-FDV proof.
+
+Golden `solana_tracker_window_peak_supply_gecko_cases.json` pins both accepted
+cases, the negative control, exact-cent calculations, and price-kind/scope
+limits. The source remains
+`solana-tracker-window-peak-supply-geckoterminal-validated-v1`; no automatic
+price adapter or promotion rule follows. Supply analysis SHA-256
+`4e129fb0a33bca1adb62f430cf6ea483d0758d5aee93e3faf828f6297ef8abb7`, history
+proof-marker SHA-256
+`eb53a2c969301176ae80da21c0f8831087095f0ca58e542a0238f2a647a45791`, and
+GeckoTerminal comparison SHA-256
+`3635c1313cd7f611fefeb31c901d21002cdfa1f7db67786534d32300894e0e4a`.
+
+## Amendment 26 (2026-10-13) — Base 3607 same-kind marginal spot corroboration
+
+For Base token `0x3607f8f1d16c5ae717b61d28eec1d624df763b07`, the
+GeckoTerminal daily high is `$0.000388974286395251` on both May 4 and May 5.
+The same-day maximum post-swap marginal spot across the four known token/USDC
+PoolManager pools is derived from the exact Uniswap v4 `sqrtPriceX96` state:
+`sqrtPriceX96² / 2^192 × 10^(18−6)` USDC per target token. Converting with the
+May 4 Kraken USDC/USD daily range `0.9970–0.9999` places both USD endpoints
+within 2% of the provider daily high. The independent all-state recheck
+contains 15 raw May 4 swaps and 15 eligible positive-liquidity post-states; it
+corrects a prior `31` state-point count that was not a raw event count. Include
+the one-sided swap state because its post-state has nonzero `sqrtPriceX96` and
+positive liquidity even though an execution-average ratio is undefined.
+
+Creation-to-anchor supply evidence records 100 billion tokens at 18 decimals,
+one creation mint and no burns through the anchor. Bridge mint/burn capability
+exists in verified source but is not an observed event in that interval. The
+daily-high price times fixed supply floors to `3889742863` cents. This supports
+only source-window FDV and same-kind spot corroboration; retain `ath_at=NULL`
+and do not claim all-DEX or lifetime completeness. The same Swap's execution
+average is `0.002799987759250452142275286391` USDC per target, about 7.198 times
+the provider USD daily high. It is a separate price kind and must not be
+averaged with or substituted for the marginal spot comparison. Do not treat
+the marginal spot as execution acquisition cost or wallet PnL.
+
+Golden `geckoterminal_base_3607_marginal_spot_window_case.json` pins exact
+square-root arithmetic, both FX endpoints, corrected state counts, fixed
+supply, and the distinct execution price. Certificate SHA-256
+`231fb11c15f6d517d5eeaa694e538d4d62fbcf2de948ad9a55d41569dea747f1`; all-state
+recheck SHA-256
+`f2747b81e124831a0b0478af14c96907d6e686e9fed0ae570c819d5e86697452`. The
+source is `geckoterminal-window-supply-pool-state-fx-validated-v1`; this adds
+no automatic parser or general promotion rule.
+
+## Amendment 27a (2026-10-13) — Robinhood direct pool maxima with traded-reference FX
+
+For the explicitly scanned canonical initial pools, define a reference-priced
+maximum by converting each successful post-creation Swap event through its
+own contemporaneous traded-market reference, then selecting the highest
+converted event. This is a source-specific model, not an exact second-level
+USD execution price. It does not generalize to other pools, tokens, or FX
+sources.
+
+For WETH-quoted token `0x01193b12f91826c2bf313d4b9620e83280a3fee1`, all three
+post-creation events are priced with the Coinbase ETH/USD close from their own
+UTC minute. The maximum after conversion is block `46,586,365`, log `11`, at
+`$0.00001006353488124656040241272196` per token, or `$10,063.53488124656…`
+FDV for one billion tokens. The selected minute's low/high sensitivity remains
+`$0.00001005229116336928213389850947–$0.00001006406447665382350926302907`
+per token. This is a minute-close reference model, not exact fiat execution or
+wallet acquisition cost.
+
+For AAPL-quoted token `0x4016fa67c597bf5e1991c852a6dfbb3eb9801e18`, price all
+six scanned events using the last successful fee-3000 USDG/AAPL execution
+before that event's timestamp group, multiplied by Kraken's closed Aug 4
+USDG/USD daily close `0.9999`. Each of the two groups is bracketed by actual
+USDG/AAPL executions; their ratios and the daily low/high remain sensitivity
+inputs. The converted maximum is block `27,216,237`, log `22`, at
+`$0.00002035554268939785137805557743` per token, or `$20,355.54268939785…`
+FDV for one billion tokens. Preserve the separate sensitivity range
+`$0.00002035147117370840286292845360–$0.00002035820501954546327338853483` per
+token. USDG is priced through the observed market route and dated Kraken
+reference; no 1:1 peg or stale AAPL oracle is assumed.
+
+The third candidate `0x48c01e934d149b54af69398a3f767b7e399fb4aa` remains a
+negative control: available USDG/AAPL executions do not form a sufficiently
+timed two-sided bracket around its pool maximum. No reference-priced maximum
+is assigned without that quote evidence. The two selected models use sources
+`onchain-pool-window-supply-cex-reference-v1` and
+`onchain-pool-window-supply-stock-trade-fx-reference-v1`; both retain
+`ath_at=NULL` and cover only three or six enumerated events in their initial
+pools through the pinned head. Neither establishes alternate-pool or lifetime
+completeness. The model output is a maximum over per-event FX-weighted values;
+do not select a native quote-ratio maximum first and convert it afterward.
+Keep the separate market-sensitivity bands intact rather than averaging them
+into the reference point. In this three-event WETH sample, the highest native
+ratio happens to remain the winner after per-minute weighting; this is not
+evidence of a ranking reversal.
+
+Golden `robinhood_scoped_reference_maxima_case.json` pins all nine event ratios
+and per-event FX models, winner identities, supply, uncertainty bands, and the
+unbracketed negative control. Capture review SHA-256
+`06e56f774c800cb8e7539159ddc1b6cdc9a2e82d6b33ca495e98a001abed3399`. This
+amendment defines only these two manually reviewed reference models; it adds
+no general adapter or automatic source promotion.
+
+## Amendment 27b (2026-10-14) — Robinhood Doppler pool maxima with per-minute ETH/USD
+
+Apply the same event-weighted reference model to three additional Robinhood
+initial pools. For each post-creation Swap, calculate the exact absolute
+WETH/token raw-delta ratio (both assets have 18 decimals) and multiply by that
+event's Coinbase ETH/USD UTC-minute close. Select the maximum only after all
+80 enumerated events are individually converted. The one-billion-token supply
+at 18 decimals gives these conservative FDV-cent floors:
+
+- `0x3d5733d2ac4d8f572aa22531e84bf620cc98fee1`: 60 events across 25 blocks;
+  maximum at block `46,091,504`, log `34`; `3,248,630` cents.
+- `0xcc799821eba30921d0f387f846d36cb6a0cafee1`: 10 events across 5 blocks;
+  maximum at block `46,871,356`, log `32`; `1,226,265` cents.
+- `0xd34b6aa31674b581ac37766198ce3a9350a3fee1`: 10 events across 7 blocks;
+  maximum at block `46,140,551`, log `94`; `3,476,092` cents.
+
+Each scan starts strictly after its verified creation receipt and ends at the
+pinned head `87,808,917`; each selected event has a confirmed `10^27` raw
+supply at 18 decimals. These three event-window models use
+`onchain-pool-window-supply-cex-reference-v1`. Retain `ath_at=NULL`: this
+evidence covers only the listed pool events through the anchor, not all-market
+or lifetime history, exact second-level USD execution, or wallet acquisition
+cost/PnL. The selected event's minute low/high remains sensitivity data and is
+not averaged into the close reference point.
+
+Golden `robinhood_doppler_no_v4_reference_maxima_case.json` contains compact
+raw event tuples for all 80 Swaps and the Coinbase candle minutes they map to;
+the test derives every exact price and winner rather than trusting summary
+flags. Follow-up review SHA-256
+`f82812ccee80ce7ffcd974fb1343fe40155da83447484cc5e551263f5261c8a5`, raw
+Swap capture SHA-256
+`667c00d5b5ae020d93735556947e6cb2d0d003ee6d8a7f0ccdc68ff5386d3ffe`, and
+Coinbase minute evidence SHA-256
+`cd2b70bf6ea7cba494b4634dd5303ab35fd92c38754355009a482c86e8bc8113`. This
+adds no automatic adapter or general source promotion rule.
+
+## Amendment 27c (2026-10-14) — Base e465 indirect marginal-spot reference
+
+For Base token `0xe46504da7f7f9d9233d6118e27bdfbf27964a215`, the scoped
+PoolManager scan begins at the verified creation block `0x314c7c0` and ends at
+anchor `0x320a267`. It contains one successful Swap in the configured target
+pool, at block `0x3164990`, transaction index `98`, log `366`. The receipt is
+successful and its target Swap log matches the archived pool scan. The
+creation-to-event supply evidence records one `10^27`-raw mint (one billion
+18-decimal tokens), no burns, and constant supply through the event.
+
+The selected value is an indirect marginal-spot reference, not the Swap's
+execution average. The target pool's post-Swap currency0/currency1 state gives
+quote-token per target-token from the inverse squared `sqrtPriceX96` ratio.
+Within the same transaction, log `353` in the quote/ZORA pool precedes the
+target log `366`; its verified currency order gives ZORA per quote-token.
+Multiply those ratios by the end-of-event-block ZORA/WETH marginal spot from the
+fee-3000 Uniswap v3 pool, then by the Coinbase ETH/USD close for the event's
+UTC minute. The resulting reference is about `$0.0000001126` per target token,
+or `11260` FDV cents floored for the fixed supply. The minute low/high produce
+separate floors of `11257` and `11264` cents. A second positive-liquidity
+fee-10000 ZORA/WETH pool gives `11296` close-reference cents, about `0.31854%`
+from the primary result and within the existing 2% corroboration bound; it is
+corroboration, not an average or replacement. The selected target event's
+execution-average estimate remains separately recorded as a distinct price
+kind; its value is slightly higher than this marginal-spot reference.
+
+This is one configured target-pool event with a composed quote route and two
+parent-pool observations. GeckoTerminal returned no daily candle for the
+token. Keep `ath_at=NULL`; this does not establish all-market or lifetime ATH,
+an exact USD execution price, wallet acquisition cost, or PnL. Its source id is
+`onchain-pool-window-supply-indirect-spot-cex-reference-v1`. Golden
+`base_e465_indirect_spot_reference_case.json` pins the receipt, route/order,
+spot arithmetic, FX range, supply, and scope. Candidate SHA-256
+`888e884399a2d0c09e390f3c9710245595c729706666ac7ac6472c4fc4cee03a`, receipt
+recapture SHA-256
+`6233f14b75e01bfb109fe944e9691b5b9df4730e9f1977db28558de3a765b74f`, and
+independent recheck SHA-256
+`56b2a7f03e4c64d6b3eb1c2dc8982d3e81aa4546cf5b7b69d34ea96909d5441a` identify
+the reviewed evidence. This amendment adds no automatic adapter or source
+promotion rule.
+
+## Amendment 28 (2026-10-14) — BRkf legacy PumpSwap spot and provider-window supply bound
+
+For Solana token `BRkf1C38Y8ZKt1sApadJDP1EAGEFrbtqZbQ1kwSupump`, Solana
+Tracker reports a recorded-window maximum spot of
+`0.00012703138168442376` USD at `1760342677.288`. A successful Buy in the
+selected PumpSwap pool is timestamped `1760342676`, 1.288 seconds earlier.
+Its pre-event pool-owned vault balances are `165088137533041` target raw units
+at six decimals and `106619718925` WSOL raw units at nine decimals. The exact
+reserve ratio multiplied by the Coinbase SOL/USD close `196.50` for that
+minute gives a nearby marginal spot of about `0.00012690660323531349` USD per
+token, 0.0982% below the provider price. Applying the minute low/high
+`196.35–196.81` keeps both endpoint comparisons within 2%. This corroborates
+the price level near the reported maximum; it does not identify the exact pool
+state at the provider's millisecond timestamp. The check pins the nearest
+preceding and earliest following successful pool states around that timestamp;
+both occur in the same FX minute and also pass the endpoint comparison.
+
+The complete birth-to-finalized-snapshot mint history contains 764 signatures
+and 764 matching full transactions, including one birth mint of
+`1000000000000000` raw tokens at six decimals. The 27 burns sum to
+`603228892359` raw units and reconcile to finalized supply
+`999396771107641`; none precedes or overlaps the provider-maximum second, and
+no later mint appears in the complete history. Thus the selected peak has
+birth supply and attains the maximum price-times-supply bound within Solana
+Tracker's recorded price scope: `12703138` cents. This proves neither all-pool
+nor lifetime ATH; retain `ath_at=NULL`.
+
+The selected-pool model uses observed real-reserve vault balances and the
+legacy fee/curve interpretation. Sample Buy and Sell reserve fields, curve
+amounts, and fee components reconcile. Three official PumpSwap IDL snapshots
+(`7645c16c`, `33590255`, `ff9cbf82`) omit `virtual_quote_reserves` from the
+Pool and BuyEvent schemas. This supports the legacy interpretation for this
+pool and time only: there is no deployed-binary capture, and absence of that
+field does not establish a general `virtual_quote_reserves = 0` rule.
+
+The source is
+`solana-tracker-window-peak-supply-legacy-pool-fx-validated-v1`. Golden
+`solana_tracker_brkf_legacy_pool_spot_case.json` derives the raw-reserve spot,
+both FX endpoint comparisons, exact cents, supply bound, and schema-version
+limits. Candidate SHA-256
+`b394638cf3d4bcce90551ef13b61f9b8a10107f7af3c3a1ac2ba30e9d391004e`,
+full-history verification SHA-256
+`afd16ba8c1b736c3646c4164d043b0ee4315ce911dffc766c205ad9898502c02`, and
+pool-state transaction capture SHA-256
+`ce9b72bd1392dd8103942700fb4066c3d80857e933e30652c0530138b3a8d792` pin the
+reviewed inputs. This is a manually reviewed source-specific case, not an
+automatic decoder or promotion rule.

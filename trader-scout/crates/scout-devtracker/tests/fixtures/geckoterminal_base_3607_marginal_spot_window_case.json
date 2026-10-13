@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "source": "geckoterminal-window-supply-pool-state-fx-validated-v1",
+  "candidate_certificate_sha256": "231fb11c15f6d517d5eeaa694e538d4d62fbcf2de948ad9a55d41569dea747f1",
+  "all_state_recheck_sha256": "f2747b81e124831a0b0478af14c96907d6e686e9fed0ae570c819d5e86697452",
+  "chain_id": 8453,
+  "token": "0x3607f8f1d16c5ae717b61d28eec1d624df763b07",
+  "token_decimals": 18,
+  "ath_at": null,
+  "provider_window_scope": "four known token/USDC PoolManager pools; not all Base DEXes or lifetime coverage",
+  "provider_observation": {
+    "kind": "geckoterminal_daily_ohlcv_high_usd",
+    "price_usd": "0.000388974286395251",
+    "days_utc": ["2026-05-04", "2026-05-05"],
+    "same_high_on_both_days": true,
+    "returned_pool_count": 4,
+    "empty_history_pool_count": 1,
+    "all_returned_pool_target_and_quote_identities_confirmed": true
+  },
+  "all_state_recheck": {
+    "raw_may4_swap_logs": 15,
+    "eligible_positive_liquidity_post_swap_states": 15,
+    "one_sided_positive_liquidity_states_included": 1,
+    "prior_manifest_state_count_not_raw_event_count": 31,
+    "pool_count": 4,
+    "pool_ids": [
+      "0x4a54dde13f064e674fb295a0f6e32a06940ec6a383703e240eecf15531ee5c96",
+      "0x15a2070d25af7b5637d29fed49cf568bf564dddbda8789bce25ceb2ebe947455",
+      "0xcec59b5775d3ff7aef144930e1aaa122e47032bb9b695353ac39c73dee05dc8a",
+      "0x573a067f57088501085067df3336a523e5a498e028d9ec5c0e83ee05675fad65"
+    ],
+    "maximum": {
+      "pool_id": "0x573a067f57088501085067df3336a523e5a498e028d9ec5c0e83ee05675fad65",
+      "currency0": "0x3607f8f1d16c5ae717b61d28eec1d624df763b07",
+      "currency1": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "currency0_role": "target",
+      "currency1_role": "USDC",
+      "currency1_decimals": 6,
+      "sqrt_price_x96": "1568644522115368171051",
+      "liquidity_after_raw": "1248447720998",
+      "spot_fraction_numerator": "600743563662732368915510273470618358018701416015625",
+      "spot_fraction_denominator": "1532495540865888858358347027150309183618739122183602176",
+      "spot_usdc_per_token": "0.000392003466008978359089045641004185915204219960527858336476087611087440058197515690213229200",
+      "timestamp_utc": "2026-05-04T07:53:23Z",
+      "transaction_hash": "0xa6dc65ad0aeed31591b2c8b588e1a3081ef82dbcb8da485f3598962d100c012f",
+      "block": 45545928,
+      "log_index": 265,
+      "receipt_success": true,
+      "header_hash_matches_receipt_and_log": true
+    },
+    "one_sided_eligible_state": {
+      "pool_id": "0x4a54dde13f064e674fb295a0f6e32a06940ec6a383703e240eecf15531ee5c96",
+      "sqrt_price_x96": "251209775249433",
+      "liquidity_after_raw": "31366209400319",
+      "eligible_positive_liquidity_post_swap_state": true,
+      "one_sided_swap": true,
+      "amount1_raw_signed": "0",
+      "execution_average_defined": false
+    }
+  },
+  "fx_and_gate": {
+    "kraken_usdc_usd_daily_low": "0.9970",
+    "kraken_usdc_usd_daily_high": "0.9999",
+    "spot_usd_low": "0.0003908274556109514240117785040811733574586073006462747614666593482541777380229231431425895124000",
+    "spot_usd_high": "0.0003919642656623774612531367364400854966126995385318055506424400023263313141916959386442078770800",
+    "both_fx_endpoints_within_two_percent_of_provider_price": true
+  },
+  "supply": {
+    "verified_tokens": "100000000000",
+    "total_supply_raw": "100000000000000000000000000000",
+    "mint_count_creation_to_anchor": 1,
+    "burn_count_creation_to_anchor": 0,
+    "supply_floor_cents_from_provider_price": 3889742863,
+    "ath_at": null,
+    "bridge_mint_burn_capability_is_not_an_observed_event": true
+  },
+  "same_event_execution_average": {
+    "kind": "uniswap_v4_swap_execution_average",
+    "amount0_raw_signed": "-306451339712177865084",
+    "amount1_raw_signed": "858060",
+    "target_raw_input": "306451339712177865084",
+    "usdc_raw_output": "858060",
+    "usdc_per_target_token": "0.002799987759250452142275286391",
+    "multiple_of_provider_daily_high": "7.19838780398270893506651157322524459668562473539808782555145660415959019396289300276772685627618374837760380199014934283",
+    "same_swap_event": true,
+    "treatment": "Keep distinct from the marginal spot; do not average or use as execution cost based on this spot comparison."
+  }
+}

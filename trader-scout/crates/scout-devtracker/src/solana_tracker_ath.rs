@@ -317,6 +317,180 @@ mod tests {
         }
     }
 
+    #[test]
+    fn scoped_sol_window_peak_supply_bounds_require_equal_maxima_and_price_gate() {
+        use alloy_primitives::U256;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_window_peak_supply_gecko_cases.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["source"].as_str(),
+            Some("solana-tracker-window-peak-supply-geckoterminal-validated-v1")
+        );
+        assert_eq!(fixture["ath_at"], serde_json::Value::Null);
+        assert_eq!(fixture["provider_window_scope"].as_str(), Some("unknown"));
+        assert_eq!(
+            fixture["supply_analysis_sha256"].as_str(),
+            Some("4e129fb0a33bca1adb62f430cf6ea483d0758d5aee93e3faf828f6297ef8abb7")
+        );
+        assert!(
+            fixture["price_kind"]
+                .as_str()
+                .unwrap()
+                .contains("same-UTC-day GeckoTerminal daily high")
+        );
+        assert!(
+            fixture["price_kind"]
+                .as_str()
+                .unwrap()
+                .contains("not an execution ratio")
+        );
+
+        let pow10 = |scale: u32| {
+            (0..scale)
+                .try_fold(U256::from(1), |value, _| value.checked_mul(U256::from(10)))
+                .unwrap()
+        };
+        let decimal_parts = |raw: &str| {
+            let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
+            let coefficient = format!("{whole}{fraction}").parse::<u128>().unwrap();
+            (
+                U256::from(coefficient),
+                u32::try_from(fraction.len()).unwrap(),
+            )
+        };
+        let same_day_price_gate = |provider: &str, gecko_high: &str| {
+            let (provider_coefficient, provider_scale) = decimal_parts(provider);
+            let (gecko_coefficient, gecko_scale) = decimal_parts(gecko_high);
+            let scale = provider_scale.max(gecko_scale);
+            let provider_aligned = provider_coefficient
+                .checked_mul(pow10(scale - provider_scale))
+                .unwrap();
+            let gecko_aligned = gecko_coefficient
+                .checked_mul(pow10(scale - gecko_scale))
+                .unwrap();
+            let difference = if provider_aligned >= gecko_aligned {
+                provider_aligned.checked_sub(gecko_aligned).unwrap()
+            } else {
+                gecko_aligned.checked_sub(provider_aligned).unwrap()
+            };
+            difference.checked_mul(U256::from(100)).unwrap()
+                <= provider_aligned.checked_mul(U256::from(2)).unwrap()
+        };
+
+        for (case, expected_first_burn_delay) in fixture["accepted_cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip([19, 54])
+        {
+            assert_eq!(case["price_gate"].as_str(), Some("pass_within_2pct"));
+            assert_eq!(case["peak_day"].as_str(), Some("2026-04-29"));
+            assert!(same_day_price_gate(
+                case["price_usd"].as_str().unwrap(),
+                case["gecko_daily_high_usd"].as_str().unwrap()
+            ));
+            assert_eq!(
+                case["peak_supply_raw"].as_u64(),
+                case["birth_supply_raw"].as_u64()
+            );
+            assert_eq!(
+                case["first_burn_after_peak_seconds"].as_u64(),
+                Some(expected_first_burn_delay)
+            );
+            assert_eq!(case["burns_before_peak_second_raw"].as_u64(), Some(0));
+            assert!(
+                case["full_signature_history_reaches_birth"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert!(
+                case["successful_transaction_set_matches_signatures"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert!(
+                case["successful_transaction_history_terminal"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert!(case["no_post_birth_mint"].as_bool().unwrap());
+            assert!(case["mint_authority_absent_at_snapshot"].as_bool().unwrap());
+            assert!(case["burns_reconcile_current_supply"].as_bool().unwrap());
+            assert!(
+                !case["unknown_or_malformed_supply_instructions"]
+                    .as_bool()
+                    .unwrap()
+            );
+
+            let price =
+                crate::birdeye::ExactDecimal::parse(case["price_usd"].as_str().unwrap()).unwrap();
+            let decimals = u8::try_from(case["decimals"].as_u64().unwrap()).unwrap();
+            let birth_raw = u128::from(case["birth_supply_raw"].as_u64().unwrap());
+            let peak_raw = u128::from(case["peak_supply_raw"].as_u64().unwrap());
+            let peak_cents = price.fdv_cents_for_raw_supply(peak_raw, decimals).unwrap();
+            let birth_cents = price.fdv_cents_for_raw_supply(birth_raw, decimals).unwrap();
+            assert_eq!(
+                peak_cents,
+                i64::try_from(case["fdv_floor_cents_at_peak_supply"].as_u64().unwrap()).unwrap()
+            );
+            assert_eq!(
+                birth_cents,
+                i64::try_from(case["fdv_floor_cents_at_birth_supply"].as_u64().unwrap()).unwrap()
+            );
+            assert_eq!(peak_cents, birth_cents);
+            assert_eq!(
+                peak_cents,
+                i64::try_from(case["provider_window_max_fdv_cents"].as_u64().unwrap()).unwrap()
+            );
+        }
+
+        let negative = &fixture["negative_control"];
+        assert_eq!(negative["price_gate"].as_str(), Some("pass_within_2pct"));
+        assert!(same_day_price_gate(
+            negative["price_usd"].as_str().unwrap(),
+            negative["gecko_daily_high_usd"].as_str().unwrap()
+        ));
+        assert!(negative["burns_before_peak_second_raw"].as_u64().unwrap() > 0);
+        assert_eq!(negative["burns_same_peak_second_raw"].as_u64(), Some(0));
+        assert!(
+            !negative["provider_window_max_fdv_claim_allowed"]
+                .as_bool()
+                .unwrap()
+        );
+        let negative_price =
+            crate::birdeye::ExactDecimal::parse(negative["price_usd"].as_str().unwrap()).unwrap();
+        let decimals = u8::try_from(negative["decimals"].as_u64().unwrap()).unwrap();
+        let peak_cents = negative_price
+            .fdv_cents_for_raw_supply(
+                u128::from(negative["peak_supply_raw"].as_u64().unwrap()),
+                decimals,
+            )
+            .unwrap();
+        let birth_cents = negative_price
+            .fdv_cents_for_raw_supply(
+                u128::from(negative["birth_supply_raw"].as_u64().unwrap()),
+                decimals,
+            )
+            .unwrap();
+        assert_eq!(
+            peak_cents,
+            i64::try_from(negative["fdv_floor_cents_at_peak_supply"].as_u64().unwrap()).unwrap()
+        );
+        assert_eq!(
+            birth_cents,
+            i64::try_from(
+                negative["fdv_floor_cents_at_birth_supply"]
+                    .as_u64()
+                    .unwrap()
+            )
+            .unwrap()
+        );
+        assert_ne!(peak_cents, birth_cents);
+    }
+
     #[tokio::test]
     async fn malformed_success_body_remains_available_for_archival() {
         let server = MockServer::start().await;
