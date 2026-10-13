@@ -638,13 +638,43 @@ pub fn http_client() -> Result<reqwest::Client, BirdeyeError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
+#[allow(
+    clippy::chunks_exact_to_as_chunks,
+    clippy::indexing_slicing,
+    clippy::integer_division,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
     use serde_json::json;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
     const BASE_ADDRESS: &str = "0xa187403aDCc6FCDF64fE9C850e0d9fAf4bA3837f";
+
+    fn bytes_from_hex(hex: &str) -> Vec<u8> {
+        hex.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    fn pubkey_from_hex(hex: &str) -> [u8; 32] {
+        bytes_from_hex(hex).try_into().unwrap()
+    }
+
+    fn raw_instruction_from_hex(hex: &str) -> scout_core::RawSolanaInstruction {
+        scout_core::RawSolanaInstruction {
+            program_id: bs58::decode("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
+                .into_vec()
+                .unwrap()
+                .try_into()
+                .unwrap(),
+            accounts: Vec::new(),
+            data: bytes_from_hex(hex),
+            instruction_index: 0,
+        }
+    }
 
     fn request(chain: BirdeyeChain, address: &str) -> OhlcvWindow {
         OhlcvWindow {
@@ -2915,7 +2945,7 @@ mod tests {
 
     #[test]
     fn robinhood_scoped_reference_maxima_weight_every_event_before_selecting() {
-        use alloy_primitives::U256;
+        use alloy_primitives::{U256, U512};
         use std::cmp::Ordering;
 
         let row: serde_json::Value = serde_json::from_str(include_str!(
@@ -2987,10 +3017,8 @@ mod tests {
             )
         };
         let compare = |left: (U256, U256), right: (U256, U256)| {
-            left.0
-                .checked_mul(right.1)
-                .unwrap()
-                .cmp(&right.0.checked_mul(left.1).unwrap())
+            (U512::from(left.0) * U512::from(right.1))
+                .cmp(&(U512::from(right.0) * U512::from(left.1)))
         };
         let positive_magnitude = |raw: &str| {
             raw.strip_prefix('-')
@@ -3215,6 +3243,226 @@ mod tests {
                     > negative["event_max_utc"].as_str().unwrap()
             );
         }
+
+        let followup: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/robinhood_48c_usdg_aapl_followup_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            followup["candidate_sha256"].as_str(),
+            Some("988799f1fd6b5a105eacbad67e5698109378467c3519f617fa08147989c080c4")
+        );
+        assert_eq!(
+            followup["source"].as_str(),
+            Some("onchain-pool-window-supply-stock-trade-fx-reference-v1")
+        );
+        assert_eq!(
+            followup["token"].as_str(),
+            Some("0x48c01e934d149b54af69398a3f767b7e399fb4aa")
+        );
+        assert_eq!(
+            followup["pool"].as_str(),
+            Some("0x591948ec42765aa9f190e62fd3cec3fa8a5ea13d593c9e8d58858debe960a1ab")
+        );
+        assert_eq!(followup["target_and_aapl_decimals"].as_u64(), Some(18));
+        assert!(followup["scope"]["ath_at"].is_null());
+        assert_eq!(followup["supply"]["decimals"].as_u64(), Some(18));
+        assert_eq!(
+            followup["supply"]["raw"].as_str(),
+            Some("1000000000000000000000000000")
+        );
+        assert_eq!(followup["supply"]["mints_after_creation"].as_u64(), Some(0));
+        assert_eq!(followup["supply"]["burns_after_creation"].as_u64(), Some(0));
+        assert_eq!(followup["events"].as_array().unwrap().len(), 15);
+        assert_eq!(followup["scope"]["groups"]["22791875"].as_u64(), Some(10));
+        assert_eq!(followup["scope"]["groups"]["22792033"].as_u64(), Some(5));
+        assert_eq!(
+            followup["fx"]["raw_sha256"].as_str(),
+            Some("2c3222370fb29cf678eb33bc08fd0112fc1a175a2e5ec78e38c069987b460517")
+        );
+
+        let usd_close = decimal_fraction(followup["fx"]["usdG_usd_close"].as_str().unwrap());
+        let usd_low = decimal_fraction(followup["fx"]["usdG_usd_low"].as_str().unwrap());
+        let usd_high = decimal_fraction(followup["fx"]["usdG_usd_high"].as_str().unwrap());
+        let mut followup_prices = Vec::new();
+        let mut observed_groups = std::collections::BTreeMap::<String, u64>::new();
+        for event in followup["events"].as_array().unwrap() {
+            let target = positive_magnitude(event["raw_target_delta"].as_str().unwrap());
+            let aapl_raw = positive_magnitude(event["raw_aapl_delta"].as_str().unwrap());
+            let event_ratio = normalize(aapl_raw, target);
+            let group = &followup["quote_groups"][event["quote_group"].as_str().unwrap()];
+            let group_name = event["quote_group"].as_str().unwrap();
+            assert_eq!(event["block"].as_u64().unwrap().to_string(), group_name);
+            *observed_groups.entry(group_name.to_string()).or_default() += 1;
+            assert!(
+                group["before_timestamp_unix"].as_u64().unwrap()
+                    < event["timestamp_unix"].as_u64().unwrap()
+            );
+            assert!(
+                event["timestamp_unix"].as_u64().unwrap()
+                    < group["after_timestamp_unix"].as_u64().unwrap()
+            );
+            let quote_before = fraction(group["before_fraction"].as_str().unwrap());
+            let quote_after = fraction(group["after_fraction"].as_str().unwrap());
+            let reference = multiply(multiply(event_ratio, quote_before), usd_close);
+            let lower_quote = if compare(quote_before, quote_after) == Ordering::Greater {
+                quote_after
+            } else {
+                quote_before
+            };
+            let upper_quote = if compare(quote_before, quote_after) == Ordering::Greater {
+                quote_before
+            } else {
+                quote_after
+            };
+            let low = multiply(multiply(event_ratio, lower_quote), usd_low);
+            let high = multiply(multiply(event_ratio, upper_quote), usd_high);
+            assert!(compare(low, reference) != Ordering::Greater);
+            assert!(compare(reference, high) != Ordering::Greater);
+            followup_prices.push((event, reference));
+        }
+        assert_eq!(observed_groups["22791875"], 10);
+        assert_eq!(observed_groups["22792033"], 5);
+        let (winner, maximum) = followup_prices
+            .iter()
+            .max_by(|left, right| compare(left.1, right.1))
+            .unwrap();
+        let expected = &followup["expected_maximum"];
+        assert_eq!(winner["block"], expected["block"]);
+        assert_eq!(winner["log_index"], expected["log_index"]);
+        assert_eq!(
+            *maximum,
+            fraction(expected["price_fraction"].as_str().unwrap())
+        );
+        assert_eq!(
+            floor_fdv_cents(*maximum),
+            U256::from(expected["fdv_cents_floor"].as_u64().unwrap())
+        );
+        assert_eq!(expected["block"].as_u64(), Some(22_791_875));
+        assert_eq!(expected["log_index"].as_u64(), Some(129));
+        assert_eq!(expected["fdv_cents_floor"].as_u64(), Some(6_143_395));
+        assert!(
+            !followup["supersedes_historical_negative_snapshot"]["source_model_max_claim_allowed"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !followup["limitations"]["all_market_or_lifetime_max_claim"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !followup["limitations"]["automatic_adapter_or_promotion"]
+                .as_bool()
+                .unwrap()
+        );
+
+        let nvda: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/robinhood_nvda_reference_followup_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            nvda["candidate_sha256"].as_str(),
+            Some("77d19011f3c103ae03c90bde88264cb5744f2fb64ee8aaead04a82c600bf7e97")
+        );
+        assert_eq!(
+            nvda["source"].as_str(),
+            Some("onchain-pool-window-supply-stock-trade-fx-reference-v1")
+        );
+        assert_eq!(
+            nvda["token"].as_str(),
+            Some("0x1e6489ef6d75c6f785843669b01262a7562b1e18")
+        );
+        assert_eq!(nvda["target_and_quote_decimals"].as_u64(), Some(18));
+        assert_eq!(nvda["events"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            nvda["supply"]["raw"].as_str(),
+            Some("1000000000000000000000000000")
+        );
+        assert_eq!(nvda["supply"]["mints"].as_u64(), Some(1));
+        assert_eq!(nvda["supply"]["burns"].as_u64(), Some(0));
+        assert_eq!(nvda["supply"]["through_block"].as_u64(), Some(17_404_579));
+        assert_eq!(
+            nvda["supply"]["manifest_sha256"].as_str(),
+            Some("870cfbf0d02cd39788e4e15229782ff9dbd70131d89bfaa8a735f0664994a65c")
+        );
+
+        let usd_close = decimal_fraction(nvda["fx"]["close"].as_str().unwrap());
+        let usd_low = decimal_fraction(nvda["fx"]["low"].as_str().unwrap());
+        let usd_high = decimal_fraction(nvda["fx"]["high"].as_str().unwrap());
+        let mut nvda_prices = Vec::new();
+        for event in nvda["events"].as_array().unwrap() {
+            let target_delta = positive_magnitude(event["raw_target_delta"].as_str().unwrap());
+            let quote_delta = positive_magnitude(event["raw_quote_delta"].as_str().unwrap());
+            let target_quote_ratio = normalize(quote_delta, target_delta);
+            let reference = &event["quote_reference"];
+            assert_eq!(
+                reference["quote_pool"].as_str(),
+                Some("0xd4eb21209c4d6093f80b5b84f5c45cc093ea14a3")
+            );
+            let same_timestamp =
+                reference["timestamp_unix"].as_u64() == event["timestamp_unix"].as_u64();
+            assert!(
+                reference["timestamp_unix"].as_u64().unwrap()
+                    <= event["timestamp_unix"].as_u64().unwrap()
+            );
+            if same_timestamp {
+                assert_eq!(reference["tx"], event["tx"]);
+                assert!(
+                    reference["log_index"].as_u64().unwrap() < event["log_index"].as_u64().unwrap()
+                );
+            }
+            let usdg_raw = positive_magnitude(reference["raw_usdg_delta"].as_str().unwrap());
+            let nvda_raw = positive_magnitude(reference["raw_nvda_delta"].as_str().unwrap());
+            let usdg_per_nvda = normalize(
+                usdg_raw
+                    .checked_mul(U256::from(1_000_000_000_000_u64))
+                    .unwrap(),
+                nvda_raw,
+            );
+            assert_eq!(
+                usdg_per_nvda,
+                fraction(reference["quote_per_nvda_fraction"].as_str().unwrap())
+            );
+            let price = multiply(multiply(target_quote_ratio, usdg_per_nvda), usd_close);
+            let low = multiply(multiply(target_quote_ratio, usdg_per_nvda), usd_low);
+            let high = multiply(multiply(target_quote_ratio, usdg_per_nvda), usd_high);
+            assert!(compare(low, price) != Ordering::Greater);
+            assert!(compare(price, high) != Ordering::Greater);
+            assert!(event["receipt_header_verified"].as_bool().unwrap());
+            nvda_prices.push((event, price));
+        }
+
+        let route = &nvda["same_transaction_quote_route"];
+        assert!(route["exact_native_amount_match"].as_bool().unwrap());
+        assert_eq!(route["quote_log_index"].as_u64(), Some(9));
+        assert_eq!(route["target_log_index"].as_u64(), Some(12));
+        assert_eq!(
+            route["quote_raw_nvda_output"],
+            route["target_raw_nvda_input"]
+        );
+        assert_eq!(route["target_tx"], nvda_prices[0].0["tx"]);
+        assert_eq!(
+            route["receipt_sha256"].as_str(),
+            Some("71192a742a9a76357ed4d7949d1255ad95c3e9456697f309f4e8a4382fbb3f3b")
+        );
+
+        let (nvda_winner, nvda_maximum) = nvda_prices
+            .iter()
+            .max_by(|left, right| compare(left.1, right.1))
+            .unwrap();
+        let expected = &nvda["expected_maximum"];
+        assert_eq!(nvda_winner["block"], expected["block"]);
+        assert_eq!(nvda_winner["log_index"], expected["log_index"]);
+        assert_eq!(
+            *nvda_maximum,
+            fraction(expected["price_fraction"].as_str().unwrap())
+        );
+        assert_eq!(floor_fdv_cents(*nvda_maximum), U256::from(2_020_370));
+        assert_eq!(expected["fdv_cents_floor"].as_u64(), Some(2_020_370));
+        assert!(nvda["limits"]["ath_at"].is_null());
+        assert!(!nvda["limits"]["all_market_or_lifetime"].as_bool().unwrap());
+        assert!(!nvda["limits"]["automatic_promotion"].as_bool().unwrap());
     }
 
     #[test]
@@ -3436,6 +3684,693 @@ mod tests {
                 U256::from(expected_cents)
             );
         }
+
+        let followup: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/robinhood_weth_reference_followup_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            followup["candidate_sha256"].as_str(),
+            Some("3eb7ff79c93912eff0c03676589d359891e81d54e7d24f08ec04b519ce8b224e")
+        );
+        assert_eq!(
+            followup["source"].as_str(),
+            Some("onchain-pool-window-supply-cex-reference-v1")
+        );
+        assert_eq!(followup["anchor_block"].as_u64(), Some(87_808_917));
+        assert!(
+            followup["creation_transaction_swap_logs_excluded"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(followup["scan_counts"]["aa539cf7"].as_u64(), Some(5));
+        assert_eq!(followup["scan_counts"]["c3a0e1a6"].as_u64(), Some(4));
+        assert_eq!(
+            followup["raw_swap_capture_sha256"].as_str(),
+            Some("667c00d5b5ae020d93735556947e6cb2d0d003ee6d8a7f0ccdc68ff5386d3ffe")
+        );
+        assert_eq!(followup["cases"].as_array().unwrap().len(), 2);
+        let expected = [
+            (
+                "0xaa539cf78ff43e4b9fd9db2715435ff57d09fee1",
+                44_528_731,
+                3,
+                45_582_061,
+                107,
+                1_037_304,
+            ),
+            (
+                "0xc3a0e1a6c10b97c3e124ff8a2c291e5677a6fee1",
+                49_434_763,
+                2,
+                49_435_080,
+                41,
+                1_021_169,
+            ),
+        ];
+        for (case, (token, creation, count, winner_block, winner_log, cents)) in
+            followup["cases"].as_array().unwrap().iter().zip(expected)
+        {
+            assert_eq!(case["token"].as_str(), Some(token));
+            assert_eq!(case["creation_block"].as_u64(), Some(creation));
+            assert_eq!(case["postcreation_event_count"].as_u64(), Some(count));
+            assert_eq!(
+                case["events"].as_array().unwrap().len(),
+                usize::try_from(count).unwrap()
+            );
+            assert_eq!(case["token_decimals"].as_u64(), Some(18));
+            assert_eq!(case["weth_decimals"].as_u64(), Some(18));
+            assert_eq!(
+                case["total_supply_raw"].as_str(),
+                Some("1000000000000000000000000000")
+            );
+            assert_eq!(case["supply_tokens"].as_str(), Some("1000000000"));
+            assert_eq!(case["creation_receipt_initial_mints"].as_u64(), Some(1));
+            assert_eq!(case["winner_block_decimals"].as_u64(), Some(18));
+            if token == "0xaa539cf78ff43e4b9fd9db2715435ff57d09fee1" {
+                assert_eq!(case["supply_observation_block"].as_u64(), Some(45_582_406));
+                assert_eq!(
+                    case["decimals_observation_block"].as_u64(),
+                    Some(45_582_406)
+                );
+                assert_eq!(
+                    case["mint_logs_birth_through_last_included_block"].as_u64(),
+                    Some(1)
+                );
+                assert_eq!(
+                    case["burn_logs_birth_through_last_included_block"].as_u64(),
+                    Some(0)
+                );
+                assert!(
+                    case["selected_event_supply_proven_unchanged_through_observation_block"]
+                        .as_bool()
+                        .unwrap()
+                );
+                assert_eq!(case["winner_block_decimals"].as_u64(), Some(18));
+                assert_eq!(
+                    case["winner_block_decimals_evidence_sha256"].as_str(),
+                    Some("942eb00e02101dd8673395e77f951530862ae177255e90bbbb71a3c42dd6fba6")
+                );
+                assert_eq!(
+                    case["full_window_supply_manifest_sha256"].as_str(),
+                    Some("6b89d834968823f75913f11524ada44a35ac3150a021b18c2b83d3b7a5793958")
+                );
+            } else {
+                assert_eq!(
+                    case["mint_logs_birth_through_selected_block"].as_u64(),
+                    Some(1)
+                );
+                assert_eq!(
+                    case["burn_logs_birth_through_selected_block"].as_u64(),
+                    Some(0)
+                );
+                assert_eq!(
+                    case["winner_block_decimals_observation_block"].as_u64(),
+                    Some(49_435_080)
+                );
+                assert_eq!(
+                    case["winner_block_decimals_evidence_sha256"].as_str(),
+                    Some("5994a23ca29269e0dc0cf2f50e0e3589b1233b66da1ea14b058f93d9d10ef199")
+                );
+            }
+
+            let mut prices = Vec::new();
+            for event in case["events"].as_array().unwrap() {
+                let block = event[0].as_u64().unwrap();
+                let log_index = event[1].as_u64().unwrap();
+                let timestamp = event[2].as_u64().unwrap();
+                assert!(block > creation && block <= followup["anchor_block"].as_u64().unwrap());
+                let quote_delta = event[3].as_str().unwrap();
+                let token_delta = event[4].as_str().unwrap();
+                assert_ne!(quote_delta.starts_with('-'), token_delta.starts_with('-'));
+                let ratio = normalize(
+                    quote_delta
+                        .strip_prefix('-')
+                        .unwrap_or(quote_delta)
+                        .parse::<U256>()
+                        .unwrap(),
+                    token_delta
+                        .strip_prefix('-')
+                        .unwrap_or(token_delta)
+                        .parse::<U256>()
+                        .unwrap(),
+                );
+                let minute_start = timestamp.div_euclid(60) * 60;
+                assert_eq!(
+                    minute_start,
+                    case["coinbase_minutes"][0][0].as_u64().unwrap()
+                );
+                let candle = case["coinbase_minutes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|minute| minute[0].as_u64() == Some(minute_start))
+                    .unwrap();
+                let low = decimal_fraction(candle[1].as_str().unwrap());
+                let high = decimal_fraction(candle[2].as_str().unwrap());
+                let close = decimal_fraction(candle[3].as_str().unwrap());
+                assert!(compare(low, close) != Ordering::Greater);
+                assert!(compare(close, high) != Ordering::Greater);
+                prices.push((block, log_index, multiply(ratio, close)));
+            }
+            let maximum = prices
+                .iter()
+                .max_by(|left, right| compare(left.2, right.2))
+                .unwrap();
+            let maximum_fixture = &case["maximum"];
+            assert_eq!(maximum.0, winner_block);
+            assert_eq!(maximum.1, winner_log);
+            assert_eq!(maximum.0, maximum_fixture["block"].as_u64().unwrap());
+            assert_eq!(maximum.1, maximum_fixture["log_index"].as_u64().unwrap());
+            let (numerator, denominator) = maximum_fixture["price_fraction"]
+                .as_str()
+                .unwrap()
+                .split_once('/')
+                .unwrap();
+            assert_eq!(
+                maximum.2,
+                normalize(
+                    numerator.parse::<U256>().unwrap(),
+                    denominator.parse::<U256>().unwrap()
+                )
+            );
+            assert_eq!(
+                maximum
+                    .2
+                    .0
+                    .checked_mul(U256::from(100_000_000_000_u64))
+                    .unwrap()
+                    .checked_div(maximum.2.1)
+                    .unwrap(),
+                U256::from(cents)
+            );
+            assert_eq!(maximum_fixture["fdv_cents_floor"].as_u64(), Some(cents));
+            assert_eq!(maximum_fixture["receipt_status"].as_str(), Some("0x1"));
+            assert!(
+                maximum_fixture["receipt_log_index_match"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert!(
+                maximum_fixture["header_hash_timestamp_match"]
+                    .as_bool()
+                    .unwrap()
+            );
+        }
+        assert!(
+            !followup["scope"]["all_market_lifetime_complete"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !followup["scope"]["alternate_migrations_or_pools_proven"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !followup["automatic_adapter_or_promotion"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(
+            followup["validation"]["root_independent_verification_sha256"].as_str(),
+            Some("7f55bcbc64b630602bd0448b6ee88a02a15485f18ac52e1843714f1afa9653e5")
+        );
+    }
+
+    #[test]
+    fn robinhood_amd_oracle_reference_uses_fresh_multiplier_adjusted_rounds() {
+        use alloy_primitives::{U256, U512};
+        use std::cmp::Ordering;
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/robinhood_amd_oracle_reference_case.json"
+        ))
+        .unwrap();
+        assert_eq!(row["chain_id"].as_u64(), Some(4663));
+        assert_eq!(
+            row["source"].as_str(),
+            Some("onchain-pool-window-supply-stock-oracle-reference-v1")
+        );
+        assert_eq!(
+            row["candidate_sha256"].as_str(),
+            Some("332df5d9d53f05722a2f899c9a6be3e97effbf9a060a4608aa16b281151c7f2b")
+        );
+        assert_eq!(
+            row["brackets_sidecar_sha256"].as_str(),
+            Some("0e98414594d9ece1bde4bc8b08d3e8b6d1e480e1af302a8f4c50baaf7cf0e9d2")
+        );
+        assert_eq!(row["target_decimals"].as_u64(), Some(18));
+        assert_eq!(row["quote"]["decimals"].as_u64(), Some(18));
+        assert_eq!(row["oracle"]["feed_decimals"].as_u64(), Some(8));
+        assert!(
+            row["oracle"]["answer_is_already_multiplier_adjusted"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !row["oracle"]["apply_ui_multiplier_again"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(
+            row["oracle"]["historical_ui_multiplier_raw"].as_str(),
+            Some("1000000000000000000")
+        );
+        assert_eq!(
+            row["oracle"]["historical_ui_multiplier_blocks"],
+            serde_json::json!([17438576, 17438776])
+        );
+        assert_eq!(row["events"].as_array().unwrap().len(), 3);
+
+        let fraction = |value: &serde_json::Value| {
+            (
+                value[0].as_str().unwrap().parse::<U256>().unwrap(),
+                value[1].as_str().unwrap().parse::<U256>().unwrap(),
+            )
+        };
+        let fraction_string = |value: &str| {
+            let (numerator, denominator) = value.split_once('/').unwrap();
+            (
+                numerator.parse::<U256>().unwrap(),
+                denominator.parse::<U256>().unwrap(),
+            )
+        };
+        let normalize = |numerator: U256, denominator: U256| (numerator, denominator);
+        let multiply = |left: (U256, U256), right: (U256, U256)| {
+            (
+                left.0.checked_mul(right.0).unwrap(),
+                left.1.checked_mul(right.1).unwrap(),
+            )
+        };
+        let compare = |left: (U256, U256), right: (U256, U256)| {
+            (U512::from(left.0) * U512::from(right.1))
+                .cmp(&(U512::from(right.0) * U512::from(left.1)))
+        };
+        let magnitude = |raw: &str| {
+            raw.strip_prefix('-')
+                .unwrap_or(raw)
+                .parse::<U256>()
+                .unwrap()
+        };
+        let feed_scale = U256::from(100_000_000_u64);
+        let low_usd = normalize(U256::from(54_487_500_000_u64), feed_scale);
+        let selected_usd = normalize(U256::from(54_871_805_000_u64), feed_scale);
+        assert!(compare(low_usd, selected_usd) == Ordering::Less);
+        assert!(
+            U512::from(selected_usd.0) * U512::from(low_usd.1) * U512::from(100)
+                <= U512::from(low_usd.0) * U512::from(selected_usd.1) * U512::from(102)
+        );
+        let spread_percent = normalize(
+            selected_usd
+                .0
+                .checked_sub(low_usd.0)
+                .unwrap()
+                .checked_mul(U256::from(100))
+                .unwrap(),
+            low_usd.0,
+        );
+        assert_eq!(
+            compare(
+                spread_percent,
+                fraction_string(
+                    row["feed_range"]["spread_percent_of_low_fraction"]
+                        .as_str()
+                        .unwrap(),
+                )
+            ),
+            Ordering::Equal
+        );
+
+        let mut prices = Vec::new();
+        for event in row["events"].as_array().unwrap() {
+            let timestamp = event["timestamp_unix"].as_u64().unwrap();
+            assert_eq!(event["receipt_status"].as_str(), Some("0x1"));
+            assert!(event["receipt_log_match"].as_bool().unwrap());
+            let before = &event["oracle_round_before"];
+            let after = &event["oracle_round_after"];
+            let before_id = before["round_id"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            let after_id = after["round_id"].as_str().unwrap().parse::<u128>().unwrap();
+            assert_eq!(before_id, 18_446_744_073_709_552_912);
+            assert_eq!(after_id, 18_446_744_073_709_552_913);
+            assert!(before_id > 0 && after_id > before_id);
+            assert_eq!(before["answered_in_round"], before["round_id"]);
+            assert_eq!(after["answered_in_round"], after["round_id"]);
+            let before_time = before["updated_at"].as_u64().unwrap();
+            let after_time = after["updated_at"].as_u64().unwrap();
+            assert!(before_time <= timestamp && timestamp <= after_time);
+            assert!(timestamp - before_time <= 300);
+            assert!(after_time - timestamp <= 300);
+            assert_eq!(
+                before["age_seconds"].as_u64(),
+                Some(timestamp - before_time)
+            );
+            assert_eq!(after["age_seconds"].as_u64(), Some(after_time - timestamp));
+            assert_eq!(before["answer_raw"].as_str(), Some("54871805000"));
+            assert_eq!(after["answer_raw"].as_str(), Some("54487500000"));
+
+            let target_raw = magnitude(event["target_delta_raw"].as_str().unwrap());
+            let amd_raw = magnitude(event["amd_delta_raw"].as_str().unwrap());
+            assert_ne!(
+                event["target_delta_raw"].as_str().unwrap().starts_with('-'),
+                event["amd_delta_raw"].as_str().unwrap().starts_with('-')
+            );
+            let amd_per_target = normalize(amd_raw, target_raw);
+            let price = multiply(amd_per_target, selected_usd);
+            let low_price = multiply(amd_per_target, low_usd);
+            assert!(compare(low_price, price) == Ordering::Less);
+            assert!(
+                U512::from(price.0) * U512::from(low_price.1) * U512::from(100)
+                    <= U512::from(low_price.0) * U512::from(price.1) * U512::from(102)
+            );
+            assert_eq!(
+                compare(price, fraction(&event["expected_price_fraction"])),
+                Ordering::Equal
+            );
+            let fdv_cents = price
+                .0
+                .checked_mul(U256::from(100_000_000_000_u64))
+                .unwrap()
+                .checked_div(price.1)
+                .unwrap();
+            assert_eq!(
+                fdv_cents,
+                U256::from(event["expected_fdv_cents"].as_u64().unwrap())
+            );
+            prices.push((event, price));
+        }
+
+        let (winner, maximum) = prices
+            .iter()
+            .max_by(|left, right| compare(left.1, right.1))
+            .unwrap();
+        assert_eq!(winner["block"], row["expected_maximum"]["block"]);
+        assert_eq!(winner["log_index"], row["expected_maximum"]["log_index"]);
+        assert_eq!(
+            compare(
+                *maximum,
+                fraction(&row["expected_maximum"]["price_fraction"])
+            ),
+            Ordering::Equal
+        );
+        assert_eq!(
+            maximum
+                .0
+                .checked_mul(U256::from(100_000_000_000_u64))
+                .unwrap()
+                .checked_div(maximum.1)
+                .unwrap(),
+            U256::from(2_029_518)
+        );
+        assert_eq!(
+            row["supply"]["raw"].as_str(),
+            Some("1000000000000000000000000000")
+        );
+        assert_eq!(
+            row["supply"]["observation_block"].as_u64(),
+            Some(17_438_576)
+        );
+        assert_eq!(
+            row["supply"]["decimals_observation_block"].as_u64(),
+            Some(17_438_576)
+        );
+        assert_eq!(
+            row["supply"]["birth_mint_count_through_last_event"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            row["supply"]["burn_count_through_last_event"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(row["supply"]["last_event_block"].as_u64(), Some(17_438_776));
+        assert!(
+            row["feed_range"]["all_target_event_round_updates_within_300s"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(
+            row["stale_negative_control"]["target_round_age_seconds"].as_u64(),
+            Some(7_054)
+        );
+        assert!(
+            !row["stale_negative_control"]["within_300_seconds"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(row["limitations"]["ath_at"].is_null());
+        assert!(
+            !row["limitations"]["all_market_or_lifetime_ath"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !row["limitations"]["direct_amd_usdg_execution_price"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !row["limitations"]["automatic_adapter_or_promotion"]
+                .as_bool()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn robinhood_60d63_and_tsla_quote_trade_windows_are_case_scoped() {
+        use alloy_primitives::{U256, U512};
+        use std::cmp::Ordering;
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/robinhood_60d63_tsla_quote_trade_followup_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            row["candidate_sha256"].as_str(),
+            Some("f321bf77d62c8a7969c9169c407567b36e85b65523069819eb427d1059eacde0")
+        );
+        let fraction = |raw: &str| {
+            let (n, d) = raw.split_once('/').unwrap();
+            (n.parse::<U256>().unwrap(), d.parse::<U256>().unwrap())
+        };
+        let multiply = |a: (U256, U256), b: (U256, U256)| {
+            (a.0.checked_mul(b.0).unwrap(), a.1.checked_mul(b.1).unwrap())
+        };
+        let compare = |a: (U256, U256), b: (U256, U256)| {
+            (U512::from(a.0) * U512::from(b.1)).cmp(&(U512::from(b.0) * U512::from(a.1)))
+        };
+        let magnitude = |raw: &str| {
+            raw.strip_prefix('-')
+                .unwrap_or(raw)
+                .parse::<U256>()
+                .unwrap()
+        };
+        let quote_usd = |quote_raw: U256, usdg_raw: U256| {
+            (
+                usdg_raw
+                    .checked_mul(U256::from(1_000_000_000_000_u64))
+                    .unwrap(),
+                quote_raw,
+            )
+        };
+        let neighbor_spread = |a: (U256, U256), b: (U256, U256)| {
+            let (low, high) = if compare(a, b) == Ordering::Greater {
+                (b, a)
+            } else {
+                (a, b)
+            };
+            let delta =
+                U512::from(high.0) * U512::from(low.1) - U512::from(low.0) * U512::from(high.1);
+            (
+                delta * U512::from(100),
+                U512::from(high.1) * U512::from(low.0),
+            )
+        };
+        let within_two_percent = |a: (U256, U256), b: (U256, U256)| {
+            let cross_a = U512::from(a.0) * U512::from(b.1);
+            let cross_b = U512::from(b.0) * U512::from(a.1);
+            let delta = if cross_a >= cross_b {
+                cross_a - cross_b
+            } else {
+                cross_b - cross_a
+            };
+            delta * U512::from(50) <= U512::from(b.0) * U512::from(a.1)
+        };
+        let within_age = |age: u64, limit: u64| age <= limit;
+
+        let expected = [
+            (
+                "0x60d63f32f0520178eabf4045cfb6e78941901e18",
+                "onchain-pool-window-supply-quote-trade-fx-reference-v1",
+                37_usize,
+                300_u64,
+                false,
+                65505526_u64,
+                107_u64,
+                3_000_729_u64,
+            ),
+            (
+                "0x9aadb292cd6e17cdf98ad16d1a1caf1704041e18",
+                "onchain-pool-window-supply-stock-trade-fx-reference-600s-v1",
+                6_usize,
+                600_u64,
+                true,
+                21054458_u64,
+                43_u64,
+                2_027_889_u64,
+            ),
+        ];
+        let mut total_events = 0;
+        for (case, (token, source, count, age_limit, exception, winner_block, winner_log, cents)) in
+            row["cases"].as_array().unwrap().iter().zip(expected)
+        {
+            assert_eq!(case["token"].as_str(), Some(token));
+            assert_eq!(case["source"].as_str(), Some(source));
+            assert_eq!(case["selected_age_limit_seconds"].as_u64(), Some(age_limit));
+            assert_eq!(
+                case["selected_600s_case_exception"].as_bool(),
+                Some(exception)
+            );
+            assert_eq!(case["events"].as_array().unwrap().len(), count);
+            assert_eq!(
+                case["fully_priced_count"].as_u64(),
+                Some(u64::try_from(count).unwrap())
+            );
+            assert_eq!(case["supply"]["decimals"].as_u64(), Some(18));
+            assert_eq!(case["quote_decimals"].as_u64(), Some(18));
+            assert_eq!(case["usdg_decimals"].as_u64(), Some(6));
+            assert_eq!(
+                case["supply"]["total_supply_raw_at_end"].as_str(),
+                Some("1000000000000000000000000000")
+            );
+            assert_eq!(
+                case["supply"]["birth_mint_count_through_end"].as_u64(),
+                Some(1)
+            );
+            assert_eq!(case["supply"]["burn_count_through_end"].as_u64(), Some(0));
+            assert_eq!(
+                case["supply"]["observed_at_block"],
+                case["window"]["last_event_block"]
+            );
+            assert!(case["scope"]["ath_at"].is_null());
+            assert!(!case["scope"]["all_markets_or_lifetime"].as_bool().unwrap());
+
+            let daily_close = fraction(case["daily_usdg_usd_close_fraction"].as_str().unwrap());
+            let mut prices = Vec::new();
+            let mut pass_300 = true;
+            for event in case["events"].as_array().unwrap() {
+                let timestamp = event["timestamp"].as_u64().unwrap();
+                let target_key = (
+                    event["block"].as_u64().unwrap(),
+                    event["tx_index"].as_u64().unwrap(),
+                    event["log_index"].as_u64().unwrap(),
+                );
+                let before = &event["quote_trade_before"];
+                let after = &event["quote_trade_after"];
+                let key = |trade: &serde_json::Value| {
+                    (
+                        trade["block"].as_u64().unwrap(),
+                        trade["tx_index"].as_u64().unwrap(),
+                        trade["log_index"].as_u64().unwrap(),
+                    )
+                };
+                assert!(key(before) < target_key && target_key < key(after));
+                assert!(before["timestamp"].as_u64().unwrap() <= timestamp);
+                assert!(timestamp <= after["timestamp"].as_u64().unwrap());
+                let age_before = timestamp - before["timestamp"].as_u64().unwrap();
+                let age_after = after["timestamp"].as_u64().unwrap() - timestamp;
+                assert_eq!(before["seconds_before"].as_u64(), Some(age_before));
+                assert_eq!(after["seconds_after"].as_u64(), Some(age_after));
+                assert!(within_age(age_before, age_limit) && within_age(age_after, age_limit));
+                pass_300 &= within_age(age_before, 300) && within_age(age_after, 300);
+
+                let target_quote = (
+                    magnitude(event["target_quote_delta_raw"].as_str().unwrap()),
+                    magnitude(event["target_token_delta_raw"].as_str().unwrap()),
+                );
+                let usd_before = quote_usd(
+                    magnitude(before["quote_delta_raw"].as_str().unwrap()),
+                    magnitude(before["usdg_delta_raw"].as_str().unwrap()),
+                );
+                let usd_after = quote_usd(
+                    magnitude(after["quote_delta_raw"].as_str().unwrap()),
+                    magnitude(after["usdg_delta_raw"].as_str().unwrap()),
+                );
+                let spread = neighbor_spread(usd_before, usd_after);
+                assert!(spread.0 <= spread.1 * U512::from(2));
+                if exception {
+                    let expected_spread = fraction(
+                        case["expected_quote_neighbor_spread_percent_fraction"]
+                            .as_str()
+                            .unwrap(),
+                    );
+                    assert_eq!(
+                        spread.0 * U512::from(expected_spread.1),
+                        U512::from(expected_spread.0) * spread.1
+                    );
+                }
+                let price = multiply(multiply(target_quote, usd_before), daily_close);
+                assert_eq!(
+                    compare(
+                        price,
+                        fraction(event["candidate_usd_per_token_fraction"].as_str().unwrap())
+                    ),
+                    Ordering::Equal
+                );
+                let low_price = multiply(
+                    multiply(target_quote, usd_before),
+                    fraction(case["daily_usdg_usd_low_fraction"].as_str().unwrap()),
+                );
+                let high_price = multiply(
+                    multiply(target_quote, usd_before),
+                    fraction(case["daily_usdg_usd_high_fraction"].as_str().unwrap()),
+                );
+                assert!(within_two_percent(low_price, price));
+                assert!(within_two_percent(high_price, price));
+                prices.push((event, price));
+            }
+            assert_eq!(case["all_events_pass_300s"].as_bool(), Some(pass_300));
+            assert_eq!(pass_300, !exception);
+            assert!(
+                case["all_events_pass_selected_age_and_two_percent_spread"]
+                    .as_bool()
+                    .unwrap()
+            );
+            let (winner, maximum) = prices.iter().max_by(|a, b| compare(a.1, b.1)).unwrap();
+            assert_eq!(winner["block"].as_u64(), Some(winner_block));
+            assert_eq!(winner["log_index"].as_u64(), Some(winner_log));
+            assert_eq!(
+                compare(
+                    *maximum,
+                    fraction(case["max_event"]["price_fraction"].as_str().unwrap())
+                ),
+                Ordering::Equal
+            );
+            let fdv_cents = maximum
+                .0
+                .checked_mul(U256::from(100_000_000_000_u64))
+                .unwrap()
+                .checked_div(maximum.1)
+                .unwrap();
+            assert_eq!(fdv_cents, U256::from(cents));
+            assert_eq!(case["max_event"]["fdv_cents_floor"].as_u64(), Some(cents));
+            total_events += count;
+        }
+        assert_eq!(total_events, 43);
+        assert!(within_age(600, 600));
+        assert!(!within_age(601, 600));
+        assert_eq!(
+            row["stale_oracle_negative_control"]["tsla_chainlink_round_age_seconds"].as_u64(),
+            Some(7_054)
+        );
+        assert!(
+            !row["stale_oracle_negative_control"]["within_300s"]
+                .as_bool()
+                .unwrap()
+        );
     }
 
     #[test]
@@ -4025,6 +4960,871 @@ mod tests {
             !row["protocol_evidence"]["general_missing_virtual_reserve_equals_zero_rule"]
                 .as_bool()
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn solana_tracker_avx_legacy_pool_spot_has_scoped_supply_bound() {
+        use alloy_primitives::U256;
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_avx_legacy_pool_spot_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            row["source"].as_str(),
+            Some("solana-tracker-window-peak-supply-legacy-pool-fx-validated-v1")
+        );
+        assert!(row["ath_at"].is_null());
+        assert_eq!(
+            row["mint"].as_str(),
+            Some("Avx71ncfuZBMJxxmVqHLsy34RYzVoHTrwD26HjQVpump")
+        );
+        assert_eq!(
+            row["pool"].as_str(),
+            Some("CMG29JVFKnAoBVjPeBPDvoPPGMzwEqrNLVNYXqdw6Ltm")
+        );
+        assert_eq!(
+            row["source_hashes"]["candidate_sha256"].as_str(),
+            Some("837a8826283825c011dc62cc97244e25c5428c691c35e31a0cb8485dd2635578")
+        );
+
+        let provider =
+            ExactDecimal::parse(row["provider_observation"]["price_usd"].as_str().unwrap())
+                .unwrap();
+        let provider_num = U256::from(provider.coefficient);
+        let pow10 = |scale: u32| {
+            (0..scale)
+                .try_fold(U256::from(1), |value, _| value.checked_mul(U256::from(10)))
+                .unwrap()
+        };
+        let provider_den = pow10(u32::try_from(provider.scale).unwrap());
+        let fx = &row["fx"];
+        assert!(fx["provider_observation_share_minute"].as_bool().unwrap());
+        assert_eq!(
+            row["provider_observation"]["timestamp_ms"]
+                .as_u64()
+                .unwrap()
+                .div_euclid(1_000)
+                .div_euclid(60),
+            fx["minute_open_unix"].as_u64().unwrap().div_euclid(60)
+        );
+
+        let check_spot = |state: &serde_json::Value, fx_key: &str| {
+            let base = state["base_raw"].as_str().unwrap().parse::<U256>().unwrap();
+            let quote = state["quote_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<U256>()
+                .unwrap();
+            if !state["pool_owner"].is_null() {
+                assert_eq!(state["pool_owner"], row["pool"]);
+                assert_eq!(state["base_decimals"].as_u64(), Some(6));
+                assert_eq!(state["quote_decimals"].as_u64(), Some(9));
+            }
+            let usd = ExactDecimal::parse(fx[fx_key].as_str().unwrap()).unwrap();
+            let spot_num = quote.checked_mul(U256::from(usd.coefficient)).unwrap();
+            let spot_den = base
+                .checked_mul(U256::from(1_000_u64))
+                .unwrap()
+                .checked_mul(pow10(u32::try_from(usd.scale).unwrap()))
+                .unwrap();
+            let provider_cross = provider_num.checked_mul(spot_den).unwrap();
+            let spot_cross = spot_num.checked_mul(provider_den).unwrap();
+            (spot_num, spot_den, provider_cross, spot_cross)
+        };
+
+        let anchors = row["selected_pool_states"].as_array().unwrap();
+        assert_eq!(anchors.len(), 2);
+        for anchor in anchors {
+            let state_minute = anchor["timestamp_unix"].as_u64().unwrap().div_euclid(60) * 60;
+            assert_eq!(state_minute, fx["minute_open_unix"].as_u64().unwrap());
+            for key in ["low", "high"] {
+                let (_, _, provider_cross, spot_cross) = check_spot(anchor, key);
+                let difference = provider_cross.abs_diff(spot_cross);
+                assert!(
+                    difference.checked_mul(U256::from(100)).unwrap()
+                        <= provider_cross.checked_mul(U256::from(2)).unwrap()
+                );
+            }
+        }
+
+        let same_second = row["same_second_pre_states"].as_array().unwrap();
+        assert_eq!(same_second.len(), 6);
+        for state in same_second {
+            assert_eq!(state["timestamp_unix"].as_u64(), Some(1_765_803_131));
+            let (_, _, provider_cross, spot_cross) = check_spot(state, "close");
+            assert!(spot_cross < provider_cross);
+        }
+
+        let supply = &row["supply_bound"];
+        assert_eq!(supply["decimals"].as_u64(), Some(6));
+        assert_eq!(supply["birth_raw"].as_str(), Some("1000000000000000"));
+        assert_eq!(supply["peak_raw"].as_str(), Some("999999999999999"));
+        assert!(supply["cent_bound_collapses"].as_bool().unwrap());
+        assert!(supply["provider_scope_max_fdv_proven"].as_bool().unwrap());
+        assert_eq!(supply["signature_index_success_rows"].as_u64(), Some(1_736));
+        assert_eq!(supply["ascending_pages"].as_u64(), Some(10));
+        assert_eq!(supply["descending_pages"].as_u64(), Some(8));
+        assert_eq!(supply["overlap_rows"].as_u64(), Some(64));
+        assert!(
+            supply["ascending_descending_union_matches_signature_index_set"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            supply["later_mint_to_or_mint_checked_absent"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            supply["mint_close_authority_extension_absent"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            supply["mint_close_authority_init_opcode25_absent"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(
+            supply["birth_supply_upper_bound_fdv_cents_floor"].as_u64(),
+            Some(7_372_003)
+        );
+        assert_eq!(
+            supply["exact_peak_supply_fdv_cents_floor"].as_u64(),
+            Some(7_372_003)
+        );
+
+        let fdv = provider_num
+            .checked_mul(U256::from(100_000_000_000_u64))
+            .unwrap()
+            .checked_div(provider_den)
+            .unwrap();
+        assert_eq!(fdv, U256::from(7_372_003));
+        let protocol = &row["protocol"];
+        assert!(!protocol["deployed_binary_proof"].as_bool().unwrap());
+        assert!(
+            !protocol["universal_missing_virtual_reserve_equals_zero_rule"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !row["limitations"]["lifetime_or_all_pool_ath_claim"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !row["limitations"]["automatic_adapter_or_promotion"]
+                .as_bool()
+                .unwrap()
+        );
+
+        let control = &row["buy_exact_quote_in_control"];
+        assert_eq!(
+            control["instruction_name"].as_str(),
+            Some("buy_exact_quote_in")
+        );
+        assert_eq!(
+            control["signature"].as_str(),
+            Some(
+                "2Fh5YwQKB3jRVq63CccNSMFwzXCd5rxsxW9FSiTV5tCCpaSL13ap51Y8W43oCnRXmXW1h4TKgQG7frd4pWBTyKAW"
+            )
+        );
+        assert_eq!(
+            control["capture_sha256"].as_str(),
+            Some("aa27e0f41c2ba744c7cee89865d7a675ccbb088073ac552b98d221ce86f15587")
+        );
+        let parse_control = |key: &str| control[key].as_str().unwrap().parse::<U256>().unwrap();
+        let base_reserve = parse_control("pool_base_raw_before");
+        let quote_reserve = parse_control("pool_quote_raw_before");
+        let gross_quote = parse_control("quote_amount_in_gross_raw");
+        let net_quote = parse_control("user_quote_amount_in_net_raw");
+        let observed_out = parse_control("base_amount_out_raw");
+        let denominator = quote_reserve
+            .checked_add(net_quote)
+            .unwrap()
+            .checked_sub(U256::from(1))
+            .unwrap();
+        let calculated_out = net_quote
+            .checked_sub(U256::from(1))
+            .unwrap()
+            .checked_mul(base_reserve)
+            .unwrap()
+            .checked_div(denominator)
+            .unwrap();
+        assert_eq!(calculated_out, U256::from(143_666_486_066_u64));
+        assert_eq!(calculated_out, observed_out);
+
+        let mut total_fee = U256::ZERO;
+        for fee in ["lp", "protocol", "creator"] {
+            let bps = U256::from(control["fee_bps"][fee].as_u64().unwrap());
+            let fee_raw = net_quote
+                .checked_mul(bps)
+                .unwrap()
+                .checked_add(U256::from(9_999))
+                .unwrap()
+                .checked_div(U256::from(10_000))
+                .unwrap();
+            assert_eq!(
+                fee_raw,
+                U256::from(control["fee_raw"][fee].as_u64().unwrap())
+            );
+            total_fee = total_fee.checked_add(fee_raw).unwrap();
+        }
+        assert_eq!(net_quote.checked_add(total_fee).unwrap(), gross_quote);
+    }
+
+    #[test]
+    fn solana_tracker_5b2bs_legacy_idl_price_and_supply_golden() {
+        use alloy_primitives::{U256, U512};
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_5b2bs_legacy_pool_spot_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            row["source"].as_str(),
+            Some("solana-tracker-window-historical-supply-bounds-pool-fx-validated-v1")
+        );
+        assert_eq!(
+            row["mint"].as_str(),
+            Some("5b2BsBEVvsjBegVaKik9vByFJ8YGcDbk8R3A96RTpump")
+        );
+        assert!(row["scope"]["ath_at"].is_null());
+        assert!(!row["scope"]["all_market_or_lifetime"].as_bool().unwrap());
+        assert!(
+            !row["limitations"]["binary_activation_date_proven"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !row["limitations"]["generic_missing_virtual_reserve_zero_rule"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(row["dated_idl"]["commit"].as_str(), Some("82dacacf15"));
+        assert_eq!(
+            row["dated_idl"]["sha256"].as_str(),
+            Some("5a15060f412974e53068bae7e89aa6004defbb70ef0c56e3902ce75d124accb6")
+        );
+        assert_eq!(
+            row["independent_recheck_sha256"].as_str(),
+            Some("bf6a6a2200cc3846154eebbb13e6e12d73dd0f85f9853d6ad5929b4969581fa1")
+        );
+        assert!(
+            row["dated_idl"]["cashback_fields_present"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !row["dated_idl"]["virtual_quote_reserves_field_present"]
+                .as_bool()
+                .unwrap()
+        );
+
+        let provider = ExactDecimal::parse(row["provider"]["price_usd"].as_str().unwrap()).unwrap();
+        let provider_num = U256::from(provider.coefficient);
+        let pow10 = |scale: u32| {
+            (0..scale)
+                .try_fold(U256::from(1), |value, _| value.checked_mul(U256::from(10)))
+                .unwrap()
+        };
+        let provider_den = pow10(u32::try_from(provider.scale).unwrap());
+        let fx = &row["fx"];
+        assert_eq!(fx["minute_open_unix"].as_u64(), Some(1_773_522_420));
+        assert_eq!(row["states"].as_array().unwrap().len(), 2);
+        for state in row["states"].as_array().unwrap() {
+            let instruction =
+                raw_instruction_from_hex(state["event_cpi_data_hex"].as_str().unwrap());
+            assert_eq!(
+                instruction.data.len(),
+                usize::try_from(state["event_cpi_data_bytes"].as_u64().unwrap()).unwrap()
+            );
+            assert_eq!(
+                state["inner_instruction_program_id"].as_str(),
+                Some("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
+            );
+            match scout_dex_solana::classify_pump_amm_event(&instruction) {
+                scout_dex_solana::PumpAmmEventOutcome::Trade(
+                    scout_dex_solana::PumpAmmEvent::Buy(event),
+                ) => {
+                    assert_eq!(state["event"].as_str(), Some("BuyEvent"));
+                    assert_eq!(
+                        event.pool,
+                        pubkey_from_hex(state["event_fields"]["pool"].as_str().unwrap())
+                    );
+                    assert_eq!(
+                        event.user,
+                        pubkey_from_hex(state["event_fields"]["user"].as_str().unwrap())
+                    );
+                    assert_eq!(
+                        event.user_base_token_account,
+                        pubkey_from_hex(
+                            state["event_fields"]["user_base_token_account"]
+                                .as_str()
+                                .unwrap()
+                        )
+                    );
+                    assert_eq!(
+                        event.user_quote_token_account,
+                        pubkey_from_hex(
+                            state["event_fields"]["user_quote_token_account"]
+                                .as_str()
+                                .unwrap()
+                        )
+                    );
+                    assert_eq!(event.cashback_fee_basis_points, Some(0));
+                    assert_eq!(event.cashback, Some(0));
+                    assert_eq!(event.virtual_quote_reserves, None);
+                    assert_eq!(event.ix_name.as_deref(), Some("buy_exact_quote_in"));
+                    assert_eq!(event.quote_cost(), Some(227_907_305));
+                }
+                scout_dex_solana::PumpAmmEventOutcome::Trade(
+                    scout_dex_solana::PumpAmmEvent::Sell(event),
+                ) => {
+                    assert_eq!(state["event"].as_str(), Some("SellEvent"));
+                    assert_eq!(
+                        event.pool,
+                        pubkey_from_hex(state["event_fields"]["pool"].as_str().unwrap())
+                    );
+                    assert_eq!(
+                        event.user,
+                        pubkey_from_hex(state["event_fields"]["user"].as_str().unwrap())
+                    );
+                    assert_eq!(
+                        event.user_base_token_account,
+                        pubkey_from_hex(
+                            state["event_fields"]["user_base_token_account"]
+                                .as_str()
+                                .unwrap()
+                        )
+                    );
+                    assert_eq!(
+                        event.user_quote_token_account,
+                        pubkey_from_hex(
+                            state["event_fields"]["user_quote_token_account"]
+                                .as_str()
+                                .unwrap()
+                        )
+                    );
+                    assert_eq!(event.cashback_fee_basis_points, Some(0));
+                    assert_eq!(event.cashback, Some(0));
+                    assert_eq!(event.virtual_quote_reserves, None);
+                    assert_eq!(event.quote_proceeds(), Some(181_751_708));
+                }
+                other => panic!("selected recorded event was not classified as a trade: {other:?}"),
+            }
+            assert_eq!(
+                state["event_payload_bytes"].as_u64(),
+                Some(if state["event"] == "BuyEvent" {
+                    439
+                } else {
+                    376
+                })
+            );
+            assert_eq!(
+                state["decoded_under_dated_idl_commit"].as_str(),
+                Some("82dacacf15")
+            );
+            assert_eq!(
+                state["event_payload_sha256"].as_str(),
+                Some(if state["event"] == "BuyEvent" {
+                    "ebce7f0d361f988f2756e776704f17b057c71de0c1a61395bfafbd55ea030860"
+                } else {
+                    "0dd891e6f67ae4eb4bd0a0bfc531ac9a62acfdb905bd4d6144f773c3fe0e939a"
+                })
+            );
+            assert!(state["curve_fee_vault_checks"].as_str() == Some("PASS"));
+            assert!(
+                state["reserve_fields_match_pool_owned_prebalances"]
+                    .as_bool()
+                    .unwrap()
+            );
+            let fields = &state["event_fields"];
+            assert_eq!(fields["cashback_fee_basis_points"].as_u64(), Some(0));
+            assert_eq!(fields["cashback"].as_u64(), Some(0));
+            assert_eq!(
+                i128::from(state["timestamp_unix"].as_u64().unwrap()) * 1_000
+                    - i128::from(row["provider"]["timestamp_ms"].as_u64().unwrap()),
+                i128::from(state["milliseconds_from_provider"].as_i64().unwrap())
+            );
+
+            let base =
+                U256::from_str_radix(state["base_reserve_raw"].as_str().unwrap(), 10).unwrap();
+            let quote =
+                U256::from_str_radix(state["quote_reserve_raw"].as_str().unwrap(), 10).unwrap();
+            let post_base =
+                U256::from_str_radix(state["pool_vault_post_base_raw"].as_str().unwrap(), 10)
+                    .unwrap();
+            let post_quote =
+                U256::from_str_radix(state["pool_vault_post_quote_raw"].as_str().unwrap(), 10)
+                    .unwrap();
+            let amount = |key: &str| U256::from(fields[key].as_u64().unwrap());
+            let ceil_fee = |gross: U256, bps: U256| {
+                gross
+                    .checked_mul(bps)
+                    .unwrap()
+                    .checked_add(U256::from(9_999))
+                    .unwrap()
+                    .checked_div(U256::from(10_000))
+                    .unwrap()
+            };
+            if state["event"] == "BuyEvent" {
+                assert_eq!(state["ix_name"].as_str(), Some("buy_exact_quote_in"));
+                let net = amount("user_quote_amount_in");
+                let net_minus_one = net.checked_sub(U256::from(1)).unwrap();
+                let expected_out = net_minus_one
+                    .checked_mul(base)
+                    .unwrap()
+                    .checked_div(quote.checked_add(net_minus_one).unwrap())
+                    .unwrap();
+                assert_eq!(expected_out, amount("base_amount_out"));
+                let gross = amount("quote_amount_in");
+                let lp = ceil_fee(net, amount("lp_fee_basis_points"));
+                let protocol = ceil_fee(net, amount("protocol_fee_basis_points"));
+                let creator = ceil_fee(net, amount("coin_creator_fee_basis_points"));
+                assert_eq!(lp, amount("lp_fee"));
+                assert_eq!(protocol, amount("protocol_fee"));
+                assert_eq!(creator, amount("coin_creator_fee"));
+                assert_eq!(
+                    net.checked_add(lp).unwrap(),
+                    amount("quote_amount_in_with_lp_fee")
+                );
+                assert_eq!(
+                    amount("quote_amount_in_with_lp_fee")
+                        .checked_add(protocol)
+                        .unwrap()
+                        .checked_add(creator)
+                        .unwrap(),
+                    gross
+                );
+                assert_eq!(base.checked_sub(post_base).unwrap(), expected_out);
+                assert_eq!(
+                    post_quote.checked_sub(quote).unwrap(),
+                    amount("quote_amount_in_with_lp_fee")
+                );
+            } else {
+                assert_eq!(state["event"].as_str(), Some("SellEvent"));
+                let base_in = amount("base_amount_in");
+                let gross = base_in
+                    .checked_mul(quote)
+                    .unwrap()
+                    .checked_div(base.checked_add(base_in).unwrap())
+                    .unwrap();
+                assert_eq!(gross, amount("quote_amount_out"));
+                let lp = ceil_fee(gross, amount("lp_fee_basis_points"));
+                let protocol = ceil_fee(gross, amount("protocol_fee_basis_points"));
+                let creator = ceil_fee(gross, amount("coin_creator_fee_basis_points"));
+                assert_eq!(lp, amount("lp_fee"));
+                assert_eq!(protocol, amount("protocol_fee"));
+                assert_eq!(creator, amount("coin_creator_fee"));
+                let net = gross.checked_sub(lp).unwrap();
+                assert_eq!(net, amount("quote_amount_out_without_lp_fee"));
+                assert_eq!(
+                    amount("user_quote_amount_out")
+                        .checked_add(protocol)
+                        .unwrap()
+                        .checked_add(creator)
+                        .unwrap(),
+                    net
+                );
+                assert_eq!(post_base.checked_sub(base).unwrap(), base_in);
+                assert_eq!(quote.checked_sub(post_quote).unwrap(), net);
+            }
+
+            let spot_n = quote.checked_mul(U256::from(1_000_000_u64)).unwrap();
+            let spot_d = base.checked_mul(U256::from(1_000_000_000_u64)).unwrap();
+            let stored = state["sol_per_token_fraction"].as_str().unwrap();
+            let (stored_n, stored_d) = stored.split_once('/').unwrap();
+            assert_eq!(
+                U512::from(spot_n) * U512::from_str_radix(stored_d, 10).unwrap(),
+                U512::from(spot_d) * U512::from_str_radix(stored_n, 10).unwrap()
+            );
+            for key in ["low", "high"] {
+                let usd = ExactDecimal::parse(fx[key].as_str().unwrap()).unwrap();
+                let candidate_n = spot_n.checked_mul(U256::from(usd.coefficient)).unwrap();
+                let candidate_d = spot_d
+                    .checked_mul(pow10(u32::try_from(usd.scale).unwrap()))
+                    .unwrap();
+                let diff = (U512::from(candidate_n) * U512::from(provider_den))
+                    .abs_diff(U512::from(provider_num) * U512::from(candidate_d));
+                assert!(
+                    diff * U512::from(50) <= U512::from(provider_num) * U512::from(candidate_d)
+                );
+            }
+        }
+
+        let supply = &row["supply"];
+        assert_eq!(supply["birth_raw"].as_str(), Some("1000000000000000"));
+        assert_eq!(supply["peak_raw"].as_str(), Some("1000000000000000"));
+        assert_eq!(
+            supply["current_snapshot_raw"].as_str(),
+            Some("999999912053342")
+        );
+        assert_eq!(supply["current_snapshot_slot"].as_u64(), Some(456_603_633));
+        assert_eq!(supply["decimals"].as_u64(), Some(6));
+        assert_eq!(supply["successful_transactions"].as_u64(), Some(429));
+        assert_eq!(
+            supply["successful_signature_index_rows"].as_u64(),
+            Some(428)
+        );
+        assert!(supply["signature_sets_match_plus_birth"].as_bool().unwrap());
+        assert_eq!(supply["mint_count"].as_u64(), Some(1));
+        assert_eq!(supply["burn_count"].as_u64(), Some(0));
+        assert_eq!(supply["unknown_target_opcodes"].as_u64(), Some(0));
+        let upper_fdv = provider_num
+            .checked_mul(U256::from_str_radix(supply["birth_raw"].as_str().unwrap(), 10).unwrap())
+            .unwrap()
+            .checked_mul(U256::from(100))
+            .unwrap()
+            .checked_div(provider_den.checked_mul(pow10(6)).unwrap())
+            .unwrap();
+        let current_fdv = provider_num
+            .checked_mul(
+                U256::from_str_radix(supply["current_snapshot_raw"].as_str().unwrap(), 10).unwrap(),
+            )
+            .unwrap()
+            .checked_mul(U256::from(100))
+            .unwrap()
+            .checked_div(provider_den.checked_mul(pow10(6)).unwrap())
+            .unwrap();
+        assert_eq!(upper_fdv, U256::from(12_133_750));
+        assert_eq!(current_fdv, U256::from(12_133_749));
+        assert_eq!(
+            row["provider"]["fdv_floor_cents"].as_u64(),
+            Some(12_133_750)
+        );
+        assert_eq!(
+            row["provider"]["current_supply_fdv_floor_cents"].as_u64(),
+            Some(12_133_749)
+        );
+    }
+
+    #[test]
+    fn solana_tracker_88pqb_uses_dated_legacy_event_layout() {
+        use alloy_primitives::{U256, U512};
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_88pqb_pool_spot_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            row["source"].as_str(),
+            Some("solana-tracker-window-peak-supply-legacy-pool-fx-validated-v1")
+        );
+        assert!(row["ath_at"].is_null());
+        assert_eq!(
+            row["mint"].as_str(),
+            Some("88pqbGiXSTb9UpNuSKegCBBEa23vaneN8R9EkKJhpump")
+        );
+        assert_eq!(
+            row["pool"].as_str(),
+            Some("HSKHmd8U4UrKm1i2TSVPD59T6H8Bhg4Mmx98PEEfzUBC")
+        );
+        assert_eq!(
+            row["historical_layout_correction"]["dated_official_idl_commit"].as_str(),
+            Some("82dacacf15")
+        );
+        assert_eq!(
+            row["historical_layout_correction"]["dated_official_idl_sha256"].as_str(),
+            Some("5a15060f412974e53068bae7e89aa6004defbb70ef0c56e3902ce75d124accb6")
+        );
+        assert_eq!(
+            row["evidence_hashes"]["independent_dated_layout_correction_sha256"].as_str(),
+            Some("9248a86e615262e62b70959514d19f206cf9bdc07d3d0f744a0d77e48d8edfb7")
+        );
+        assert_eq!(
+            row["evidence_hashes"]["prior_independent_proof_with_withdrawn_vq_interpretation_sha256"]
+                .as_str(),
+            Some("4ce029419fceed8b87c1694da3a6cdb59179e6e7a021987f6eb012c22d8998cc")
+        );
+        assert_eq!(
+            row["historical_layout_correction"]["prior_suffix_as_virtual_quote_interpretation"]
+                .as_str(),
+            Some("withdrawn; retained in original diagnostic artifacts only")
+        );
+        assert!(
+            !row["historical_layout_correction"]["deployed_binary_activation_proven"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !row["historical_layout_correction"]["virtual_quote_reserves_field_present"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !row["protocol"]["general_missing_virtual_reserve_equals_zero_rule"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            !row["limitations"]["all_pool_or_lifetime_ath"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(!row["limitations"]["database_promotion"].as_bool().unwrap());
+
+        let provider = ExactDecimal::parse(row["provider"]["price_usd"].as_str().unwrap()).unwrap();
+        let provider_num = U256::from(provider.coefficient);
+        let pow10 = |scale: u32| {
+            (0..scale)
+                .try_fold(U256::from(1), |value, _| value.checked_mul(U256::from(10)))
+                .unwrap()
+        };
+        let provider_den = pow10(u32::try_from(provider.scale).unwrap());
+        let fx = &row["fx"];
+        let provider_minute = row["provider"]["timestamp_ms"].as_u64().unwrap() / 1_000 / 60 * 60;
+        assert_eq!(provider_minute, fx["minute_open_unix"].as_u64().unwrap());
+
+        for state in row["states"].as_array().unwrap() {
+            let instruction =
+                raw_instruction_from_hex(state["event_cpi_data_hex"].as_str().unwrap());
+            assert_eq!(
+                instruction.data.len(),
+                usize::try_from(state["event_cpi_data_bytes"].as_u64().unwrap()).unwrap()
+            );
+            assert_eq!(
+                state["inner_instruction_program_id"].as_str(),
+                Some("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
+            );
+            match scout_dex_solana::classify_pump_amm_event(&instruction) {
+                scout_dex_solana::PumpAmmEventOutcome::Trade(
+                    scout_dex_solana::PumpAmmEvent::Buy(event),
+                ) => {
+                    assert_eq!(state["event"].as_str(), Some("BuyEvent"));
+                    assert_eq!(
+                        event.pool,
+                        pubkey_from_hex(state["event_fields"]["pool"].as_str().unwrap())
+                    );
+                    assert_eq!(
+                        event.user,
+                        pubkey_from_hex(state["event_fields"]["user"].as_str().unwrap())
+                    );
+                    assert_eq!(
+                        event.user_base_token_account,
+                        pubkey_from_hex(
+                            state["event_fields"]["user_base_token_account"]
+                                .as_str()
+                                .unwrap()
+                        )
+                    );
+                    assert_eq!(
+                        event.user_quote_token_account,
+                        pubkey_from_hex(
+                            state["event_fields"]["user_quote_token_account"]
+                                .as_str()
+                                .unwrap()
+                        )
+                    );
+                    assert_eq!(event.cashback_fee_basis_points, Some(0));
+                    assert_eq!(event.cashback, Some(0));
+                    assert_eq!(event.virtual_quote_reserves, None);
+                    assert_eq!(event.ix_name.as_deref(), Some("buy_exact_quote_in"));
+                    assert_eq!(event.quote_cost(), Some(100_000_000));
+                }
+                scout_dex_solana::PumpAmmEventOutcome::Trade(
+                    scout_dex_solana::PumpAmmEvent::Sell(event),
+                ) => {
+                    assert_eq!(state["event"].as_str(), Some("SellEvent"));
+                    assert_eq!(
+                        event.pool,
+                        pubkey_from_hex(state["event_fields"]["pool"].as_str().unwrap())
+                    );
+                    assert_eq!(
+                        event.user,
+                        pubkey_from_hex(state["event_fields"]["user"].as_str().unwrap())
+                    );
+                    assert_eq!(
+                        event.user_base_token_account,
+                        pubkey_from_hex(
+                            state["event_fields"]["user_base_token_account"]
+                                .as_str()
+                                .unwrap()
+                        )
+                    );
+                    assert_eq!(
+                        event.user_quote_token_account,
+                        pubkey_from_hex(
+                            state["event_fields"]["user_quote_token_account"]
+                                .as_str()
+                                .unwrap()
+                        )
+                    );
+                    assert_eq!(event.cashback_fee_basis_points, Some(0));
+                    assert_eq!(event.cashback, Some(0));
+                    assert_eq!(event.virtual_quote_reserves, None);
+                    assert_eq!(event.quote_proceeds(), Some(11_123_524_554));
+                }
+                other => panic!("selected recorded event was not classified as a trade: {other:?}"),
+            }
+            assert_eq!(
+                state["event_payload_bytes"].as_u64(),
+                Some(if state["event"] == "BuyEvent" {
+                    439
+                } else {
+                    376
+                })
+            );
+            assert_eq!(
+                state["decoded_under_dated_idl_commit"].as_str(),
+                Some("82dacacf15")
+            );
+            assert_eq!(
+                state["effective_quote_model"].as_str(),
+                Some("real pre-swap quote-vault balance")
+            );
+            assert!(state.get("virtual_quote_raw_signed_i128").is_none());
+            assert!(state.get("virtual_quote_raw_suffix_hex").is_none());
+            assert!(
+                state["reserve_fields_match_pool_owned_prebalances"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert!(
+                state["event_amount_fee_balance_reconciliation"]
+                    .as_bool()
+                    .unwrap()
+            );
+            let fields = &state["event_fields"];
+            assert_eq!(fields["cashback_fee_basis_points"].as_str(), Some("0"));
+            assert_eq!(fields["cashback"].as_str(), Some("0"));
+
+            let base = state["base_raw"].as_str().unwrap().parse::<U256>().unwrap();
+            let quote = state["quote_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<U256>()
+                .unwrap();
+            let post_base = state["pool_vault_post_base_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<U256>()
+                .unwrap();
+            let post_quote = state["pool_vault_post_quote_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<U256>()
+                .unwrap();
+            let amount = |key: &str| fields[key].as_str().unwrap().parse::<U256>().unwrap();
+            let ceil_fee = |gross: U256, bps: U256| {
+                gross
+                    .checked_mul(bps)
+                    .unwrap()
+                    .checked_add(U256::from(9_999))
+                    .unwrap()
+                    .checked_div(U256::from(10_000))
+                    .unwrap()
+            };
+            if state["event"] == "BuyEvent" {
+                assert_eq!(fields["ix_name"].as_str(), Some("buy_exact_quote_in"));
+                let net = amount("user_quote_amount_in");
+                let net_minus_one = net.checked_sub(U256::from(1)).unwrap();
+                let output = net_minus_one
+                    .checked_mul(base)
+                    .unwrap()
+                    .checked_div(quote.checked_add(net_minus_one).unwrap())
+                    .unwrap();
+                assert_eq!(output, amount("base_amount_out"));
+                let gross = amount("quote_amount_in");
+                let lp = ceil_fee(net, amount("lp_fee_basis_points"));
+                let protocol = ceil_fee(net, amount("protocol_fee_basis_points"));
+                let creator = ceil_fee(net, amount("coin_creator_fee_basis_points"));
+                assert_eq!(lp, amount("lp_fee"));
+                assert_eq!(protocol, amount("protocol_fee"));
+                assert_eq!(creator, amount("coin_creator_fee"));
+                let pool_quote_in = amount("quote_amount_in_with_lp_fee");
+                assert_eq!(net.checked_add(lp).unwrap(), pool_quote_in);
+                assert_eq!(
+                    pool_quote_in
+                        .checked_add(protocol)
+                        .unwrap()
+                        .checked_add(creator)
+                        .unwrap(),
+                    gross
+                );
+                assert_eq!(base.checked_sub(post_base).unwrap(), output);
+                assert_eq!(post_quote.checked_sub(quote).unwrap(), pool_quote_in);
+            } else {
+                assert_eq!(state["event"].as_str(), Some("SellEvent"));
+                let base_in = amount("base_amount_in");
+                let gross = base_in
+                    .checked_mul(quote)
+                    .unwrap()
+                    .checked_div(base.checked_add(base_in).unwrap())
+                    .unwrap();
+                assert_eq!(gross, amount("quote_amount_out"));
+                let lp = ceil_fee(gross, amount("lp_fee_basis_points"));
+                let protocol = ceil_fee(gross, amount("protocol_fee_basis_points"));
+                let creator = ceil_fee(gross, amount("coin_creator_fee_basis_points"));
+                assert_eq!(lp, amount("lp_fee"));
+                assert_eq!(protocol, amount("protocol_fee"));
+                assert_eq!(creator, amount("coin_creator_fee"));
+                let pool_quote_out = amount("quote_amount_out_without_lp_fee");
+                assert_eq!(gross.checked_sub(lp).unwrap(), pool_quote_out);
+                assert_eq!(
+                    amount("user_quote_amount_out")
+                        .checked_add(protocol)
+                        .unwrap()
+                        .checked_add(creator)
+                        .unwrap(),
+                    pool_quote_out
+                );
+                assert_eq!(post_base.checked_sub(base).unwrap(), base_in);
+                assert_eq!(quote.checked_sub(post_quote).unwrap(), pool_quote_out);
+            }
+
+            let timestamp = state["timestamp_unix"].as_u64().unwrap();
+            assert_eq!(
+                timestamp.div_euclid(60) * 60,
+                fx["minute_open_unix"].as_u64().unwrap()
+            );
+            for key in ["low", "close", "high"] {
+                let fx_value = ExactDecimal::parse(fx[key].as_str().unwrap()).unwrap();
+                let spot_num = quote.checked_mul(U256::from(fx_value.coefficient)).unwrap();
+                let spot_den = base
+                    .checked_mul(U256::from(1_000_u64))
+                    .unwrap()
+                    .checked_mul(pow10(u32::try_from(fx_value.scale).unwrap()))
+                    .unwrap();
+                let provider_cross = provider_num.checked_mul(spot_den).unwrap();
+                let spot_cross = spot_num.checked_mul(provider_den).unwrap();
+                let difference = U512::from(provider_cross).abs_diff(U512::from(spot_cross));
+                assert!(difference * U512::from(100) <= U512::from(provider_cross) * U512::from(2));
+            }
+        }
+
+        let supply = &row["supply"];
+        assert_eq!(supply["raw"].as_str(), Some("2000000000000000"));
+        assert_eq!(supply["tokens"].as_str(), Some("2000000000"));
+        assert_eq!(supply["decimals"].as_u64(), Some(6));
+        assert_eq!(supply["successful_transactions"].as_u64(), Some(191));
+        assert!(
+            supply["signature_index_matches_window_set"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(supply["birth_authority_revoked"].as_bool().unwrap());
+        assert!(supply["no_close_authority"].as_bool().unwrap());
+        assert_eq!(
+            supply["mint_to_after_birth_through_peak_second"].as_str(),
+            Some("0")
+        );
+        assert_eq!(
+            supply["burn_before_or_during_peak_second"].as_str(),
+            Some("0")
+        );
+        let fdv = provider_num
+            .checked_mul(U256::from(200_000_000_000_u64))
+            .unwrap()
+            .checked_div(provider_den)
+            .unwrap();
+        assert_eq!(fdv, U256::from(1_921_249));
+        assert_eq!(fdv.to_string(), supply["fdv_cents_floor"].as_str().unwrap());
+        assert_eq!(
+            row["provider"]["market_cap_usd_reported"].as_str(),
+            Some("9606.25")
         );
     }
 }

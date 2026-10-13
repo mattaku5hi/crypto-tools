@@ -1116,6 +1116,118 @@ independent recheck SHA-256
 the reviewed evidence. This amendment adds no automatic adapter or source
 promotion rule.
 
+## Amendment 27d (2026-10-14) — Robinhood 48c follow-up with traded USDG/AAPL references
+
+The prior 48c snapshot remains an accurate record of its then-incomplete quote
+evidence, but a pinned follow-up now supplies actual pre-event USDG/AAPL trades
+for each of the two target-event time groups. Apply the existing 27a per-event
+model to all 15 successful Swaps (10 in block `22,791,875`, five in
+`22,792,033`): absolute AAPL/target raw-delta ratio, multiplied by that
+group's last actual USDG/AAPL trade before the events and Kraken's July 29
+USDG/USD daily close `1.0000`; select the maximum only after converting every
+event. The group-one reference trade is block `22,790,408`, log `4`; its
+bracketing follow-up trade is block `22,791,960`, log `29` (148 seconds before
+and 8 seconds after the target group). Group two uses that latter trade as its
+pre-event reference and is bracketed by a same-pair fee-500 trade at block
+`22,792,331`, log `19` (7 seconds before and 30 seconds after). The different
+fee tier in the second group's trailing quote is retained in the sensitivity
+range, not averaged into the reference point.
+
+The maximum is the first group's block `22,791,875`, log `129`, at
+`$0.00006143395877629962…` per token; with one billion 18-decimal tokens this
+floors to `6,143,395` FDV cents. The bracket and daily FX low/high sensitivity
+is `$61,427.81538…–$61,448.49062…` FDV. This is a traded-reference model, not
+an exact second-level fiat execution price. The source remains
+`onchain-pool-window-supply-stock-trade-fx-reference-v1`, with `ath_at=NULL`;
+the evidence covers the listed pool events only, not all markets or lifetime
+history. The historical negative-control snapshot is preserved, while this
+follow-up supersedes its conclusion that the scoped quote evidence was
+insufficient. Golden
+`robinhood_48c_usdg_aapl_followup_case.json` includes all 15 raw event tuples,
+group references/brackets, exact maximum arithmetic, supply, and the prior
+snapshot's status. Candidate SHA-256
+`988799f1fd6b5a105eacbad67e5698109378467c3519f617fa08147989c080c4` and Kraken
+USDG/USD candle SHA-256
+`2c3222370fb29cf678eb33bc08fd0112fc1a175a2e5ec78e38c069987b460517` pin the
+reviewed inputs. This remains a manual source-specific case with no automatic
+adapter or promotion rule.
+
+## Amendment 27e (2026-10-14) — Robinhood WETH-reference pool-window follow-up
+
+Two additional configured initial Uniswap v4 pools have manually reviewed
+WETH-reference maxima under the existing 27a event-weighted method. For every
+successful post-creation event in each scanned pool, calculate the exact
+absolute WETH/target raw-delta ratio and multiply by that event's own Coinbase
+ETH/USD UTC-minute close, then select the maximum. The target and WETH both
+have 18 decimals, and the selected event's one-billion-token supply is
+`10^27` raw units from its creation mint; no burn appears through the scanned
+window end.
+
+- `0xaa539cf78ff43e4b9fd9db2715435ff57d09fee1`: three post-creation events in
+  the configured pool, maximum block `45,582,061`, log `107`, at approximately
+  `$0.0000103730435063` per token; one-billion-token FDV floors to `1,037,304`
+  cents. Across these events the minute low/high sensitivity spans about
+  `$10,361.81–$10,377.20` FDV.
+- `0xc3a0e1a6c10b97c3e124ff8a2c291e5677a6fee1`: two post-creation events in
+  the configured pool, maximum block `49,435,080`, log `41`, at approximately
+  `$0.0000102116903886` per token; FDV floors to `1,021,169` cents. Its
+  event-window minute sensitivity spans about `$10,211.15–$10,219.67` FDV.
+
+Both scans start after the verified creation block and stop at pinned head
+`87,808,917`; creation-transaction Swap logs are excluded. Each selected
+event's receipt/log and block-header timestamp are verified, and its own
+matching candle is retained. The source is
+`onchain-pool-window-supply-cex-reference-v1`. These event-window references
+are not exact fiat execution prices, alternate-pool coverage, lifetime ATH, or
+wallet acquisition cost/PnL; retain `ath_at=NULL`.
+
+Golden `robinhood_weth_reference_followup_case.json` adds the raw tuples for
+all five events to the exact-rational test already covering 80 Doppler events,
+and recomputes both winners and cent floors. Candidate review SHA-256
+`3eb7ff79c93912eff0c03676589d359891e81d54e7d24f08ec04b519ce8b224e`, shared
+Swap capture SHA-256
+`667c00d5b5ae020d93735556947e6cb2d0d003ee6d8a7f0ccdc68ff5386d3ffe`, and
+matching Coinbase candles
+`610c07d496f00477c8536c7cee0eb38ece3d164b51204ee3e6104145b0df0801` and
+`040e86ae2aaedb31e96ae316337c8575b6149bc082fb9469b24e6607d5067a8e` pin the
+reviewed inputs. For aa539, `totalSupply()` and `decimals()` were directly read
+at the last included swap block `45,582,406`, later than the winning block
+`45,582,061`; the complete birth-through-last mint/burn scan (one mint, no
+burns) proves the one-billion supply also held at the winner. Decimals were
+also independently read at the winning block. Root verification SHA-256
+`7f55bcbc64b630602bd0448b6ee88a02a15485f18ac52e1843714f1afa9653e5` and the
+aa539 full-window supply manifest SHA-256
+`6b89d834968823f75913f11524ada44a35ac3150a021b18c2b83d3b7a5793958` pin this
+distinction. This manual extension adds no automatic adapter or source
+promotion rule.
+
+## Amendment 27f (2026-10-14) — Robinhood NVDA-reference pool-window follow-up
+
+The configured Robinhood pool for `0x1e6489ef6d75c6f785843669b01262a7562b1e18`
+has three successful post-creation target events. Convert each event's exact
+target/NVDA raw-delta ratio through the preceding NVDA/USDG v3 trade in the
+same transaction where available, then through the event's dated Kraken
+USDG/USD daily close; select the maximum only after converting all events.
+The winning block `17,403,416`, log `12` has a same-transaction quote route
+whose NVDA output exactly matches the target event's NVDA input. Its reference
+price is approximately `$0.0000202037022883` per token, or `2,020,370` FDV
+cents for one billion tokens. The one-birth-mint, no-burn supply check extends
+through the last scanned event at block `17,404,579`.
+
+The source remains
+`onchain-pool-window-supply-stock-trade-fx-reference-v1`, with `ath_at=NULL`.
+This is a configured-pool/event-window reference model, not exact fiat
+execution price, wallet cost basis, all-market coverage, or lifetime ATH.
+Golden `robinhood_nvda_reference_followup_case.json` checks all three event
+conversions, the same-transaction route, supply, and cent floor. Candidate
+SHA-256
+`77d19011f3c103ae03c90bde88264cb5744f2fb64ee8aaead04a82c600bf7e97`, supply
+manifest SHA-256
+`870cfbf0d02cd39788e4e15229782ff9dbd70131d89bfaa8a735f0664994a65c`, and
+Kraken candle SHA-256
+`ed81dd2a05a92a744a1c6d1da01d65fdcdb8dd795ea50ecca401577a40db1ce7` pin the
+reviewed inputs. This manual case adds no automatic adapter or promotion rule.
+
 ## Amendment 28 (2026-10-14) — BRkf legacy PumpSwap spot and provider-window supply bound
 
 For Solana token `BRkf1C38Y8ZKt1sApadJDP1EAGEFrbtqZbQ1kwSupump`, Solana
@@ -1163,3 +1275,226 @@ pool-state transaction capture SHA-256
 `ce9b72bd1392dd8103942700fb4066c3d80857e933e30652c0530138b3a8d792` pin the
 reviewed inputs. This is a manually reviewed source-specific case, not an
 automatic decoder or promotion rule.
+
+### Avx legacy PumpSwap follow-up
+
+The same narrowly scoped interpretation is independently checked for
+`Avx71ncfuZBMJxxmVqHLsy34RYzVoHTrwD26HjQVpump`. Solana Tracker's recorded-window
+maximum is `0.00007372003307230689` USD at `1765803131.144`. The nearest
+preceding and earliest following successful swaps in the selected legacy
+PumpSwap pool yield close-referenced marginal spots `0.00007373331466016226`
+(+0.018016%) and `0.0000732802454296758` (-0.596565%). Both anchors share the
+Coinbase SOL/USD minute and pass the 2% check at both minute low and high. Six
+successful pool states have second-resolution timestamps equal to the provider
+second and are all lower at the candle close; they cannot be ordered against
+the provider's millisecond timestamp, so this does not claim an exact state at
+that instant.
+
+Birth supply was `1000000000000000` raw units at six decimals. One raw unit was
+burned before the provider timestamp, leaving peak supply `999999999999999`;
+complete ascending/descending signature-index coverage and full transaction
+checks establish no later mint and a nonincreasing supply bound through the
+finalized snapshot. The provider price times both birth upper-bound supply and
+exact peak supply floors to `7372003` cents. The reviewed legacy real-reserve
+model is supported by historical IDL snapshots for this pool/time, not a
+deployed-binary capture; it does not establish a universal rule that a missing
+virtual reserve is zero. Golden
+`solana_tracker_avx_legacy_pool_spot_case.json` pins the raw balances, FX
+endpoints, supply evidence, same-second ambiguity, and source limitations.
+Candidate SHA-256 is
+`837a8826283825c011dc62cc97244e25c5428c691c35e31a0cb8485dd2635578`.
+This is another manual source-specific validation, not an automatic adapter,
+all-pool/lifetime ATH claim, or database promotion.
+
+An additional successful Avx control transaction exercises the distinct
+`buy_exact_quote_in` instruction variant. In that observed variant,
+`quote_amount_in` is gross (`79200000` raw) while `user_quote_amount_in` is net
+(`78260868` raw); the 20/5/95-bps LP/protocol/creator fees round up separately
+to `156522`, `39131`, and `743479` raw units and reconcile gross to net plus
+fees. With pre-state base/quote reserves `179841645839855` and `97888658987`,
+the net-input formula
+`floor((net - 1) * base / (quote + net - 1))` reproduces `143666486066` raw
+base output. This is a variant-specific observed mapping; do not apply the
+gross/net field assignment to the separate `buy` variant. The official Pump
+documentation gives the same `-1` constant-product equation for the pool leg
+of `buy_exact_quote_in_v3` and states that this pool leg uses PumpSwap buy
+math: [Synthetic Migration: The Last Buy on the Bonding Curve Has No Max Size](https://github.com/pump-fun/pump-public-docs/blob/main/docs/SYNTHETIC_MIGRATION.md).
+Golden `solana_tracker_avx_legacy_pool_spot_case.json` pins this control sample
+and checks the curve and fee arithmetic exactly.
+
+## Amendment 29 (2026-10-14; corrected) — 88pqb dated legacy pool spot and supply bound
+
+For Solana Tracker's recorded-window maximum for
+`88pqbGiXSTb9UpNuSKegCBBEa23vaneN8R9EkKJhpump`, the reported price is
+`$0.00000960624821632361` at `1775781520.246`. In the configured PumpSwap pool,
+the nearest preceding successful Buy and earliest following successful Sell
+are at `1775781519` and `1775781522`. **Correction:** the earlier
+interpretation of the final 16 bytes as signed `virtual_quote_reserves` is
+withdrawn. The selected 439-byte `BuyEvent` and 376-byte `SellEvent` decode
+completely under the official 2026-02-17 IDL at commit `82dacacf15`; the final
+fields are `cashback_fee_basis_points` and `cashback`, both zero. The selected
+price model uses the actual pre-swap quote-vault balance and applies no
+virtual-reserve adjustment. This dated IDL does not prove the deployed
+binary's activation date or establish a general default for missing fields.
+The exact fee, curve, and pool-vault deltas reconcile for both events. The
+pre-state real-reserve ratios, normalized for six-decimal target and
+nine-decimal WSOL and multiplied by the event-minute Coinbase SOL/USD close,
+are within 2% of the provider price; both candle low/high endpoints also
+remain within 2%. These are nearby pool states, not the exact state at the
+provider millisecond.
+
+The complete 191-transaction birth-to-peak window matches its signature index,
+has revoked birth mint authority and no close authority, and records no mint
+or burn affecting peak supply. The verified supply is `2,000,000,000` tokens
+at six decimals, so the provider price yields an FDV floor of `1,921,249`
+cents. Keep the reported `$9,606.25` market-cap value distinct; it is not the
+FDV calculation from that supply.
+
+The source identifier is
+`solana-tracker-window-peak-supply-legacy-pool-fx-validated-v1`, and
+`ath_at=NULL`. The dated IDL contains cashback fields, not
+`virtual_quote_reserves`; the old signed-suffix interpretation is superseded.
+The evidence supports only this selected pool and recorded price window, not
+all-pool or lifetime ATH. Golden
+`solana_tracker_88pqb_pool_spot_case.json` pins the dated event layout,
+cashback fields, exact legacy reserve math, pool identity, FX endpoints,
+supply, and scope. Candidate SHA-256
+`ff7c37ef3c72ebac3af380f964de6eac86cf6724213040904756ec61fe8b82e4`, event
+validation SHA-256
+`271c1ff08e79a60f2f7ccb54dd9e4e42d8b4d3eaedee1c8cf81e0f24a2f251ba`, and
+Coinbase candle SHA-256
+`ec80a23421b0c40a0ea6503679543cbdfc0e8d08c751926e1b14b1c0124e5011` pin the
+reviewed inputs. That original independent proof retains the now-withdrawn
+suffix interpretation. The corrected independent dated-layout check is
+separately pinned by SHA-256
+`9248a86e615262e62b70959514d19f206cf9bdc07d3d0f744a0d77e48d8edfb7`; do not
+substitute the original proof for it. This manual case adds no automatic
+decoder or database promotion rule.
+
+## Amendment 30 (2026-10-14) — Robinhood AMD oracle-reference pool window
+
+For token `0x52df349d941a790762a7474244a276ac1f371e18`, three successful events
+in its configured initial Uniswap v4 pool are valued individually as the
+absolute AMD/target raw-delta ratio multiplied by the latest-before-event
+AMD/USD Chainlink round, using eight feed decimals. The selected winning
+event is block `17,438,576`, log `28`, at approximately `$0.0000202951885` per
+target token; with the verified one-billion-token supply, its FDV floors to
+`2,029,518` cents. `totalSupply()` and `decimals()` were read at the winning
+block, and complete birth-through-last-event mint/burn history establishes
+that the one-billion supply did not change afterward.
+
+The AMD feed round used at each event is positive, has matching nonzero
+`roundId`/`answeredInRound`, and is 149–169 seconds old. The following updates
+arrive 11–31 seconds after the event; the oracle-answer endpoints
+`$544.875–$548.71805` differ by about 0.705% of the lower value. These are
+dated oracle-reference bounds, not an AMD/USD market trade. Robinhood's
+[oracle documentation](https://docs.robinhood.com/chain/oracles-and-price-feeds/)
+states that the stock-token feed returns the per-token value with the
+`uiMultiplier` already incorporated. Historical `uiMultiplier()` reads at
+both the winning and last target-event blocks return `1e18`; do not apply it
+to the feed answer again. A TSLA comparison with a 7,054-second-old round is
+rejected by the 300-second freshness check. The standard USDG/AMD fee-tier
+probe was limited to three tiers and does not prove that no other market
+exists.
+
+The selected source is
+`onchain-pool-window-supply-stock-oracle-reference-v1`, with `ath_at=NULL`.
+It covers this configured pool and three recorded events only, not all venues,
+lifetime ATH, a direct USDG execution price, or wallet acquisition cost.
+Golden `robinhood_amd_oracle_reference_case.json` checks each event's exact
+ratio and round age/identity, reevaluates the maximum and cent floor, and
+retains the stale-feed negative control. Candidate SHA-256
+`332df5d9d53f05722a2f899c9a6be3e97effbf9a060a4608aa16b281151c7f2b`, adjacent
+round sidecar SHA-256
+`0e98414594d9ece1bde4bc8b08d3e8b6d1e480e1af302a8f4c50baaf7cf0e9d2`, and
+historical multiplier manifest SHA-256
+`e842608793f64047ad121a99b5fa42a1add6dc58b5ef4d2e75b5cfcb72607c12` pin the
+reviewed inputs. This is a manual source-specific validation with no
+automatic adapter or promotion rule.
+
+## Amendment 31 (2026-10-14) — Robinhood 60d63 and TSLA quote-trade references
+
+For `0x60d63f32f0520178eabf4045cfb6e78941901e18`, value each of the 37
+recorded target-pool events from its exact target/quote raw-delta ratio, the
+same quote asset's own USDG-market swap immediately before the event, and that
+day's Kraken USDG/USD close. Both quote-market observations are ordered around
+the target event, no more than 300 seconds away, and their implied quote/USD
+rates differ by at most 2%. The maximum is block `65,505,526`, log `107`, at
+approximately `$0.00003000729` per token; for the verified one-billion-token
+supply, the FDV floor is `3,000,729` cents.
+
+For `0x9aadb292cd6e17cdf98ad16d1a1caf1704041e18` (TSLA), the same calculation
+covers six events. The selected quote-trade observations are 353/204 and
+370/187 seconds before/after for the two older groups; their implied quote/USD
+rates differ by `0.03657016%`, within the existing 2% agreement limit. This
+selected case uses the source-specific 600-second age limit: all six events
+fail the existing 300-second limit, and the 600-second allowance does not
+change any other source policy. The maximum is block `21,054,458`, log `43`,
+at approximately `$0.00002027889` per token, yielding a `2,027,889` cent FDV
+floor. A TSLA Chainlink observation 7,054 seconds old remains a rejected
+negative control.
+
+For both cases, calculate all event prices before selecting the maximum;
+quote and USDG decimals are 18 and 6 respectively. The one-billion-token,
+18-decimal supply is observed at each case's last recorded event, while the
+captured birth-to-last mint/burn history records one birth mint and no burns.
+These source-specific windows have `ath_at=NULL` and do not establish all-
+market or lifetime ATH. Golden
+`robinhood_60d63_tsla_quote_trade_followup_case.json` pins all 43 event ratios,
+reference ordering and ages, neighbor-rate agreement, FX endpoints, maximum,
+cent floor, supply, and scope. Candidate SHA-256
+`f321bf77d62c8a7969c9169c407567b36e85b65523069819eb427d1059eacde0`, target
+swap capture SHA-256
+`667c00d5b5ae020d93735556947e6cb2d0d003ee6d8a7f0ccdc68ff5386d3ffe`, RPC
+manifest SHA-256
+`a1caf1fb9c06b434143b7a6df016dd5cd423d433f157fd5c5a678694db020ab3`, and
+Kraken manifest SHA-256
+`fe9d2f30aaec6a77be4e5a2758a36416a6fdf32170ade092f079dfb503ae1d93` pin the
+reviewed inputs. These manual validations add no automatic adapter or
+promotion rule.
+## Amendment 32 (2026-10-14) — 5b2Bs dated legacy event revalidation
+
+For `5b2BsBEVvsjBegVaKik9vByFJ8YGcDbk8R3A96RTpump`, the selected
+provider-window price is `$0.00012133750413201461`. The nearest prior
+successful pool event is a 439-byte `BuyEvent` at `1773522435`; the first
+following event is a 376-byte `SellEvent` at `1773522438`. Both are fully
+decoded under the official 2026-02-17 PumpSwap IDL (`82dacacf15`, SHA-256
+`5a15060f412974e53068bae7e89aa6004defbb70ef0c56e3902ce75d124accb6`). Their
+trailing fields are `cashback_fee_basis_points` and `cashback`, both zero.
+There is no virtual quote-reserve field in this dated layout, and this
+selected legacy calculation does not create a generic missing-field default.
+
+The buy event is `buy_exact_quote_in`; its curve output is checked with
+`(net_quote - 1) * base_reserve / (quote_reserve + net_quote - 1)`. The sell
+curve output, gross/net quote amounts, ceiling fee calculations, and both
+pool-vault balance deltas reconcile to the recorded events. Using the actual
+pre-swap quote-vault balance, six-decimal target, nine-decimal WSOL, and
+Coinbase SOL/USD minute low/high of `$86.92–$86.94`, both strict bracket
+prices remain within 2% of the provider value. The complete captured
+birth-to-peak window has 429 successful transactions; its 428-row successful
+signature-index set plus the validated birth signature matches that set. It
+contains one birth mint and no burn or unknown target opcode. Peak supply is
+`1,000,000,000` tokens at six decimals, producing an FDV floor of `12,133,750`
+cents. A finalized current-snapshot supply of `999,999,912,053,342` raw units
+at slot `456603633` floors to `12,133,749` cents, preserving the distinction
+between the historical peak supply and the later current balance.
+
+The existing source remains
+`solana-tracker-window-historical-supply-bounds-pool-fx-validated-v1`, with
+`ath_at=NULL`. This revalidation strengthens the already-known 5b2Bs record;
+it is not a new candidate or a new numerical database write. The historical
+IDL establishes the selected payload layout, not the deployed binary
+activation date or a universal rule for other unrecognized layouts. Golden
+`solana_tracker_5b2bs_legacy_pool_spot_case.json` pins raw event hashes and
+decoded values, curve/fee/vault arithmetic, FX endpoints, supply, and scope.
+Proof SHA-256 `16ed533ead71dd4b173196c879ca49acd71d7c7cace8269f4381547d962ef95e`,
+selected transaction capture SHA-256
+`0f5641c6062b76e80097ecb434e2579c49140010ac433cdb33e6c05060265f87`, and
+dated IDL SHA-256
+`5a15060f412974e53068bae7e89aa6004defbb70ef0c56e3902ce75d124accb6` pin the
+reviewed inputs. The finalized-account capture SHA-256
+`a5fd4460378d62d1dd4bbed38f06e95069340c37e2ff13219efa69927985942c` pins the
+current-supply comparison. Independent arithmetic recheck SHA-256
+`bf6a6a2200cc3846154eebbb13e6e12d73dd0f85f9853d6ad5929b4969581fa1` pins the
+revalidation. This manual validation adds no automatic decoder or
+database-promotion rule.

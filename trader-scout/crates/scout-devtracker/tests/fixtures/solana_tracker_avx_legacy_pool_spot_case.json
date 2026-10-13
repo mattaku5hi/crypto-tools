@@ -1,0 +1,186 @@
+{
+  "schema": "solana-tracker-window-peak-supply-legacy-pool-fx-validated-v1",
+  "source": "solana-tracker-window-peak-supply-legacy-pool-fx-validated-v1",
+  "network": "solana-mainnet",
+  "mint": "Avx71ncfuZBMJxxmVqHLsy34RYzVoHTrwD26HjQVpump",
+  "pool": "CMG29JVFKnAoBVjPeBPDvoPPGMzwEqrNLVNYXqdw6Ltm",
+  "ath_at": null,
+  "provider_observation": {
+    "source": "Solana Tracker",
+    "kind": "provider_reported_maximum_spot_price",
+    "timestamp_utc": "2025-12-15T12:52:11.144Z",
+    "timestamp_ms": 1765803131144,
+    "price_usd": "0.00007372003307230689",
+    "scope": "captured Solana Tracker chart scope; not lifetime or all-pool ATH"
+  },
+  "selected_pool_states": [
+    {
+      "position": "nearest preceding event state",
+      "signature": "4Lmp1SxKb4Hd6Srjr2tbVm1b6wV4VbNQBeFMxW95z1JPgsPSuL869XkyoxBNSZVYW7UHJZc618oHmJhNrAHmiWmJ",
+      "slot": 386863721,
+      "transaction_index": 12,
+      "timestamp_unix": 1765803130,
+      "milliseconds_from_provider_timestamp": -1144,
+      "successful": true,
+      "event": "PumpSwap Buy",
+      "state": "pre-event vault balances",
+      "pool_owner": "CMG29JVFKnAoBVjPeBPDvoPPGMzwEqrNLVNYXqdw6Ltm",
+      "base_vault": "GJJUfxKPrcKhphnDHbNX1xVbD9RGJPkoPGz8EW7SLYTd",
+      "base_raw": "178058812411349",
+      "base_decimals": 6,
+      "quote_vault": "4GkYBBMJbFAscaxfxvGwDd83uK3znnqBRDd4GvQYhGtz",
+      "quote_mint": "So11111111111111111111111111111111111111112",
+      "quote_raw": "98861946111",
+      "quote_decimals": 9
+    },
+    {
+      "position": "earliest following event state",
+      "signature": "636AVzp5ndkuEzKnfnUQBZJ2UzSwYDuU5k3B8BWksntAbePUxomojPAsr4TcLHSoUoacBpKZm9d3rdEAk9E7U8Dc",
+      "slot": 386863725,
+      "transaction_index": 1045,
+      "timestamp_unix": 1765803132,
+      "milliseconds_from_provider_timestamp": 856,
+      "successful": true,
+      "event": "PumpSwap Buy",
+      "state": "pre-event vault balances",
+      "pool_owner": "CMG29JVFKnAoBVjPeBPDvoPPGMzwEqrNLVNYXqdw6Ltm",
+      "base_vault": "GJJUfxKPrcKhphnDHbNX1xVbD9RGJPkoPGz8EW7SLYTd",
+      "base_raw": "178611456392404",
+      "base_decimals": 6,
+      "quote_vault": "4GkYBBMJbFAscaxfxvGwDd83uK3znnqBRDd4GvQYhGtz",
+      "quote_mint": "So11111111111111111111111111111111111111112",
+      "quote_raw": "98559422899",
+      "quote_decimals": 9
+    }
+  ],
+  "time_interpretation": "Six successful pool states in the provider second are lower-priced, but Solana blockTime is second-resolution and does not order them against the provider millisecond. Compare the nearest preceding and earliest following successful swap anchors; do not claim an exact state at the provider instant.",
+  "fx": {
+    "source": "Coinbase public SOL-USD one-minute candle",
+    "minute_open_unix": 1765803120,
+    "low": "132.69",
+    "high": "132.81",
+    "close": "132.80",
+    "provider_observation_share_minute": true
+  },
+  "supply_bound": {
+    "birth_raw": "1000000000000000",
+    "birth_supply_tokens": "1000000000",
+    "peak_raw": "999999999999999",
+    "decimals": 6,
+    "birth_signature": "46NNkbGuU6zuAR667hnwXcetuRVoC36CJedFGkHHPsPaotjM7FDUdsLFHPiRbrhUbQGhZudUefdkKZTnmShTosuZ",
+    "peak_burn_raw": "1",
+    "peak_burn_before_provider_timestamp": true,
+    "supply_changes_in_provider_second": 0,
+    "birth_supply_upper_bound_fdv_cents_floor": 7372003,
+    "exact_peak_supply_fdv_cents_floor": 7372003,
+    "cent_bound_collapses": true,
+    "signature_index_success_rows": 1736,
+    "ascending_pages": 10,
+    "descending_pages": 8,
+    "overlap_rows": 64,
+    "union_rows": 1736,
+    "ascending_descending_union_matches_signature_index_set": true,
+    "later_mint_to_or_mint_checked_absent": true,
+    "birth_authority_revoked_to_none": true,
+    "mint_close_authority_extension_absent": true,
+    "mint_close_authority_init_opcode25_absent": true,
+    "all_slots_at_or_below_finalized_snapshot": true,
+    "provider_scope_max_fdv_proven": true
+  },
+  "protocol": {
+    "model": "legacy PumpSwap marginal real-quote / real-base reserve ratio \u00d7 external SOL/USD reference",
+    "historical_idl_snapshots": [
+      {
+        "date": "2025-11-15",
+        "commit": "7d7abd77403f",
+        "sha256": "d9d46f955118e7d71b2e7f64861a43e924e8693823f7660492d0ee7b8adc6c70",
+        "virtual_quote_reserves_field": false
+      },
+      {
+        "date": "2026-07-15",
+        "commit": "2c22246b6708",
+        "sha256": "6b5c7ec4e5ef9742fa99dc57b0d75b1031b379bba02a7e1b3c5a4cad68d77e56",
+        "virtual_quote_reserves_field": true
+      }
+    ],
+    "deployed_binary_proof": false,
+    "universal_missing_virtual_reserve_equals_zero_rule": false
+  },
+  "derived": {
+    "provider_price_fdv_cents_floor": 7372003
+  },
+  "limitations": {
+    "pool_scope_only": true,
+    "lifetime_or_all_pool_ath_claim": false,
+    "wallet_cost_or_pnl_claim": false,
+    "automatic_adapter_or_promotion": false
+  },
+  "source_hashes": {
+    "candidate_sha256": "837a8826283825c011dc62cc97244e25c5428c691c35e31a0cb8485dd2635578",
+    "pool_transactions_sha256": "aa27e0f41c2ba744c7cee89865d7a675ccbb088073ac552b98d221ce86f15587",
+    "coinbase_minute_sha256": "1e23184378fd3f5dd54bb09a586e5855544298af80dc80d1674b65fdf96c058b",
+    "birth_to_peak_transactions_sha256": "6d811d208e6da80ffcc09d6b08fcc473218a77368bb70d0e0517564e3fceab07",
+    "signature_coverage_sha256": "273ea058aad91d1310e3d35314b5e5672c8c669d36dea545f806fe265c945069",
+    "succeeded_transaction_union_sha256": "2706637e8c7267fabc7cb519dcc5d69d1573bc0e18526048bbc8d56a8c5f213e",
+    "idl_history_sha256": "e667cab8b483945feaecf65baeb7a8c0be8400013747e9d6471a8b7dc388c6f2"
+  },
+  "same_second_pre_states": [
+    {
+      "signature_prefix": "2uBakK4w26",
+      "base_raw": "178181074595448",
+      "quote_raw": "98794245862",
+      "timestamp_unix": 1765803131
+    },
+    {
+      "signature_prefix": "3NNFzxZca8",
+      "base_raw": "178702534301528",
+      "quote_raw": "98506537666",
+      "timestamp_unix": 1765803131
+    },
+    {
+      "signature_prefix": "2owELaBy2u",
+      "base_raw": "179638516050764",
+      "quote_raw": "97994309428",
+      "timestamp_unix": 1765803131
+    },
+    {
+      "signature_prefix": "4TDNypVG4C",
+      "base_raw": "179677769204259",
+      "quote_raw": "97972944001",
+      "timestamp_unix": 1765803131
+    },
+    {
+      "signature_prefix": "3MQ1of753G",
+      "base_raw": "179316382437026",
+      "quote_raw": "98170789494",
+      "timestamp_unix": 1765803131
+    },
+    {
+      "signature_prefix": "3Lt7GNbRGW",
+      "base_raw": "179502298747462",
+      "quote_raw": "98069314205",
+      "timestamp_unix": 1765803131
+    }
+  ],
+  "buy_exact_quote_in_control": {
+    "signature": "2Fh5YwQKB3jRVq63CccNSMFwzXCd5rxsxW9FSiTV5tCCpaSL13ap51Y8W43oCnRXmXW1h4TKgQG7frd4pWBTyKAW",
+    "instruction_name": "buy_exact_quote_in",
+    "verified_by": "PumpSwap BuyExactQuoteIn program log and matching decoded instruction event",
+    "pool_base_raw_before": "179841645839855",
+    "pool_quote_raw_before": "97888658987",
+    "quote_amount_in_gross_raw": "79200000",
+    "user_quote_amount_in_net_raw": "78260868",
+    "base_amount_out_raw": "143666486066",
+    "fee_bps": {
+      "lp": 20,
+      "protocol": 5,
+      "creator": 95
+    },
+    "fee_raw": {
+      "lp": 156522,
+      "protocol": 39131,
+      "creator": 743479
+    },
+    "capture_sha256": "aa27e0f41c2ba744c7cee89865d7a675ccbb088073ac552b98d221ce86f15587"
+  }
+}

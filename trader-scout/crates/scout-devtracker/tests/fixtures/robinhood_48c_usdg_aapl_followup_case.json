@@ -1,0 +1,192 @@
+{
+  "schema": "robinhood-48c-usdg-aapl-traded-reference-followup-v1",
+  "candidate_sha256": "988799f1fd6b5a105eacbad67e5698109378467c3519f617fa08147989c080c4",
+  "token": "0x48c01e934d149b54af69398a3f767b7e399fb4aa",
+  "pool": "0x591948ec42765aa9f190e62fd3cec3fa8a5ea13d593c9e8d58858debe960a1ab",
+  "source": "onchain-pool-window-supply-stock-trade-fx-reference-v1",
+  "target_and_aapl_decimals": 18,
+  "scope": {
+    "pool_events": 15,
+    "groups": {
+      "22791875": 10,
+      "22792033": 5
+    },
+    "alternate_pools_or_lifetime": false,
+    "ath_at": null
+  },
+  "supply": {
+    "raw": "1000000000000000000000000000",
+    "decimals": 18,
+    "human": "1000000000",
+    "mints_after_creation": 0,
+    "burns_after_creation": 0
+  },
+  "fx": {
+    "date": "2026-07-29",
+    "usdG_usd_low": "0.9999",
+    "usdG_usd_close": "1.0000",
+    "usdG_usd_high": "1.0002",
+    "raw_sha256": "2c3222370fb29cf678eb33bc08fd0112fc1a175a2e5ec78e38c069987b460517"
+  },
+  "quote_groups": {
+    "22791875": {
+      "before_fraction": "128340185000000000000/378002612654427269",
+      "before_block": 22790408,
+      "before_log_index": 4,
+      "before_timestamp_unix": 1785361849,
+      "after_fraction": "2550194500000000000/7510858459990017",
+      "after_block": 22791960,
+      "after_log_index": 29,
+      "after_timestamp_unix": 1785362005
+    },
+    "22792033": {
+      "before_fraction": "2550194500000000000/7510858459990017",
+      "before_block": 22791960,
+      "before_log_index": 29,
+      "before_timestamp_unix": 1785362005,
+      "after_fraction": "25000000000000000/73634082206183",
+      "after_block": 22792331,
+      "after_log_index": 19,
+      "after_timestamp_unix": 1785362042
+    }
+  },
+  "events": [
+    {
+      "block": 22791875,
+      "log_index": 23,
+      "timestamp_unix": 1785361997,
+      "raw_target_delta": "3126448373066587552731649",
+      "raw_aapl_delta": "-551870417754093356",
+      "quote_group": "22791875"
+    },
+    {
+      "block": 22791875,
+      "log_index": 26,
+      "timestamp_unix": 1785361997,
+      "raw_target_delta": "-29701259544132581750951",
+      "raw_aapl_delta": "5185768236535756",
+      "quote_group": "22791875"
+    },
+    {
+      "block": 22791875,
+      "log_index": 49,
+      "timestamp_unix": 1785361997,
+      "raw_target_delta": "3105718931945232952313594",
+      "raw_aapl_delta": "-551633896068790533",
+      "quote_group": "22791875"
+    },
+    {
+      "block": 22791875,
+      "log_index": 51,
+      "timestamp_unix": 1785361997,
+      "raw_target_delta": "-29504329853479713046979",
+      "raw_aapl_delta": "5183488599278745",
+      "quote_group": "22791875"
+    },
+    {
+      "block": 22791875,
+      "log_index": 74,
+      "timestamp_unix": 1785361997,
+      "raw_target_delta": "3085194989102624327425141",
+      "raw_aapl_delta": "-551397529343270610",
+      "quote_group": "22791875"
+    },
+    {
+      "block": 22791875,
+      "log_index": 76,
+      "timestamp_unix": 1785361997,
+      "raw_target_delta": "-29309352396474931110539",
+      "raw_aapl_delta": "5181210847123501",
+      "quote_group": "22791875"
+    },
+    {
+      "block": 22791875,
+      "log_index": 99,
+      "timestamp_unix": 1785361997,
+      "raw_target_delta": "3064873804628883106472003",
+      "raw_aapl_delta": "-551161311554206205",
+      "quote_group": "22791875"
+    },
+    {
+      "block": 22791875,
+      "log_index": 101,
+      "timestamp_unix": 1785361997,
+      "raw_target_delta": "-29116301143974389511484",
+      "raw_aapl_delta": "5178934918998650",
+      "quote_group": "22791875"
+    },
+    {
+      "block": 22791875,
+      "log_index": 129,
+      "timestamp_unix": 1785361997,
+      "raw_target_delta": "3044747347086140012184260",
+      "raw_aapl_delta": "-550924267993377175",
+      "quote_group": "22791875"
+    },
+    {
+      "block": 22791875,
+      "log_index": 131,
+      "timestamp_unix": 1785361997,
+      "raw_target_delta": "-28925099797318330115750",
+      "raw_aapl_delta": "5176651623903468",
+      "quote_group": "22791875"
+    },
+    {
+      "block": 22792033,
+      "log_index": 88,
+      "timestamp_unix": 1785362012,
+      "raw_target_delta": "-3095183889335921677204333",
+      "raw_aapl_delta": "552188624552913894",
+      "quote_group": "22792033"
+    },
+    {
+      "block": 22792033,
+      "log_index": 112,
+      "timestamp_unix": 1785362012,
+      "raw_target_delta": "-3014299873615278612062418",
+      "raw_aapl_delta": "534449167474686191",
+      "quote_group": "22792033"
+    },
+    {
+      "block": 22792033,
+      "log_index": 135,
+      "timestamp_unix": 1785362012,
+      "raw_target_delta": "-3074661742625780622790459",
+      "raw_aapl_delta": "541818154813392333",
+      "quote_group": "22792033"
+    },
+    {
+      "block": 22792033,
+      "log_index": 158,
+      "timestamp_unix": 1785362012,
+      "raw_target_delta": "-3054343039211598084150890",
+      "raw_aapl_delta": "534934899745022066",
+      "quote_group": "22792033"
+    },
+    {
+      "block": 22792033,
+      "log_index": 181,
+      "timestamp_unix": 1785362012,
+      "raw_target_delta": "-3034225066582594275407283",
+      "raw_aapl_delta": "528181980866678561",
+      "quote_group": "22792033"
+    }
+  ],
+  "expected_maximum": {
+    "block": 22791875,
+    "log_index": 129,
+    "transaction_hash": "0x6e429ed3e2ab14f60d772b04e6dc13dc09dba00ce9fd565ed178050a363c3466",
+    "price_fraction": "3535286123762980270713868750000000000/57546122603559860237596991060624599829297",
+    "fdv_cents_floor": 6143395
+  },
+  "supersedes_historical_negative_snapshot": {
+    "status": "unbracketed_negative_control_at_prior_snapshot",
+    "source_model_max_claim_allowed": false,
+    "meaning": "The prior snapshot lacked a sufficiently timed quote bracket; this pinned follow-up supplies pre-event trade references for all 15 events."
+  },
+  "limitations": {
+    "all_market_or_lifetime_max_claim": false,
+    "exact_second_level_usd_execution_claim": false,
+    "automatic_adapter_or_promotion": false
+  }
+}

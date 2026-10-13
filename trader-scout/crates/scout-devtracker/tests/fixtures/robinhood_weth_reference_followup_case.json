@@ -1,0 +1,168 @@
+{
+  "schema": "robinhood-weth-pool-window-reference-followup-v1",
+  "candidate_sha256": "3eb7ff79c93912eff0c03676589d359891e81d54e7d24f08ec04b519ce8b224e",
+  "source": "onchain-pool-window-supply-cex-reference-v1",
+  "anchor_block": 87808917,
+  "scope": {
+    "market_route": "indexed Doppler creation receipt initial Uniswap v4 PoolManager pool only",
+    "coverage_from": "exact indexed creation block; creation-transaction Swap logs excluded",
+    "coverage_to": "pinned provider head from prior scan",
+    "all_market_lifetime_complete": false,
+    "alternate_migrations_or_pools_proven": false
+  },
+  "validation": {
+    "source_scan_event_counts": {
+      "aa539cf7": 5,
+      "c3a0e1a6": 4
+    },
+    "included_postcreation_event_counts": {
+      "aa539cf7": 3,
+      "c3a0e1a6": 2
+    },
+    "target_event_transactions_successful_and_logs_match": true,
+    "block_header_hash_and_timestamp_match": true,
+    "initial_pool_currency_order_verified_from_creation_receipts": true,
+    "event_quote": "WETH; target and WETH decimals verified as 18",
+    "mint_burn_window": "Transfer(from=zero) and Transfer(to=zero) scans from indexed creation through each selected event block; one target-token initial mint of 1e27 raw units and zero burns for each token",
+    "supply_at_aa539_winner_is_proven_constant_through_later_scan_end": true,
+    "root_independent_verification_sha256": "7f55bcbc64b630602bd0448b6ee88a02a15485f18ac52e1843714f1afa9653e5"
+  },
+  "coinbase": {
+    "product": "ETH-USD",
+    "granularity_seconds": 60,
+    "each_event_valued_with_its_own_matching_minute_close": true,
+    "low_high_sensitivity_retained": true,
+    "public_get_count": 2
+  },
+  "raw_swap_capture_sha256": "667c00d5b5ae020d93735556947e6cb2d0d003ee6d8a7f0ccdc68ff5386d3ffe",
+  "cases": [
+    {
+      "token": "0xaa539cf78ff43e4b9fd9db2715435ff57d09fee1",
+      "pool_id": "0x9d540ddc694a361f8fc5aad383e325f534bae6048819aaef2d5d1e8c4037f374",
+      "creation_block": 44528731,
+      "postcreation_event_count": 3,
+      "token_decimals": 18,
+      "weth_decimals": 18,
+      "total_supply_raw": "1000000000000000000000000000",
+      "supply_tokens": "1000000000",
+      "creation_receipt_initial_mints": 1,
+      "creation_tx": "0xd4b9b6e962b9cfa02c56622fdc1580968ff59b0efc4d3fcc441ec70ec2dcb1d6",
+      "events": [
+        [
+          45582061,
+          105,
+          1787646245,
+          "-863787904524352",
+          "207758439827211599274591"
+        ],
+        [
+          45582061,
+          107,
+          1787646245,
+          "12313550331025",
+          "-2960557767537765289663"
+        ],
+        [
+          45582406,
+          28,
+          1787646279,
+          "1244304118940980",
+          "-299333185565000000000000"
+        ]
+      ],
+      "coinbase_minutes": [
+        [
+          1787646240,
+          "2491.3",
+          "2495",
+          "2494"
+        ]
+      ],
+      "maximum": {
+        "block": 45582061,
+        "log_index": 107,
+        "price_fraction": "30709994525576350/2960557767537765289663",
+        "fdv_cents_floor": 1037304,
+        "coinbase_minute": 1787646240,
+        "coinbase_close": "2494",
+        "coinbase_low": "2491.3",
+        "coinbase_high": "2495",
+        "candle_sha256": "610c07d496f00477c8536c7cee0eb38ece3d164b51204ee3e6104145b0df0801",
+        "receipt_status": "0x1",
+        "receipt_log_index_match": true,
+        "header_hash_timestamp_match": true,
+        "raw_swap_log_sha256": "ea52e207bfa7ac1018201bbb1cdbf207843ce938f122cca70fafb4a657ff56bd"
+      },
+      "mint_logs_birth_through_last_included_block": 1,
+      "burn_logs_birth_through_last_included_block": 0,
+      "supply_observation_block": 45582406,
+      "decimals_observation_block": 45582406,
+      "selected_event_supply_proven_unchanged_through_observation_block": true,
+      "winner_block_decimals": 18,
+      "winner_block_decimals_evidence_sha256": "942eb00e02101dd8673395e77f951530862ae177255e90bbbb71a3c42dd6fba6",
+      "full_window_supply_manifest_sha256": "6b89d834968823f75913f11524ada44a35ac3150a021b18c2b83d3b7a5793958"
+    },
+    {
+      "token": "0xc3a0e1a6c10b97c3e124ff8a2c291e5677a6fee1",
+      "pool_id": "0x97b033419e7bc4a7884e6f0b95bb0eb546371eead1a42f02129ea5296eadc0a2",
+      "creation_block": 49434763,
+      "postcreation_event_count": 2,
+      "token_decimals": 18,
+      "weth_decimals": 18,
+      "total_supply_raw": "1000000000000000000000000000",
+      "supply_tokens": "1000000000",
+      "creation_receipt_initial_mints": 1,
+      "mint_logs_birth_through_selected_block": 1,
+      "burn_logs_birth_through_selected_block": 0,
+      "creation_tx": "0xb155719eda4bfaaca20601f2da0b15e24753430894a29b532345d1429598e2c3",
+      "events": [
+        [
+          49435080,
+          39,
+          1788034871,
+          "-636754820860747",
+          "153168277863743808145965"
+        ],
+        [
+          49435080,
+          41,
+          1788034871,
+          "9076241067882",
+          "-2182647959558349266080"
+        ]
+      ],
+      "coinbase_minutes": [
+        [
+          1788034860,
+          "2455.57",
+          "2457.62",
+          "2455.7"
+        ]
+      ],
+      "maximum": {
+        "block": 49435080,
+        "log_index": 41,
+        "price_fraction": "111442625951989137/10913239797791746330400",
+        "fdv_cents_floor": 1021169,
+        "coinbase_minute": 1788034860,
+        "coinbase_close": "2455.7",
+        "coinbase_low": "2455.57",
+        "coinbase_high": "2457.62",
+        "candle_sha256": "040e86ae2aaedb31e96ae316337c8575b6149bc082fb9469b24e6607d5067a8e",
+        "receipt_status": "0x1",
+        "receipt_log_index_match": true,
+        "header_hash_timestamp_match": true,
+        "raw_swap_log_sha256": "c6c5977c2f07cae626b703b075f2127d1c74da6931045c6f3ac590b7a01fb034"
+      },
+      "winner_block_decimals": 18,
+      "winner_block_decimals_observation_block": 49435080,
+      "winner_block_decimals_evidence_sha256": "5994a23ca29269e0dc0cf2f50e0e3589b1233b66da1ea14b058f93d9d10ef199"
+    }
+  ],
+  "automatic_adapter_or_promotion": false,
+  "scan_counts": {
+    "aa539cf7": 5,
+    "c3a0e1a6": 4
+  },
+  "creation_transaction_swap_logs_excluded": true
+}

@@ -1,17 +1,17 @@
 # B8.4 historical ATH closures — 2026-10-13
 
-Thirteen guarded writes extend the immutable 679-token diagnostic cohort from
-434 numeric / 245 unknown to **447 numeric / 232 unknown** (Oct 14 Moscow). This is a
+Twenty-two guarded writes extend the immutable 679-token diagnostic cohort from
+434 numeric / 245 unknown to **456 numeric / 223 unknown** (Oct 14 Moscow). This is a
 candidate-cohort checkpoint, not a coverage percentage for all annual network
 launches. Numeric records retain source-specific price kinds and historical
 scope; annual all-market ATH is still incomplete.
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Solana | 20 | 90 |
+| Solana | 22 | 88 |
 | BSC | 13 | 0 |
 | Base | 403 | 100 |
-| Robinhood | 11 | 42 |
+| Robinhood | 18 | 35 |
 
 ## Guarded closures
 
@@ -23,6 +23,8 @@ scope; annual all-market ATH is still incomplete.
 | SOL `6HfzZY1f…` | 68,044.67 | ST maximum and exact-mint GT daily high agree within 0.13%; complete mint/burn history proves peak supply equals birth supply. |
 | SOL `6L9EyzaF…` | 68,048.89 | ST/GT same-day highs agree within 0.09%; complete history likewise determines the provider-window maximum FDV cents. |
 | SOL `BRkf1C38…` | 127,031.38 | ST maximum matched by time-bracketing legacy PumpSwap reserve states and dated SOL/USD; 764 matching history transactions prove birth supply at the maximum. |
+| SOL `Avx71ncf…` | 73,720.03 | ST maximum matched by pre/post PumpSwap states and dated SOL/USD; complete birth-to-peak history and a one-raw-unit burn produce identical upper/lower FDV cent floors. |
+| SOL `88pqbGiX…` | 19,212.49 | ST maximum matched by fully decoded historical cashback-layout PumpSwap states and dated SOL/USD; complete 191-transaction birth-to-peak window proves the issued 2B supply. |
 | Base `0x3607f8f1…` | 38,897,428.63 | GT daily high corroborated by a same-day active V4 marginal state and dated USDC/USD at both FX endpoints; fixed 100B supply. |
 | Base `0xe46504da…` | 112.60 | One captured target-pool state composed through an earlier same-transaction quote/ZORA state, two active ZORA/WETH parents and dated ETH/USD minute close. |
 | RH `0x4016fa67…` | 20,355.54 | Maximum over six pool executions valued through contemporaneous USDG/AAPL trades and the closed UTC-day USDG/USD reference. |
@@ -30,6 +32,13 @@ scope; annual all-market ATH is still incomplete.
 | RH `0x3d5733d2…` | 32,486.30 | All 60 post-creation executions individually valued with dated ETH/USD minute closes. |
 | RH `0xcc799821…` | 12,262.65 | Same reference model over all ten post-creation executions. |
 | RH `0xd34b6aa3…` | 34,760.92 | Same reference model over all ten post-creation executions. |
+| RH `0x48c01e93…` | 61,433.95 | All fifteen post-creation executions weighted with successful time-bracketing USDG/AAPL trades and dated USDG/USD. |
+| RH `0xaa539cf7…` | 10,373.04 | All three post-creation executions weighted with their own ETH/USD minute closes; supply observed at the last event and independently proven unchanged from birth. |
+| RH `0xc3a0e1a6…` | 10,211.69 | Same reference model over both post-creation executions. |
+| RH `0x1e6489ef…` | 20,203.70 | All three executions weighted with preceding USDG/NVDA trades and dated USDG/USD; the winning quote leg precedes the target leg in the same receipt. |
+| RH `0x52df349d…` | 20,295.18 | All three executions weighted with the block-pinned AMD/USD oracle round; historical UI multiplier is one, and adjacent-round bounds are within 0.71%. |
+| RH `0x60d63f32…` | 30,007.29 | All 37 executions priced through the exact quote-contract/USDG market and dated USDG/USD. |
+| RH `0x9aadb292…` | 20,278.89 | All six executions priced through actual quote/USDG trades; selected 600-second exception, 0.037% neighbor spread, stale oracle rejected. |
 
 Three valid Codex refresh requests covered 96 SOL, 102 Base and 47 RH unknown
 keys. They found the three SOL observations above; Base/RH returned no new
@@ -66,7 +75,9 @@ $20,351.47–$20,358.21 for AAPL and $10,052.29–$10,064.06 for WETH. Neither i
 an exact second-level fiat execution or wallet-net cost. The AAPL route uses
 successful before/after market trades, not a stale equity oracle or assumed
 USDG parity. Authoritative raw-header UTC times correct the earlier draft's
-date rendering. The unbracketed `0x48c01e93…` observation remains unknown.
+date rendering. The previously unbracketed `0x48c01e93…` observation was
+subsequently recovered with successful actual-market brackets; its earlier
+negative evidence is retained.
 
 The three additional RH models cover all 80 post-creation events in their
 initial pools through block 87,808,917. Every event was converted before maximum
@@ -99,7 +110,7 @@ finalized supply; no burn precedes or overlaps the maximum-price second.
 Every write required the current zero-sentinel row to remain `codex-missing`
 with the expected observation timestamp. The ST writes additionally checked
 the stored provider price, timestamp, exact pool and raw-response hash. Known
-positive values were preserved. Holders/liquidity were preserved on all ten
+positive values were preserved. Holders/liquidity were preserved on all nineteen
 complementary-source writes; the three primary Codex updates followed existing
 metadata-refresh behavior. Runner thresholds and membership rules are unchanged.
 Complementary records keep `ath_at=NULL`; the primary Codex timestamps retain
@@ -117,15 +128,18 @@ rows are retained under `.scout-data/diagnostics/`:
 - `rh-doppler-no-v4-13-2026-10-13/capture-204732/`.
 - `base-e465-manual-reference-candidate-2026-10-14/`.
 - `solana-gap-closure-2026-10-14/timefiltered/`.
+- `rh-followup-independent-2026-10-14/`.
+- `rh-nvda-amd-guarded-promotions-2026-10-14/`.
 
 The original frozen snapshot and previous sealed deployment archive were not
 rewritten. The live checkpoint is `b84-live-progress-2026-10-13.json`; the old
-deployment dump predates these thirteen writes and is not claimed to include them.
+deployment dump predates these twenty-two writes and is not claimed to include them.
 
-Six new golden cases and ADR-021 amendments 25–28 cover the accepted price
-kinds, supply-bound negative control, per-event FX weighting and provenance.
+Fourteen new golden cases and ADR-021 amendments 25–32 cover accepted and
+pending reviewed price kinds, supply-bound negative controls, per-event FX
+weighting and provenance.
 Full `cargo fmt --check`, workspace/all-targets/all-features Clippy with denied
-warnings, and workspace/all-features tests passed: **1,222 tests**, with DB
+warnings, and workspace/all-features tests passed: **1,227 tests**, with DB
 tests isolated in `scout_test`. The release daemon remains active without
 restart; its production logic did not change in this checkpoint.
 
@@ -139,11 +153,22 @@ The earlier audit's claim of 13 RH tokens without an initial V4 Initialize
 was unsupported: their creation receipts contain all 13 initializations, and
 the retained discovery filters omitted every one of these token addresses.
 Only two births precede the old lower block bound, so the cause cannot be
-reduced to that bound alone. Three of these newly discovered pools supplied
-the 80-event closures above; the remaining quote paths need further work.
+reduced to that bound alone. Nine of these newly discovered pools supplied numeric reference maxima.
+The remaining four have zero observed Swaps or only creation-transaction
+bootstrap Swaps. A fresh broader discovery/reconciliation for all 35 current
+RH unknowns finds 32 empty pools and three with creation-transaction-only
+Swaps at the configured manager. This does not prove absence of other venues
+or justify an ATH of zero.
 
 **B8.4 remains active.** Next batches query timestamp-adjacent SOL pool states
-and remaining RH quote paths, while preserving
+and missing Base price history, while preserving
 explicit gaps for empty provider history, unsupported quote conversions and
 unproven market-wide coverage. No unknown value is treated as zero or promoted
 just to make the counter complete.
+
+The 88pqb provenance correction fully decodes the historical 16-byte suffix
+as two cashback `u64` fields, both zero, using the dated February IDL. The
+previous signed-virtual-reserve interpretation is preserved as superseded
+evidence; its numeric FDV does not change. Captured event-CPI bytes now pass
+through the production parser in regression tests. The 5b2Bs check strengthens
+an already-known Oct 11 value and is **not** counted as a new closure.
