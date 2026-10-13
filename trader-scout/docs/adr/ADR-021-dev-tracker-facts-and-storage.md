@@ -886,7 +886,7 @@ billion, the provider-window FDV floor is `150658261` cents. The API quote
 amount's `amountDecimal` differs from the exact on-chain quote by
 `0.000000000000020574` MATRY units and remains disclosed as precision context.
 
-The same transaction's verified WETH route gives `0.000000565714882340740481…`
+The same transaction's verified pool-core WETH route gives `0.000000565714882340740481…`
 WETH per DVA. Multiplying by the matched Coinbase ETH/USD one-minute range
 `$2686.29–$2686.84` places both endpoints within 2% of the candidate. The
 Birdeye daily high `$0.0014819050096223831` differs by more than 2% from both
@@ -895,6 +895,17 @@ not average them. This establishes
 source-specific precedence for this selected, corroborated Zora execution
 window only. It does not change the independent 2% threshold or create a
 general Zora parser/automatic ingestion rule.
+
+The corroboration is a pool-core route execution average converted with the
+dated quote/USD candle. The receipt contains ten core Swaps across four pools,
+plus four PoolManager-to-hook WETH transfers and twenty hook payouts totaling
+`0.000003823677346108` WETH (3.312% of the external WETH input). There are no
+DVA or MATRY ERC-20 Transfer logs in this receipt. These observations do not
+establish per-leg fee allocation or final wallet settlement; this price must
+not be used as wallet-net acquisition cost or PnL. The supplementary cached
+receipt audit does not alter the selected provider-window price or its 2%
+corroboration gate. Audit SHA-256:
+`e5ff8abcabc2e01305a6c39d79b97e6c60c05170a885600aa5f395c3194a3526`.
 
 The index returned 92 execution edges (91 distinct `priceUsdc` values) while
 the same-pool chain scan found 326 Swaps through its anchor. Cursor exhaustion

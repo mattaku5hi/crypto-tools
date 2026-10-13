@@ -51,6 +51,12 @@ within their configured cadences. Two isolated external heartbeat send errors
 were logged, while internal beats and subsequent progress continued; zero
 service restarts were observed.
 
+After connectivity returned, the 19:45 UTC check found an internal beat less
+than one minute old and Base/Robinhood source updates within nine minutes.
+The daemon had automatically delivered changed Solana top-migr and win-streak
+albums at 19:19:44 UTC; the current exports contain 39/424/140 Solana developers
+in top-runners/top-migr/win-streak. The other network counts above are unchanged.
+
 Facts run every 30 minutes, derivation every 60 minutes and ATH every 240
 minutes, with one Codex attempt per chain per ATH pass. Four networks therefore
 permit at most 24 scheduled calls/day, plus restart/manual work; the persisted
@@ -107,7 +113,7 @@ Four guarded Base updates closed previously unknown numeric values:
   observation remains separate. No new provider calls were needed.
 - `058e72…c738`: anonymous Zora history returned 92 indexed execution edges.
   The selected maximum matches a saved successful receipt and a two-pool WETH
-  route in the same transaction. Coinbase's corresponding one-minute ETH/USD
+  pool-core route in the same transaction. Coinbase's corresponding one-minute ETH/USD
   range corroborates it within 0.89% at both endpoints. Fixed one-billion supply
   gives 150,658,261 cents under source
   `zora-window-supply-route-fx-validated-v1`; `ath_at` remains unknown. The price
@@ -118,6 +124,10 @@ Four guarded Base updates closed previously unknown numeric values:
   corroboration. Birdeye's disagreement with the route stays visible. The seven
   anonymous probe requests used no paid credentials; the guarded write made
   zero additional provider calls. Trades were not inserted as OHLC candles.
+  A later offline receipt audit found ten core Swaps across four pools and
+  hook WETH payouts totaling 3.312% of the external input. The route comparison
+  is an execution average from core events; final wallet settlement and fee
+  allocation remain unresolved. It is not a wallet-net cost or PnL input.
 
 Each database write checked the old unknown row and observation before updating;
 known positive values were not replaced. The GeckoTerminal updates follow ADR-021 amendment 23; the selected Zora
@@ -164,3 +174,33 @@ Private manifests/logs are in `.scout-data/checks/2026-10-13/` and
 Next tasks remain **B8.4** (qualified historical ATH gaps), **B9.1** (actual
 GitHub release workflow execution) and **B9** (VPS deployment after local
 debugging). The local installation does not mark annual filling complete.
+
+## Fresh private state package
+
+The PostgreSQL custom dump taken after all four guarded updates passed archive
+listing. Its command ran from 18:41:03 to 18:53:47 UTC without pausing the daemon;
+these times bracket pg_dump's consistent internal snapshot, rather than naming
+the exact snapshot transaction timestamp. Level-1 compression produced
+3,011,427,325 bytes in 763.64 seconds, SHA-256
+`e725df24825141f4fda94d04bd07b77ac0556bcbb2cfb2aac0fd24c29c7ab117`.
+
+The protected bundle is
+`.scout-data/deployment/2026-10-13-local-daemon-final/trader-scout-state-schema10-local-20261013.tar`.
+It contains 39 payload files: schema-10 database dump, relative-path config,
+36 separately dated exports and provenance including the guarded price
+certificates. Size is 3,011,911,680 bytes; SHA-256
+`ffed4fa6ddc1c0ed3cab15a3fa223513af7f81e0f7c7325507de8fd5c8256d4a`.
+Packing, verification, extraction and independent hashes of every extracted
+file passed in 114.54 seconds. Archive/files are 0600, extraction root 0700;
+credentials are excluded and remain supplied separately in `deploy/.env`.
+The source binary is the unchanged release build from `7c1ca5c`; deployment
+assets were committed as `cc46164`, and the additional golden cases as
+`ae6c055`.
+
+The reported workstation exposes 16 CPUs (i7-12700K model) and 22.9 GiB RAM;
+PostgreSQL occupied about 18.5 GiB including indexes at the final observation.
+Cache state was uncontrolled and the daemon, tests and other workstation jobs
+were active during snapshot work. These timings are operational observations,
+not isolated throughput benchmarks. A fresh full restore was not performed for
+this dump; the earlier schema-10 full restore proofs remain separately dated
+in [portable deployment validation](2026-10-11-portable-deployment-validation.md).

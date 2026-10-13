@@ -26,6 +26,7 @@
     "price_usdc_semantics": "The provider field units and exact timestamp meaning are undocumented; this selected window edge is independently corroborated, with no automatic API parser integration."
   },
   "same_transaction_route": {
+    "price_kind_note": "Pool-core route execution-average cross-check with dated quote/USD conversion; hook transfers and other route legs are not reconciled into final wallet-net cost or PnL.",
     "transaction_hash": "0x5de8c05554f6c146f9e542587e2c125c8c4d666a1874dc354d34ca47c0d213dc",
     "target_amount_out_raw": "204088445592385538139",
     "weth_amount_in_raw": "115455870985401",
