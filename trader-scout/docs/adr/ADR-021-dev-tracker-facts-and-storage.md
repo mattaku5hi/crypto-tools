@@ -865,3 +865,44 @@ quantum. Its 1% fixtures are unchanged. Audit:
 `.scout-data/diagnostics/base-rh-two-percent-offline-audit-2026-10-12/audit.json`
 (SHA-256 `a018509e9cff9cdf9b5aa24eadf7253534a7e7660714400c18d8bdd5e5f2c206`);
 report: [`2026-10-12-base-rh-two-percent-offline-audit.md`](../p0/measurements/2026-10-12-base-rh-two-percent-offline-audit.md).
+
+Golden `geckoterminal_base_cross_day_max_tie_price_gate_case.json` records a
+second scoped Base window case. Its same-pool May 4 open/high equal the May 3
+close/high, so the daily maximum ties across dates; the May 3 receipt-backed
+USDC execution remains same-day and passes the unchanged 2% gate at both dated
+FX endpoints. The empty-history pool has a complete zero-Swap scan, fixed
+supply is retained, the distinct post-swap spot and Birdeye disagreement stay
+separate, and `ath_at` remains unknown. Source certificate SHA-256:
+`66b194cd41f530eb112199933fa28cc9d14c3dad095c3721a5af2f12f1fc38c7`.
+
+## Amendment 24 (2026-10-13) — selected Zora execution-window candidate
+
+For Base token `0x058e72b9e99561844582b019ab91cdab6c9ac738`, the selected
+Zora-indexed edge derives an execution-average candidate from the exact
+receipt-verified MATRY quote amount and the API's `priceUsdc` value, divided by
+the exact DVA output. A source-specific, conservative 24-decimal floor is
+`$0.001506582619089042126709` per DVA; with validated fixed supply of one
+billion, the provider-window FDV floor is `150658261` cents. The API quote
+amount's `amountDecimal` differs from the exact on-chain quote by
+`0.000000000000020574` MATRY units and remains disclosed as precision context.
+
+The same transaction's verified WETH route gives `0.000000565714882340740481…`
+WETH per DVA. Multiplying by the matched Coinbase ETH/USD one-minute range
+`$2686.29–$2686.84` places both endpoints within 2% of the candidate. The
+Birdeye daily high `$0.0014819050096223831` differs by more than 2% from both
+route-derived endpoints; retain the two source observations separately and do
+not average them. This establishes
+source-specific precedence for this selected, corroborated Zora execution
+window only. It does not change the independent 2% threshold or create a
+general Zora parser/automatic ingestion rule.
+
+The index returned 92 execution edges (91 distinct `priceUsdc` values) while
+the same-pool chain scan found 326 Swaps through its anchor. Cursor exhaustion
+is not complete market or lifetime coverage; `priceUsdc` units and exact
+timestamp semantics remain undocumented. The selected edge supports only a
+scoped provider-window value, not a lifetime ATH; keep `ath_at=NULL`. It is
+execution evidence, not 92 OHLC candles, and does not replace Birdeye candle
+history. Golden `zora_route_fx_window_case.json` pins the same-transaction raw
+amounts, exact rational 24-decimal floor, both FX endpoints, supply, and
+coverage limits. Certificate SHA-256:
+`941113c79a66900a52f079de7cdbcbd3638f2d4fba60c36858e24d8626778b56`.

@@ -44,7 +44,12 @@ At 16:55:44 UTC the daemon's own derivation/export sent two changed Solana
 albums: top-migr became 424 and win-streak 137; top-runners stayed 39. Their
 six format records received new delivery timestamps, while the other eight
 categories retained the first-delivery timestamp. This verifies automatic
-changed-list delivery on live data, beyond the unchanged-repeat check.
+changed-list delivery on live data, beyond the unchanged-repeat check. A further
+changed win-streak Solana album was delivered at 18:16:30 UTC. The 18:43 audit
+found current fact-cursor ages of 16–24 minutes and a 27-minute-old export,
+within their configured cadences. Two isolated external heartbeat send errors
+were logged, while internal beats and subsequent progress continued; zero
+service restarts were observed.
 
 Facts run every 30 minutes, derivation every 60 minutes and ATH every 240
 minutes, with one Codex attempt per chain per ATH pass. Four networks therefore
@@ -64,12 +69,12 @@ This establishes the configured source scope, not every launchpad or DEX.
 Indexed checks found no actionable BSC/Robinhood identity gaps under the current
 eligible-candidate selectors; this is not an all-wallet identity guarantee.
 
-The frozen 679-token diagnostic cohort currently has **432 numeric values and
-247 unknown**, including three absent ATH rows. The per-network split is:
+The frozen 679-token diagnostic cohort currently has **434 numeric values and
+245 unknown**, including three absent ATH rows. The per-network split is:
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Base | 399 | 104 |
+| Base | 401 | 102 |
 | BSC | 13 | 0 |
 | Robinhood | 6 | 47 |
 | Solana | 14 | 96 |
@@ -78,7 +83,7 @@ These are candidate-cohort counts, not coverage percentages for all tokens in
 the annual database. A numeric observation may itself have limited provider,
 pool or time scope. Unknown values are not zero and do not satisfy runner gates.
 
-Two guarded Base updates closed previously unknown numeric values:
+Four guarded Base updates closed previously unknown numeric values:
 
 - `92d958…8b07`: exact price × fixed 100B supply, corroborated within the accepted
   2% tolerance using the saved eight-pool daily-window and same-day USDC/FX
@@ -92,9 +97,32 @@ Two guarded Base updates closed previously unknown numeric values:
   and explicit scam-inclusive filter; responses were identical. No filter fix
   was warranted. The existing primary-source policy was retained.
 
+- `fec3a8…cb07`: the exact May 3 GeckoTerminal high also appears as May 4
+  open/high; choosing the later tied candle had falsely suggested a date gap.
+  The May 3 candle itself supplies a valid same-day comparison. Receipt-backed
+  USDC execution with dated FX differs by less than 0.084% at both endpoints.
+  The scoped four-pool value is 111,664,197 cents; `ath_at` stays unknown. Six
+  returned daily bars and the complete zero-Swap empty-pool exception are
+  preserved. Its 0.011818 USDC notional is small, and the discordant Birdeye
+  observation remains separate. No new provider calls were needed.
+- `058e72…c738`: anonymous Zora history returned 92 indexed execution edges.
+  The selected maximum matches a saved successful receipt and a two-pool WETH
+  route in the same transaction. Coinbase's corresponding one-minute ETH/USD
+  range corroborates it within 0.89% at both endpoints. Fixed one-billion supply
+  gives 150,658,261 cents under source
+  `zora-window-supply-route-fx-validated-v1`; `ath_at` remains unknown. The price
+  is conservatively floored to 24 decimal places without changing the FDV-cent
+  floor. The cached chain scan found 326 swaps through its later anchor, so the
+  92-edge index is explicitly partial. General `priceUsdc` timestamp semantics
+  remain undocumented; only the selected edge has the independent route/FX
+  corroboration. Birdeye's disagreement with the route stays visible. The seven
+  anonymous probe requests used no paid credentials; the guarded write made
+  zero additional provider calls. Trades were not inserted as OHLC candles.
+
 Each database write checked the old unknown row and observation before updating;
-known positive values were not replaced. The first update follows ADR-021
-amendment 23 and its existing golden fixture; category semantics did not change.
+known positive values were not replaced. The GeckoTerminal updates follow ADR-021 amendment 23; the selected Zora
+source is specified in amendment 24. Both new cases have exact-arithmetic golden
+fixtures. Category thresholds and membership semantics did not change.
 
 Three separate Solana Tracker token-info calls returned current holder counts
 4, 2 and 1 for the three frozen Solana records with unknown holders. These are
@@ -124,6 +152,8 @@ service does not impose the compact Compose memory ceilings.
 
 `cargo fmt --check`, workspace/all-targets/all-features Clippy with warnings
 denied, 1,214 workspace/all-features tests and the locked release build passed.
+After the two new golden cases, the full fmt/Clippy/test sequence passed again
+with 1,216 tests, using `scout_test` (483.42 seconds on the loaded workstation).
 Database tests used the separate `scout_test` database. Seven portable runtime
 and state-bundle tests, installer syntax and generated-unit path validation
 also passed. The real installed service, first delivery and unchanged-repeat

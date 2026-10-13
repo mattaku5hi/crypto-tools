@@ -1,0 +1,76 @@
+{
+  "source": "geckoterminal-window-supply-swap-fx-validated-v2",
+  "certificate_sha256": "66b194cd41f530eb112199933fa28cc9d14c3dad095c3721a5af2f12f1fc38c7",
+  "chain_id": 8453,
+  "token": "0xfec3a80626377bce24c399ef9f4e124afef6cb07",
+  "utc_day": "2026-05-03",
+  "provider_price_usd": "0.000011166419773745",
+  "supply_tokens": "100000000000",
+  "expected_fdv_cents": 111664197,
+  "ath_at": null,
+  "scope_note": "four observed Base PoolManager USDC pools; window and pool scope only, not all markets or lifetime history",
+  "pool_scan": {
+    "initialized": 4,
+    "scanned": 4,
+    "complete_from_token_creation_to_anchor": true,
+    "empty_history_pool": {
+      "pool": "0x0f5f7a357bd4fe68cb2a9b5d4c2df89edf0b1f2b6eb9b747337671fcee074c08",
+      "complete_swap_logs": 0,
+      "ohlc_rows": 0
+    }
+  },
+  "pool_identity": {
+    "pool": "0xb8c0e994e14debae24505691e0c7298f191952d7cd3db7b8c95bedad929a3ffb",
+    "provider_request_token_selector": "base",
+    "base_token": "0xfec3a80626377bce24c399ef9f4e124afef6cb07",
+    "quote_token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "quote_symbol": "USDC"
+  },
+  "geckoterminal_same_pool_daily_rows": {
+    "2026-05-03": {
+      "open": "0.000000000000227431309616834",
+      "high": "0.000011166419773745",
+      "close": "0.000011166419773745"
+    },
+    "2026-05-04": {
+      "open": "0.000011166419773745",
+      "high": "0.000011166419773745",
+      "close": "0.0000000000111475273322321"
+    }
+  },
+  "max_tie_days": ["2026-05-03", "2026-05-04"],
+  "tie_note": "May 4 open and high equal the May 3 close and high. The May 3 observation supplies the same-day comparison; no inference is made about how the provider populated either candle.",
+  "execution": {
+    "pool": "0xb8c0e994e14debae24505691e0c7298f191952d7cd3db7b8c95bedad929a3ffb",
+    "quote_token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "quote_symbol": "USDC",
+    "quote_raw": "11818",
+    "quote_notional_usdc": "0.011818",
+    "quality_note": "The 0.011818 USDC execution notional is small and remains explicit quality context.",
+    "token_raw": "1058914044537470897063",
+    "token_decimals": 18,
+    "execution_price_fraction_after_decimals": ["11818000000000000", "1058914044537470897063"],
+    "event_day": "2026-05-03",
+    "receipt_and_block_header_verified": true,
+    "block_number": 45495353,
+    "log_index": 396,
+    "fx_usdc_usd_low_high": ["0.9997", "0.9999"],
+    "within_two_percent_at_both_fx_endpoints": true
+  },
+  "different_price_kind": {
+    "kind": "post_swap_marginal_spot",
+    "usd_per_token": "0.00001235935818575042949927298473255",
+    "use_for_execution_corroboration": false
+  },
+  "supply": {
+    "verified": true,
+    "decimals": 18,
+    "total_supply_raw": "100000000000000000000000000000",
+    "mint_count": 1,
+    "burn_count": 0
+  },
+  "unresolved_birdeye_discrepancy": {
+    "same_day_high_usd": "0.000010019452563580683",
+    "status": "preserved source disagreement; not averaged and does not replace the scoped GeckoTerminal observation"
+  }
+}

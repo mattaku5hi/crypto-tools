@@ -1133,6 +1133,392 @@ mod tests {
     }
 
     #[test]
+    fn geckoterminal_cross_day_max_tie_uses_same_day_usdc_price_gate() {
+        use alloy_primitives::U256;
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/geckoterminal_base_cross_day_max_tie_price_gate_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            row["certificate_sha256"].as_str(),
+            Some("66b194cd41f530eb112199933fa28cc9d14c3dad095c3721a5af2f12f1fc38c7")
+        );
+        assert_eq!(
+            row["source"].as_str(),
+            Some("geckoterminal-window-supply-swap-fx-validated-v2")
+        );
+        assert_eq!(row["chain_id"].as_u64(), Some(8453));
+        assert_eq!(
+            row["token"].as_str(),
+            Some("0xfec3a80626377bce24c399ef9f4e124afef6cb07")
+        );
+        assert!(row["ath_at"].is_null());
+
+        let daily = &row["geckoterminal_same_pool_daily_rows"];
+        let may3 = &daily["2026-05-03"];
+        let may4 = &daily["2026-05-04"];
+        assert_eq!(may3["high"], row["provider_price_usd"]);
+        assert_eq!(may3["close"], row["provider_price_usd"]);
+        assert_eq!(may4["open"], row["provider_price_usd"]);
+        assert_eq!(may4["high"], row["provider_price_usd"]);
+        assert_ne!(may4["close"], row["provider_price_usd"]);
+        let observed_tie_days: Vec<_> = ["2026-05-03", "2026-05-04"]
+            .into_iter()
+            .filter(|day| daily[*day]["high"] == row["provider_price_usd"])
+            .collect();
+        assert_eq!(observed_tie_days, ["2026-05-03", "2026-05-04"]);
+        assert_eq!(row["max_tie_days"][0].as_str(), Some("2026-05-03"));
+        assert_eq!(row["max_tie_days"][1].as_str(), Some("2026-05-04"));
+
+        let supply = &row["supply"];
+        assert!(supply["verified"].as_bool().unwrap());
+        assert_eq!(supply["decimals"].as_u64(), Some(18));
+        let supply_raw = supply["total_supply_raw"]
+            .as_str()
+            .unwrap()
+            .parse::<u128>()
+            .unwrap();
+        assert_eq!(supply_raw % 10_u128.pow(18), 0);
+        let supply_tokens = supply_raw.checked_div(10_u128.pow(18)).unwrap();
+        assert_eq!(
+            supply_tokens.to_string(),
+            row["supply_tokens"].as_str().unwrap()
+        );
+        let provider = ExactDecimal::parse(row["provider_price_usd"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            provider.fdv_cents_for_supply(supply_tokens),
+            Some(i64::try_from(row["expected_fdv_cents"].as_u64().unwrap()).unwrap())
+        );
+
+        let scan = &row["pool_scan"];
+        assert_eq!(scan["initialized"], scan["scanned"]);
+        assert!(
+            scan["complete_from_token_creation_to_anchor"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(
+            scan["empty_history_pool"]["complete_swap_logs"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(scan["empty_history_pool"]["ohlc_rows"].as_u64(), Some(0));
+
+        const BASE_USDC: &str = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+        assert_eq!(row["pool_identity"]["base_token"], row["token"]);
+        assert_eq!(
+            row["pool_identity"]["quote_token"].as_str(),
+            Some(BASE_USDC)
+        );
+        assert_eq!(row["pool_identity"]["quote_symbol"].as_str(), Some("USDC"));
+
+        let execution = &row["execution"];
+        assert_eq!(execution["pool"], row["pool_identity"]["pool"]);
+        assert_eq!(execution["quote_token"].as_str(), Some(BASE_USDC));
+        assert_eq!(execution["quote_symbol"].as_str(), Some("USDC"));
+        assert_eq!(execution["quote_notional_usdc"].as_str(), Some("0.011818"));
+        assert!(
+            execution["quality_note"]
+                .as_str()
+                .unwrap()
+                .contains("small")
+        );
+        assert_eq!(execution["event_day"], row["utc_day"]);
+        assert!(
+            execution["receipt_and_block_header_verified"]
+                .as_bool()
+                .unwrap()
+        );
+
+        let fraction = |value: &str| {
+            let decimal = ExactDecimal::parse(value).unwrap();
+            let scale = u32::try_from(decimal.scale).unwrap();
+            (
+                U256::from(decimal.coefficient),
+                U256::from(10_u8).pow(U256::from(scale)),
+            )
+        };
+        let provider_fraction = fraction(row["provider_price_usd"].as_str().unwrap());
+        let (execution_num, execution_den) = (
+            execution["execution_price_fraction_after_decimals"][0]
+                .as_str()
+                .unwrap()
+                .parse::<U256>()
+                .unwrap(),
+            execution["execution_price_fraction_after_decimals"][1]
+                .as_str()
+                .unwrap()
+                .parse::<U256>()
+                .unwrap(),
+        );
+        assert_eq!(
+            execution_num,
+            execution["quote_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<U256>()
+                .unwrap()
+                .checked_mul(U256::from(1_000_000_000_000_u64))
+                .unwrap()
+        );
+        assert_eq!(
+            execution_den,
+            execution["token_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<U256>()
+                .unwrap()
+        );
+        let within_two_percent =
+            |candidate_num: U256, candidate_den: U256, reference_num: U256, reference_den: U256| {
+                let candidate = candidate_num.checked_mul(reference_den).unwrap();
+                let reference = reference_num.checked_mul(candidate_den).unwrap();
+                let difference = if candidate >= reference {
+                    candidate.checked_sub(reference).unwrap()
+                } else {
+                    reference.checked_sub(candidate).unwrap()
+                };
+                difference.checked_mul(U256::from(100)).unwrap()
+                    <= reference.checked_mul(U256::from(2)).unwrap()
+            };
+
+        for fx_text in execution["fx_usdc_usd_low_high"].as_array().unwrap().iter() {
+            let (fx_num, fx_den) = fraction(fx_text.as_str().unwrap());
+            let actual = (
+                execution_num.checked_mul(fx_num).unwrap(),
+                execution_den.checked_mul(fx_den).unwrap(),
+            );
+            assert!(within_two_percent(
+                actual.0,
+                actual.1,
+                provider_fraction.0,
+                provider_fraction.1
+            ));
+        }
+
+        let spot = &row["different_price_kind"];
+        assert_eq!(spot["kind"].as_str(), Some("post_swap_marginal_spot"));
+        assert!(!spot["use_for_execution_corroboration"].as_bool().unwrap());
+
+        let birdeye = fraction(
+            row["unresolved_birdeye_discrepancy"]["same_day_high_usd"]
+                .as_str()
+                .unwrap(),
+        );
+        assert!(!within_two_percent(
+            birdeye.0,
+            birdeye.1,
+            provider_fraction.0,
+            provider_fraction.1
+        ));
+        assert!(
+            row["unresolved_birdeye_discrepancy"]["status"]
+                .as_str()
+                .unwrap()
+                .contains("preserved source disagreement")
+        );
+    }
+
+    #[test]
+    fn zora_window_price_uses_exact_route_fx_and_conservative_floor() {
+        use alloy_primitives::U256;
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/zora_route_fx_window_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            row["certificate_sha256"].as_str(),
+            Some("941113c79a66900a52f079de7cdbcbd3638f2d4fba60c36858e24d8626778b56")
+        );
+        assert_eq!(
+            row["source"].as_str(),
+            Some("zora-window-supply-route-fx-validated-v1")
+        );
+        assert_eq!(row["chain_id"].as_u64(), Some(8453));
+        assert_eq!(
+            row["token"].as_str(),
+            Some("0x058e72b9e99561844582b019ab91cdab6c9ac738")
+        );
+        assert!(row["ath_at"].is_null());
+
+        let pow10 = |n: u32| {
+            (0..n)
+                .try_fold(U256::from(1), |value, _| value.checked_mul(U256::from(10)))
+                .unwrap()
+        };
+        let decimal_fraction = |text: &str| {
+            let value = ExactDecimal::parse(text).unwrap();
+            (
+                U256::from(value.coefficient),
+                pow10(u32::try_from(value.scale).unwrap()),
+                value,
+            )
+        };
+        let raw = |value: &serde_json::Value| {
+            U256::from(value.as_str().unwrap().parse::<u128>().unwrap())
+        };
+
+        let edge = &row["api_edge"];
+        let route = &row["same_transaction_route"];
+        assert_eq!(edge["transaction_hash"], route["transaction_hash"]);
+        assert_eq!(edge["coin_amount_raw"], route["target_amount_out_raw"]);
+        assert_eq!(
+            edge["quote_address"].as_str(),
+            Some("0x364863eece7fd2e6c5f3dc13a3f043521f77ec49")
+        );
+        assert_eq!(
+            route["weth_address"].as_str(),
+            Some("0x4200000000000000000000000000000000000006")
+        );
+        assert_eq!(edge["quote_decimals"].as_u64(), Some(18));
+        assert_eq!(edge["coin_decimals"].as_u64(), Some(18));
+        assert_eq!(route["weth_decimals"].as_u64(), Some(18));
+        assert_eq!(
+            &edge["timestamp_utc"].as_str().unwrap()[..16],
+            &route["coinbase_minute_start_utc"].as_str().unwrap()[..16]
+        );
+
+        let quote_raw = raw(&edge["onchain_quote_amount_raw"]);
+        let api_quote =
+            ExactDecimal::parse(edge["api_quote_amount_decimal"].as_str().unwrap()).unwrap();
+        let api_quote_scale = u32::try_from(api_quote.scale).unwrap();
+        let api_quote_raw = U256::from(api_quote.coefficient)
+            .checked_mul(pow10(18_u32.checked_sub(api_quote_scale).unwrap()))
+            .unwrap();
+        let amount_rounding_difference = quote_raw.checked_sub(api_quote_raw).unwrap();
+        let stated_rounding_difference = decimal_fraction(
+            edge["api_amount_rounding_difference_quote_units"]
+                .as_str()
+                .unwrap(),
+        );
+        assert_eq!(
+            amount_rounding_difference,
+            stated_rounding_difference
+                .0
+                .checked_mul(pow10(
+                    18_u32
+                        .checked_sub(u32::try_from(stated_rounding_difference.2.scale).unwrap())
+                        .unwrap()
+                ))
+                .unwrap()
+        );
+
+        let api_price =
+            ExactDecimal::parse(edge["api_price_usdc_per_quote_unit"].as_str().unwrap()).unwrap();
+        let price_scale = u32::try_from(api_price.scale).unwrap();
+        assert!(price_scale >= 24);
+        let coin_raw = raw(&edge["coin_amount_raw"]);
+        let window_num = quote_raw
+            .checked_mul(U256::from(api_price.coefficient))
+            .unwrap();
+        let window_den = coin_raw
+            .checked_mul(pow10(price_scale.checked_sub(24).unwrap()))
+            .unwrap();
+        let floor_24dp = window_num.checked_div(window_den).unwrap();
+        assert!(floor_24dp.checked_mul(window_den).unwrap() <= window_num);
+        assert!(
+            floor_24dp
+                .checked_add(U256::from(1))
+                .unwrap()
+                .checked_mul(window_den)
+                .unwrap()
+                > window_num
+        );
+        let digits = floor_24dp.to_string();
+        let floor_text = format!("0.{}{}", "0".repeat(24 - digits.len()), digits);
+        assert_eq!(
+            floor_text,
+            row["canonical_window_price_usd_floor_24dp"]
+                .as_str()
+                .unwrap()
+        );
+
+        let supply = &row["supply"];
+        assert!(supply["verified"].as_bool().unwrap());
+        let supply_raw = raw(&supply["total_supply_raw"]);
+        let supply_tokens = supply_raw
+            .checked_div(pow10(
+                u32::try_from(supply["decimals"].as_u64().unwrap()).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(
+            supply_tokens.to_string(),
+            supply["tokens"].as_str().unwrap()
+        );
+        let floor_price = ExactDecimal::parse(&floor_text).unwrap();
+        assert_eq!(
+            floor_price.fdv_cents_for_supply(u128::try_from(supply_tokens).unwrap()),
+            Some(i64::try_from(row["expected_fdv_cents"].as_u64().unwrap()).unwrap())
+        );
+
+        let weth_raw = raw(&route["weth_amount_in_raw"]);
+        for fx_name in ["coinbase_eth_usd_min", "coinbase_eth_usd_max"] {
+            let (fx_num, fx_den, _) = decimal_fraction(route[fx_name].as_str().unwrap());
+            let candidate_cross = window_num.checked_mul(fx_den).unwrap();
+            let route_cross = weth_raw
+                .checked_mul(fx_num)
+                .unwrap()
+                .checked_mul(pow10(price_scale))
+                .unwrap();
+            let difference = if candidate_cross >= route_cross {
+                candidate_cross.checked_sub(route_cross).unwrap()
+            } else {
+                route_cross.checked_sub(candidate_cross).unwrap()
+            };
+            assert!(
+                difference.checked_mul(U256::from(100)).unwrap()
+                    <= candidate_cross.checked_mul(U256::from(2)).unwrap()
+            );
+        }
+
+        let birdeye = ExactDecimal::parse(
+            row["birdeye_disagreement"]["same_day_high_usd"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let birdeye_scale = u32::try_from(birdeye.scale).unwrap();
+        for fx_name in ["coinbase_eth_usd_min", "coinbase_eth_usd_max"] {
+            let (fx_num, fx_den, _) = decimal_fraction(route[fx_name].as_str().unwrap());
+            let route_cross = weth_raw
+                .checked_mul(fx_num)
+                .unwrap()
+                .checked_mul(pow10(birdeye_scale))
+                .unwrap();
+            let birdeye_cross = U256::from(birdeye.coefficient)
+                .checked_mul(coin_raw)
+                .unwrap()
+                .checked_mul(fx_den)
+                .unwrap();
+            let difference = if route_cross >= birdeye_cross {
+                route_cross.checked_sub(birdeye_cross).unwrap()
+            } else {
+                birdeye_cross.checked_sub(route_cross).unwrap()
+            };
+            assert!(
+                difference.checked_mul(U256::from(100)).unwrap()
+                    > route_cross.checked_mul(U256::from(2)).unwrap()
+            );
+        }
+        assert!(
+            row["birdeye_disagreement"]["status"]
+                .as_str()
+                .unwrap()
+                .contains("do not average")
+        );
+
+        let coverage = &row["coverage"];
+        assert_eq!(coverage["api_reported_edges"].as_u64(), Some(92));
+        assert_eq!(coverage["api_observed_price_values"].as_u64(), Some(91));
+        assert_eq!(
+            coverage["same_pool_chain_swaps_through_anchor"].as_u64(),
+            Some(326)
+        );
+        assert!(coverage["status"].as_str().unwrap().contains("partial"));
+    }
+
+    #[test]
     fn geckoterminal_zero_swap_pool_keeps_scoped_fdv_and_unknown_ath() {
         use alloy_primitives::U256;
 
