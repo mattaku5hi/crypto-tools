@@ -359,15 +359,54 @@ The counter controls this application's attempts; other clients using the
 account can still consume the provider's quota. Provider quota errors therefore
 remain terminal for the pass even if this counter is positive.
 
-The current local processes use transient user services
+The 2026-10-10 local processes used transient user services
 `trader-scout-dev-tracker.service` and `trader-scout-year-backfill.service`.
 Inspect them with `systemctl --user show <unit> -p ActiveState -p MainPID` and
 read `logs/run.log` / `logs/backfill.log`. They run outside the agent's process
 group and use the existing private `.env`, without embedding keys in command
 arguments. They survive termination of the launching agent; they are not an
-installed reboot deployment. B9 remains the server/deployment task.
+installed reboot deployment. The daemon was replaced by the persistent local
+unit below on 2026-10-13; VPS deployment remains pending under B9.
 
 A stopped transient unit can be garbage-collected; recreate it with `systemd-run --user` when it no longer exists, rather than starting a missing unit.
+
+#### Persistent local user service
+
+Installed and running locally on 2026-10-13, with lingering already enabled.
+Initial Telegram delivery sent 10 non-empty lists (30 documents); an unchanged
+repeat sent zero. Annual ATH coverage remains incomplete. See the
+[deployment and coverage proof](p0/measurements/2026-10-13-local-daemon-and-year-coverage.md).
+
+For a local host deployment, place the runtime at
+`~/.local/share/trader-scout/runtime` (or pass another existing absolute
+runtime directory to `deploy/systemd/install-user-service.sh`). It must contain
+`bin/dev-tracker`, `config/dev-tracker.toml`, and `deploy/.env`. The environment
+file must be private (mode 0600 or stricter) and set
+`SCOUT_DEVTRACKER_DATABASE_URL` to the already-running PostgreSQL database;
+reuse its existing database and delivery records rather than creating a
+second database. Ensure the database accepts connections from the host.
+
+Install and enable the user unit with:
+
+```sh
+bash deploy/systemd/install-user-service.sh
+```
+
+The installer does not start the service. After stopping any other daemon that
+uses the same database, start it with
+`systemctl --user start trader-scout-dev-tracker.service`; inspect it with
+`systemctl --user status trader-scout-dev-tracker.service` and
+`journalctl --user -u trader-scout-dev-tracker.service`. To receive Telegram
+delivery, keep `delivery.telegram = true` and set both Telegram variables in
+`deploy/.env`. A first non-empty list and subsequent membership changes are
+sent based on the persistent PostgreSQL delivery state; empty initial lists
+are skipped. `bin/dev-tracker export --config config/dev-tracker.toml --test`
+sends one test album without changing delivery state. With an empty delivery
+table, `export --config config/dev-tracker.toml --send` sends each non-empty
+list once; it does not force unchanged lists. User services start at boot only
+after the user manager starts; enable lingering with
+`loginctl enable-linger "$USER"` only if boot startup before login is required
+and approved for this host.
 
 ### Light Codex usage in the daemon (2026-10-11)
 

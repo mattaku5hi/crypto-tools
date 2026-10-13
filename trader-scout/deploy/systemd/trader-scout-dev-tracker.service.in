@@ -1,0 +1,20 @@
+[Unit]
+Description=Trader Scout dev-tracker daemon
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@RUNTIME_ROOT_ESCAPED@
+EnvironmentFile=@ENV_FILE_ESCAPED@
+ExecStart=@BINARY_QUOTED@ run --config @CONFIG_QUOTED@
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=default.target
