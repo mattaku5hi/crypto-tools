@@ -78,6 +78,35 @@ The receipt also contains 25 WETH `Transfer` logs: the external-to-PoolManager t
 
 Supply evidence for 101087 is in the frozen source/supply audit referenced by the private certificate. Even so, this candidate is not suitable for price promotion: its provider cursor has more pages, the same-transaction pool route disagrees strongly with Zora's value and the indexed price windows, and the receipt contains post-swap hook transfers not mapped to final wallet consideration. The Zora nested quote-price formula/time basis is undocumented. The follow-up used one Zora request, two read-only Base RPC calls, and one public Coinbase request; no retries, Codex/Birdeye calls, or database writes. Raw response SHA-256 values, exact parameters, transfer ledger, and Decimal calculations are in `.scout-data/diagnostics/zora-101087-coinswaps-route-2026-10-13/candidate.json` (including fee audit SHA-256 `9190bdd36c6c1dd54423911c19781a87198223e096dc606b0dbe224351bdc421`).
 
+### 010e amount-scale receipt check (2026-10-13)
+
+Three bounded Base receipt reads tested the two tiny BUY rows and the large
+SELL control for `0x010e1320febbb89c1a48e9549e8ff45db180ebd3`. In the exact
+identified target pool, core Swap deltas and corresponding token Transfers
+match API `coinAmount`: 252,440 and 140,264 raw target units for the buys, and
+964,738,230 whole target tokens for the sell. Verified decimals are 18, so the
+two tiny amounts are real; changing their scale would invent a price.
+Quote amounts also match, apart from the API JSON-number rounding of roughly
+1e-11–3e-11 quote units. These points remain observations rather than silently
+discarded dust or corrected decimal errors.
+
+The receipts contain three to five PoolManager Swaps each. A separate
+hook-associated target-pool Swap follows the selected sell; it is not merged
+into that API edge. No same-transaction USD conversion or final wallet-net
+settlement is proven. Applying the unverified API quote-USD field to the sell
+still gives an execution average roughly 451 times Birdeye's saved daily
+high; this pilot cannot identify a canonical price. Two other API rows remain
+unchecked, and index exhaustion is not all-market coverage. No ATH/FDV write
+followed. The next specific checks are a dated quote/USD route and the two
+remaining rows, with price kind and settlement kept separate.
+
+All three requests succeeded, with a 2 MiB response cap, 20-second timeout and
+no retries, fallback or Codex/Birdeye calls. Independent verification confirmed
+raw receipt hashes, success status, exact pool deltas and matching token
+Transfers. Private analysis:
+`.scout-data/diagnostics/zora-010e-receipt-pilot-2026-10-13/analysis.json`,
+SHA-256 `61ffaa5aa63eb574609dbc531c2f5324247c58bc9a3b1b928400054ee9de9b98`.
+
 ## Primary sources
 
 - DexPaprika [Free/Pro pricing, history limits, keyless behavior, and token OHLCV entitlement](https://dexpaprika.com/api/pricing).
