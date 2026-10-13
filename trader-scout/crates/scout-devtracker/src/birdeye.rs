@@ -676,6 +676,101 @@ mod tests {
         }
     }
 
+    #[test]
+    fn solana_tracker_8ih_maximum_fdv_is_bounded_within_one_cent() {
+        use alloy_primitives::{U256, U512};
+
+        let row: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_8ih_legacy_cent_bound_case.json"
+        ))
+        .unwrap();
+        let parse = |text: &str| {
+            let decimal = ExactDecimal::parse(text).unwrap();
+            let denominator = (0..u32::try_from(decimal.scale).unwrap())
+                .fold(U256::from(1), |value, _| value * U256::from(10));
+            (U256::from(decimal.coefficient), denominator)
+        };
+        let price = parse(row["provider"]["price_usd"].as_str().unwrap());
+        let raw = |key: &str| {
+            row["supply"][key]
+                .as_str()
+                .unwrap()
+                .parse::<U256>()
+                .unwrap()
+        };
+        let burn_sum =
+            row["supply"]["burns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .fold(U256::ZERO, |sum, burn| {
+                    assert!(
+                        burn["block_time_unix_s"].as_u64().unwrap()
+                            < row["provider"]["timestamp_ms"].as_u64().unwrap() / 1_000
+                    );
+                    sum + U256::from(burn["amount_raw"].as_u64().unwrap())
+                });
+        assert_eq!(raw("birth_raw") - burn_sum, raw("peak_raw"));
+        let denominator = price.1 * U256::from(1_000_000);
+        let numerator = |supply| price.0 * supply * U256::from(100);
+        let lower = numerator(raw("peak_raw")) / denominator;
+        let upper = numerator(raw("birth_raw")) / denominator;
+        assert_eq!(lower, U256::from(10_435_467));
+        assert_eq!(upper, U256::from(10_435_468));
+        assert!(numerator(burn_sum) < denominator);
+        let acceptable = |low: U256, high: U256| {
+            high.checked_sub(low)
+                .is_some_and(|width| low > U256::ZERO && width <= U256::from(1))
+        };
+        assert!(acceptable(lower, upper));
+        assert!(!acceptable(lower - U256::from(1), upper));
+        assert!(!acceptable(U256::ZERO, U256::from(1)));
+        assert!(!acceptable(upper, lower));
+        for state in row["events"].as_array().unwrap() {
+            let instruction =
+                raw_instruction_from_hex(state["event_cpi_data_hex"].as_str().unwrap());
+            let outcome = scout_dex_solana::classify_pump_amm_event(&instruction);
+            let (base, quote, virtual_reserves, pool) = match outcome {
+                scout_dex_solana::PumpAmmEventOutcome::Trade(
+                    scout_dex_solana::PumpAmmEvent::Buy(event),
+                ) => (
+                    event.pool_base_token_reserves,
+                    event.pool_quote_token_reserves,
+                    event.virtual_quote_reserves,
+                    event.pool,
+                ),
+                scout_dex_solana::PumpAmmEventOutcome::Trade(
+                    scout_dex_solana::PumpAmmEvent::Sell(event),
+                ) => (
+                    event.pool_base_token_reserves,
+                    event.pool_quote_token_reserves,
+                    event.virtual_quote_reserves,
+                    event.pool,
+                ),
+                _ => panic!("captured event-CPI must decode as a trade"),
+            };
+            assert_eq!(virtual_reserves, None);
+            assert_eq!(bs58::encode(pool).into_string(), row["provider"]["pool"]);
+            assert_eq!(base.to_string(), state["base_raw"]);
+            assert_eq!(quote.to_string(), state["quote_raw"]);
+            for endpoint in ["fx_low_usd", "fx_high_usd"] {
+                let fx = parse(state[endpoint].as_str().unwrap());
+                let left = U512::from(quote) * U512::from(fx.0) * U512::from(price.1);
+                let right =
+                    U512::from(base) * U512::from(1_000) * U512::from(fx.1) * U512::from(price.0);
+                let difference = if left >= right {
+                    left - right
+                } else {
+                    right - left
+                };
+                assert!(difference * U512::from(100) <= right * U512::from(2));
+            }
+        }
+        assert_eq!(row["supply"]["successful_history_transactions"], 838);
+        assert_eq!(row["supply"]["successful_signatures_without_birth"], 837);
+        assert!(row["ath_at"].is_null());
+    }
+
     fn request(chain: BirdeyeChain, address: &str) -> OhlcvWindow {
         OhlcvWindow {
             chain,
@@ -5826,5 +5921,245 @@ mod tests {
             row["provider"]["market_cap_usd_reported"].as_str(),
             Some("9606.25")
         );
+    }
+
+    #[test]
+    fn solana_tracker_mayhem_curve_marks_match_window_price_and_peak_supply() {
+        use alloy_primitives::U512;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_mayhem_curve_mark_cases.json"
+        ))
+        .unwrap();
+        let fraction = |numerator: U512, denominator: U512| (numerator, denominator);
+        let decimal_fraction = |value: &str| {
+            let decimal = ExactDecimal::parse(value).unwrap();
+            let denominator = (0..u32::try_from(decimal.scale).unwrap())
+                .try_fold(U512::from(1), |value, _| value.checked_mul(U512::from(10)))
+                .unwrap();
+            fraction(U512::from(decimal.coefficient), denominator)
+        };
+        let compare =
+            |left: (U512, U512), right: (U512, U512)| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let floor_fdv_cents = |price: (U512, U512), supply_raw: U512| {
+            price.0 * supply_raw * U512::from(100) / (price.1 * U512::from(1_000_000_u64))
+        };
+        let expected_fdv_cents = [1_430_309_u64, 1_567_048, 5_643_677];
+        let expected_half_supply_cents = [715_154_u64, 783_524, 2_821_838];
+        let mut total_marks = 0;
+
+        for (row_index, row) in fixture["rows"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(
+                row["source"].as_str(),
+                Some("solana-tracker-window-peak-supply-mayhem-curve-mark-fx-validated-v1")
+            );
+            assert!(row["ath_at"].is_null());
+            let mint = row["mint"].as_str().unwrap();
+            let provider = decimal_fraction(row["provider_price_usd"].as_str().unwrap());
+            let provider_time = row["timestamp_ms"].as_u64().unwrap() / 1_000;
+            let native = &row["native_execution"];
+            assert_eq!(native["mint"].as_str(), Some(mint));
+            assert_eq!(
+                native["nested_pump_program"].as_str(),
+                Some("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+            );
+            assert!(native["finalized"].as_bool().unwrap());
+            assert!(native["transaction_success"].as_bool().unwrap());
+
+            let mut marks = Vec::new();
+            for mark in row["neighborhood"]["events"].as_array().unwrap() {
+                let raw_program = bs58::decode(mark["program_id"].as_str().unwrap())
+                    .into_vec()
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+                assert_eq!(raw_program, scout_dex_solana::PUMP_PROGRAM_ID_BYTES);
+                assert_eq!(
+                    mark["program_id"].as_str(),
+                    Some("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+                );
+                let instruction = scout_core::RawSolanaInstruction {
+                    program_id: raw_program,
+                    accounts: Vec::new(),
+                    data: bytes_from_hex(mark["event_cpi_data_hex"].as_str().unwrap()),
+                    instruction_index: 0,
+                };
+                let expected = &mark["event"];
+                match scout_dex_solana::classify_pump_event(&instruction) {
+                    scout_dex_solana::PumpEventOutcome::Trade(event) => {
+                        assert_eq!(bs58::encode(event.mint).into_string(), mint);
+                        assert_eq!(event.sol_amount, expected["sol_amount"].as_u64().unwrap());
+                        assert_eq!(
+                            event.token_amount,
+                            expected["token_amount"].as_u64().unwrap()
+                        );
+                        assert_eq!(event.is_buy, expected["is_buy"].as_bool().unwrap());
+                        assert_eq!(event.timestamp, expected["timestamp"].as_i64().unwrap());
+                        assert_eq!(
+                            event.virtual_sol_reserves,
+                            expected["virtual_sol_reserves"].as_u64().unwrap()
+                        );
+                        assert_eq!(
+                            event.virtual_token_reserves,
+                            expected["virtual_token_reserves"].as_u64().unwrap()
+                        );
+                        assert_eq!(
+                            event.real_sol_reserves,
+                            expected["real_sol_reserves"].as_u64().unwrap()
+                        );
+                        assert_eq!(
+                            event.real_token_reserves,
+                            expected["real_token_reserves"].as_u64().unwrap()
+                        );
+                        assert_eq!(event.mayhem_mode, Some(true));
+                        assert_eq!(expected["mayhem_mode"].as_bool(), Some(true));
+                        assert_eq!(event.quote_mint, None);
+                        assert_eq!(event.quote_amount, None);
+                        assert_eq!(event.virtual_quote_reserves, None);
+                        assert_eq!(event.real_quote_reserves, None);
+                        assert_eq!(event.holder_rewards_bps, None);
+                        assert_eq!(event.holder_rewards, None);
+                        assert_eq!(event.trailing_bytes, 0);
+                        assert_eq!(event.data_len, instruction.data.len());
+                        assert_eq!(event.last_field_present, "cashback");
+
+                        let event_fraction = fraction(
+                            U512::from(event.virtual_sol_reserves),
+                            U512::from(event.virtual_token_reserves) * U512::from(1_000_u64),
+                        );
+                        let low_fx = decimal_fraction(mark["fx_low_usd"].as_str().unwrap());
+                        let high_fx = decimal_fraction(mark["fx_high_usd"].as_str().unwrap());
+                        let low_usd =
+                            fraction(event_fraction.0 * low_fx.0, event_fraction.1 * low_fx.1);
+                        let high_usd =
+                            fraction(event_fraction.0 * high_fx.0, event_fraction.1 * high_fx.1);
+                        assert_eq!(
+                            compare(
+                                low_usd,
+                                fraction_from_text(mark["usd_low_fraction"].as_str().unwrap())
+                            ),
+                            std::cmp::Ordering::Equal
+                        );
+                        assert_eq!(
+                            compare(
+                                high_usd,
+                                fraction_from_text(mark["usd_high_fraction"].as_str().unwrap())
+                            ),
+                            std::cmp::Ordering::Equal
+                        );
+                        marks.push((mark, event_fraction, low_usd, high_usd));
+                    }
+                    other => panic!("expected a Pump TradeEvent, got {other:?}"),
+                }
+            }
+            total_marks += marks.len();
+            assert_eq!(
+                marks.len(),
+                usize::try_from(row["neighborhood"]["event_count"].as_u64().unwrap()).unwrap()
+            );
+
+            let low_max = marks
+                .iter()
+                .max_by(|left, right| compare(left.2, right.2))
+                .unwrap();
+            let high_max = marks
+                .iter()
+                .max_by(|left, right| compare(left.3, right.3))
+                .unwrap();
+            let selected = marks
+                .iter()
+                .max_by(|left, right| compare(left.1, right.1))
+                .unwrap();
+            assert_eq!(low_max.0["signature"], high_max.0["signature"]);
+            assert_eq!(
+                selected.0["signature"],
+                row["neighborhood"]["maximum_event_signature"]
+            );
+            assert_eq!(selected.0["signature"], native["signature"]);
+            assert!(
+                selected.0["event"]["timestamp"]
+                    .as_i64()
+                    .unwrap()
+                    .abs_diff(i64::try_from(provider_time).unwrap())
+                    <= 1
+            );
+            assert_eq!(
+                selected.0["event"]["sol_amount"].as_u64(),
+                native["event_sol_amount_lamports"].as_u64()
+            );
+            assert_eq!(
+                selected.0["event"]["token_amount"].as_u64(),
+                native["event_token_amount_raw"].as_u64()
+            );
+            for price in [low_max.2, high_max.3] {
+                let difference = (price.0 * provider.1).abs_diff(provider.0 * price.1);
+                assert!(difference * U512::from(100) <= provider.0 * price.1 * U512::from(2));
+            }
+
+            let supply_raw = row["supply"]["total_birth_mints_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<U512>()
+                .unwrap();
+            assert_eq!(supply_raw, U512::from(2_000_000_000_000_000_u64));
+            assert_eq!(
+                row["supply"]["birth_mint_instructions"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            let birth_mint_sum = row["supply"]["birth_mint_instructions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|mint| U512::from(mint["amount_raw"].as_u64().unwrap()))
+                .fold(U512::ZERO, |sum, amount| sum + amount);
+            assert_eq!(birth_mint_sum, supply_raw);
+            assert_eq!(row["supply"]["burns"].as_array().unwrap().len(), 0);
+            assert_eq!(
+                row["supply"]["history_rows"].as_u64(),
+                Some([17, 25, 181][row_index])
+            );
+            assert_eq!(
+                row["supply"]["successful_signature_rows"].as_u64(),
+                Some([16, 24, 180][row_index])
+            );
+            assert!(
+                row["supply"]["signature_sets_equal_with_explicit_birth"]
+                    .as_bool()
+                    .unwrap()
+            );
+
+            let fdv = floor_fdv_cents(provider, supply_raw);
+            assert_eq!(fdv, U512::from(expected_fdv_cents[row_index]));
+            assert_eq!(fdv, U512::from(row["ath_fdv_cents"].as_u64().unwrap()));
+            assert_eq!(
+                row["supply"]["maximum_fdv_bound_cent_floors"][0].as_u64(),
+                Some(expected_fdv_cents[row_index])
+            );
+            let wrong_supply_fdv = floor_fdv_cents(provider, supply_raw / U512::from(2));
+            assert_eq!(
+                wrong_supply_fdv,
+                U512::from(expected_half_supply_cents[row_index])
+            );
+            assert_ne!(wrong_supply_fdv, fdv);
+
+            let execution_price = fraction(
+                U512::from(native["event_sol_amount_lamports"].as_u64().unwrap()),
+                U512::from(native["event_token_amount_raw"].as_u64().unwrap())
+                    * U512::from(1_000_u64),
+            );
+            assert_ne!(
+                compare(execution_price, selected.1),
+                std::cmp::Ordering::Equal
+            );
+        }
+        assert_eq!(total_marks, 27);
+
+        fn fraction_from_text(text: &str) -> (U512, U512) {
+            let (numerator, denominator) = text.split_once('/').unwrap();
+            (numerator.parse().unwrap(), denominator.parse().unwrap())
+        }
     }
 }

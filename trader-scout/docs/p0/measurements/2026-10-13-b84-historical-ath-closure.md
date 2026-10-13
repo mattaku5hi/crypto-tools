@@ -1,14 +1,14 @@
 # B8.4 historical ATH closures — 2026-10-13
 
-Twenty-two guarded writes extend the immutable 679-token diagnostic cohort from
-434 numeric / 245 unknown to **456 numeric / 223 unknown** (Oct 14 Moscow). This is a
+Twenty-six guarded writes extend the immutable 679-token diagnostic cohort from
+434 numeric / 245 unknown to **460 numeric / 219 unknown** (Oct 14 Moscow). This is a
 candidate-cohort checkpoint, not a coverage percentage for all annual network
 launches. Numeric records retain source-specific price kinds and historical
 scope; annual all-market ATH is still incomplete.
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Solana | 22 | 88 |
+| Solana | 26 | 84 |
 | BSC | 13 | 0 |
 | Base | 403 | 100 |
 | Robinhood | 18 | 35 |
@@ -25,6 +25,10 @@ scope; annual all-market ATH is still incomplete.
 | SOL `BRkf1C38…` | 127,031.38 | ST maximum matched by time-bracketing legacy PumpSwap reserve states and dated SOL/USD; 764 matching history transactions prove birth supply at the maximum. |
 | SOL `Avx71ncf…` | 73,720.03 | ST maximum matched by pre/post PumpSwap states and dated SOL/USD; complete birth-to-peak history and a one-raw-unit burn produce identical upper/lower FDV cent floors. |
 | SOL `88pqbGiX…` | 19,212.49 | ST maximum matched by fully decoded historical cashback-layout PumpSwap states and dated SOL/USD; complete 191-transaction birth-to-peak window proves the issued 2B supply. |
+| SOL `8ihYkBBP…` | 104,354.67 | Legacy PumpSwap mark/FX validation and complete 838-transaction mint history; conservative maximum FDV lower bound with less than one cent uncertainty. |
+| SOL `DwzNzHsH…` | 14,303.09 | Native-SOL Mayhem curve mark, all three adjacent states, dated FX and complete 17-transaction supply window; actual 2B supply. |
+| SOL `CemXM4du…` | 15,670.48 | Same curve-mark model over all fourteen adjacent states and a complete 25-transaction supply window. |
+| SOL `AkKQKnhP…` | 56,436.77 | Same curve-mark model over all ten adjacent states and a complete 181-transaction supply window. |
 | Base `0x3607f8f1…` | 38,897,428.63 | GT daily high corroborated by a same-day active V4 marginal state and dated USDC/USD at both FX endpoints; fixed 100B supply. |
 | Base `0xe46504da…` | 112.60 | One captured target-pool state composed through an earlier same-transaction quote/ZORA state, two active ZORA/WETH parents and dated ETH/USD minute close. |
 | RH `0x4016fa67…` | 20,355.54 | Maximum over six pool executions valued through contemporaneous USDG/AAPL trades and the closed UTC-day USDG/USD reference. |
@@ -110,7 +114,7 @@ finalized supply; no burn precedes or overlaps the maximum-price second.
 Every write required the current zero-sentinel row to remain `codex-missing`
 with the expected observation timestamp. The ST writes additionally checked
 the stored provider price, timestamp, exact pool and raw-response hash. Known
-positive values were preserved. Holders/liquidity were preserved on all nineteen
+positive values were preserved. Holders/liquidity were preserved on all twenty-three
 complementary-source writes; the three primary Codex updates followed existing
 metadata-refresh behavior. Runner thresholds and membership rules are unchanged.
 Complementary records keep `ath_at=NULL`; the primary Codex timestamps retain
@@ -133,13 +137,13 @@ rows are retained under `.scout-data/diagnostics/`:
 
 The original frozen snapshot and previous sealed deployment archive were not
 rewritten. The live checkpoint is `b84-live-progress-2026-10-13.json`; the old
-deployment dump predates these twenty-two writes and is not claimed to include them.
+deployment dump predates these twenty-six writes and is not claimed to include them.
 
-Fourteen new golden cases and ADR-021 amendments 25–32 cover accepted and
+Golden fixtures and ADR-021 amendments 25–34 cover accepted and
 pending reviewed price kinds, supply-bound negative controls, per-event FX
 weighting and provenance.
 Full `cargo fmt --check`, workspace/all-targets/all-features Clippy with denied
-warnings, and workspace/all-features tests passed: **1,227 tests**, with DB
+warnings, and workspace/all-features tests passed: **1,229 tests**, with DB
 tests isolated in `scout_test`. The release daemon remains active without
 restart; its production logic did not change in this checkpoint.
 
@@ -172,3 +176,12 @@ previous signed-virtual-reserve interpretation is preserved as superseded
 evidence; its numeric FDV does not change. Captured event-CPI bytes now pass
 through the production parser in regression tests. The 5b2Bs check strengthens
 an already-known Oct 11 value and is **not** counted as a new closure.
+
+The batch-5 follow-up closes four additional SOL records. The 8ih maximum
+FDV remains bounded to less than one cent, with the conservative lower value
+accepted under amendment 33. The three Mayhem values use actual 2B issuance,
+rather than the provider market-cap field's approximate 1B denominator;
+complete native execution, dated FX and all captured curve states corroborate
+the selected mark (amendment 34). See [batch 5](2026-10-14-solana-ath-gap-closure-batch5.md).
+The Base 00b0 execution maximum has a 90% fee and differs from the marginal
+state maximum; its independent follow-up remains unpromoted.

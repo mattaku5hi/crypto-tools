@@ -1498,3 +1498,88 @@ current-supply comparison. Independent arithmetic recheck SHA-256
 `bf6a6a2200cc3846154eebbb13e6e12d73dd0f85f9853d6ad5929b4969581fa1` pins the
 revalidation. This manual validation adds no automatic decoder or
 database-promotion rule.
+
+## Amendment 33 (2026-10-14) — conservative maximum FDV with one-cent uncertainty
+
+For `8ihYkBBPHu86isqxU4CnNQdbixqtbRcMcicxTxYYpump`, preserve the distinction
+between exact supply at the provider price peak and the maximum of price
+times supply throughout the provider window. The complete birth-to-peak
+history contains 838 successful transactions: 837 successful signatures plus
+the explicitly excluded birth signature. One birth mint issued `1e15` raw
+units; five burns before the peak removed `92,734,328` raw units. At six
+decimals, the peak supply is `999,999,907.265672` tokens. Mint authority was
+revoked at birth, and the finalized mint has no close authority or
+supply-scaling extension, establishing a nonincreasing supply bound.
+
+The observed peak price is `$0.00010435468782714595`. Its peak-supply product
+is a lower bound on maximum provider-window FDV; its birth-supply product is
+an upper bound. Their exact difference is less than one cent, with cent
+floors **10,435,467–10,435,468**. Under the owner's accepted 1–2% tolerance,
+this selected case stores the conservative lower value. Arithmetic and
+threshold comparisons remain exact; this does not claim the true maximum
+cent is known. The source is
+`solana-tracker-window-peak-supply-cent-tolerance-legacy-pool-fx-validated-v1`,
+with `ath_at=NULL`. Do not apply this exception to wider intervals or zero
+lower bounds, and do not relabel the result as lifetime/all-market ATH.
+
+Both adjacent PumpSwap states decode completely under the dated January IDL,
+match the actual pool vaults, reproduce curve/fee amounts, and agree with
+both dated SOL/USD minute endpoints within 2%. Golden
+`solana_tracker_8ih_legacy_cent_bound_case.json` uses captured event-CPI bytes
+through the production decoder, exact interval arithmetic, and negative
+controls for two-cent uncertainty, zero and reversed bounds. Independent
+proof SHA-256 `33a7a7a8cab70395ea09d15508b11c12375cd1488e2cff993ceb1eaf8deb2463`
+pins the reviewed inputs. This is a manual source-specific validation;
+runner thresholds and automatic adapter rules are unchanged.
+
+## Amendment 34 (2026-10-14) — selected native-SOL Mayhem curve marks
+
+Three selected Solana Tracker price maxima for `DwzNzHsH…`, `CemXM4du…`
+and `AkKQKnhP…` have `pool_id == mint`; this is a provider association for
+pump.fun bonding curves, not a PumpSwap pool account. Their finalized
+standard transactions contain successful Mayhem-router calls and nested
+Pump `buy` instructions with the official discriminator, exact mint account
+and emitted TradeEvent. Actual native lamport debits and token balance
+increases equal the selected event amounts. The historical payloads end at
+cashback fields; later quote/reserve fields are absent, not zero.
+
+The official Pump SDK 4.1.0 defines its fee-tier market-cap mark as
+`virtualQuoteReserves * mintSupply / virtualTokenReserves`; Mayhem uses the
+actual mint supply. For native SOL, reserve units are lamports and raw token
+units. This supports a selected **curve-mark reference**, not execution-average
+price, wallet acquisition cost or an identified Data API pricing algorithm.
+Mayhem can explicitly update virtual reserves: ordinary constant-product
+trade deltas must not be used to reject or reconstruct such updates.
+The full Mayhem state-transition schedule is not proven here.
+
+The complete captured ±3-second windows contain respectively 3, 14 and 10
+TradeEvents. All event-CPI bytes match emitted payloads in the actual Pump
+program log context, with the exact mint and successful transaction. Compute
+the maximum virtual-reserve ratio over every captured state before comparing
+both dated SOL/USD minute low/high endpoints with the provider price; do not
+pick a matching state while omitting a higher one. Each selected maximum
+occurs one second before the provider timestamp and agrees at both FX
+endpoints within 2%. This neighborhood check is corroboration, not proof of
+all-market annual coverage.
+
+Complete birth-to-peak histories contain 17, 25 and 181 successful transactions,
+matching finalized signature-index sets plus the explicitly excluded birth.
+Each birth has two `MintTo` instructions of `1e15` raw units, producing 2B
+six-decimal tokens, followed by mint-authority revocation. No burn occurs
+through the peak, and the observed mint extensions have no close authority
+or supply-scaling feature. Price-times-peak and price-times-birth maximum FDV
+bounds therefore have identical cent floors: **1,430,309**, **1,567,048** and
+**5,643,677**. The provider-reported market caps use approximately 1B and are
+not copied into the FDV ledger.
+
+The selected source is
+`solana-tracker-window-peak-supply-mayhem-curve-mark-fx-validated-v1`, with
+`ath_at=NULL`, existing holders/liquidity preserved, and an unknown provider
+recording window. Golden `solana_tracker_mayhem_curve_mark_cases.json` exercises
+captured bytes through the production parser and exact mark/FX/supply math.
+The independent price, supply and native-execution proofs have SHA-256 values
+`2607199ac0d7398223c5925aa76ca059cb77a8e60c5df7f0328eed2679fcdb4f`,
+`b3688fe3ff869e23f078215fe65ab9ba16e9db1fe9a74113fdac2e2a29bd5b54`
+and `fdec592f71aded401a17f542f7f72780968bbd8037a6c4f4be17083b0590b158`.
+This manual validation adds no automatic adapter/promotion rule and changes
+no runner threshold or selection definition.
