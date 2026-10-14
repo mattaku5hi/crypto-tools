@@ -66,8 +66,10 @@ jobs:
           with path.open("rb") as stream:
               stream.seek(max(0, path.stat().st_size - 8000))
               tail = stream.read(8000).decode("utf-8", errors="replace")
-          escaped = tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-          print("::error title=Rust test failure details::" + escaped)
+          for start in range(0, len(tail), 1000):
+              chunk = tail[start:start + 1000]
+              escaped = chunk.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::error title=Rust test failure details {start // 1000 + 1}::" + escaped)
           PY
             exit "$status"
           fi
