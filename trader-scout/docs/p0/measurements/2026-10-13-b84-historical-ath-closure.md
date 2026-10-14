@@ -1,14 +1,14 @@
 # B8.4 historical ATH closures — 2026-10-13
 
-Seventy guarded writes extend the immutable 679-token diagnostic cohort from
-434 numeric / 245 unknown to **504 numeric / 175 unknown** (Oct 14 Moscow). This is a
+Seventy-four guarded writes extend the immutable 679-token diagnostic cohort from
+434 numeric / 245 unknown to **508 numeric / 171 unknown** (Oct 14 Moscow). This is a
 candidate-cohort checkpoint, not a coverage percentage for all annual network
 launches. Numeric records retain source-specific price kinds and historical
 scope; annual all-market ATH is still incomplete.
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Solana | 70 | 40 |
+| Solana | 74 | 36 |
 | BSC | 13 | 0 |
 | Base | 403 | 100 |
 | Robinhood | 18 | 35 |
@@ -241,3 +241,14 @@ ADR-021 amendment41. Guarded writes and read-back passed after full
 fmt/Clippy/1233tests. Current70closures are SOL56/Base2/RH12; the fixed
 cohort is504numeric/175unknown. The separately dated68-closure state package
 is retained; it does not contain these last two writes.
+
+## Four more first-buy recoveries (Oct14)
+
+D8uy/gLTR/A5Ewn/NDt3 add four explicit conservative lower estimates after
+all966 terminal neighborhood pre/post states and eight canonical transaction
+recaptures were checked. Full workspace fmt/Clippy/1233tests passed after
+adding winning-time assertions. Atomic guarded writes preserve holder/
+liquidity metadata and null ATH dates. Total74closures: SOL60/Base2/RH12;
+fixedcohort508numeric/171unknown. The separate70-closure bundle predates
+these last four updates. See [batch14 evidence](2026-10-14-solana-first-buy-batch14.md)
+and ADR-021 amendment42. Bd556 remains rejected by its5.9% price conflict.

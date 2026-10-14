@@ -249,5 +249,29 @@ Private archive:
 `8562eece3e9dfc10072b7891caa23c3154e5df3473c1a6f872573a1265ee2820`.
 Its39 allowlisted payloads include36 separately dated import exports; no
 secrets. Dump TOC, packing, extraction, all payload hashes and0600/0700 modes
-passed; workspace fmt/Clippy/1232tests are hash-linked. Fresh full restore is
-a separate pending check, not claimed by archive extraction.
+passed; workspace fmt/Clippy/1232tests are hash-linked. A separate
+isolated full restore subsequently passed: schema1–10, fixed679cohort, all68
+closure rows, all100 pinned observations and quota7+100 were verified. The
+1CPU/1GiB/no-network container and its private volume were removed. Earlier
+path/log-name verifier failures are retained; the final independent query
+proof is `restore-v3-verification.json`. The orchestration exit code was not
+captured in that final attempt, so successful completion is established by
+restored schema/data checks rather than an asserted measured process exit.
+
+
+## Seventy-closure archive checkpoint (2026-10-14)
+
+A newer schema10 consistent dump runs02:48:13–02:49:34UTC, after the two
+transaction-local vault closures. It contains all70 expected ATH rows exactly
+including sources, observation times, lower FDV floors and holder/liquidity.
+Fixedcohort504numeric/175unknown. The39-payload/36-export archive is verified
+and extracted with0600/0700 modes; secrets are excluded and dates separated.
+
+Private archive:
+`.scout-data/deployment/2026-10-14-b84-70-closures/trader-scout-state-schema10-b84-70-closures-20261014.tar`,
+3,014,789,120bytes, SHA-256
+`739a58b3f8b301de82672520069a6774743fb1e5d4e61f54499b2cde34257d52`.
+Source binary remains7c1ca5c; checkoutcc49996; workspace1233tests passed.
+This70-closure dump has archive/row verification, while the separate full
+restore above validates the68-closure dump. A full70-dump restore is not
+claimed. Both immutable checkpoint packages remain preserved.

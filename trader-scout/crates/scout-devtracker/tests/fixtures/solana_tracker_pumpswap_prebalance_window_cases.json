@@ -40,6 +40,7 @@
         "all_vault_token_operations_classified": true,
         "authority_exact": true,
         "buyevent_tail_bytes": 0,
+        "create_pool_option_bool": false,
         "create_pool_precedes_buy": true,
         "create_pool_tail_bytes": 0,
         "stack_parent_exact": true
@@ -774,6 +775,7 @@
         "all_vault_token_operations_classified": true,
         "authority_exact": true,
         "buyevent_tail_bytes": 0,
+        "create_pool_option_bool": false,
         "create_pool_precedes_buy": true,
         "create_pool_tail_bytes": 0,
         "stack_parent_exact": true
@@ -3718,6 +3720,7 @@
         "all_vault_token_operations_classified": true,
         "authority_exact": true,
         "buyevent_tail_bytes": 0,
+        "create_pool_option_bool": true,
         "create_pool_precedes_buy": true,
         "create_pool_tail_bytes": 0,
         "stack_parent_exact": true

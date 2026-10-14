@@ -1931,3 +1931,40 @@ the strict all-window/binding v5 proof is
 `127348ce325353679112d28958e7009dba29d9c25ce8b41a5047979274074976`.
 Canonical confirmation uses three recovered-transaction recaptures plus two
 winning-price recaptures, five explicitly budgeted methods total.
+
+## Amendment 42 (2026-10-14) — four further captured first-buy recoveries
+
+D8uyqvds…, gLTRxnhz…, A5Ewn6Xu… and NDt3PMmQ… use the same exact
+transaction-local pool/vault verification as amendment41 and conservative
+combined2% lower-FDV policy as amendment40. Complete combined capture pages
+are required: earlier A5Ewn/NDt3 pages were nonterminal and remain preserved.
+The final windows contain230/98/360/278 pre/post states,966 total. Page-label
+suffixes on gLTR/NDt3 are diagnostic filenames, not part of mint identity.
+
+The formerly unsupported selected334-byte events are CreatePoolEvents under
+the full dated IDLs. They bind the target pool/base mint and create-parent
+stack scope; they are not swaps. Ordered ATA initialization, pool funding,
+first-buy transfers and event-CPI scope independently reconstruct both missing
+vault pre states and canonical post states. The separate Bd556n65… volume-
+accumulator close is likewise a known non-trade, but its full price maximum
+still differs about5.9% from the provider reference and remains unknown.
+Recognizing a non-trade is not sufficient to accept its surrounding price.
+
+Exact saved provider price times the independently verified later raw supply
+gives conservative lower floors4,422,273 /4,406,919 /4,096,359 /3,453,617
+cents. Each floor is within2% of the unrounded provider/birth-supply upper
+bound and both independent full-window FX/supply endpoints. Birth authority
+revocation, issued amount and exact legacy/metadata-only current mint layouts
+are replayed from raw data. Exact peak supply and full burn history are not
+asserted. Eight new finalized standard recaptures cover each recovered buy
+and winning-price transaction and match entire messages/selected metadata.
+
+Root certificate SHA-256:
+`b101c28dc5e41cce6636a3dc509e65491b44a9fe8973b75b04394910df18a0f5`.
+Independent all-window/private binding proof:
+`33d8e5b4f841fb6f147dccbf294951ee20b4bec732c1250425c5e0fe225d5895`.
+The new four-case golden extends the captured binding/window regression;
+no automatic production fallback or threshold changes. Writes are guarded
+by the exact original provider observation and previous missing-row version,
+with explicit lower-bound source, ATH date null, holder/liquidity unchanged.
+Annual/all-market completeness remains unknown.

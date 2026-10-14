@@ -6209,9 +6209,21 @@ mod tests {
             "../tests/fixtures/solana_tracker_pumpswap_prebalance_window_cases.json"
         ))
         .unwrap();
+        let recovered_fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_pumpswap_prebalance_batch14_cases.json"
+        ))
+        .unwrap();
         assert_eq!(
             fixture["provenance"]["window_proof_v5_sha256"].as_str(),
             Some("127348ce325353679112d28958e7009dba29d9c25ce8b41a5047979274074976")
+        );
+        assert_eq!(
+            recovered_fixture["provenance"]["window_proof_v5_sha256"].as_str(),
+            Some("33d8e5b4f841fb6f147dccbf294951ee20b4bec732c1250425c5e0fe225d5895")
+        );
+        assert_eq!(
+            recovered_fixture["provenance"]["root_four_bounds_sha256"].as_str(),
+            Some("b101c28dc5e41cce6636a3dc509e65491b44a9fe8973b75b04394910df18a0f5")
         );
         let pow10 = |scale: u32| {
             (0..scale)
@@ -6336,8 +6348,16 @@ mod tests {
                 })
         };
 
+        let mut cases = fixture["cases"].as_array().unwrap().clone();
+        cases.extend(
+            recovered_fixture["cases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
         let mut outcomes = Vec::new();
-        for row in fixture["cases"].as_array().unwrap() {
+        for row in &cases {
             assert!(row["full_window_complete"].as_bool().unwrap());
             assert_eq!(
                 usize::try_from(row["verified_state_count"].as_u64().unwrap()).unwrap(),
@@ -6356,9 +6376,9 @@ mod tests {
             );
             let create_quote = u64::from_le_bytes(create_data[18..26].try_into().unwrap());
             assert_eq!(create_data[58], 0, "captured pool is not in mayhem mode");
-            if row["label"].as_str() == Some("G3Hy") {
+            if row["binding_expectations"]["create_pool_option_bool"].as_bool() == Some(true) {
                 assert_eq!(create_data.len(), 60);
-                assert_eq!(create_data[59], 0, "Feb IDL cashback OptionBool is false");
+                assert_eq!(create_data[59], 0, "dated IDL cashback OptionBool is false");
             } else {
                 assert_eq!(create_data.len(), 59);
             }
@@ -6636,6 +6656,14 @@ mod tests {
                     assert_eq!(marks[0].last().unwrap().1, -1);
                     assert!(price_pass);
                 }
+                "D8uy" | "gLTR" | "A5Ewn" | "NDt3" => {
+                    assert!(price_pass);
+                    assert!(
+                        marks
+                            .iter()
+                            .all(|states| (-3..=0).contains(&states.last().unwrap().1))
+                    );
+                }
                 _ => panic!("unexpected mint case"),
             }
             let supply = &row["supply"];
@@ -6662,6 +6690,28 @@ mod tests {
             );
             let price = ExactDecimal::parse(row["provider_price_usd"].as_str().unwrap()).unwrap();
             let cents = price.fdv_cents_for_raw_supply(current, 6).unwrap();
+            if supply["stored_candidate_source"].is_string() {
+                assert_eq!(
+                    supply["stored_candidate_source"].as_str(),
+                    Some("provider_peak_price_times_current_supply_lower_bound")
+                );
+                assert_eq!(supply["stored_candidate_floor_cents"].as_i64(), Some(cents));
+                assert!(
+                    supply["floor_aware_interval_within_two_percent"]
+                        .as_bool()
+                        .unwrap()
+                        && supply["independent_spot_supply_endpoints_within_two_percent"]
+                            .as_bool()
+                            .unwrap()
+                        && supply["all_global_price_endpoints_within_two_percent"]
+                            .as_bool()
+                            .unwrap()
+                        && supply["eligible_manual_lower_bound_candidate"]
+                            .as_bool()
+                            .unwrap()
+                );
+                assert!(!supply["historical_peak_supply_exact"].as_bool().unwrap());
+            }
             let provider_upper = (provider.0 * U512::from(birth), provider.1 * pow10(6));
             assert!(U512::from(98) * provider_upper.0 <= U512::from(cents) * provider_upper.1);
             let stored = (provider.0 * U512::from(current), provider.1 * pow10(6));
@@ -6684,7 +6734,11 @@ mod tests {
             vec![
                 ("69KX", 7_963_221, false, false),
                 ("CtN5", 7_547_302, true, true),
-                ("G3Hy", 5_854_639, true, true)
+                ("G3Hy", 5_854_639, true, true),
+                ("D8uy", 4_422_273, true, true),
+                ("gLTR", 4_406_919, true, true),
+                ("A5Ewn", 4_096_359, true, true),
+                ("NDt3", 3_453_617, true, true)
             ]
         );
 
