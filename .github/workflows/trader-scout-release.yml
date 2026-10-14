@@ -2,6 +2,8 @@ name: trader-scout release
 
 on:
   push:
+    branches:
+      - "ci/trader-scout-release"
     tags:
       - "trader-scout/v*"
   workflow_dispatch:
@@ -125,17 +127,21 @@ jobs:
         env:
           BUILD_COMMIT: ${{ github.sha }}
           BUILD_REF: ${{ github.ref_name }}
+          BUILD_REF_TYPE: ${{ github.ref_type }}
           BUILD_EVENT: ${{ github.event_name }}
           BUILD_RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
-          if [[ "$BUILD_EVENT" == "push" ]]; then
+          if [[ "$BUILD_EVENT" == "push" && "$BUILD_REF_TYPE" == "tag" ]]; then
             [[ "$BUILD_REF" =~ ^trader-scout/v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
               echo "tag must be trader-scout/vMAJOR.MINOR.PATCH" >&2
               exit 1
             }
             version="${BUILD_REF#trader-scout/}"
             tag="$BUILD_REF"
+          elif [[ "$BUILD_EVENT" == "push" && "$BUILD_REF_TYPE" == "branch" && "$BUILD_REF" == "ci/trader-scout-release" ]]; then
+            version="preview-${BUILD_COMMIT:0:12}-run-${BUILD_RUN_NUMBER}"
+            tag=""
           else
             version="manual-${BUILD_COMMIT:0:12}-run-${BUILD_RUN_NUMBER}"
             tag=""
