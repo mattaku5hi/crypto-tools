@@ -1734,3 +1734,55 @@ its prior revisions and all raw captures remain separate. The source remains
 `ath_at=NULL`, preserved holders/liquidity and unknown recording-window
 start. This adds manual cases, not a general adapter or annual all-market
 coverage claim.
+
+## Amendment 38 (2026-10-14) — fresh candidate membership and scoped histories
+
+Seven further native-SOL Mayhem curve marks retain amendments 34–37's
+price/source contract. The corrected batch-9 input intersects the exact
+current unknown keys with the saved birth/supply join and orders by
+birth-to-peak duration. A prior stale selection included three already-known
+rows and used the wrong ordering; it was stopped after 24 Helius methods
+and ten Coinbase GETs. Its input/raw bodies/manifest remain retained, and
+it produced no write. A separate extension records cumulative budgets before
+new requests: 120 Helius methods, with ten reserved for independent canonical
+checks, and 22 Coinbase GETs. The corrected capture uses 75 methods and
+seven new Coinbase GETs; three exact-minute earlier candles are reused with
+hash provenance. Including seven canonical recaptures, actual totals are
+106 Helius methods and 17 Coinbase GETs. No provider quota counter is reset.
+
+The complete positive ±3-second neighborhoods contain 53 TradeEvents.
+Global USD maxima are selected at both actual event-minute FX endpoints;
+they agree on the same signature, zero to two seconds before the provider
+peak, and each is within 2%. Exact provider price × independently verified
+2B supply gives FDV cent floors 2,922,033 / 12,277,898 / 3,189,985 /
+8,491,258 / 1,272,774 / 1,738,769 / 6,871,894. SDK × FX bands corroborate
+price only. Full birth-to-peak successful transaction counts are
+85 / 157 / 106 / 58 / 76 / 294 / 221. Each has two birth mints totaling
+`2e15` raw, birth mint-authority revocation, no burn/unknown supply opcode
+through the peak, and current metadata-only mint extensions.
+
+AJg's raw query retains 317 signatures with 294 successful overall. One
+successful transaction is two seconds after the peak; another out-of-scope
+row is failed. The 293 successful rows inside birth-through-peak plus
+explicit birth equal all 294 terminal TFA transactions. 3Lwp likewise
+retains an out-of-scope failed row. Original cursor-mismatch statuses and
+failed/outside rows remain retained; no raw capture is rewritten to make
+sets agree. Standard finalized recaptures match TFA messages and metadata;
+scoped native curve/fee/creator transfers reconcile without any extra
+creator-vault amount. These seven selected event fees are zero, explicitly
+decoded from bytes rather than assumed from missing fields.
+
+Golden `solana_tracker_mayhem_curve_mark_batch9_cases.json` extends the shared
+captured-byte regression. Positive maxima must fall in the explicit -3..0
+second gate, while future negative controls remain preserved separately.
+Root price, supply and native proof hashes are
+`a242ab6e35d5eb0ffa3033376b195eafe777961164b7c828dd4f1b4826419789`,
+`3591777dc1f9b001c222a512b387ef2cfc31d19243101ca057bfe43bdd86384f`
+and `8a8c0fcbb119f907d5f1eb35fa6fbbd82e48c05437f3a4ed24380a4ee39c2163`.
+The separate worker proof hash is
+`788684e4baeaf238b7566f672122820ab36174766912f13f56b3d83070c9890f`.
+Three AMM inputs are excluded from curve pricing; their capped nonterminal
+histories do not establish peak supply. The source remains
+`solana-tracker-window-peak-supply-mayhem-curve-mark-fx-validated-v1`, with
+`ath_at=NULL` and preserved holders/liquidity. No general adapter, full
+Mayhem transition reconstruction or all-market/year completeness is added.

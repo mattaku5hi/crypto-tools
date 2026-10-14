@@ -6247,6 +6247,27 @@ mod tests {
                 None,
                 &[false][..],
             ),
+            (
+                include_str!(
+                    "../tests/fixtures/solana_tracker_mayhem_curve_mark_batch9_cases.json"
+                ),
+                &[
+                    2_922_033_u64,
+                    12_277_898,
+                    3_189_985,
+                    8_491_258,
+                    1_272_774,
+                    1_738_769,
+                    6_871_894,
+                ][..],
+                &[85_u64, 157, 106, 58, 76, 294, 221][..],
+                &[84_u64, 156, 105, 57, 75, 293, 220][..],
+                &[-1_i64, -1, -2, -1, 0, -1, -1][..],
+                53_usize,
+                0_usize,
+                None,
+                &[][..],
+            ),
         ];
 
         for (
@@ -6377,7 +6398,7 @@ mod tests {
                 );
                 let selected_offset = low_max.0["event"]["timestamp"].as_i64().unwrap()
                     - i64::try_from(provider_second).unwrap();
-                assert!((-3..=3).contains(&selected_offset));
+                assert!((-3..=0).contains(&selected_offset));
                 assert_eq!(selected_offset, expected_offsets[index]);
                 assert!(within_two_percent(low_max.2, provider));
                 assert!(within_two_percent(high_max.3, provider));
