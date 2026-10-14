@@ -2070,3 +2070,65 @@ IDL. They remain unpromoted. The earlier diagnostic mislabeled January9 as
 November15; corrected offline evidence preserves the old result separately.
 A separate audit finds no such incorrect pre-peak IDL in accepted closures.
 Annual/all-market ATH remains incomplete.
+
+## Amendment 45 (2026-10-14) — vC95 chronological supply-weighted reference
+
+vC95xGR… applies amendment43 to its captured birth-to-provider-peak history.
+The terminal mint-address capture reconciles616 successful full transactions
+and retains112 failed signature records. Two birth MintTo instructions issue
+2B tokens, followed by authority revocation. Four actual burns, including
+three outer instructions, reduce supply to1116992414701072raw at6decimals;
+the final sum equals the verified metadata-only current mint. Every price
+state uses supply at its actual transaction/instruction position, rather than
+birth supply or supply at the provider's maximum-price timestamp.
+
+The captured set has1219 physical price marks represented by1661 interval
+endpoint rows: Create,442 curve PRE intervals and POST marks, and334 actual
+PRE/POST vault marks from167 swaps at the selected PumpSwap pool. All35
+minute SOL/USD candles use exact raw Decimal values. Conditional PRE intervals
+invert the dated SDK1.31 equations as in amendment43. The IDL declares25-byte buys (including track_volume: OptionBool) and24-byte
+sells. Captured25-byte buys have a validated Boolean;24-byte buys omit that
+field and remain a legacy-wire gap. Actual scoped SPL token
+transfers corroborate all442 curve trade amounts;233 buys use scoped System
+inputs,209 sells use the whole-transaction curve lamport delta, not an
+invented isolated transfer. Missing declared buy arguments, appended account roles and Mayhem-wrapper
+semantics remain raw, explicit gaps. This evidence is a
+conditional SDK-model reference and does not declare complete deployed ABI
+support or relax the strict full-wire gate for other protocol price cases.
+
+One incomplete curve log stack has a unique byte-exact event CPI, with the
+expected program/event authority and a dated sell parent at the correct
+stack boundary. Finalized canonical recapture confirms that transaction,
+birth and the global winner. The incomplete log stack remains recorded.
+
+The global FDV reference lower floor is49712596cents; upper ceiling49790592.
+Both winners are the selected-pool POST state on2026-04-01 at12:43:06UTC,
+1330ms before the saved provider timestamp. Combined FX/interval/cent
+uncertainty is below0.157%, and both global price bounds agree within2% with
+the saved provider price. Preserve the amendment43 source, null ATH date,
+and existing holder/liquidity metadata. The captured model's upper endpoint
+is below$500k; this does not prove no larger value at another venue or time.
+Annual/all-market/lifetime ATH remains unproven.
+
+Root certificate:
+`bb8991d7c5d1687a3bc0feb374a33259a71c1e70b65c9bf0c1b946cba0e56c26`.
+Independent all-endpoint/canonical audit:
+`f99bb4dc20efa8101dc1fa6652ebea072115554180f5a3152aaf6468e5f2af52`.
+A guarded manual write requires the captured-case regression, passing full
+workspace checks, the exact original provider observation and unchanged
+missing-row version. No automatic fallback or runner-gate change.
+
+A separate raw-flow audit finds two buy-side curve balance additions beyond
+the event input: decoded initial account rent1468560lamports, and an extra
+473280lamport user-to-curve transfer in one transaction. The latter has no
+proven dated event-field meaning and remains a route/Mayhem gap. Neither is
+folded into event.sol_amount. All209 sell whole-transaction curve deltas match
+the event amounts with no additional scoped System curve flow. The model
+reference does not assert event input is the only native movement.
+
+A retroactive SDK schema audit corrects the prior wire interpretation for
+main3 as well:28 buys omit the required Boolean;656 argument payloads are
+complete. Appended accounts remain unresolved. All684 conditional quote
+intervals and exact event-CPI identities still match; no monetary write is
+changed. Corrected audit SHA-256:
+`9ae25d1eeeaf46e0ffda5acf38f37d858b196cb754559523b1b17914e62bd784`.

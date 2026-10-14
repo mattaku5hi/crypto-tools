@@ -53,6 +53,7 @@
 - PumpSwap 16 нулевых хвостовых байт могут быть двумя `u64` cashback, а не `i128` virtual reserves: декодировать полный датированный IDL, не именовать поле по длине/нулю (ADR-021 amendments 29/32).
 - Solana Tracker chart: сохранять exact wire query и проверять scale/epoch; price-default control без `timezone` дал правильные UTC метки, explicit `timezone=UTC` сдвинул их на−7200s (`docs/p0/measurements/2026-10-11-solana-jc-chart-supply-bounds.md`).
 - Не искать текст по `.env*`/secret files: `rg` ограничивать конкретными source/docs каталогами; credentials читать только внутри процесса по exact variable и никогда не выводить URL/header/exception с ключом.
+- Датированный Pump IDL проверять по SHA до интерпретации: `pump-sdk-source-2026-10-14/package` содержит современный4.1, а не1.31; buy1.31 имеет обязательный `track_volume` (measurement `2026-10-14-solana-pump-curve-wire-tail-source-check.md`).
 - Диагностический proof после передачи SHA другим агентам неизменяем: исправление — новый versioned файл; reader проверяет hash до/после чтения (`docs/p0/measurements/2026-10-14-solana-chronological-fdv-window.md`).
 
 Следовать `docs/ROADMAP.md`. Не писать все CLI отдельно. Сначала контракт данных и hand-checked corpus; затем сквозной ограниченный slice, расширение сетей/DEX и оптимизация по профилю. После каждой задачи: перечислить измененные файлы, выполненные проверки, полученные результаты, ограничения и следующий task ID. Фиксировать изменения небольшими законченными коммитами, когда среда действительно дает доступ к git.

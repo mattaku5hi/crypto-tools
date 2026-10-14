@@ -7579,6 +7579,570 @@ mod tests {
                     .as_u64()
                     .unwrap()
         );
+
+        let vc95: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_vc95_chronological_fdv_window_case.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            vc95["provenance"]["root_certificate_sha256"].as_str(),
+            Some("bb8991d7c5d1687a3bc0feb374a33259a71c1e70b65c9bf0c1b946cba0e56c26")
+        );
+        assert_eq!(
+            vc95["provenance"]["pump_sdk_1_31_tarball_sha256"].as_str(),
+            Some("b12fdf292139f16bb2ff209a0bd57ac5e2b2168d687dc3d51a131cf45575ad18")
+        );
+        let idl_raw = vc95["pump_sdk_1_31_idl_json_raw"].as_str().unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(idl_raw.as_bytes())),
+            "0ba934dd633279d22c33b8ed247e0c06accf81f5c91537d68c2d20b592aa0f57"
+        );
+        assert_eq!(
+            vc95["provenance"]["pump_sdk_1_31_idl_sha256"].as_str(),
+            Some("0ba934dd633279d22c33b8ed247e0c06accf81f5c91537d68c2d20b592aa0f57")
+        );
+        let idl: serde_json::Value = serde_json::from_str(idl_raw).unwrap();
+        let option_bool = idl["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ty| ty["name"] == "OptionBool")
+            .unwrap();
+        assert_eq!(option_bool["type"]["kind"], "struct");
+        assert_eq!(option_bool["type"]["fields"][0], "bool");
+        for (name, argument_count, byte_count) in
+            [("buy", 3, 25), ("buy_exact_sol_in", 3, 25), ("sell", 2, 24)]
+        {
+            let instruction = idl["instructions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|instruction| instruction["name"] == name)
+                .unwrap();
+            assert_eq!(
+                instruction["args"].as_array().unwrap().len(),
+                argument_count
+            );
+            assert_eq!(instruction["args"][0]["type"], "u64");
+            assert_eq!(instruction["args"][1]["type"], "u64");
+            assert_eq!(
+                instruction["args"][2]["name"].as_str(),
+                (argument_count == 3).then_some("track_volume")
+            );
+            assert_eq!(8 + (2 * 8) + usize::from(argument_count == 3), byte_count);
+        }
+        let wire_audit_raw = vc95["wire_consistency_audit_raw"].as_str().unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(wire_audit_raw.as_bytes())),
+            "9ae25d1eeeaf46e0ffda5acf38f37d858b196cb754559523b1b17914e62bd784"
+        );
+        let wire_audit: serde_json::Value = serde_json::from_str(wire_audit_raw).unwrap();
+        assert_eq!(wire_audit["network_calls"], 0);
+        assert_eq!(wire_audit["database_writes"], 0);
+        assert_eq!(
+            wire_audit["vc95"]["complete_dated_idl_argument_decodes"],
+            390
+        );
+        assert_eq!(wire_audit["vc95"]["complete_event_cpi_trade_bindings"], 442);
+        assert_eq!(wire_audit["vc95"]["appended_account_event_count"], 121);
+        assert_eq!(wire_audit["vc95"]["appended_account_slot_count"], 172);
+        assert_eq!(
+            vc95["provenance"]["native_flow_audit_v2_sha256"].as_str(),
+            Some("b73417d3d66a64ab8c5f512a3bac61d4c7fda792a9637cd1ad4eecd4f9e1f485")
+        );
+        assert_eq!(
+            vc95["provenance"]["source_hashes"][".scout-data/diagnostics/solana-vC95-provenance-audit-2026-10-14/raw-provenance-audit-v2.json"],
+            "b73417d3d66a64ab8c5f512a3bac61d4c7fda792a9637cd1ad4eecd4f9e1f485"
+        );
+        assert_eq!(vc95["scope"]["unresolved_extra_account_slots"], 172);
+        let native_flow_scope = &vc95["native_flow_scope"];
+        assert_eq!(native_flow_scope["buy_event_input_count"], 233);
+        assert_eq!(native_flow_scope["sell_whole_transaction_delta_count"], 209);
+        assert_eq!(native_flow_scope["buy_extra_curve_inflow_count"], 1);
+        assert_eq!(native_flow_scope["sell_unrelated_curve_transfer_count"], 0);
+        assert_eq!(
+            native_flow_scope["buy_creation_rent_example"]["kind"],
+            "create_account_rent"
+        );
+        assert_eq!(
+            native_flow_scope["buy_creation_rent_example"]["lamports"],
+            1_468_560
+        );
+        assert_eq!(
+            native_flow_scope["buy_unknown_extra_inflow_example"]["kind"],
+            "unresolved_extra_system_transfer_to_curve"
+        );
+        assert_eq!(
+            native_flow_scope["buy_unknown_extra_inflow_example"]["signature"],
+            "2FvT5wBwzjWwAnHduzF8BRyhptHqHVP21hgtXgpYvPNp1zko66NdwhKPzcido2EC4LtVw9zoL7yCzGnFH2EFQ636"
+        );
+        assert_eq!(
+            native_flow_scope["buy_unknown_extra_inflow_example"]["event_input_lamports"],
+            33_977_059
+        );
+        assert_eq!(
+            native_flow_scope["buy_unknown_extra_inflow_example"]["lamports"],
+            473_280
+        );
+        assert_eq!(
+            native_flow_scope["buy_unknown_extra_inflow_example"]["whole_curve_balance_delta_lamports"],
+            34_450_339
+        );
+        assert_eq!(vc95["scope"]["endpoint_rows"].as_u64(), Some(1_661));
+        assert_eq!(vc95["scope"]["physical_price_marks"].as_u64(), Some(1_219));
+        assert_eq!(vc95["scope"]["curve_pre_intervals"].as_u64(), Some(442));
+        assert_eq!(vc95["fx_minutes"].as_array().unwrap().len(), 35);
+        let vc95_case = &vc95["case"];
+        assert_eq!(
+            vc95_case["mint"].as_str(),
+            Some("vC95xGRqaLWpYPkYrgMGtMqyFe8utiCjDoiMSKxpump")
+        );
+        assert_eq!(vc95_case["states"].as_array().unwrap().len(), 1_661);
+        assert_eq!(vc95_case["curve_pre_states"].as_array().unwrap().len(), 442);
+        assert_eq!(
+            vc95_case["curve_trade_bindings"].as_array().unwrap().len(),
+            442
+        );
+        assert_eq!(
+            vc95_case["certificate"]["stored_lower_fdv_cents"].as_u64(),
+            Some(49_712_596)
+        );
+        assert_eq!(
+            vc95_case["certificate"]["upper_fdv_cents_ceiling"].as_u64(),
+            Some(49_790_592)
+        );
+        assert_eq!(
+            vc95_case["certificate"]["strict_birth"]["strict_allowlist_pass"],
+            true
+        );
+        assert_eq!(
+            vc95_case["certificate"]["current_mint"]["extension_set_exact"],
+            true
+        );
+        assert_eq!(
+            vc95_case["certificate"]["current_mint"]["snapshot_is_finalized"],
+            true
+        );
+        assert_eq!(
+            vc95_case["certificate"]["current_mint"]["raw_account_length"].as_u64(),
+            Some(399)
+        );
+
+        let vc95_request_raw = vc95["current_mint_capture"]["request_json_raw"]
+            .as_str()
+            .unwrap();
+        let vc95_response_raw = vc95["current_mint_capture"]["response_json_raw"]
+            .as_str()
+            .unwrap();
+        let vc95_request_sha = format!("{:x}", Sha256::digest(vc95_request_raw.as_bytes()));
+        let vc95_response_sha = format!("{:x}", Sha256::digest(vc95_response_raw.as_bytes()));
+        let vc95_current = &vc95_case["certificate"]["current_mint"];
+        assert_eq!(vc95_request_sha, vc95_current["snapshot_request_sha256"]);
+        assert_eq!(vc95_response_sha, vc95_current["snapshot_response_sha256"]);
+        let vc95_request: serde_json::Value = serde_json::from_str(vc95_request_raw).unwrap();
+        let vc95_response: serde_json::Value = serde_json::from_str(vc95_response_raw).unwrap();
+        assert_eq!(vc95_request["method"], "getMultipleAccounts");
+        assert_eq!(vc95_request["params"][1]["commitment"], "finalized");
+        assert_eq!(vc95_request["params"][1]["encoding"], "base64");
+        assert_eq!(vc95_request["params"][0].as_array().unwrap().len(), 20);
+        assert_eq!(
+            vc95_response["result"]["context"]["slot"],
+            vc95_current["snapshot_context_slot"]
+        );
+        assert_eq!(
+            vc95_response["result"]["value"].as_array().unwrap().len(),
+            20
+        );
+        let vc95_mint_index = vc95_request["params"][0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|mint| mint.as_str() == vc95_case["mint"].as_str())
+            .unwrap();
+        let vc95_account = &vc95_response["result"]["value"][vc95_mint_index];
+        assert_eq!(vc95_account["owner"], vc95_current["owner"]);
+        assert_eq!(vc95_account["data"][0], vc95_current["raw_account_base64"]);
+        assert_eq!(vc95_account["data"][1], "base64");
+
+        let vc95_manifest_raw = vc95["canonical_manifest_raw"].as_str().unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(vc95_manifest_raw.as_bytes())),
+            vc95["canonical_manifest_sha256"]
+        );
+        let vc95_manifest: serde_json::Value = serde_json::from_str(vc95_manifest_raw).unwrap();
+        assert_eq!(vc95_manifest["status"], "complete");
+        assert_eq!(vc95_manifest["calls_used"].as_u64(), Some(3));
+        assert!(
+            vc95_manifest["calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|call| {
+                    call["http_status"].as_u64() == Some(200)
+                        && call["matches_frozen_tfa_object"] == true
+                })
+        );
+
+        let vc95_birth_raw = vc95_case["birth_transaction_response_raw"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(vc95_birth_raw.as_bytes())),
+            vc95_case["birth_transaction_response_sha256"]
+        );
+        let vc95_birth: serde_json::Value = serde_json::from_str(vc95_birth_raw).unwrap();
+        let vc95_birth = &vc95_birth["result"];
+        assert_eq!(
+            vc95_birth["transaction"]["signatures"][0],
+            vc95_case["birth_sample"]["signature"]
+        );
+        let vc95_birth_sample = &vc95_case["birth_sample"];
+        assert!(
+            vc95_birth_sample["log_messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line.as_str().unwrap().contains("Instruction: CreateV2"))
+        );
+        assert!(
+            vc95_birth_sample["log_messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line.as_str().unwrap().contains("Instruction: Buy"))
+        );
+        for event_name in ["create_event", "trade_event"] {
+            let payload = &vc95_birth_sample["event_payloads"][event_name];
+            let bytes = bytes_from_hex(payload["data_hex"].as_str().unwrap());
+            assert_eq!(format!("{:x}", Sha256::digest(&bytes)), payload["sha256"]);
+        }
+        assert_eq!(
+            vc95_birth_sample["event_payloads"]["create_event"]["sha256"],
+            "a3ef7c70ece0cf7bf1db4fe51cd8a25d681bb89d0b0d290dc8470a78f7b20f1f"
+        );
+        assert_eq!(
+            vc95_birth_sample["event_payloads"]["trade_event"]["sha256"],
+            "abc32de3644ca904d7a5abe77981067ed3e481574fb7b1f221cb539fb7ccbabb"
+        );
+        assert!(
+            vc95_birth_sample["pre_token_balances"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !vc95_birth_sample["post_token_balances"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        let recovered = &vc95_case["recovered_event_cpi_gap"];
+        let recovered_raw = recovered["response_raw"].as_str().unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(recovered_raw.as_bytes())),
+            recovered["response_sha256"]
+        );
+        assert_eq!(recovered["audit"]["child_before_parent_boundary"], true);
+        assert_eq!(recovered["audit"]["event_authority_match"], true);
+        assert_eq!(
+            recovered["audit"]["event_sha256"],
+            "a269c53b999b56044bb42be2ef18929761a5ad9da5058e781f0fcd0d996f7666"
+        );
+
+        let mut vc95_state_total = 0_usize;
+        let mut vc95_max_low: Option<(U512, U512)> = None;
+        let mut vc95_max_high: Option<(U512, U512)> = None;
+        let mut vc95_chronological = Vec::with_capacity(1_661);
+        for state in vc95_case["states"].as_array().unwrap() {
+            let minute = state["minute"].as_u64().unwrap();
+            let fx = vc95["fx_minutes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["minute_unix_s"].as_u64() == Some(minute))
+                .unwrap();
+            let native = ratio(state["price_native"].as_str().unwrap());
+            let fx_low = decimal_ratio(fx["low_usd_per_sol"].as_str().unwrap());
+            let fx_high = decimal_ratio(fx["high_usd_per_sol"].as_str().unwrap());
+            assert_eq!(
+                compare(
+                    (native.0 * fx_low.0, native.1 * fx_low.1),
+                    ratio(state["price_usd_low"].as_str().unwrap())
+                ),
+                Ordering::Equal
+            );
+            assert_eq!(
+                compare(
+                    (native.0 * fx_high.0, native.1 * fx_high.1),
+                    ratio(state["price_usd_high"].as_str().unwrap())
+                ),
+                Ordering::Equal
+            );
+            let low = fdv(
+                ratio(state["price_usd_low"].as_str().unwrap()),
+                U512::from(state["supply_low_raw"].as_u64().unwrap()),
+            );
+            let high = fdv(
+                ratio(state["price_usd_high"].as_str().unwrap()),
+                U512::from(state["supply_high_raw"].as_u64().unwrap()),
+            );
+            assert_eq!(
+                low.0 / low.1,
+                U512::from(state["fdv_low_cents"].as_u64().unwrap())
+            );
+            assert_eq!(
+                ceil_div(high.0, high.1),
+                U512::from(state["fdv_high_cents"].as_u64().unwrap())
+            );
+            if vc95_max_low.is_none_or(|current| compare(low, current).is_gt()) {
+                vc95_max_low = Some(low);
+            }
+            if vc95_max_high.is_none_or(|current| compare(high, current).is_gt()) {
+                vc95_max_high = Some(high);
+            }
+            let side_order = match state["side"].as_str().unwrap() {
+                "create" => 0_u8,
+                "pre" => 1_u8,
+                "post" => 2_u8,
+                _ => panic!("unexpected vC95 state side"),
+            };
+            vc95_chronological.push((
+                state["slot"].as_u64().unwrap(),
+                state["transaction_index"].as_u64().unwrap(),
+                state["log_index"].as_u64().unwrap(),
+                side_order,
+            ));
+            vc95_state_total += 1;
+        }
+        assert_eq!(vc95_state_total, 1_661);
+        assert!(vc95_chronological.windows(2).all(|pair| pair[0] <= pair[1]));
+        for (key, maximum, expected_cents) in [
+            (
+                "full_window_global_max_fdv_low",
+                vc95_max_low.unwrap(),
+                49_712_596,
+            ),
+            (
+                "full_window_global_max_fdv_high",
+                vc95_max_high.unwrap(),
+                49_790_592,
+            ),
+        ] {
+            let winner = &vc95_case["global_maxima"][key];
+            assert_eq!(
+                compare(
+                    maximum,
+                    ratio(winner["fdv_cents_unrounded"].as_str().unwrap())
+                ),
+                Ordering::Equal
+            );
+            assert_eq!(winner["fdv_cents"].as_u64(), Some(expected_cents));
+            assert!(vc95_case["states"].as_array().unwrap().iter().any(|state| {
+                state["signature"] == winner["signature"]
+                    && state["side"] == winner["side"]
+                    && state["log_index"] == winner["log_index"]
+            }));
+        }
+        assert_eq!(
+            compare(
+                vc95_max_low.unwrap(),
+                ratio(
+                    vc95_case["certificate"]["fdv_lower_unrounded_cents"]
+                        .as_str()
+                        .unwrap()
+                )
+            ),
+            Ordering::Equal
+        );
+        let vc95_upper = ratio(
+            vc95_case["certificate"]["fdv_upper_unrounded_cents"]
+                .as_str()
+                .unwrap(),
+        );
+        assert_eq!(compare(vc95_max_high.unwrap(), vc95_upper), Ordering::Equal);
+        let vc95_uncertainty = ratio(
+            vc95_case["certificate"]["combined_relative_uncertainty_including_cent_rounding"]
+                .as_str()
+                .unwrap(),
+        );
+        assert!(vc95_uncertainty.0 * U512::from(100) <= vc95_uncertainty.1 * U512::from(2));
+        assert!(vc95_uncertainty.0 * U512::from(100_000) < vc95_uncertainty.1 * U512::from(157));
+
+        let provider_price = decimal_ratio(
+            vc95_case["provider_peak"]["provider_price_usd"]
+                .as_str()
+                .unwrap(),
+        );
+        let max_price_low = ratio(
+            vc95_case["provider_peak"]["maximum_price_winner_low"]["usd_price_low_fraction"]
+                .as_str()
+                .unwrap(),
+        );
+        let max_price_high = ratio(
+            vc95_case["provider_peak"]["maximum_price_winner_high"]["usd_price_high_fraction"]
+                .as_str()
+                .unwrap(),
+        );
+        let within_two_percent = |candidate: (U512, U512)| {
+            let candidate_scaled = candidate.0 * provider_price.1;
+            let provider_scaled = provider_price.0 * candidate.1;
+            let delta = if candidate_scaled >= provider_scaled {
+                candidate_scaled - provider_scaled
+            } else {
+                provider_scaled - candidate_scaled
+            };
+            delta * U512::from(100) <= provider_scaled * U512::from(2)
+        };
+        assert!(within_two_percent(max_price_low));
+        assert!(within_two_percent(max_price_high));
+
+        for (pre, binding) in vc95_case["curve_pre_states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(vc95_case["curve_trade_bindings"].as_array().unwrap())
+        {
+            assert_eq!(pre["signature"], binding["signature"]);
+            assert_eq!(pre["event_sha256"], binding["event_sha256"]);
+            assert_eq!(binding["trade_roles"]["mint"], vc95_case["mint"]);
+            assert!(
+                transfer_is_bound(binding),
+                "vC95 transfer binding failed for {}",
+                binding["signature"]
+            );
+            let t = U512::from(pre["pre_virtual_token_raw"].as_u64().unwrap());
+            let a = U512::from(pre["event_token_amount_raw"].as_u64().unwrap());
+            let signed_delta = pre["actual_curve_native_delta_lamports"].as_i64().unwrap();
+            let d = U512::from(signed_delta.unsigned_abs());
+            assert_eq!(
+                pre["native_movement_measurement_kind"],
+                if pre["side_of_trade"] == "buy" {
+                    "scoped_system_event_input"
+                } else {
+                    "whole_transaction_curve_balance_delta"
+                }
+            );
+            assert_eq!(
+                d,
+                U512::from(pre["event_sol_amount_lamports"].as_u64().unwrap())
+            );
+            let candidate = U512::from(
+                pre["candidate_previous_post_virtual_sol_lamports"]
+                    .as_u64()
+                    .unwrap(),
+            );
+            let low = U512::from(
+                pre["pre_virtual_sol_interval_low_lamports"]
+                    .as_u64()
+                    .unwrap(),
+            );
+            let high = U512::from(
+                pre["pre_virtual_sol_interval_high_lamports"]
+                    .as_u64()
+                    .unwrap(),
+            );
+            assert!(low <= candidate && candidate <= high);
+            assert_eq!(
+                high - low + U512::from(1),
+                U512::from(
+                    pre["pre_virtual_sol_interval_integer_count"]
+                        .as_u64()
+                        .unwrap()
+                )
+            );
+            let formula = pre["pre_virtual_sol_interval_formula"].as_str().unwrap();
+            let (derived_low, derived_high) = match formula {
+                "buy_exact_token_out_cost_formula" => {
+                    assert!(signed_delta > 0 && t > a);
+                    (
+                        ceil_div((d - U512::from(1)) * (t - a), a),
+                        ceil_div(d * (t - a), a) - U512::from(1),
+                    )
+                }
+                "sell_sdk" => {
+                    assert!(signed_delta < 0);
+                    (
+                        ceil_div(d * (t + a), a),
+                        ceil_div((d + U512::from(1)) * (t + a), a) - U512::from(1),
+                    )
+                }
+                "exact_sol_in_net_minus_1" => {
+                    assert!(signed_delta > 0);
+                    (
+                        ((d - U512::from(1)) * t) / (a + U512::from(1)) + U512::from(2) - d,
+                        ((d - U512::from(1)) * t) / a + U512::from(1) - d,
+                    )
+                }
+                _ => panic!("unexpected vC95 curve interval formula"),
+            };
+            assert_eq!((low, high), (derived_low, derived_high));
+            let sdk_output = |q: U512| match formula {
+                "buy_exact_token_out_cost_formula" => a * q / (t - a) + U512::from(1),
+                "sell_sdk" => a * q / (t + a),
+                "exact_sol_in_net_minus_1" => (d - U512::from(1)) * t / (q + d - U512::from(1)),
+                _ => unreachable!(),
+            };
+            let output = if formula == "exact_sol_in_net_minus_1" {
+                a
+            } else {
+                d
+            };
+            assert_eq!(sdk_output(low), output);
+            assert_eq!(sdk_output(high), output);
+            assert_ne!(sdk_output(low - U512::from(1)), output);
+            assert_ne!(sdk_output(high + U512::from(1)), output);
+            assert!(pre["pre_virtual_sol_lamports"].is_null());
+
+            let shape = &pre["instruction_shape"];
+            let actual_data = bytes_from_hex(
+                binding["matched_trade_instruction"]["data_hex"]
+                    .as_str()
+                    .unwrap(),
+            );
+            assert_eq!(
+                actual_data.len(),
+                usize::try_from(shape["data_bytes"].as_u64().unwrap()).unwrap()
+            );
+            let instruction_name = pre["instruction_name"].as_str().unwrap();
+            let has_track_volume = matches!(instruction_name, "buy" | "buy_exact_sol_in");
+            if has_track_volume && actual_data.len() == 25 {
+                assert!(matches!(actual_data[24], 0 | 1));
+                assert_eq!(shape["track_volume_bool"], actual_data[24] == 1);
+                assert_eq!(shape["legacy_wire_gap_missing_track_volume"], false);
+            } else if has_track_volume {
+                assert_eq!(actual_data.len(), 24);
+                assert_eq!(shape["track_volume_bool"], serde_json::Value::Null);
+                assert_eq!(shape["legacy_wire_gap_missing_track_volume"], true);
+            } else {
+                assert_eq!(instruction_name, "sell");
+                assert_eq!(actual_data.len(), 24);
+                assert_eq!(shape["track_volume_bool"], serde_json::Value::Null);
+                assert_eq!(shape["legacy_wire_gap_missing_track_volume"], false);
+            }
+            let accounts = binding["matched_trade_instruction"]["accounts"]
+                .as_array()
+                .unwrap();
+            let account_count = u64::try_from(accounts.len()).unwrap();
+            assert_eq!(account_count, shape["account_count"].as_u64().unwrap());
+            let idl_accounts = shape["dated_idl_account_count"].as_u64().unwrap();
+            assert_eq!(
+                shape["unresolved_extra_account_count"].as_u64().unwrap(),
+                account_count.saturating_sub(idl_accounts)
+            );
+        }
+        let mut vc95_bad_authority = vc95_case["curve_trade_bindings"][0].clone();
+        vc95_bad_authority["scoped_transfers"][0]["authority"] =
+            serde_json::json!("11111111111111111111111111111111");
+        assert!(!transfer_is_bound(&vc95_bad_authority));
+        let mut vc95_bad_mint = vc95_case["curve_trade_bindings"][0].clone();
+        vc95_bad_mint["scoped_transfers"][0]["mint"] =
+            serde_json::json!("So11111111111111111111111111111111111111112");
+        assert!(!transfer_is_bound(&vc95_bad_mint));
+        let mut vc95_out_of_scope = vc95_case["curve_trade_bindings"][0].clone();
+        vc95_out_of_scope["scoped_transfers"][0]["inner_index"] =
+            vc95_out_of_scope["subtree_end"].clone();
+        assert!(!transfer_is_bound(&vc95_out_of_scope));
     }
 
     #[test]

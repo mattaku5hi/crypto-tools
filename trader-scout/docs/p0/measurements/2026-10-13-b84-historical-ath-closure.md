@@ -285,3 +285,22 @@ and original current-mint capture hashes; numeric values are unchanged.
 
 Latest78-closure state package includes all current writes, exact dump-row
 reconciliation and corrected capture provenance; see the [archive checkpoint](2026-10-13-local-daemon-and-year-coverage.md). Its own full restore is not claimed.
+
+## vC95 chronological supply-weighted reference (Oct14)
+
+After616 successful transactions, six exact supply instructions, all1661
+price/FX/supply endpoints and three canonical recaptures reconcile, vC95 adds
+$497,125.96 as a scoped conditional SDK-model lower reference. The upper
+endpoint is$497,905.92; combined uncertainty is below0.157%. All334 selected-
+pool vault marks and442 curve transfers are independently bound to raw
+captures. One incomplete log stack is recovered by a unique exact event CPI;
+one additional curve transfer remains an unexplained route flow. Dated SDK
+argument interpretation is corrected:25-byte buys include track_volume;
+52 shorter buys and appended account roles remain gaps. A retroactive audit
+confirms unchanged main3 arithmetic while recording28 shorter buy variants.
+See [vC95 evidence](2026-10-14-solana-vc95-chronological-fdv.md), amendment45.
+
+Full fmt/Clippy/1234tests passed before the atomic guarded write; holder/
+liquidity metadata and null ATH date are preserved. Current79closures are
+SOL65/Base2/RH12; fixedcohort513numeric/166unknown. The78-closure archive above
+predates this latest write. Annual/all-market ATH remains incomplete.
