@@ -2593,3 +2593,34 @@ and one public Coinbase GET for BQJF. Existing historical supply and provider
 captures are reused. No new Solana Tracker or Codex requests, no retries.
 
 Measurement: `docs/p0/measurements/2026-10-14-solana-fnfp-bqjf-observed-windows.md`.
+
+## Amendment 56 (2026-10-14) — BbM37/D28 bounded observed windows
+
+Apply the existing amendment51
+`onchain-pool-window-bounded-supply-cex-reference-v1` to all 14 captured
+actual-vault marks. An observed-window maximum uses both PRE and POST states;
+it does not require interpolating to the provider's millisecond timestamp or
+discarding a terminal window without a strict before/after bracket. Correct
+the old diagnostic exclusions while retaining whole-second timing uncertainty.
+This does not change the live decoder or runner gates.
+
+Canonical birth MintTo operations followed by authority revocation and later
+standard mint accounts prove monotone birth-to-current supply intervals.
+BbM raw interval is1999950095876448–2000000000000000, D28
+999998621881978–1000000000000000. Token-2022 extensions for BbM are metadata-only;
+D28 is classic SPL. Exact per-state supply and complete burn history remain
+unknown. Both interval widths and global low/high price deviations meet the
+existing2% gates. Three canonical winner/latest objects match saved full rows.
+
+Observed FDV floor/ceil cents are1273820/1274286 and10955938/10961131.
+Use current supply only as the conservative lower bound, birth as upper.
+Keep null dates, original holders/liquidity, conditional vault-model scope and
+annual/all-market gaps. No runner membership follows from these sub-threshold
+references. Three new Helius methods; no new provider-price or history requests.
+
+Corrected proofv3/auditv5 preserve accurate candle open/close/volume labels;
+their earlier low/high monetary calculations are unchanged. Golden and guarded
+writes pin only these latest immutable proofs and the root certificate
+`6f6f0a6b32e8ddad82abeb42d14d4b8cebabf786692b6071ae1f8ac5534b54b2`.
+
+Measurement: `docs/p0/measurements/2026-10-14-solana-bbm-d28-bounded-windows.md`.
