@@ -1884,3 +1884,50 @@ provider recording window and other-market/year coverage remain unknown.
 Stored FDV is a conservative reference estimate, not an exact peak or a
 wallet execution cost. Import-file labels contain runner counts rather than
 claiming exact FDV; source detail remains in ATH records and this evidence.
+
+## Amendment 41 (2026-10-14) — transaction-local PumpSwap pool creation
+
+The saved neighborhoods for CtN5TQw6… and G3HyEDPZ… contain a first buy in
+the same transaction that creates the pool and its vault accounts. Their
+transaction-start preTokenBalances correctly omit these vaults. Treating
+this as swap-pre state loses the event; synthesizing zero is also wrong.
+The exact intra-transaction pre state is reconstructed from ordered actual
+SPL funding transfers after vault initialization and before the buy. Bound
+BuyEvent reserve fields must equal that funding state; the selected buy's
+scoped vault transfers must equal the event transition and canonical final
+post balances. Unknown operations touching those vaults are not skipped.
+
+G3Hy's Program-data logs are truncated, but its actual event-CPI instruction
+is complete. The targeted proof binds the CPI by the pinned program and
+event-authority account, parent instruction stack scope, unique compatible
+trade, target mint/pool/vault identities and event timestamp. A following
+CPI in the same outer group alone is insufficient. Unknown CreatePool event
+bytes remain preserved; they are not parsed as a trade or supply instruction.
+This is a captured-case verification path, not a general production fallback.
+
+Every pre/post price state in each terminal ±3-second selected-pool window
+participates in the global FX endpoint maxima. The CtN5 and G3Hy maxima
+agree within 2% with the saved provider prices, with maximum states three
+and one seconds before the provider timestamps respectively. The 69KX
+negative control has a higher full-window post state one second after the
+provider peak, about 6.9% above it; it remains unknown. A matching earlier
+state must not hide that future higher value.
+
+The same conservative interval policy as amendment40 applies: use saved
+provider price times verified current supply, floor to cents, and require
+both the unrounded birth-supply upper error and both independent combined
+price/supply endpoint errors <=2%. Exact peak supply and complete historical
+burn ledgers are not claimed. Named lower floors are 7,547,302 and5,854,639
+cents, with the explicit lower-bound source, null ATH dates and preserved
+holder/liquidity metadata. Guarded writes follow isolated workspace checks
+and require the exact original observation and previous missing-row version.
+
+Golden `solana_tracker_pumpswap_prebalance_window_cases.json` replays actual
+CreatePool, vault initialization/funding and BuyEvent bytes, the full318
+pre/post price states, exact combined gates and malformed binding controls.
+Root's independent interval certificate SHA-256 is
+`80e48c14b032a1b0d36f0956ba8384295ebdc8b61efd66e637e93d3e52ea1c57`;
+the strict all-window/binding v5 proof is
+`127348ce325353679112d28958e7009dba29d9c25ce8b41a5047979274074976`.
+Canonical confirmation uses three recovered-transaction recaptures plus two
+winning-price recaptures, five explicitly budgeted methods total.

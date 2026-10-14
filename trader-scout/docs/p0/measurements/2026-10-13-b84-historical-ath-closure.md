@@ -1,14 +1,14 @@
 # B8.4 historical ATH closures — 2026-10-13
 
-Sixty-eight guarded writes extend the immutable 679-token diagnostic cohort from
-434 numeric / 245 unknown to **502 numeric / 177 unknown** (Oct 14 Moscow). This is a
+Seventy guarded writes extend the immutable 679-token diagnostic cohort from
+434 numeric / 245 unknown to **504 numeric / 175 unknown** (Oct 14 Moscow). This is a
 candidate-cohort checkpoint, not a coverage percentage for all annual network
 launches. Numeric records retain source-specific price kinds and historical
 scope; annual all-market ATH is still incomplete.
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Solana | 68 | 42 |
+| Solana | 70 | 40 |
 | BSC | 13 | 0 |
 | Base | 403 | 100 |
 | Robinhood | 18 | 35 |
@@ -228,3 +228,16 @@ ADR-021 amendment 40. Holders/liquidity are preserved; `ath_at=NULL`. Two
 roughly 44% supply-bound controls remain unknown. Total closures since the
 immutable 434 baseline are 68: SOL54/Base2/RH12. Workspace fmt, all-target
 all-feature Clippy and 1232 tests passed against the isolated test database.
+
+## Transaction-local vault recovery (Oct14)
+
+CtN5 and G3Hy add two explicit conservative lower estimates, $75,473.02
+and $58,546.39. Exact scoped initialization/funding/buy transfers recover
+missing intra-transaction pre states; G3Hy retains its intact event CPI despite
+truncated logs. All318 neighborhood states participate in maxima. The69KX
+control has a6.8–6.9% higher global state and remains unknown. See
+[transaction-local vault evidence](2026-10-14-solana-transaction-local-vaults.md),
+ADR-021 amendment41. Guarded writes and read-back passed after full
+fmt/Clippy/1233tests. Current70closures are SOL56/Base2/RH12; the fixed
+cohort is504numeric/175unknown. The separately dated68-closure state package
+is retained; it does not contain these last two writes.

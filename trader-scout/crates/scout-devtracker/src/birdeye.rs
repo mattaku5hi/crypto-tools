@@ -6202,6 +6202,519 @@ mod tests {
     }
 
     #[test]
+    fn solana_tracker_pumpswap_prebalance_binding_and_full_window_gates() {
+        use alloy_primitives::U512;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_pumpswap_prebalance_window_cases.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["provenance"]["window_proof_v5_sha256"].as_str(),
+            Some("127348ce325353679112d28958e7009dba29d9c25ce8b41a5047979274074976")
+        );
+        let pow10 = |scale: u32| {
+            (0..scale)
+                .try_fold(U512::from(1), |value, _| value.checked_mul(U512::from(10)))
+                .unwrap()
+        };
+        let decimal_ratio = |value: &str| {
+            let decimal = ExactDecimal::parse(value).unwrap();
+            (
+                U512::from(decimal.coefficient),
+                pow10(u32::try_from(decimal.scale).unwrap()),
+            )
+        };
+        let compare_ratio = |a: (U512, U512), b: (U512, U512)| (a.0 * b.1).cmp(&(b.0 * a.1));
+        let within_two = |a: (U512, U512), b: (U512, U512)| {
+            let left = a.0 * b.1;
+            let right = b.0 * a.1;
+            let delta = if left >= right {
+                left - right
+            } else {
+                right - left
+            };
+            delta * U512::from(100) <= right * U512::from(2)
+        };
+        let is_bound = |row: &serde_json::Value| {
+            let create = &row["create_pool"];
+            let buy = &row["buy"];
+            let event = &row["buy_event_cpi"];
+            let create_pos = (
+                create["outer"].as_u64().unwrap(),
+                create["inner"].as_i64().unwrap(),
+            );
+            let buy_pos = (
+                buy["outer"].as_u64().unwrap(),
+                buy["inner"].as_i64().unwrap(),
+            );
+            let event_pos = (
+                event["outer"].as_u64().unwrap(),
+                event["inner"].as_i64().unwrap(),
+            );
+            let boundary = (
+                row["same_outer_parent_boundary"][0].as_u64().unwrap(),
+                row["same_outer_parent_boundary"][1].as_i64().unwrap(),
+            );
+            let accounts = event["accounts"].as_array().unwrap();
+            if create_pos >= buy_pos
+                || event_pos.0 != buy_pos.0
+                || event_pos <= buy_pos
+                || event_pos >= boundary
+                || event["stack_height"].as_u64().unwrap()
+                    != buy["stack_height"].as_u64().unwrap() + 1
+                || accounts.len() != 1
+                || accounts[0].as_str() != row["buy_event_authority"].as_str()
+                || buy["roles"]["event_authority"].as_str() != row["buy_event_authority"].as_str()
+                || buy["roles"]["program"].as_str()
+                    != Some("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
+                || row["binding_expectations"]["create_pool_tail_bytes"].as_u64() != Some(0)
+                || row["binding_expectations"]["buyevent_tail_bytes"].as_u64() != Some(0)
+                || row["ata_initializers"]
+                    .as_array()
+                    .is_none_or(|a| a.len() != 2)
+                || row["vault_transfer_checked_instructions"]
+                    .as_array()
+                    .is_none_or(|a| a.len() != 4)
+                || row["unrecognized_vault_token_operations"]
+                    .as_array()
+                    .is_none_or(|a| !a.is_empty())
+            {
+                return false;
+            }
+            let inits = row["token_account_initializers"].as_array().unwrap();
+            row["ata_initializers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|ata| {
+                    let vault = ata["accounts"][1].as_str().unwrap();
+                    let is_base = vault == row["vaults"]["base"].as_str().unwrap();
+                    let mint = if is_base {
+                        row["mint"].as_str().unwrap()
+                    } else {
+                        row["quote_mint"].as_str().unwrap()
+                    };
+                    let ata_pos = (
+                        ata["outer"].as_u64().unwrap(),
+                        ata["inner"].as_i64().unwrap(),
+                    );
+                    ata["program"].as_str() == Some("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+                        && ata["data_hex"].as_str() == Some("01")
+                        && ata_pos < create_pos
+                        && ata["accounts"][2].as_str() == row["pool"].as_str()
+                        && ata["accounts"][3].as_str() == Some(mint)
+                        && ata["accounts"][5].as_str()
+                            == row["create_pool"]["roles"][if is_base {
+                                "base_token_program"
+                            } else {
+                                "quote_token_program"
+                            }]
+                            .as_str()
+                        && inits
+                            .iter()
+                            .filter(|ix| {
+                                let data = bytes_from_hex(ix["data_hex"].as_str().unwrap());
+                                let pos =
+                                    (ix["outer"].as_u64().unwrap(), ix["inner"].as_i64().unwrap());
+                                ix["program"].as_str()
+                                    == row["create_pool"]["roles"][if is_base {
+                                        "base_token_program"
+                                    } else {
+                                        "quote_token_program"
+                                    }]
+                                    .as_str()
+                                    && ix["accounts"][0].as_str() == Some(vault)
+                                    && pos < create_pos
+                                    && data.len() == 33
+                                    && data[0] == 18
+                                    && bs58::encode(&data[1..]).into_string()
+                                        == row["pool"].as_str().unwrap()
+                            })
+                            .count()
+                            == 1
+                })
+        };
+
+        let mut outcomes = Vec::new();
+        for row in fixture["cases"].as_array().unwrap() {
+            assert!(row["full_window_complete"].as_bool().unwrap());
+            assert_eq!(
+                usize::try_from(row["verified_state_count"].as_u64().unwrap()).unwrap(),
+                row["states"].as_array().unwrap().len()
+            );
+            assert!(is_bound(row));
+            let create_data = bytes_from_hex(row["create_pool"]["data_hex"].as_str().unwrap());
+            assert_eq!(&create_data[..8], &[233, 146, 209, 142, 207, 104, 64, 188]);
+            assert_eq!(
+                u16::from_le_bytes(create_data[8..10].try_into().unwrap()),
+                0
+            );
+            assert_eq!(
+                u64::from_le_bytes(create_data[10..18].try_into().unwrap()),
+                206_900_000_000_000
+            );
+            let create_quote = u64::from_le_bytes(create_data[18..26].try_into().unwrap());
+            assert_eq!(create_data[58], 0, "captured pool is not in mayhem mode");
+            if row["label"].as_str() == Some("G3Hy") {
+                assert_eq!(create_data.len(), 60);
+                assert_eq!(create_data[59], 0, "Feb IDL cashback OptionBool is false");
+            } else {
+                assert_eq!(create_data.len(), 59);
+            }
+            let create_roles = &row["create_pool"]["roles"];
+            assert_eq!(create_roles["pool"].as_str(), row["pool"].as_str());
+            assert_eq!(create_roles["base_mint"].as_str(), row["mint"].as_str());
+            assert_eq!(
+                create_roles["quote_mint"].as_str(),
+                row["quote_mint"].as_str()
+            );
+            assert_eq!(
+                create_roles["pool_base_token_account"].as_str(),
+                row["vaults"]["base"].as_str()
+            );
+            assert_eq!(
+                create_roles["pool_quote_token_account"].as_str(),
+                row["vaults"]["quote"].as_str()
+            );
+            assert_eq!(
+                create_quote.to_string(),
+                row["reserve_transition"]["pre"]["quote"].as_str().unwrap()
+            );
+            let event_ix =
+                raw_instruction_from_hex(row["buy_event_cpi"]["data_hex"].as_str().unwrap());
+            let (base_pre, quote_pre, base_out, quote_in, event_time) =
+                match scout_dex_solana::classify_pump_amm_event(&event_ix) {
+                    scout_dex_solana::PumpAmmEventOutcome::Trade(
+                        scout_dex_solana::PumpAmmEvent::Buy(event),
+                    ) => {
+                        assert_eq!(bs58::encode(event.pool).into_string(), row["pool"]);
+                        assert_eq!(event.virtual_quote_reserves, None);
+                        (
+                            event.pool_base_token_reserves,
+                            event.pool_quote_token_reserves,
+                            event.base_amount_out,
+                            event.quote_amount_in_with_lp_fee,
+                            event.timestamp,
+                        )
+                    }
+                    other => panic!("bound event did not decode as BuyEvent: {other:?}"),
+                };
+            assert_eq!(
+                event_time,
+                i64::try_from(row["buy_event_cpi"]["block_time_unix_s"].as_u64().unwrap()).unwrap()
+            );
+            let state = &row["reserve_transition"];
+            assert_eq!(base_pre.to_string(), state["pre"]["base"].as_str().unwrap());
+            assert_eq!(
+                quote_pre.to_string(),
+                state["pre"]["quote"].as_str().unwrap()
+            );
+            assert_eq!(
+                base_pre - base_out,
+                state["post"]["base"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap()
+            );
+            assert_eq!(
+                quote_pre + quote_in,
+                state["post"]["quote"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap()
+            );
+            assert_eq!(row["post_vault_balances"].as_array().unwrap().len(), 2);
+            let transfers = row["vault_transfer_checked_instructions"]
+                .as_array()
+                .unwrap();
+            let create_pos = (
+                row["create_pool"]["outer"].as_u64().unwrap(),
+                row["create_pool"]["inner"].as_i64().unwrap(),
+            );
+            let buy_pos = (
+                row["buy"]["outer"].as_u64().unwrap(),
+                row["buy"]["inner"].as_i64().unwrap(),
+            );
+            let mut funding_count = 0;
+            let mut buy_count = 0;
+            for ix in transfers {
+                let bytes = bytes_from_hex(ix["data_hex"].as_str().unwrap());
+                assert_eq!(bytes.len(), 10);
+                assert_eq!(bytes[0], 12);
+                let amount = u64::from_le_bytes(bytes[1..9].try_into().unwrap());
+                let accounts = ix["accounts"].as_array().unwrap();
+                let source = accounts[0].as_str().unwrap();
+                let token_mint = accounts[1].as_str().unwrap();
+                let destination = accounts[2].as_str().unwrap();
+                let vault = if source == row["vaults"]["base"].as_str().unwrap()
+                    || destination == row["vaults"]["base"].as_str().unwrap()
+                {
+                    row["vaults"]["base"].as_str().unwrap()
+                } else {
+                    row["vaults"]["quote"].as_str().unwrap()
+                };
+                let transfer_pos = (ix["outer"].as_u64().unwrap(), ix["inner"].as_i64().unwrap());
+                if transfer_pos > create_pos && transfer_pos < buy_pos {
+                    funding_count += 1;
+                    assert_eq!(destination, vault);
+                    assert_eq!(
+                        accounts[3].as_str(),
+                        row["create_pool"]["roles"]["creator"].as_str()
+                    );
+                    assert_eq!(
+                        source,
+                        row["create_pool"]["roles"][if vault
+                            == row["vaults"]["base"].as_str().unwrap()
+                        {
+                            "user_base_token_account"
+                        } else {
+                            "user_quote_token_account"
+                        }]
+                        .as_str()
+                        .unwrap()
+                    );
+                    assert_eq!(
+                        amount.to_string(),
+                        row["reserve_transition"]["pre"][if vault
+                            == row["vaults"]["base"].as_str().unwrap()
+                        {
+                            "base"
+                        } else {
+                            "quote"
+                        }]
+                        .as_str()
+                        .unwrap()
+                    );
+                    let token_role = if vault == row["vaults"]["base"].as_str().unwrap() {
+                        "base_token_program"
+                    } else {
+                        "quote_token_program"
+                    };
+                    assert_eq!(
+                        ix["program"].as_str(),
+                        row["create_pool"]["roles"][token_role].as_str()
+                    );
+                } else if transfer_pos > buy_pos {
+                    buy_count += 1;
+                    assert_eq!(
+                        ix["stack_height"].as_u64().unwrap(),
+                        row["buy"]["stack_height"].as_u64().unwrap() + 1
+                    );
+                    if vault == row["vaults"]["base"].as_str().unwrap() {
+                        assert_eq!(accounts[3].as_str(), row["pool"].as_str());
+                        assert_eq!(source, vault);
+                        assert_eq!(
+                            destination,
+                            row["buy"]["roles"]["user_base_token_account"]
+                                .as_str()
+                                .unwrap()
+                        );
+                        assert_eq!(amount, base_out);
+                    } else {
+                        assert_eq!(accounts[3].as_str(), row["buy"]["roles"]["user"].as_str());
+                        assert_eq!(
+                            source,
+                            row["buy"]["roles"]["user_quote_token_account"]
+                                .as_str()
+                                .unwrap()
+                        );
+                        assert_eq!(destination, vault);
+                        assert_eq!(amount, quote_in);
+                    }
+                    let token_role = if vault == row["vaults"]["base"].as_str().unwrap() {
+                        "base_token_program"
+                    } else {
+                        "quote_token_program"
+                    };
+                    assert_eq!(
+                        ix["program"].as_str(),
+                        row["create_pool"]["roles"][token_role].as_str()
+                    );
+                } else {
+                    panic!("vault transfer is outside CreatePool funding or target buy scope");
+                }
+                assert_eq!(
+                    bytes[9],
+                    if token_mint == row["mint"].as_str().unwrap() {
+                        6
+                    } else {
+                        9
+                    }
+                );
+                let token_role = if token_mint == row["mint"].as_str().unwrap() {
+                    "base_token_program"
+                } else {
+                    assert_eq!(token_mint, row["quote_mint"].as_str().unwrap());
+                    "quote_token_program"
+                };
+                assert_eq!(
+                    ix["program"].as_str(),
+                    row["create_pool"]["roles"][token_role].as_str()
+                );
+            }
+            assert_eq!((funding_count, buy_count), (2, 2));
+            for balance in row["post_vault_balances"].as_array().unwrap() {
+                let base_vault = balance["account"].as_str() == row["vaults"]["base"].as_str();
+                let expected = if base_vault {
+                    state["post"]["base"].as_str().unwrap()
+                } else {
+                    state["post"]["quote"].as_str().unwrap()
+                };
+                assert_eq!(balance["raw_amount"].as_str(), Some(expected));
+                assert_eq!(balance["owner"].as_str(), row["pool"].as_str());
+                assert_eq!(
+                    balance["mint"].as_str(),
+                    if base_vault {
+                        row["mint"].as_str()
+                    } else {
+                        row["quote_mint"].as_str()
+                    }
+                );
+            }
+            let provider = decimal_ratio(row["provider_price_usd"].as_str().unwrap());
+            type Mark = ((U512, U512), i64, String);
+            let mut marks: [Vec<Mark>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+            for s in row["states"].as_array().unwrap() {
+                assert!(s["offset_from_peak_s"].as_i64().unwrap().abs() <= 3);
+                assert_eq!(
+                    s["coinbase_minute_unix_s"].as_u64().unwrap(),
+                    s["block_time_unix_s"].as_u64().unwrap() / 60 * 60
+                );
+                let base = U512::from(
+                    s["base_vault_raw"]
+                        .as_str()
+                        .unwrap()
+                        .parse::<u64>()
+                        .unwrap(),
+                );
+                let quote = U512::from(
+                    s["quote_vault_raw"]
+                        .as_str()
+                        .unwrap()
+                        .parse::<u64>()
+                        .unwrap(),
+                );
+                let native = (quote * pow10(6), base * U512::from(1_000_000_000_u64));
+                for (i, key) in ["sol_usd_low", "sol_usd_close", "sol_usd_high"]
+                    .iter()
+                    .enumerate()
+                {
+                    let fx = decimal_ratio(s[*key].as_str().unwrap());
+                    marks[i].push((
+                        (native.0 * fx.0, native.1 * fx.1),
+                        s["offset_from_peak_s"].as_i64().unwrap(),
+                        s["signature"].as_str().unwrap().to_owned(),
+                    ));
+                }
+            }
+            for endpoint in &mut marks {
+                endpoint.sort_by(|a, b| compare_ratio(a.0, b.0));
+            }
+            let price_pass = marks
+                .iter()
+                .all(|states| within_two(states.last().unwrap().0, provider));
+            let label = row["label"].as_str().unwrap();
+            match label {
+                "69KX" => {
+                    assert_eq!(marks[1].last().unwrap().1, 1);
+                    assert!(marks[1].iter().any(|mark| {
+                        mark.2.starts_with("2FCxxFF2")
+                            && compare_ratio(mark.0, marks[1].last().unwrap().0).is_eq()
+                    }));
+                    assert!(!price_pass);
+                }
+                "CtN5" => {
+                    assert!(marks[0].iter().any(|mark| {
+                        mark.1 == -3 && compare_ratio(mark.0, marks[0].last().unwrap().0).is_eq()
+                    }));
+                    assert!(price_pass);
+                }
+                "G3Hy" => {
+                    assert_eq!(marks[0].last().unwrap().1, -1);
+                    assert!(price_pass);
+                }
+                _ => panic!("unexpected mint case"),
+            }
+            let supply = &row["supply"];
+            let birth = supply["birth_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            let current = supply["current_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            assert_eq!(birth, 1_000_000_000_000_000);
+            assert!(
+                (birth - current) * 50 <= birth,
+                "current-to-birth supply interval exceeds 2%"
+            );
+            assert_eq!(supply["decimals"].as_u64(), Some(6));
+            assert!(
+                supply["mint_authority_none"].as_bool().unwrap()
+                    && supply["extension_set_exact"].as_bool().unwrap()
+                    && supply["birth_allowlist_pass"].as_bool().unwrap()
+            );
+            let price = ExactDecimal::parse(row["provider_price_usd"].as_str().unwrap()).unwrap();
+            let cents = price.fdv_cents_for_raw_supply(current, 6).unwrap();
+            let provider_upper = (provider.0 * U512::from(birth), provider.1 * pow10(6));
+            assert!(U512::from(98) * provider_upper.0 <= U512::from(cents) * provider_upper.1);
+            let stored = (provider.0 * U512::from(current), provider.1 * pow10(6));
+            let independent_low = marks[0].last().unwrap().0;
+            let independent_high = marks[2].last().unwrap().0;
+            let low_fdv = (
+                independent_low.0 * U512::from(current),
+                independent_low.1 * pow10(6),
+            );
+            let high_fdv = (
+                independent_high.0 * U512::from(birth),
+                independent_high.1 * pow10(6),
+            );
+            let supply_price_pass = within_two(stored, low_fdv) && within_two(stored, high_fdv);
+            assert_eq!(supply_price_pass, label != "69KX");
+            outcomes.push((label, cents, price_pass, supply_price_pass));
+        }
+        assert_eq!(
+            outcomes,
+            vec![
+                ("69KX", 7_963_221, false, false),
+                ("CtN5", 7_547_302, true, true),
+                ("G3Hy", 5_854_639, true, true)
+            ]
+        );
+
+        let mut rogue = fixture["cases"][1].clone();
+        rogue["buy_event_cpi"]["accounts"][0] =
+            serde_json::Value::String("11111111111111111111111111111111".into());
+        assert!(!is_bound(&rogue));
+        let mut outside = fixture["cases"][1].clone();
+        outside["buy_event_cpi"]["inner"] = outside["same_outer_parent_boundary"][1].clone();
+        assert!(!is_bound(&outside));
+        let mut missing_init = fixture["cases"][1].clone();
+        missing_init["token_account_initializers"] = serde_json::Value::Array(Vec::new());
+        assert!(!is_bound(&missing_init));
+        let mut unknown_op = fixture["cases"][1].clone();
+        unknown_op["unrecognized_vault_token_operations"] =
+            serde_json::json!([{"opcode":3,"touches_pool_vault":true}]);
+        assert!(!is_bound(&unknown_op));
+        let mut malformed = raw_instruction_from_hex(
+            fixture["cases"][1]["buy_event_cpi"]["data_hex"]
+                .as_str()
+                .unwrap(),
+        );
+        malformed.data.truncate(20);
+        assert!(!matches!(
+            scout_dex_solana::classify_pump_amm_event(&malformed),
+            scout_dex_solana::PumpAmmEventOutcome::Trade(scout_dex_solana::PumpAmmEvent::Buy(_))
+        ));
+    }
+
+    #[test]
     fn solana_tracker_doy_full_neighborhood_marks_and_supply_match() {
         use alloy_primitives::U512;
         use sha2::{Digest, Sha256};

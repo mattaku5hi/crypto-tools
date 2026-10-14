@@ -230,3 +230,24 @@ The live binary is unchanged from source `7c1ca5c…`; verified test/documentati
 changes are at `7da9765…`. The service has zero restarts. This package is a
 new partial-ATH checkpoint, not a claim that B8.4 or annual market-wide ATH
 coverage is complete.
+
+## Sixty-eight-closure state checkpoint (2026-10-14)
+
+After the twelve conservative lower estimates (ADR-021 amendment40), a new
+private schema10 bundle freezes 502 numeric /177 unknown in the fixed679
+diagnostic cohort. Runtime binary remains source7c1ca5c, SHA-256
+`b762ee94fc36d0f5f9a346f87e5c646edf01bea0c18a4e389c53c03c80f3700d`;
+configuration checkout396cf90. The consistent pg_dump ran from
+02:21:56 to02:23:07UTC without pausing the daemon. All68 closures match its
+ATH table exactly, including holder/liquidity metadata and all12 explicit
+lower-bound sources. This supersedes the separately preserved26-closure
+bundle as the latest state checkpoint.
+
+Private archive:
+`.scout-data/deployment/2026-10-14-b84-68-closures/trader-scout-state-schema10-b84-68-closures-20261014.tar`,
+3,014,778,880bytes, SHA-256
+`8562eece3e9dfc10072b7891caa23c3154e5df3473c1a6f872573a1265ee2820`.
+Its39 allowlisted payloads include36 separately dated import exports; no
+secrets. Dump TOC, packing, extraction, all payload hashes and0600/0700 modes
+passed; workspace fmt/Clippy/1232tests are hash-linked. Fresh full restore is
+a separate pending check, not claimed by archive extraction.
