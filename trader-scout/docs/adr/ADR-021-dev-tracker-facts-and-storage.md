@@ -2373,3 +2373,39 @@ Independent raw/model audit:
 `4400fe289254568bb41357f329e51dd54dec1566734728772069bc59da55fb16`.
 Independent raw supply-bound audit:
 `33d8e99b4aefab3f6140db6005108b72a2cd10b538ff2a4ff9376efcaeaa522c`.
+
+## Amendment 51 (2026-10-14) — captured vault states despite instruction-layout gaps
+
+6SFB and 7rWY use existing `onchain-pool-window-bounded-supply-cex-reference-v1`
+for conditional real-vault-ratio observations. Raw pool account identity and
+transaction balance metadata bind 50/42 PRE/POST states from 25/21 successful
+transactions. The 150/126 low/close/high calculations are three FX endpoints
+per state, not additional reserve observations. All observed global price
+extrema agree within 2% with the saved provider peaks. Dated-IDL diagnostics
+retain 18/29 instruction-layout variances; absent/variant bytes have no inferred
+bool or default. Neither full ABI support nor internal spot equivalence follows
+from a reproducible real-vault ratio.
+
+Both raw birth receipts issue 1e15 raw units and revoke mint authority in the
+same transaction. Later legacy SPL mint accounts at exact request indexes 1/15,
+slot 456610930, have 82-byte layouts, decimals 6, no authorities or extensions,
+and supplies 999999485135843 / 999961149869882 raw. These bound supply, rather
+than reconstructing exact burn times. The observed-state FDV intervals are
+8372684–8380093 and 11418986–11435750 cents, with outward rounding.
+
+6SFB has 25 successful and 14 failed captured transactions, with a terminal
+successful-query follow-up. 7rWY has 21 successful and 2 failed captured
+transactions; its 20-row continuation overlaps the initial response before an
+empty page. This does not prove exhaustive endpoint/window enumeration. All
+failed records remain without price/ledger effects. Both maxima and numerical
+upper bounds apply only to captured states; any unobserved maximum is unknown.
+The supply/FX widths do not bound unknown model error or establish annual,
+all-market or lifetime ATH. Preserve null dates and holder/liquidity metadata.
+
+Writes require source/certificate equality in the golden regression, full
+isolated workspace checks, and unchanged provider observations/missing-row
+versions, atomically for both rows. No runner gates or production fallback change.
+Root certificate:
+`b9394a5fd978140d755f42fdc8571af62d458f1a4b3d419a112b9e7ec3b31bc2`.
+Independent raw/supply audit:
+`770c96b2a13a6fc6c131b013d7b54ce308d9e412d9b24476dc2d6abf2e1d5243`.

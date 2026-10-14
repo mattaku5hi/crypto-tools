@@ -9244,6 +9244,394 @@ mod tests {
     }
 
     #[test]
+    fn solana_tracker_6sfb_7rwy_bounded_vault_fdv_windows_replay_exactly() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+        use std::collections::{BTreeMap, HashSet};
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_6sfb_7rwy_bounded_vault_fdv_cases.json"
+        ))
+        .unwrap();
+        let hash = |raw: &str| format!("{:x}", Sha256::digest(raw.as_bytes()));
+        let audit_raw = fixture["audit_json_raw"].as_str().unwrap();
+        let supply_raw = fixture["raw_supply_audit_json_raw"].as_str().unwrap();
+        let certificate_raw = fixture["root_certificate_json_raw"].as_str().unwrap();
+        let coinbase = [
+            ("six_sfb_coinbase", "six_sfb_coinbase_json_raw"),
+            ("seven_rwy_coinbase", "seven_rwy_coinbase_json_raw"),
+        ];
+        for (source, key) in [
+            ("audit", "audit_json_raw"),
+            ("raw_supply_audit", "raw_supply_audit_json_raw"),
+            ("root_certificate", "root_certificate_json_raw"),
+            coinbase[0],
+            coinbase[1],
+        ] {
+            assert_eq!(
+                hash(fixture[key].as_str().unwrap()),
+                fixture["source_sha256"][source]
+            );
+        }
+        assert_eq!(
+            fixture["source_sha256"]["audit"],
+            "5bc108f193ac465447e3935f4abcb68a6a958310fa8ab5e37be2f589d3f158ac"
+        );
+        assert_eq!(
+            fixture["source_sha256"]["raw_supply_audit"],
+            "770c96b2a13a6fc6c131b013d7b54ce308d9e412d9b24476dc2d6abf2e1d5243"
+        );
+        assert_eq!(
+            fixture["source_sha256"]["root_certificate"],
+            "b9394a5fd978140d755f42fdc8571af62d458f1a4b3d419a112b9e7ec3b31bc2"
+        );
+        assert_eq!(
+            fixture["source_kind"],
+            "onchain-pool-window-bounded-supply-cex-reference-v1"
+        );
+        let audit: serde_json::Value = serde_json::from_str(audit_raw).unwrap();
+        let supply_audit: serde_json::Value = serde_json::from_str(supply_raw).unwrap();
+        let certificate: serde_json::Value = serde_json::from_str(certificate_raw).unwrap();
+        for expected_hash in [
+            &fixture["source_sha256"]["audit_v3"],
+            &fixture["source_sha256"]["raw_supply_audit"],
+        ] {
+            assert!(
+                certificate["source_sha256"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .any(|source_hash| source_hash == expected_hash)
+            );
+        }
+        assert_eq!(
+            serde_json::json!([
+                certificate["schema"],
+                certificate["rawgate_pass"],
+                certificate["observed_marks"],
+                certificate["successful_transactions"],
+                certificate["failed_transactions_retained_without_marks"],
+                certificate["conditional_vault_ratio_model"],
+                certificate["protocol_internal_spot_equivalence"],
+                certificate["instruction_wire_arguments"],
+                certificate["full_event_decoder_support"],
+                certificate["annual_allmarket_lifetime_complete"],
+                certificate["seven_rwy_endpoint_window_exhaustiveness"],
+                certificate["upper_bound_scope"],
+                certificate["network_calls_during_root_audit"],
+                certificate["database_writes"],
+            ]),
+            serde_json::json!([
+                "root-6sfb-7rwy-92-observed-vault-marks-bounded-supply-certificate-v1",
+                true,
+                92,
+                46,
+                16,
+                true,
+                "unknown",
+                "unknown; no default inferred",
+                false,
+                false,
+                "unknown; overlapping continuation",
+                "captured observed states only; missing-window maximum unknown",
+                0,
+                0,
+            ])
+        );
+        let fraction = |text: &str| {
+            let (numerator, denominator) = text.split_once('/').unwrap();
+            (
+                U512::from_str_radix(numerator, 10).unwrap(),
+                U512::from_str_radix(denominator, 10).unwrap(),
+            )
+        };
+        let compare =
+            |left: (U512, U512), right: (U512, U512)| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let decimal = |text: &str| {
+            let (whole, tail) = text.split_once('.').unwrap();
+            let denominator = U512::from(10_u64.pow(u32::try_from(tail.len()).unwrap()));
+            let numerator = U512::from(whole.parse::<u64>().unwrap()) * denominator
+                + U512::from(tail.parse::<u64>().unwrap());
+            (numerator, denominator)
+        };
+        let bounds = [
+            (
+                "6SFBnNJv",
+                "six_sfb_coinbase_json_raw",
+                50,
+                150,
+                25,
+                14,
+                1,
+                "999999485135843",
+                8372684,
+                8380093,
+            ),
+            (
+                "7rWYdrHd",
+                "seven_rwy_coinbase_json_raw",
+                42,
+                126,
+                21,
+                2,
+                15,
+                "999961149869882",
+                11418986,
+                11435750,
+            ),
+        ];
+        for (
+            index,
+            (
+                name,
+                candle_key,
+                distinct_states,
+                price_rows,
+                tx_count,
+                failed_count,
+                mint_index,
+                current_supply,
+                lower_cents,
+                upper_cents,
+            ),
+        ) in bounds.into_iter().enumerate()
+        {
+            let case = &audit["cases"][name];
+            let raw_case = &supply_audit["cases"][name];
+            let certificate_row = &certificate["rows"][index];
+            let candles: serde_json::Value =
+                serde_json::from_str(fixture[candle_key].as_str().unwrap()).unwrap();
+            assert_eq!(certificate_row["label"], name);
+            assert_eq!(certificate_row["source"], fixture["source_kind"]);
+            assert_eq!(certificate_row["observed_marks"], distinct_states);
+            assert_eq!(certificate_row["successful_transactions"], tx_count);
+            assert_eq!(
+                certificate_row["failed_transactions_retained_without_marks"],
+                failed_count
+            );
+            assert_eq!(certificate_row["lower_fdv_cents"], lower_cents);
+            assert_eq!(certificate_row["upper_fdv_cents_ceiling"], upper_cents);
+            assert_eq!(certificate_row["supply_lower_raw"], current_supply);
+            assert_eq!(certificate_row["supply_upper_raw"], "1000000000000000");
+            assert_eq!(
+                case["raw_vault_ratio_state_count"],
+                serde_json::json!(distinct_states)
+            );
+            assert_eq!(
+                case["raw_price_calculation_count"],
+                serde_json::json!(price_rows)
+            );
+            assert_eq!(
+                raw_case["raw_capture"]["pre_post_state_pairs"],
+                distinct_states
+            );
+            assert_eq!(
+                raw_case["raw_capture"]["raw_price_calculations"],
+                price_rows
+            );
+            assert_eq!(raw_case["raw_capture"]["unique_successes"], tx_count);
+            assert!(
+                raw_case["checks"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .all(|v| v == true)
+            );
+            assert_eq!(
+                raw_case["current_mint"]["raw_supply"],
+                case["supply_join"]["current_supply_raw"]
+            );
+            assert_eq!(raw_case["current_mint"]["raw_supply"], current_supply);
+            assert_eq!(raw_case["current_mint"]["decimals"], 6);
+            assert_eq!(raw_case["current_mint"]["account_bytes"], 82);
+            assert_eq!(raw_case["current_mint"]["mint_authority_option"], 0);
+            assert_eq!(raw_case["current_mint"]["freeze_authority_option"], 0);
+            assert_eq!(raw_case["current_mint"]["request_index"], mint_index);
+
+            let instructions = raw_case["raw_birth_instruction_decodes"]
+                .as_array()
+                .unwrap();
+            assert_eq!(instructions.len(), 3);
+            assert_eq!(instructions[0]["opcode"], 20);
+            assert_eq!(instructions[0]["decimals"], 6);
+            assert_eq!(instructions[1]["opcode"], 7);
+            assert_eq!(instructions[1]["amount_raw"], "1000000000000000");
+            assert_eq!(instructions[2]["opcode"], 6);
+            assert_eq!(instructions[2]["new_authority_option"], 0);
+            assert!(
+                instructions
+                    .iter()
+                    .all(|ix| ix["account0_mint_match"] == true)
+            );
+
+            let states = case["states"].as_array().unwrap();
+            assert_eq!(states.len(), price_rows);
+            let mut paired_states: BTreeMap<(String, String), HashSet<String>> = BTreeMap::new();
+            let mut max_low: Option<(U512, U512)> = None;
+            let mut max_high: Option<(U512, U512)> = None;
+            let mut price_maxima: BTreeMap<String, Option<(U512, U512)>> = ["low", "close", "high"]
+                .into_iter()
+                .map(|endpoint| (endpoint.to_owned(), None))
+                .collect();
+            for state in states {
+                let side = state["side"].as_str().unwrap();
+                let fx_kind = state["fx_kind"].as_str().unwrap();
+                let signature = state["signature"].as_str().unwrap();
+                paired_states
+                    .entry((signature.to_owned(), side.to_owned()))
+                    .or_default()
+                    .insert(fx_kind.to_owned());
+                let candle = candles
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row[0].as_u64() == state["coinbase_minute_unix_s"].as_u64())
+                    .unwrap();
+                let fx_index = match fx_kind {
+                    "low" => 1,
+                    "high" => 2,
+                    "close" => 4,
+                    _ => panic!("unexpected FX endpoint"),
+                };
+                let fx = decimal(&candle[fx_index].to_string());
+                let quote =
+                    U512::from_str_radix(state["quote_vault_raw"].as_str().unwrap(), 10).unwrap();
+                let base =
+                    U512::from_str_radix(state["base_vault_raw"].as_str().unwrap(), 10).unwrap();
+                let price = (quote * fx.0, base * U512::from(1_000_u64) * fx.1);
+                assert_eq!(
+                    compare(
+                        price,
+                        fraction(state["usd_per_token_fraction"].as_str().unwrap())
+                    ),
+                    std::cmp::Ordering::Equal
+                );
+                if price_maxima[fx_kind].is_none_or(|previous| compare(price, previous).is_gt()) {
+                    price_maxima.insert(fx_kind.to_owned(), Some(price));
+                }
+                let supply_low = U512::from_str_radix(
+                    case["conditional_fdv_interval"]["current_supply_raw"]
+                        .as_str()
+                        .unwrap(),
+                    10,
+                )
+                .unwrap();
+                let supply_high = U512::from_str_radix(
+                    case["conditional_fdv_interval"]["birth_supply_raw"]
+                        .as_str()
+                        .unwrap(),
+                    10,
+                )
+                .unwrap();
+                let scale = U512::from(1_000_000_u64);
+                if fx_kind == "low" {
+                    let fdv = (price.0 * supply_low, price.1 * scale);
+                    if max_low.is_none_or(|previous| compare(fdv, previous).is_gt()) {
+                        max_low = Some(fdv);
+                    }
+                } else if fx_kind == "high" {
+                    let fdv = (price.0 * supply_high, price.1 * scale);
+                    if max_high.is_none_or(|previous| compare(fdv, previous).is_gt()) {
+                        max_high = Some(fdv);
+                    }
+                }
+            }
+            assert_eq!(paired_states.len(), distinct_states);
+            assert!(paired_states.values().all(|kinds| kinds.len() == 3));
+            for endpoint in ["low", "close", "high"] {
+                let maximum = price_maxima[endpoint].unwrap();
+                assert_eq!(
+                    compare(
+                        maximum,
+                        fraction(
+                            case["state_extrema"][endpoint]["usd_fraction"]
+                                .as_str()
+                                .unwrap()
+                        )
+                    ),
+                    std::cmp::Ordering::Equal
+                );
+            }
+            let max_low = max_low.unwrap();
+            let max_high = max_high.unwrap();
+            let interval = &case["conditional_fdv_interval"];
+            assert_eq!(
+                compare(
+                    max_low,
+                    fraction(interval["lower_fraction"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(
+                compare(
+                    max_high,
+                    fraction(interval["upper_fraction"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(
+                compare(
+                    max_low,
+                    fraction(certificate_row["lower_usd_fraction"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(
+                compare(
+                    max_high,
+                    fraction(certificate_row["upper_usd_fraction"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(
+                max_low.0 * U512::from(100) / max_low.1,
+                U512::from(interval["lower_cents_floor"].as_u64().unwrap())
+            );
+            assert_eq!(
+                (max_high.0 * U512::from(100) + max_high.1 - U512::from(1)) / max_high.1,
+                U512::from(interval["upper_cents_ceil"].as_u64().unwrap())
+            );
+            let width = (
+                max_high.0 * max_low.1 - max_low.0 * max_high.1,
+                max_high.0 * max_low.1,
+            );
+            assert!(compare(width, (U512::from(2), U512::from(100))).is_le());
+            let provider = fraction(case["provider_peak_usd"].as_str().unwrap());
+            for endpoint in ["low", "close", "high"] {
+                let price = price_maxima[endpoint].unwrap();
+                assert!(
+                    compare(
+                        price,
+                        (provider.0 * U512::from(98), provider.1 * U512::from(100))
+                    )
+                    .is_ge()
+                );
+                assert!(
+                    compare(
+                        price,
+                        (provider.0 * U512::from(102), provider.1 * U512::from(100))
+                    )
+                    .is_le()
+                );
+            }
+            if name == "7rWYdrHd" {
+                assert!(
+                    case["scope"]["pagination_assessment"]
+                        .as_str()
+                        .unwrap()
+                        .contains("overlap")
+                );
+                assert!(
+                    raw_case["captured_window_completeness"]
+                        .as_str()
+                        .unwrap()
+                        .contains("not established")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn solana_tracker_h4_and_9sef_historical_supply_fdv_windows_replay_exactly() {
         use alloy_primitives::U512;
         use sha2::{Digest, Sha256};
