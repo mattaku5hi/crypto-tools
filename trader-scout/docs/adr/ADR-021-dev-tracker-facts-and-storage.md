@@ -2225,3 +2225,53 @@ Root certificate SHA-256:
 `9d968b747ca3d5522eb56a5020968a605e6a6b3e510daa627c259f017562d2e7`.
 Independent raw gate:
 `e2da976cea2b78e9a061da004308c5695855f4f72cf0a8c53b7a8bd047ebfb2d`.
+
+## Amendment 48 (2026-10-14) — H4/9sEF window supply and raw instruction locators
+
+The existing `onchain-pool-window-supply-cex-reference-v1` source admits
+conditional observed vault-ratio references for two selected PumpSwap pools.
+H4 has12 PRE/POST marks across six swaps;9sEF has34 marks across17swaps.
+Both remain provider-window observations, not annual/all-market/lifetime ATH.
+The historical event layout has no virtual-quote field. Today's unparsed
+30-byte pool tail is not evidence of historical zero virtual reserves; that
+model condition and unknown deployed semantics remain explicit.
+
+A terminal mint-signature census plus terminal price-window transactions is
+reconciled to the actual successful TFA set: H4 has286census rows/38failed,
+248successes plus six window transactions =254unique successful rows;9sEF
+has399/25failed,374successes plus17window transactions =391unique rows.
+H4's last TFA page retains a cursor, so completeness is the exact census/window
+set reconciliation, not a false terminal-TFA claim. This does not extend the
+mint-address index into all-market price coverage.
+
+Each token has two birth MintTo instructions issuing2Btokens at6decimals,
+revoked authority and three burns before its entire observed price window.
+All ten supply operations bind raw Token-2022 bytes, account identity and
+actual outer/inner parent positions. Historical raw supply is
+1136099869009195 for H4 and1712502929816770 for9sEF. Later current mint
+snapshots are lower and are not substituted for historical supply. Requested
+mint indexes18/14, account owner, authority, decimals and metadata-only TLVs
+18/19 are checked against actual request/response captures.
+
+Reconciliation v1 incorrectly flattened9sEF's two birth MintTo operations
+under outer0. Their actual parent is outer2, inner19/20. Amounts and net
+supply were correct, but raw provenance was not; the failed audit is retained.
+New v2 producer/reconciliation/envelope fixes the locators without changing
+money. Golden regression must fail for the old `[0,19,0,20]` tuple. All
+previously announced artifacts remain immutable.
+
+Recompute every raw reserve ratio with6/9decimal scaling and exact Coinbase
+minute low/high, then multiply each mark by its verified historical supply.
+Take the observed global lower/high maxima before cent rounding. H4 gives
+1784671–1785348cents;9sEF gives2907531–2909291cents. Both endpoint prices
+agree within2% with their original captured provider quotes. These narrow
+FX/rounding intervals do not bound unknown model/market errors. Preserve
+null ATH date and holder/liquidity fields; no runner gates or automatic
+production fallback changes.
+
+Root certificate:
+`02ad7707bac026e066c1495d992cd18805c52776e6e0b0f262757eadecea3e34`.
+Independent raw audit v2:
+`523ea53ab2d50702f99afca6d3cf7de2fa6480c156ff27d692971dd062f7b388`.
+Writes require captured-case/full-workspace checks and unchanged original
+provider observation/missing-row version, guarded atomically for both rows.

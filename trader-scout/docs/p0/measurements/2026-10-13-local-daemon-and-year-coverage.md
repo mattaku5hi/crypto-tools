@@ -383,3 +383,17 @@ verification reports; raw diagnostic evidence remains separate. This replaces
 the previous policy of keeping every intermediate full dump. Full bundles
 are created at completed milestones, with at most two verified complete
 packages retained. Rust's daily cleanup explicitly excludes these data.
+
+## H4/9sEF reference closure (2026-10-14)
+
+Two historical supply replays resolve the denominator for46selected-window
+marks. Independent raw instructions/account/census checks and exact fractions
+pass;9sEF MintTo locators are corrected in new v2 artifacts. Golden source-kind
+is required to match its root certificate; the first mismatch was rejected
+before any write. Full fmt/Clippy/1237tests passed in57.49seconds. Atomic
+writes preserve dates/holder/liquidity and add1784671/2907531cents. Cohort:
+517numeric/162unknown,83new values since434 (SOL69/Base2/RH12). Selected-window
+vault models remain conditional, with unknown historical virtual reserves;
+annual ATH remains incomplete. Sealed80 package predates three latest writes.
+No live binary restart, runner threshold change or new full dump is needed
+for this reference update. B8.4 proceeds to remaining price/model gaps.

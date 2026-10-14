@@ -8146,6 +8146,649 @@ mod tests {
     }
 
     #[test]
+    fn solana_tracker_h4_and_9sef_historical_supply_fdv_windows_replay_exactly() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+        use std::collections::BTreeMap;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_h4_9sef_historical_supply_fdv_window_cases_v2.json"
+        ))
+        .unwrap();
+        let hash = |raw: &str| format!("{:x}", Sha256::digest(raw.as_bytes()));
+        macro_rules! check {
+            ($actual:expr, $expected:expr $(,)?) => {
+                assert_eq!($actual, $expected)
+            };
+        }
+        let raw = [
+            ("h4_window", "h4_window_json_raw"),
+            ("nine_sef_window", "nine_sef_window_json_raw"),
+            (
+                "historical_supply_replay",
+                "historical_supply_replay_json_raw",
+            ),
+            (
+                "nine_sef_supply_reconciliation",
+                "nine_sef_supply_reconciliation_json_raw",
+            ),
+        ];
+        for (source, key) in raw {
+            check!(
+                hash(fixture[key].as_str().unwrap()),
+                fixture["source_sha256"][source]
+            );
+        }
+        check!(
+            serde_json::json!([
+                fixture["schema"],
+                fixture["root_certificate_pending"],
+                fixture["source_kind"],
+                fixture["source_sha256"]["h4_window"],
+                fixture["source_sha256"]["nine_sef_window"],
+                fixture["source_sha256"]["historical_supply_replay"],
+                fixture["source_sha256"]["nine_sef_supply_reconciliation"],
+                fixture["root_certificate_sha256"],
+            ]),
+            serde_json::json!([
+                "solana-tracker-h4-9sef-historical-supply-fdv-window-cases-v1",
+                false,
+                "onchain-pool-window-supply-cex-reference-v1",
+                "b6e0c010070df64480b5b94a0253cffae3788f8c42f2630d0d73cdb23eb88544",
+                "c0e527cac3c896cb7d34744bc1cc37fdf1604590a97a6314ba3accdd1ac962ad",
+                "c114bf8fc3868192f956af0d77dee8dbc1686ccae2657790f9465ea5544bfe7f",
+                "09018eedbe90f2b8d51957a4f4f7d17acf986734a184d0a7ce087ec057ff3ad5",
+                "02ad7707bac026e066c1495d992cd18805c52776e6e0b0f262757eadecea3e34",
+            ]),
+        );
+        let certificate_raw = fixture["root_certificate_json_raw"].as_str().unwrap();
+        check!(hash(certificate_raw), fixture["root_certificate_sha256"]);
+        let certificate: serde_json::Value = serde_json::from_str(certificate_raw).unwrap();
+        check!(fixture["source_kind"], certificate["source"]);
+        check!(
+            serde_json::json!([
+                certificate["schema"],
+                certificate["source"],
+                certificate["all_pass"],
+                certificate["observed_states"],
+                certificate["supply_ops_checked"],
+                certificate["window_supply_changes"],
+                certificate["conditional_vault_ratio_model"],
+                certificate["historical_virtual_quote_reserves"],
+                certificate["current_unparsed_pool_tail_not_extrapolated"],
+                certificate["annual_allmarket_lifetime_complete"],
+                certificate["ath_at_policy"],
+                certificate["network_calls"],
+                certificate["database_writes"],
+                certificate["source_sha256"][".scout-data/diagnostics/solana-h4-observed-window-fdv-2026-10-14/h4-observed-window-fdv-v1.json"],
+                certificate["source_sha256"][".scout-data/diagnostics/solana-9sef-observed-window-fdv-2026-10-14/9sef-observed-window-fdv-v2.json"],
+                certificate["source_sha256"][".scout-data/diagnostics/solana-9sef-history-continuation-2026-10-14/9sef-supply-reconciliation-v2.json"],
+                certificate["source_sha256"][".scout-data/diagnostics/solana-h4-9sef-independent-audit-2026-10-14/raw-data-audit-v2.json"],
+            ]),
+            serde_json::json!([
+                "root-h4-9sef-observed-pool-window-certificate-v1",
+                "onchain-pool-window-supply-cex-reference-v1",
+                true,
+                46,
+                10,
+                0,
+                true,
+                "unknown",
+                true,
+                false,
+                "null",
+                0,
+                0,
+                "b6e0c010070df64480b5b94a0253cffae3788f8c42f2630d0d73cdb23eb88544",
+                "c0e527cac3c896cb7d34744bc1cc37fdf1604590a97a6314ba3accdd1ac962ad",
+                "09018eedbe90f2b8d51957a4f4f7d17acf986734a184d0a7ce087ec057ff3ad5",
+                "523ea53ab2d50702f99afca6d3cf7de2fa6480c156ff27d692971dd062f7b388",
+            ]),
+        );
+        check!(
+            serde_json::json!(
+                certificate["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| serde_json::json!([
+                        row["mint"],
+                        row["observed_states"],
+                        row["supply_raw"],
+                        row["current_supply_raw"],
+                        row["lower_fdv_cents"],
+                        row["upper_fdv_cents_ceiling"],
+                        row["price_peak_gate_pass"],
+                        row["global_low_mark"],
+                        row["global_high_mark"],
+                    ]))
+                    .collect::<Vec<_>>()
+            ),
+            serde_json::json!([
+                [
+                    "H4knWZeC8zPMbtn4MR8uWZDXLZsAkjosWJgL1XVopump",
+                    12,
+                    "1136099869009195",
+                    "1117339762843949",
+                    1784671,
+                    1785348,
+                    true,
+                    "5bhuBSNcdhuM9wgeKduxfvyjvPBht96Tny7AygeNhTvPJZoyLniu1YKD8u27sz6CxAvv8jG7fEUkPDSpS1sPjdrg",
+                    "5bhuBSNcdhuM9wgeKduxfvyjvPBht96Tny7AygeNhTvPJZoyLniu1YKD8u27sz6CxAvv8jG7fEUkPDSpS1sPjdrg",
+                ],
+                [
+                    "9sEF8kqzYexjqxYNvV3bBb5kRihxdXcsWSVLSFeypump",
+                    34,
+                    "1712502929816770",
+                    "1699458511258170",
+                    2907531,
+                    2909291,
+                    true,
+                    "75arBXWDPwYgJPXDjT6tmZwZ5gorhkZxxnNLhQLXctSd5omM3951u2HmGf8HmzDEkVbxaGnK3Zu4K3KEnqSJWP5",
+                    "75arBXWDPwYgJPXDjT6tmZwZ5gorhkZxxnNLhQLXctSd5omM3951u2HmGf8HmzDEkVbxaGnK3Zu4K3KEnqSJWP5",
+                ],
+            ]),
+        );
+        let (h4, nine, supply_replay, reconciliation): (
+            serde_json::Value,
+            serde_json::Value,
+            serde_json::Value,
+            serde_json::Value,
+        ) = (
+            serde_json::from_str(fixture["h4_window_json_raw"].as_str().unwrap()).unwrap(),
+            serde_json::from_str(fixture["nine_sef_window_json_raw"].as_str().unwrap()).unwrap(),
+            serde_json::from_str(
+                fixture["historical_supply_replay_json_raw"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap(),
+            serde_json::from_str(
+                fixture["nine_sef_supply_reconciliation_json_raw"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
+        let h4_token = supply_replay["tokens"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|token| token["mint"] == h4["mint"])
+            .unwrap();
+        let nine_token = supply_replay["tokens"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|token| token["mint"] == nine["mint"])
+            .unwrap();
+        let nine_supply = &reconciliation["supply_ops"];
+        check!(
+            serde_json::json!([
+                h4["schema"],
+                h4["state_count"],
+                h4["swap_count"],
+                h4["decimals"],
+                h4["quote_decimals"],
+                h4["input_sha256"]["price_proof_v4"],
+                h4["input_sha256"]["supply_replay_v1"],
+                nine["schema"],
+                nine["state_count"],
+                nine["event_count"],
+                nine["base_decimals"],
+                nine["quote_decimals"],
+                nine["source_hashes"]["v4"],
+                nine["source_hashes"]["reconciliation"],
+                reconciliation["status"],
+                reconciliation["signature_set"]["exact_match"],
+                reconciliation["signature_set"]["expected_union_rows"],
+                reconciliation["signature_set"]["unique_tfa_rows"],
+                reconciliation["signature_set"]["successful_census_rows"],
+                reconciliation["signature_set"]["window_rows"],
+            ]),
+            serde_json::json!([
+                "h4-observed-window-fdv-state-envelope-v1",
+                12,
+                6,
+                6,
+                9,
+                "9784d2b5136404d5a6517857c7d0ca64c733651a1eb2a9bf26d7a85bedf75c4e",
+                fixture["source_sha256"]["historical_supply_replay"],
+                "solana-9sef-observed-window-fdv-v2",
+                34,
+                17,
+                6,
+                9,
+                "9784d2b5136404d5a6517857c7d0ca64c733651a1eb2a9bf26d7a85bedf75c4e",
+                fixture["source_sha256"]["nine_sef_supply_reconciliation"],
+                "complete_success_set_reconciled_raw_locators_verified",
+                true,
+                391,
+                391,
+                374,
+                17,
+            ]),
+        );
+        check!(
+            nine["source_hashes"]["continuation_manifest"],
+            reconciliation["source_sha256"]["continuation_manifest"]
+        );
+        check!(
+            serde_json::json!([
+                h4["supply_raw_at_all_states"],
+                nine["supply_raw_each_state"],
+                reconciliation["selected_peak"]["supply_raw"],
+                reconciliation["provider_window_supply_rows"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                nine["comparison_to_existing_provider_peak"]["both_within_2_percent"],
+            ]),
+            serde_json::json!([
+                "1136099869009195",
+                "1712502929816770",
+                "1712502929816770",
+                17,
+                true,
+            ]),
+        );
+        check!(
+            reconciliation["provider_window_supply_rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["ops"].as_array().unwrap().is_empty()
+                    && row["supply_before_raw"] == row["supply_after_raw"]
+                    && row["supply_after_raw"] == "1712502929816770"),
+            true
+        );
+
+        let fraction = |text: &str| {
+            let (n, d) = text.split_once('/').unwrap();
+            (
+                U512::from_str_radix(n, 10).unwrap(),
+                U512::from_str_radix(d, 10).unwrap(),
+            )
+        };
+        let compare = |a: (U512, U512), b: (U512, U512)| (a.0 * b.1).cmp(&(b.0 * a.1));
+        let same =
+            |a: (U512, U512), b: (U512, U512)| assert_eq!(compare(a, b), std::cmp::Ordering::Equal);
+        let decimal = |text: &str| {
+            let value = ExactDecimal::parse(text).unwrap();
+            let denominator = (0..u32::try_from(value.scale).unwrap())
+                .try_fold(U512::from(1), |n, _| n.checked_mul(U512::from(10)))
+                .unwrap();
+            (U512::from(value.coefficient), denominator)
+        };
+        let pow10 = |scale: u32| {
+            (0..scale)
+                .try_fold(U512::from(1), |n, _| n.checked_mul(U512::from(10)))
+                .unwrap()
+        };
+        let ceil = |n: U512, d: U512| (n + d - U512::from(1)) / d;
+        let replay_window = |proof: &serde_json::Value, endpoints: &[(&str, usize)]| {
+            let states = proof["states"].as_array().unwrap();
+            let base_decimals = proof["decimals"]
+                .as_u64()
+                .or_else(|| proof["base_decimals"].as_u64())
+                .unwrap();
+            let quote_decimals = proof["quote_decimals"].as_u64().unwrap();
+            let supply = U512::from_str_radix(
+                proof["supply_raw_at_all_states"]
+                    .as_str()
+                    .or_else(|| proof["supply_raw_each_state"].as_str())
+                    .unwrap(),
+                10,
+            )
+            .unwrap();
+            let mut maxima: BTreeMap<String, (String, String, (U512, U512))> = BTreeMap::new();
+            for state in states {
+                let base = U512::from_str_radix(state["base_raw"].as_str().unwrap(), 10).unwrap();
+                let quote = U512::from_str_radix(state["quote_raw"].as_str().unwrap(), 10).unwrap();
+                let native_price = (
+                    quote * pow10(u32::try_from(base_decimals).unwrap()),
+                    base * pow10(u32::try_from(quote_decimals).unwrap()),
+                );
+                if let Some(native) = state
+                    .get("spot_native_fraction")
+                    .or_else(|| state.get("price_native_fraction"))
+                {
+                    same(native_price, fraction(native.as_str().unwrap()));
+                }
+                let candle = state["coinbase_candle"]
+                    .as_array()
+                    .or_else(|| state["coinbase_candle_low_high_open_close_volume"].as_array())
+                    .unwrap();
+                for (end, fx_index) in endpoints {
+                    let fx = decimal(candle[*fx_index].as_str().unwrap());
+                    let price = (native_price.0 * fx.0, native_price.1 * fx.1);
+                    let fdv = (
+                        price.0 * supply,
+                        price.1 * pow10(u32::try_from(base_decimals).unwrap()),
+                    );
+                    let fraction_key = format!("fdv_{end}_fraction");
+                    let usd_fraction_key = format!("fdv_{end}_usd_fraction");
+                    let stored = state[if state.get(fraction_key.as_str()).is_some() {
+                        fraction_key.as_str()
+                    } else {
+                        usd_fraction_key.as_str()
+                    }]
+                    .as_str()
+                    .unwrap();
+                    same(fdv, fraction(stored));
+                    let side = state["side"]
+                        .as_str()
+                        .or_else(|| state["state_side"].as_str())
+                        .unwrap();
+                    let signature = state["signature"].as_str().unwrap();
+                    if maxima
+                        .get(*end)
+                        .is_none_or(|(_, _, old)| compare(fdv, *old).is_gt())
+                    {
+                        maxima.insert(
+                            (*end).to_owned(),
+                            (signature.to_owned(), side.to_owned(), fdv),
+                        );
+                    }
+                }
+            }
+            maxima
+        };
+        let h4_max = replay_window(&h4, &[("low", 3), ("high", 2)]);
+        let nine_max = replay_window(&nine, &[("low", 1), ("high", 2), ("close", 4)]);
+        for (proof, maxima, keys) in [
+            (&h4, &h4_max, [("low", "low"), ("high", "high")]),
+            (&nine, &nine_max, [("low", "fdv_low"), ("high", "fdv_high")]),
+        ] {
+            let expected = if proof["mint"] == h4["mint"] {
+                &proof["maxima"]
+            } else {
+                &proof["global_maxima"]
+            };
+            for (endpoint, expected_key) in keys {
+                let (signature, side, actual) = &maxima[endpoint];
+                let record = &expected[expected_key];
+                same(
+                    *actual,
+                    fraction(
+                        record["fdv_fraction"]
+                            .as_str()
+                            .unwrap_or_else(|| record["fraction"].as_str().unwrap()),
+                    ),
+                );
+                check!(
+                    serde_json::json!([signature, side]),
+                    serde_json::json!([
+                        record["signature"],
+                        record
+                            .get("side")
+                            .or_else(|| record.get("state_side"))
+                            .unwrap()
+                    ])
+                );
+                let cents = if endpoint == "low" {
+                    actual.0 * U512::from(100) / actual.1
+                } else {
+                    ceil(actual.0 * U512::from(100), actual.1)
+                };
+                let rounded = if endpoint == "low" {
+                    record["floor_cents"].as_u64().unwrap()
+                } else {
+                    record["ceil_cents"].as_u64().unwrap()
+                };
+                assert_eq!(cents, U512::from(rounded));
+            }
+        }
+        let (close_signature, close_side, close_fdv) = &nine_max["close"];
+        same(
+            *close_fdv,
+            fraction(
+                nine["global_maxima"]["fdv_close"]["fraction"]
+                    .as_str()
+                    .unwrap(),
+            ),
+        );
+        check!(
+            serde_json::json!([close_signature, close_side]),
+            serde_json::json!([
+                nine["global_maxima"]["fdv_close"]["signature"],
+                nine["global_maxima"]["fdv_close"]["state_side"],
+            ]),
+        );
+        check!(
+            serde_json::json!([
+                h4_max["low"].0,
+                h4_max["high"].0,
+                h4_max["low"].1.to_string(),
+                h4_max["high"].1.to_string(),
+                nine_max["low"].0,
+                nine_max["high"].0,
+                nine_max["close"].0,
+                nine_max["low"].1.to_string(),
+                nine_max["high"].1.to_string(),
+            ]),
+            serde_json::json!([
+                "5bhuBSNcdhuM9wgeKduxfvyjvPBht96Tny7AygeNhTvPJZoyLniu1YKD8u27sz6CxAvv8jG7fEUkPDSpS1sPjdrg",
+                "5bhuBSNcdhuM9wgeKduxfvyjvPBht96Tny7AygeNhTvPJZoyLniu1YKD8u27sz6CxAvv8jG7fEUkPDSpS1sPjdrg",
+                "post",
+                "post",
+                "75arBXWDPwYgJPXDjT6tmZwZ5gorhkZxxnNLhQLXctSd5omM3951u2HmGf8HmzDEkVbxaGnK3Zu4K3KEnqSJWP5",
+                "75arBXWDPwYgJPXDjT6tmZwZ5gorhkZxxnNLhQLXctSd5omM3951u2HmGf8HmzDEkVbxaGnK3Zu4K3KEnqSJWP5",
+                "75arBXWDPwYgJPXDjT6tmZwZ5gorhkZxxnNLhQLXctSd5omM3951u2HmGf8HmzDEkVbxaGnK3Zu4K3KEnqSJWP5",
+                "post",
+                "post",
+            ]),
+        );
+
+        let h4_birth = &h4_token["birth"];
+        let h4_sequence = &h4_birth["birth_program_sequence"];
+        let h4_ops = h4_token["supply_ops"]["all_ordered_ops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>();
+        let h4_mints = h4_ops
+            .iter()
+            .copied()
+            .filter(|op| op["kind"] == "mint_to")
+            .collect::<Vec<_>>();
+        let nine_birth = &reconciliation["birth"];
+        let nine_ops = nine_supply.as_array().unwrap().iter().collect::<Vec<_>>();
+        let nine_mints = nine_ops
+            .iter()
+            .copied()
+            .filter(|op| op["kind"] == "mint_to")
+            .collect::<Vec<_>>();
+        check!(
+            serde_json::json!([
+                nine_mints[0]["outer_index"],
+                nine_mints[0]["inner_index"],
+                nine_mints[1]["outer_index"],
+                nine_mints[1]["inner_index"],
+            ]),
+            serde_json::json!([2, 19, 2, 20]),
+        );
+        let raw_amount = |value: &serde_json::Value| {
+            value.as_str().map_or_else(
+                || U512::from(value.as_u64().unwrap()),
+                |text| U512::from_str_radix(text, 10).unwrap(),
+            )
+        };
+        for (birth, mints, ops, revoked, historic_supply, window_start) in [
+            (
+                h4_birth,
+                &h4_mints,
+                &h4_ops,
+                &h4_sequence["mint_authority_revoked_at_birth"],
+                &h4["supply_raw_at_all_states"],
+                1_775_162_881_u64,
+            ),
+            (
+                nine_birth,
+                &nine_mints,
+                &nine_ops,
+                &nine_birth["mint_authority_revoked_at_birth"],
+                &nine["supply_raw_each_state"],
+                1_774_650_073_u64,
+            ),
+        ] {
+            let birth_value = birth
+                .get("raw_supply")
+                .or_else(|| birth.get("supply_raw"))
+                .unwrap();
+            let birth_raw = raw_amount(birth_value);
+            let mint_total = mints.iter().fold(U512::from(0), |sum, mint| {
+                sum + raw_amount(&mint["amount_raw"])
+            });
+            assert_eq!(mints.len(), 2);
+            assert_eq!(birth_raw, U512::from(2_000_000_000_000_000_u64));
+            assert_eq!(mint_total, birth_raw);
+            check!(revoked, true);
+            let burns: Vec<_> = ops.iter().filter(|op| op["kind"] == "burn").collect();
+            assert_eq!(burns.len(), 3);
+            let burned = burns
+                .iter()
+                .fold(U512::from(0), |sum, op| sum + raw_amount(&op["amount_raw"]));
+            assert_eq!(
+                birth_raw - burned,
+                U512::from_str_radix(historic_supply.as_str().unwrap(), 10).unwrap()
+            );
+            assert!(
+                burns
+                    .iter()
+                    .all(|op| op["block_time"].as_u64().unwrap() < window_start)
+            );
+        }
+        check!(
+            serde_json::json!([
+                h4_sequence["initialize_mint2"]["decimals"],
+                h4_sequence["initialize_mint2"]["inner_index"],
+                h4_sequence["mint_to_instructions"][0]["inner_index"],
+                h4_sequence["mint_to_instructions"][1]["inner_index"],
+                h4_sequence["set_authority_revoke"]["inner_index"],
+                h4_sequence["set_authority_revoke"]["new_authority_option"],
+                h4_birth["unix_s"],
+                reconciliation["birth"]["unix_s"],
+                reconciliation["supply_ops"].as_array().unwrap().len(),
+                reconciliation["selected_peak"]["same_transaction_supply_ops"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+            ]),
+            serde_json::json!([6, 2, 19, 20, 21, 0, 1773438537, 1773868141, 5, 0]),
+        );
+        let h4_current = &h4_token["current_snapshot"];
+        let nine_current = &nine_token["current_snapshot"];
+        check!(
+            serde_json::json!([
+                h4_current["supply_raw"],
+                h4_current["context_slot"],
+                h4_current["account_raw_sha256"],
+                nine_current["supply_raw"],
+                nine_current["context_slot"],
+                nine_current["account_raw_sha256"],
+                reconciliation["current_snapshot_after_window"]["supply_raw"],
+                reconciliation["current_snapshot_after_window"]["sha256"],
+            ]),
+            serde_json::json!([
+                "1117339762843949",
+                456650939,
+                "b864ca0ef25e8a5a97f2e814bedf82714b23670548551e698f5137ecc060bbc4",
+                "1699458511258170",
+                456650939,
+                "180f06aa8d6d4e4f5e998258fddb933eaa042938c3d07c7910dc6fc431c06d5f",
+                "1699458511258170",
+                "180f06aa8d6d4e4f5e998258fddb933eaa042938c3d07c7910dc6fc431c06d5f",
+            ]),
+        );
+        assert!(
+            U512::from_str_radix(h4_current["supply_raw"].as_str().unwrap(), 10).unwrap()
+                < U512::from_str_radix(h4["supply_raw_at_all_states"].as_str().unwrap(), 10)
+                    .unwrap()
+        );
+        assert!(
+            U512::from_str_radix(nine_current["supply_raw"].as_str().unwrap(), 10).unwrap()
+                < U512::from_str_radix(nine["supply_raw_each_state"].as_str().unwrap(), 10)
+                    .unwrap()
+        );
+        assert!(h4_current["context_slot"].as_u64().unwrap() > 410_607_988);
+        assert!(nine_current["context_slot"].as_u64().unwrap() > 409_297_681);
+        assert_eq!(h4["limitations"].as_array().unwrap().len(), 3);
+        assert!(
+            h4["scope"]
+                .as_str()
+                .unwrap()
+                .contains("not lifetime ATH or all-market coverage")
+        );
+        assert_eq!(nine["model_caveats"].as_array().unwrap().len(), 3);
+        assert!(
+            nine["model_caveats"][0]
+                .as_str()
+                .unwrap()
+                .contains("30-byte unparsed tail")
+        );
+        assert!(nine["states"].as_array().unwrap().iter().all(|state| {
+            state["event_layout"] == "historical_legacy_no_virtual_quote_field"
+                && state["supply_raw_at_state"] == "1712502929816770"
+        }));
+        for (token, sequence, expected_mint) in [
+            (
+                h4_token,
+                &h4_birth["birth_program_sequence"],
+                h4["mint"].as_str().unwrap(),
+            ),
+            (
+                nine_token,
+                &nine_token["birth"]["birth_program_sequence"],
+                nine["mint"].as_str().unwrap(),
+            ),
+        ] {
+            let mint_to = sequence["mint_to_instructions"].as_array().unwrap();
+            check!(
+                serde_json::json!([
+                    token["mint"],
+                    token["current_snapshot"]["account_owner"],
+                    token["current_snapshot"]["mint_authority_absent"],
+                    token["current_snapshot"]["freeze_authority_absent"],
+                    sequence["initialize_mint2"]["mint_authority"],
+                    sequence["initialize_mint2"]["decimals"],
+                    sequence["set_authority_revoke"]["mint"],
+                    sequence["set_authority_revoke"]["new_authority_option"],
+                    mint_to[0]["mint"],
+                    mint_to[1]["mint"],
+                    mint_to[0]["authority"],
+                    mint_to[1]["authority"],
+                    mint_to[0]["destination"],
+                    mint_to[1]["destination"],
+                ]),
+                serde_json::json!([
+                    expected_mint,
+                    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+                    true,
+                    true,
+                    "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",
+                    6,
+                    expected_mint,
+                    0,
+                    expected_mint,
+                    expected_mint,
+                    "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",
+                    "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",
+                    mint_to[0]["destination"],
+                    mint_to[1]["destination"],
+                ]),
+            );
+            assert_ne!(mint_to[0]["destination"], mint_to[1]["destination"]);
+        }
+        assert!(
+            nine["coverage_scope"]
+                .as_str()
+                .unwrap()
+                .contains("Does not establish alternate-pool, all-market, or lifetime ATH")
+        );
+    }
+
+    #[test]
     fn solana_tracker_4ev_observed_curve_post_pool_fdv_replays_exactly() {
         use alloy_primitives::U512;
         use sha2::{Digest, Sha256};
