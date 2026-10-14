@@ -64,3 +64,38 @@ Changed: both CI workflow test steps, portable cutover README, ticket statuses
 and this dated readiness record. Private verification logs:
 `.scout-data/checks/2026-10-14/b9-readiness/`. Next tasks: B8.4 historical gaps,
 B9.1 publish/exercise the release workflow, B9 server cutover when a host exists.
+
+## Later checkpoint: 95 new references, 2026-10-14 14:14 UTC
+
+The later consistent live dump contains all 95 new reference rows: each source,
+observation time, stored FDV, optional ATH date, holder count and liquidity value
+matches the frozen progress evidence. The 679-key cohort now has529 numeric /
+150 unknown entries (SOL 15, Base 100, Robinhood 35, BSC 0 unknown). The four latest
+SOL references cover captured selected-pool windows; they do not establish
+annual/all-market ATH. All four are below the runner threshold and do not change
+developer-list membership. B8.4 remains incomplete.
+
+The new schema 10 private bundle contains 39 payloads, including 36 exports. Packing,
+verification and extraction passed, with all payload hashes and permissions
+checked. Archive SHA-256:
+`701332da041bb8729eef8c90c4ba560f268c83ca43ed02fd56dd9e018e9417e0`.
+The dump started at 14:12:57.985 UTC and finished at 14:14:15.874 UTC; exports have
+their own recorded capture times. Credentials remain separate. A full database
+restore of this 95-reference snapshot was not performed; the earlier 68-reference
+restore evidence remains historical proof only.
+
+Under the approved retention policy, complete bundles 80/95 are retained.
+Bundle 79 and the new standalone/extracted dump duplicates and derived ATH COPY
+were removed after hash checks and successful 95-row reconciliation, freeing
+8.54 GiB. Small provenance, exports and raw diagnostics remain. To recover the
+dump, extract the verified 95 bundle; the pack script's original dump input was
+intentionally pruned.
+
+Latest code validation passed 1247 tests, fmt and workspace/all-target/all-feature
+Clippy with warnings denied, using isolated scout_test. No production restore,
+daemon restart, GitHub publication or VPS deployment occurred. Final cutover
+still requires a stopped-source snapshot and restore/state checks before one
+server daemon starts. Private evidence:
+`.scout-data/deployment/2026-10-14-b84-95-closures/bundle-manifest.json`,
+`closure-dump-reconciliation.json`, and
+`.scout-data/maintenance/snapshot-retention-95-applied-2026-10-14.json`.
