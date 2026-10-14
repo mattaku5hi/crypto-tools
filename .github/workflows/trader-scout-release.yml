@@ -52,27 +52,7 @@ jobs:
       - name: Workspace tests (local PostgreSQL only)
         env:
           SCOUT_TEST_DATABASE_URL: postgres://scout:scout@127.0.0.1:55439/scout_test
-        run: |
-          log="$RUNNER_TEMP/trader-scout-test.log"
-          if cargo test --workspace --all-features >"$log" 2>&1; then
-            cat "$log"
-          else
-            status=$?
-            cat "$log"
-            python3 - "$log" <<'PY'
-          from pathlib import Path
-          import sys
-          path = Path(sys.argv[1])
-          with path.open("rb") as stream:
-              stream.seek(max(0, path.stat().st_size - 8000))
-              tail = stream.read(8000).decode("utf-8", errors="replace")
-          for start in range(0, len(tail), 1000):
-              chunk = tail[start:start + 1000]
-              escaped = chunk.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-              print(f"::error title=Rust test failure details {start // 1000 + 1}::" + escaped)
-          PY
-            exit "$status"
-          fi
+        run: cargo test --workspace --all-features
 
   secret-scan:
     name: secret scan

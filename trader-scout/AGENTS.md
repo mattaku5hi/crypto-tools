@@ -35,6 +35,8 @@
 
 ## Порядок разработки
 
+- DB-тесты ATH используют уникальные токены на запуск: прежний `observed_at` может заблокировать seed и скрыть неверное ожидание (`crates/scout-devtracker/src/ath.rs`).
+- Для временного checkout задавать отдельный `CARGO_TARGET_DIR`: переиспользованный test binary может читать фикстуры через `CARGO_MANIFEST_DIR` уже удалённой копии (`bins/buyer-intersect/tests/budget.rs`).
 - Zora `coinSwaps.currencyAmountWithPrice.priceUsdc` относится к quote asset; raw `coinAmount` и quote scale сверять с receipt, иначе получается ложное расхождение цены (`docs/p0/measurements/2026-10-13-ath-year-history-options.md`).
 - Годовая деривация может исчерпать Docker `/dev/shm` 64 MiB; PostgreSQL deploy использует 512 MiB, на старом контейнере временно отключать parallel workers для роли/БД (`deploy/`).
 - После ATH runner-index backfill проверять signer gaps: старые немигрированные кандидаты вне migrated/recent очереди `DevDb::shared_launches_without_signer` (`crates/scout-devdb/src/lib.rs`).

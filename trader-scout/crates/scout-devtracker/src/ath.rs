@@ -1407,6 +1407,7 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use scout_devdb::Launch;
     use sqlx::Row;
@@ -1416,9 +1417,17 @@ mod tests {
     use super::*;
 
     async fn isolated_db() -> Option<DevDb> {
-        let url = std::env::var("SCOUT_TEST_DATABASE_URL").ok()?;
-        let db = DevDb::connect(&url, 2).await.ok()?;
-        db.migrate().await.ok()?;
+        let Ok(url) = std::env::var("SCOUT_TEST_DATABASE_URL") else {
+            return None;
+        };
+        let db = DevDb::connect(&url, 2).await;
+        assert!(db.is_ok(), "configured test database connection failed");
+        let db = db.unwrap();
+        let migration = db.migrate().await;
+        assert!(
+            migration.is_ok(),
+            "configured test database migration failed"
+        );
         Some(db)
     }
 
@@ -1435,11 +1444,19 @@ mod tests {
             "../tests/fixtures/codex_ath_null_extrema_metadata.json"
         ))
         .unwrap();
-        let first = "0x0015279976b7e3211043144b99f44930d3340b07".to_string();
-        let second = "0x009501a47650fe5c940c9f49d1a97388e0a2cb07".to_string();
+        let run_id = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        )
+        .unwrap();
+        let first = format!("0x{run_id:032x}abcdef12");
+        let second = token_address(run_id + 1);
         response["data"]["filterTokens"]["results"][0]["token"]["address"] =
             json!(format!("0x{}", &first[2..].to_ascii_uppercase()));
-        let absent = token_address(u64::from(std::process::id()) + 11);
+        response["data"]["filterTokens"]["results"][1]["token"]["address"] = json!(second);
+        let absent = token_address(run_id + 2);
         let requested = vec![first.clone(), second.clone(), absent.clone()];
         let now = 1_800_000_321;
         let parsed = parse_observe_batch(&response, "base", 8453, &requested, now).unwrap();
@@ -1455,7 +1472,6 @@ mod tests {
         assert_eq!(positive.holders, Some(1431));
         assert_eq!(positive.liquidity_cents, Some(2500));
 
-        let pid = u64::from(std::process::id());
         let launch_rows: Vec<Launch> = requested
             .iter()
             .enumerate()
@@ -1463,10 +1479,10 @@ mod tests {
                 chain: "base".into(),
                 token: token.clone(),
                 launchpad: "ath-observe-test".into(),
-                creator: format!("ath-observe-{pid}-{index}"),
+                creator: format!("ath-observe-{run_id}-{index}"),
                 created_block: 1,
                 created_at: now,
-                tx_hash: format!("ath-observe-{pid}-{index}"),
+                tx_hash: format!("ath-observe-{run_id}-{index}"),
                 source: "test".into(),
             })
             .collect();
@@ -1486,9 +1502,28 @@ mod tests {
         db.upsert_ath(&parsed.rows).await.unwrap();
         let stored = db.dev_launches(Some("base"), 0).await.unwrap();
         let stored_null = stored.iter().find(|row| row.token == requested[0]).unwrap();
-        assert_eq!(stored_null.ath_fdv_cents, None);
+        assert_eq!(stored_null.ath_fdv_cents, Some(900));
         assert_eq!(stored_null.ath_holders, Some(1419));
         assert_eq!(stored_null.ath_max_liquidity_cents, Some(9000));
+        let url = std::env::var("SCOUT_TEST_DATABASE_URL").unwrap();
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let stored_ath = sqlx::query(
+            "SELECT ath_fdv_cents, ath_at, source, observed_at, holders, max_liquidity_cents
+             FROM ath WHERE chain = 'base' AND token = $1",
+        )
+        .bind(&requested[0])
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored_ath.get::<i64, _>("ath_fdv_cents"), 900);
+        assert_eq!(stored_ath.get::<Option<i64>, _>("ath_at"), Some(now - 1));
+        assert_eq!(stored_ath.get::<String, _>("source"), "codex");
+        assert_eq!(stored_ath.get::<i64, _>("observed_at"), now);
+        assert_eq!(stored_ath.get::<Option<i64>, _>("holders"), Some(1419));
+        assert_eq!(
+            stored_ath.get::<Option<i64>, _>("max_liquidity_cents"),
+            Some(9000)
+        );
 
         let sol_mint = "So11111111111111111111111111111111111111112";
         let sol_response = json!({
@@ -1524,7 +1559,7 @@ mod tests {
         ));
         let mut unexpected = response.clone();
         unexpected["data"]["filterTokens"]["results"][0]["token"]["address"] =
-            json!(token_address(pid + 99));
+            json!(token_address(run_id + 99));
         assert!(matches!(
             parse_observe_batch(&unexpected, "base", 8453, &requested, now),
             Err(AthError::MalformedIndex(_))
