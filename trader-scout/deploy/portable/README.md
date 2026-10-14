@@ -102,3 +102,13 @@ container drops Linux capabilities, uses a read-only root filesystem and a
 bounded `/tmp`; keep `exports/` writable by its mapped host identity and config
 readable. The database volume name is explicit so changing
 the runtime directory does not silently create a different volume.
+
+For the actual cutover, stop the workstation daemon before taking the final
+dump and packing the private state bundle. That freezes ingestion cursors,
+provider usage counters and Telegram delivery fingerprints at the transfer
+point. Keep the workstation daemon stopped while the server uses that state.
+Older prepared bundles are checkpoints rather than a mirror of later writes.
+Before enabling the server daemon, verify restored schema, cursors, provider
+usage and delivery state, then check its first progress/heartbeat and export
+pass. Reuse the verified release manifest and state manifest to record which
+binary and database snapshot were deployed.

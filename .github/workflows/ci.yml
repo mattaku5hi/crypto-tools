@@ -46,6 +46,10 @@ jobs:
         working-directory: trader-scout
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      - name: Portable runtime and private state bundle tests
+        working-directory: trader-scout
+        run: python3 -m unittest discover -s deploy -p 'test_*.py' -v
+
       - name: cargo test
         working-directory: trader-scout
         # Offline CI does not depend on paid RPCs or live-chain state

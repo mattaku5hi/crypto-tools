@@ -42,6 +42,10 @@ jobs:
             trader-scout/target
           key: ${{ runner.os }}-trader-scout-checks-${{ hashFiles('trader-scout/Cargo.lock') }}
       - run: cargo fmt --all -- --check
+      - name: Portable runtime and private state bundle tests
+        run: python3 -m unittest discover -s deploy -p 'test_*.py' -v
+      - name: Deployment shell syntax
+        run: bash -n deploy/package-release.sh deploy/portable/prepare-runtime.sh deploy/db-dump.sh deploy/db-restore.sh deploy/systemd/install-user-service.sh
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Workspace tests (local PostgreSQL only)
         env:
