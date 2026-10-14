@@ -38,6 +38,15 @@ reference is below the unchanged $500k runner threshold; accepting these
 | `EEnuxT5Q…` | $4,117.00 | $4,852.73 | 15.16% |
 | `F2RwcxcL…` | $37,140.31 | $37,142.56 | 0.00% |
 
+The comparison audit retains signed on-chain-minus-provider differences for
+13 exact-mint proofs. Available ranges run from about −34.88% to +17.62%;
+this is reference disagreement, not an established measurement-error bound.
+The 4qo and 9Jek exact maxima artifacts were not pinned in that extraction,
+so their percentage cells remain unavailable. The earlier negative status is
+retained without fabricating an exact difference. These comparisons do not
+alter the owner-accepted provider values. Private `accepted-values-v3.csv`
+contains all 15 full mint addresses, FDV bounds and available differences.
+
 The independent audit checks 15 raw birth transactions, request signatures,
 MintTo sums and mint-authority revocation; 15 raw mint accounts with supported
 program owners, decimals, authority options and metadata-only extensions; and
@@ -57,7 +66,7 @@ Private proof root:
 `.scout-data/diagnostics/solana15-owner-discordance-acceptance-2026-10-14/`:
 `root-final-certificate-v1.json` SHA
 `b722441bd572ef8cff1d78559ca4df599239e5448f38b9ad07264cb7f3387874`,
-`raw-supply-independent-audit-v2.json`, `accepted-values.csv`, and
+`raw-supply-independent-audit-v2.json`, `accepted-values-v3.csv`, and
 `atomic-fifteen-row-write-v1/manifest.json`.
 
 Changed: `crates/scout-devtracker/src/birdeye.rs` (tests only),

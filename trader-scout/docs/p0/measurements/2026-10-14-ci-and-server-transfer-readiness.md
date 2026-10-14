@@ -130,3 +130,29 @@ SHA-256 `c0d91c6c81897748b15892feca80e41a557e4d1970762a5f0ef69f33195954d7`.
 This validates the local restore of this snapshot. B8.4 annual ATH gaps,
 B9.1 actual GitHub release execution and the final stopped-source VPS cutover
 remain pending.
+
+
+## Later owner-scoped checkpoint: 110 new references, 2026-10-14 20:13 UTC
+
+After the owner accepted the remaining 15 Solana price disagreements, the
+frozen cohort reached 544 numeric / 135 unknown values. The 100 Base gaps are
+parked by explicit owner choice, and 35 Robinhood values remain unknown.
+The new 110-reference private bundle passed packing, verification and extraction
+for all 39 payloads (36 exports). The consistent compressed dump completed in
+73.35 seconds; all 110 frozen reference rows matched source, observation time,
+FDV, optional ATH date, holders and liquidity exactly. Runtime config and all
+export contents were unchanged across the separately dated file capture.
+
+Archive SHA-256:
+`5c8ab1f028c239692a1e9c4e40104ebff828d4cf9a8002c92880d90eb0e9fd0e`.
+Proof directory: `.scout-data/deployment/2026-10-14-b84-110-closures/`.
+This 110-reference dump was not full-restored; the successful 95-reference
+restore above remains the latest full-restore proof. Do not transfer that
+older proof as validation of a full restore of the new dump. Final cutover
+still needs a stopped-source snapshot and restoration/state verification.
+Latest unchanged code validation passed 1248 tests plus fmt and Clippy.
+
+The approved two-archive retention policy now retains complete bundles 95/110;
+bundle 80 and temporary dump copies are pruned only after hash verification.
+Small provenance and raw audits remain. No production restart, restore,
+GitHub publication or VPS deployment was performed by this acceptance task.
