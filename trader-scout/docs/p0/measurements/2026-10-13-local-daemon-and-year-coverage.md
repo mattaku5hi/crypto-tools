@@ -365,3 +365,21 @@ before cleanup; all source archives, dumps and proofs remain. An additional
 17.1GB of apparent Rust incremental compiler-cache data was removed after
 checking there were no active workspace compilers. Tested binaries and
 dependencies remained; this build-cache footprint is not daemon memory.
+
+## JC closure and bounded snapshot retention (2026-10-14)
+
+JC's five observed two-pool reserve pairings and two dated VQ models pass
+independent raw/supply/math checks and1236 workspace tests. The guarded
+write adds22707992cents with null date and unchanged metadata. Fixed679-key
+cohort is now515numeric/164unknown,81new references (SOL67/Base2/RH12).
+See `2026-10-14-solana-jc-cross-quote-fdv.md` and ADR-021 amendment47.
+The sealed80-closure bundle predates JC; annual/all-market ATH is incomplete.
+
+The user approved retaining two complete state packages. Repeated standalone
+dumps, unpacked copies and superseded full versions accounted for98.66GiB.
+The79/80 packages were rehashed, with all39 payload hashes checked in each.
+Keep their complete TARs and all small historical manifests, exports and
+verification reports; raw diagnostic evidence remains separate. This replaces
+the previous policy of keeping every intermediate full dump. Full bundles
+are created at completed milestones, with at most two verified complete
+packages retained. Rust's daily cleanup explicitly excludes these data.

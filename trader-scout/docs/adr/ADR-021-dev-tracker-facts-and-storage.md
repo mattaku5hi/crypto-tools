@@ -2178,3 +2178,50 @@ Finalized birth/winner confirmation:
 `cbd88a9b8d431a9131597c1b2dce10581d2e65b68a273d86627e2c847dd43c0b`.
 The guarded manual write requires passing captured-case/workspace checks,
 exact original provider observation and the unchanged missing-row version.
+
+## Amendment 47 (2026-10-14) — conditional two-pool cross-quote FDV references
+
+JCd8kQp… uses volatile quote token87ea… rather than WSOL or a USD peg.
+A terminal seven-second window [1791672251,1791672258) covers the target
+pool and its two vaults, plus the quote/WSOL pool and its two vaults.
+It contains two target transactions and one quote-pool transaction. Five
+chronologically valid reserve pairings are evaluated; no Cartesian pairing
+of target PRE with a later quote POST is admitted. The BuyEvent's associated
+BoostBuyAndBurnEvent is a side effect, not another trade or price mark.
+
+Source: `onchain-selected-pool-cross-quote-observed-fdv-window-vq-model-cex-v1`.
+Effective quote reserves are actual vault amount plus signed virtual quote.
+A primary source commit dated2026-10-08 predates the2026-10-10 events; its
+retained-fee rule supports PRE-event VQ semantics through adjacent target
+states. A second POST-event interpretation is retained as sensitivity,
+particularly because the quote pool has only one captured event. The deployed
+program revision remains unverified. The current quote Pool account has14
+unparsed zero bytes after the pinned287-byte IDL layout; current VQ is not
+projected backward. These uncertainties are explicit model conditions.
+
+For each of five marks and both models, compute exact target quote/base
+reserve ratio times quote WSOL/base ratio, normalized with6/6/9 decimal
+scales, then the captured Kraken minute SOL/USD low/high. Multiply each
+mark's price by instruction-ordered supply, normalized by10^6. Birth issues
+1B tokens and revokes authority. The terminal87-row supply replay has30
+raw Burns, no later MintTo, and reconciles with the actual current mint.
+The buy's1188170011339raw burn occurs before its event CPI; PRE supply is
+966949259282595raw and POST/route supply965761089271256raw.
+
+Take the minimum across each model's maximum lower FDV endpoint and the
+maximum across each model's maximum upper endpoint, then floor/ceil cents.
+This gives22707992–22722406cents. Taking the maximum of model lower bounds
+would incorrectly select22707995cents. The combined FX/model/rounding
+reference width is0.0634328423%; it is not an error bound for unknown deployed
+semantics, other markets or missing states. Both models' global price bounds
+agree within2% with the original captured provider peak.
+
+This is a conditional selected-pool/window lower reference, not annual,
+lifetime or all-market ATH. Keep ATH date null and preserve holder/liquidity
+metadata. No generic production adapter or runner threshold changes. Manual
+promotion requires the unchanged original price observation/missing-row
+version, captured-case regression and passing isolated workspace checks.
+Root certificate SHA-256:
+`9d968b747ca3d5522eb56a5020968a605e6a6b3e510daa627c259f017562d2e7`.
+Independent raw gate:
+`e2da976cea2b78e9a061da004308c5695855f4f72cf0a8c53b7a8bd047ebfb2d`.
