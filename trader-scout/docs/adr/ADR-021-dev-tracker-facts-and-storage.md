@@ -1786,3 +1786,50 @@ histories do not establish peak supply. The source remains
 `solana-tracker-window-peak-supply-mayhem-curve-mark-fx-validated-v1`, with
 `ath_at=NULL` and preserved holders/liquidity. No general adapter, full
 Mayhem transition reconstruction or all-market/year completeness is added.
+
+## Amendment 39 (2026-10-14) — all pre/post states in a legacy PumpSwap neighborhood
+
+`DoyZoNkB…` closes a further exact-cent provider-window FDV. The terminal
+±3-second mint window contains 86 selected-pool historical PumpSwap events,
+with 172 exact pool-owned pre/post vault states. The dated February 17 IDL
+has explicit legacy cashback fields and no virtual-quote-reserve field;
+absence is justified by that historical schema, not inferred as zero from
+an opaque tail. Each event matches actual program log context, event-CPI
+bytes, target-pool trade accounts and reserve fields. Entire window pages,
+cursor chains, duplicate-free signatures, actual FX minutes and raw hashes
+are verified. No captured higher state is discarded. Both full-window FX
+endpoint maxima select the same post-Buy at the provider peak's second and
+agree within 2% with the saved Tracker price.
+
+The earlier private AMM v1 proof priced only pre states and was never used
+for a write. Separate v2/v3 corrections include every pre/post state and
+correct their provenance text; all earlier artifacts remain retained. Root
+independently replays raw captures with exact decimal FX, cursor validation
+and complete state selection. The `27ES77p6…` control has 68 pre/post states
+and its global maximum fails both price endpoints; it remains unknown.
+`EwMi5eRi…` passes this price check, but capped birth-to-peak histories do
+not establish an exact peak supply and do not authorize the same write.
+
+Doy's bounded continuations produce terminal TFA and signature histories:
+921 successful transactions including birth equal 920 successful scoped
+signatures plus exclusive-cursor birth, with 161 failed signatures retained.
+One birth `MintTo` issues `1e15` raw units, mint authority is revoked at birth,
+and one burn of 1,073,000 raw units occurs 356 seconds before the price peak.
+Peak supply is therefore `999999998927000` at six decimals. The provider
+price times this supply is the lower maximum-FDV bound; provider price times
+birth supply is the upper bound. Both floor to 4,286,370 cents, so maximum
+FDV cents in that provider window are determined despite the small burn.
+A standard finalized recapture matches the selected TFA message and metadata;
+its buy-exact-quote CPM floor, ceiling fees and pool-vault deltas reconcile.
+
+Golden `solana_tracker_doy_legacy_neighborhood_case.json` runs all 172 event
+CPIs through the production parser, checks exact pre/post mark math and full
+maxima, selected trade fees and the negative pool's all-state rejection.
+The root price and supply proof SHA-256 values are
+`e6c03bce1f6b9f45d914d8ce61a54b545d2e376379c282b09a840922a0c46ea1`
+and `34f6e8640ecbfa116b14a89f3f23f31799e8fbfeb2dc981dfe2053733ea7613c`.
+The guarded source is
+`solana-tracker-window-peak-supply-legacy-cashback-pool-fx-validated-v1`,
+with `ath_at=NULL` and holders/liquidity preserved. The price remains a
+provider recording-window reference, not proof of annual/all-market coverage.
+No general adapter or runner threshold is changed.

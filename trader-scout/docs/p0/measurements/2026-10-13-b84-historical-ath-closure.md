@@ -1,14 +1,14 @@
 # B8.4 historical ATH closures — 2026-10-13
 
-Fifty-five guarded writes extend the immutable 679-token diagnostic cohort from
-434 numeric / 245 unknown to **489 numeric / 190 unknown** (Oct 14 Moscow). This is a
+Fifty-six guarded writes extend the immutable 679-token diagnostic cohort from
+434 numeric / 245 unknown to **490 numeric / 189 unknown** (Oct 14 Moscow). This is a
 candidate-cohort checkpoint, not a coverage percentage for all annual network
 launches. Numeric records retain source-specific price kinds and historical
 scope; annual all-market ATH is still incomplete.
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Solana | 55 | 55 |
+| Solana | 56 | 54 |
 | BSC | 13 | 0 |
 | Base | 403 | 100 |
 | Robinhood | 18 | 35 |
@@ -143,7 +143,7 @@ Golden fixtures and ADR-021 amendments 25–36 cover accepted and
 pending reviewed price kinds, supply-bound negative controls, per-event FX
 weighting and provenance.
 Full `cargo fmt --check`, workspace/all-targets/all-features Clippy with denied
-warnings, and workspace/all-features tests passed: **1,230 tests**, with DB
+warnings, and workspace/all-features tests passed: **1,231 tests**, with DB
 tests isolated in `scout_test`. The release daemon remains active without
 restart; its production logic did not change in this checkpoint.
 
@@ -210,3 +210,9 @@ curve marks. Fresh exact-key selection and scoped signature reconciliation
 avoid both already-known candidates and post-peak successful effects; all
 prior requests remain in cumulative budget accounting. The three AMM inputs
 have separate price diagnostics and capped nonterminal supply histories.
+
+[Doy legacy PumpSwap follow-up](2026-10-14-solana-doy-legacy-neighborhood.md)
+adds one exact-cent record, with every captured pre/post state checked and a
+complete 921-transaction supply window. The burn occurs before the peak;
+maximum-FDV endpoint floors still agree. Other AMM price passes have their
+supply evidence recorded separately and are not silently treated as exact.
