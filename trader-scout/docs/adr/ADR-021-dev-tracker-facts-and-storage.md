@@ -1968,3 +1968,64 @@ no automatic production fallback or threshold changes. Writes are guarded
 by the exact original provider observation and previous missing-row version,
 with explicit lower-bound source, ATH date null, holder/liquidity unchanged.
 Annual/all-market completeness remains unknown.
+
+## Amendment 43 (2026-10-14) — chronological FDV reference with bounded curve PRE
+
+For the captured EWbabspX…, FLkQktRL… and2b4p8ien… histories, maximum
+price times supply at the price peak is not necessarily maximum FDV.
+FLk's earlier curve state has a larger supply-weighted FDV than the later
+selected-pool price peak. Replay supply changes in canonical transaction and
+instruction order, and maximize price times the supply at each state.
+
+The scoped dataset contains1031 observed curve POST/Create and selected-pool
+PRE/POST states, plus684 curve PRE references. TradeEvent bytes and actual
+instructions bind target mint/user/program/event authority and invocation
+scope under the dated official SDK1.31 IDL. Each token amount independently
+matches one scoped SPL transfer, including token program, mint, decimals,
+source, destination and authority. Buy inputs come from scoped user-to-curve
+System transfers; sell gross output comes from the curve account's whole-
+transaction lamport delta, with exactly one curve trade per transaction.
+The latter is not relabeled as an isolated System transfer.
+
+PRE virtual-token reserves equal the previous observed POST plus/minus the
+actual traded amount. For PRE virtual-SOL, invert the dated direction-specific
+integer quote formula against observed native/token amounts. Exact-token-out
+buy, exact-SOL-in buy and sell have distinct rounding; exact-SOL-in uses the
+net-minus-one rule explicitly documented in that IDL. Store the full compatible
+integer interval, rather than asserting the previous POST reserve is the only
+possible value. All684 prior POST candidates lie within these intervals,
+whose relative widths are below0.001%. Current POST minus native movement
+fails in555 cases and must not replace this inversion. Unknown Mayhem-wrapper
+events remain raw and unparsed; an actual reset or deployed wrapper ABI is
+not claimed. These are conditional SDK-model references, not a generic adapter.
+
+Use current event-minute Coinbase SOL/USD low/high and PRE quote-interval
+endpoints. Apply each birth mint/burn before or after the trade according to
+its actual instruction position. Take global FDV maxima over all1715 states
+using exact rational arithmetic; floor the lower endpoint and ceil the upper
+endpoint only after selecting maxima. Require the stored lower floor to be
+within2% of the unrounded global upper endpoint, including cent rounding.
+Independently require both global price maxima to agree within2% with the
+saved Solana Tracker price. Do not require the FDV maximum to coincide with
+the provider price-peak timestamp, or discard an earlier larger FDV.
+
+Named source:
+`onchain-mint-history-curve-selected-pool-fdv-window-cpm-bounded-cex-v1`.
+Stored lower floors are613081 /632673 /6025465cents; combined uncertainty
+is0.11759% /0.03445% /0.09477%. Scope is the captured mint-address history
+from birth through the saved price-peak neighborhood, Pump curve and the
+selected PumpSwap pool. Terminal pagination and signature-set reconciliation
+are scoped facts, not a universal index of all markets or reserve-only writes.
+Minute FX is a reference interval, not proof of an instantaneous executable
+USD quote. Lifetime, annual and all-market ATH remain unproven; ATH dates
+remain null and holder/liquidity metadata is preserved.
+
+Six finalized standard recaptures confirm all three birth and FDV-winning
+transactions. Guarded manual writes require a passing captured-case regression
+and workspace checks, exact original provider observation and the previous
+missing-row version. Root's independent final certificate is
+`2897e4dfac148afb0c91e8a8f2bd66d75d6cde25fbdee166c89b8fbfb11d90ed`,
+pinning finalized replay
+`414d4555fda934b0a8eab435430ff7efcabc746ca9ae02d134214cf4d2ef2d2d`.
+The earlier root certificate-v2 pins a transient producer-overwritten artifact
+and is explicitly invalid; the correction note retains that provenance gap.

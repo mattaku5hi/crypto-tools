@@ -6769,6 +6769,571 @@ mod tests {
     }
 
     #[test]
+    fn solana_tracker_chronological_fdv_window_exact_bounds_and_binding() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_chronological_fdv_window_cases.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["provenance"]["artifact_sha256"]["full_fdv_replay_v25_sha256"].as_str(),
+            Some("414d4555fda934b0a8eab435430ff7efcabc746ca9ae02d134214cf4d2ef2d2d")
+        );
+        assert_eq!(
+            fixture["provenance"]["artifact_sha256"]["root_full_fdv_certificate_v3_sha256"]
+                .as_str(),
+            Some("2897e4dfac148afb0c91e8a8f2bd66d75d6cde25fbdee166c89b8fbfb11d90ed")
+        );
+        assert_eq!(
+            fixture["provenance"]["artifact_sha256"]["root_curve_token_transfers_v1_sha256"]
+                .as_str(),
+            Some("fc16c015c3b9d2bdf9c1218eef8d30fa849f2636251ea2386dc08c8b6463a323")
+        );
+        assert_eq!(
+            fixture["provenance"]["artifact_sha256"]["cpm_pre_q_inversion_interval_audit_v2_sha256"]
+                .as_str(),
+            Some("54d1aee7ef3f1727010f27f4a98a307019214a08a5b4a10cc65ae519671ce2f8")
+        );
+        assert_eq!(fixture["scope"]["state_count"].as_u64(), Some(1_715));
+        assert_eq!(
+            fixture["scope"]["curve_pre_state_count"].as_u64(),
+            Some(684)
+        );
+        assert_eq!(fixture["fx_minutes"].as_array().unwrap().len(), 84);
+        assert_eq!(
+            fixture["scope"]["limitations"]["exact_deployed_mayhem_wrapper_pre_q"],
+            false
+        );
+        assert_eq!(fixture["scope"]["limitations"]["all_venues"], false);
+        assert_eq!(fixture["scope"]["limitations"]["lifetime_history"], false);
+        assert_eq!(fixture["scope"]["limitations"]["annual_history"], false);
+
+        let ratio = |value: &str| {
+            let (numerator, denominator) = value.split_once('/').unwrap();
+            (
+                U512::from_str_radix(numerator, 10).unwrap(),
+                U512::from_str_radix(denominator, 10).unwrap(),
+            )
+        };
+        let compare =
+            |left: (U512, U512), right: (U512, U512)| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let ceil_div = |numerator: U512, denominator: U512| {
+            (numerator + denominator - U512::from(1)) / denominator
+        };
+        let pow10 = |scale: u32| {
+            (0..scale)
+                .try_fold(U512::from(1), |value, _| value.checked_mul(U512::from(10)))
+                .unwrap()
+        };
+        let decimal_ratio = |value: &str| {
+            let decimal = ExactDecimal::parse(value).unwrap();
+            (
+                U512::from(decimal.coefficient),
+                pow10(u32::try_from(decimal.scale).unwrap()),
+            )
+        };
+        let fdv = |price: (U512, U512), supply_raw: U512| {
+            (
+                price.0 * supply_raw * U512::from(100),
+                price.1 * U512::from(1_000_000),
+            )
+        };
+        let transfer_is_bound = |row: &serde_json::Value| {
+            let transfers = row["scoped_transfers"].as_array().unwrap();
+            if !row["matches"].as_bool().unwrap()
+                || !row["unknown"].as_array().unwrap().is_empty()
+                || transfers.len() != 1
+            {
+                return false;
+            }
+            let transfer = &transfers[0];
+            let roles = &row["trade_roles"];
+            let instruction = &row["matched_trade_instruction"];
+            let bytes = bytes_from_hex(transfer["raw_hex"].as_str().unwrap());
+            let amount = U512::from(transfer["amount_raw"].as_u64().unwrap());
+            let event_amount = U512::from(row["event_token_raw"].as_u64().unwrap());
+            let inner = transfer["inner_index"].as_u64().unwrap();
+            let end = row["subtree_end"].as_u64().unwrap();
+            let trade_inner = row["inner_index"].as_i64().unwrap();
+            let trade_height = row["trade_stack_height"].as_u64().unwrap();
+            let is_buy = matches!(
+                row["instruction"].as_str(),
+                Some("buy" | "buy_exact_sol_in")
+            );
+            let expected_source = if is_buy {
+                roles["associated_bonding_curve"].as_str().unwrap()
+            } else {
+                roles["associated_user"].as_str().unwrap()
+            };
+            let expected_destination = if is_buy {
+                roles["associated_user"].as_str().unwrap()
+            } else {
+                roles["associated_bonding_curve"].as_str().unwrap()
+            };
+            let expected_authority = if is_buy {
+                roles["bonding_curve"].as_str().unwrap()
+            } else {
+                roles["user"].as_str().unwrap()
+            };
+            let trade_data = bytes_from_hex(instruction["data_hex"].as_str().unwrap());
+            let expected_discriminator: &[u8] = match row["instruction"].as_str() {
+                Some("buy") => &[0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea],
+                Some("buy_exact_sol_in") => &[0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f],
+                Some("sell") => &[0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad],
+                _ => return false,
+            };
+            let expected_start = if trade_inner < 0 {
+                0
+            } else {
+                u64::try_from(trade_inner).unwrap() + 1
+            };
+            bytes.len() == 10
+                && bytes[0] == 12
+                && U512::from(u64::from_le_bytes(bytes[1..9].try_into().unwrap())) == amount
+                && amount == event_amount
+                && bytes[9] == 6
+                && transfer["opcode"].as_u64() == Some(12)
+                && transfer["mint"] == roles["mint"]
+                && transfer["program"] == roles["token_program"]
+                && transfer["authority"] == expected_authority
+                && transfer["source"] == expected_source
+                && transfer["destination"] == expected_destination
+                && instruction["program"].as_str()
+                    == Some("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+                && trade_data.starts_with(expected_discriminator)
+                && instruction["inner_index"] == row["inner_index"]
+                && instruction["outer_index"] == row["outer_index"]
+                && instruction["stack_height"] == row["trade_stack_height"]
+                && instruction["subtree_end"] == row["subtree_end"]
+                && transfer["stack_height"].as_u64().unwrap() > trade_height
+                && inner > expected_start
+                && inner < end
+        };
+
+        let expected = [
+            ("EWbabspX", 469, 198, 613_081, 613_803),
+            ("FLkQktRL", 455, 152, 632_673, 632_892),
+            ("2b4p8ien", 791, 334, 6_025_465, 6_031_181),
+        ];
+        let mut state_total = 0_usize;
+        let mut pre_total = 0_usize;
+        for (case, (prefix, state_count, pre_count, low_cents, high_cents)) in
+            fixture["cases"].as_array().unwrap().iter().zip(expected)
+        {
+            assert_eq!(case["prefix"].as_str(), Some(prefix));
+            let states = case["states"].as_array().unwrap();
+            let curve_pre = case["curve_pre_states"].as_array().unwrap();
+            let bindings = case["curve_trade_bindings"].as_array().unwrap();
+            assert_eq!(states.len(), state_count);
+            assert_eq!(curve_pre.len(), pre_count);
+            assert_eq!(bindings.len(), pre_count);
+            assert_eq!(case["decimals"].as_u64(), Some(6));
+            state_total += states.len();
+            pre_total += curve_pre.len();
+
+            let mut max_low: Option<(U512, U512)> = None;
+            let mut max_high: Option<(U512, U512)> = None;
+            let mut chronological = Vec::with_capacity(states.len());
+            for state in states {
+                let minute = state["fx_minute_unix_s"]
+                    .as_u64()
+                    .or_else(|| state["minute"].as_u64())
+                    .unwrap();
+                let fx = fixture["fx_minutes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["minute_unix_s"].as_u64() == Some(minute))
+                    .unwrap();
+                let (native_low, native_high) = if state["venue"].as_str() == Some("pumpfun_curve")
+                    && state["side"].as_str() == Some("pre")
+                {
+                    (
+                        ratio(state["price_native_sol_per_token_low"].as_str().unwrap()),
+                        ratio(state["price_native_sol_per_token_high"].as_str().unwrap()),
+                    )
+                } else {
+                    let native = ratio(state["price_native"].as_str().unwrap());
+                    (native, native)
+                };
+                let fx_low = decimal_ratio(fx["low_usd_per_sol"].as_str().unwrap());
+                let fx_high = decimal_ratio(fx["high_usd_per_sol"].as_str().unwrap());
+                assert_eq!(
+                    compare(
+                        (native_low.0 * fx_low.0, native_low.1 * fx_low.1),
+                        ratio(state["price_usd_low"].as_str().unwrap())
+                    ),
+                    Ordering::Equal
+                );
+                assert_eq!(
+                    compare(
+                        (native_high.0 * fx_high.0, native_high.1 * fx_high.1),
+                        ratio(state["price_usd_high"].as_str().unwrap())
+                    ),
+                    Ordering::Equal
+                );
+                let low = fdv(
+                    ratio(state["price_usd_low"].as_str().unwrap()),
+                    U512::from(state["supply_low_raw"].as_u64().unwrap()),
+                );
+                let high = fdv(
+                    ratio(state["price_usd_high"].as_str().unwrap()),
+                    U512::from(state["supply_high_raw"].as_u64().unwrap()),
+                );
+                let low_floor = low.0 / low.1;
+                let high_ceil = ceil_div(high.0, high.1);
+                assert_eq!(
+                    low_floor,
+                    U512::from(state["fdv_low_cents"].as_u64().unwrap())
+                );
+                assert_eq!(
+                    high_ceil,
+                    U512::from(state["fdv_high_cents"].as_u64().unwrap())
+                );
+                if state["venue"].as_str() == Some("pumpfun_curve")
+                    && state["side"].as_str() == Some("pre")
+                {
+                    assert_eq!(
+                        state["supply_low_raw"],
+                        state["supply_immediately_before_trade_raw"]
+                    );
+                    assert_eq!(
+                        state["supply_high_raw"],
+                        state["supply_immediately_before_trade_raw"]
+                    );
+                }
+                if max_low.is_none_or(|current| compare(low, current).is_gt()) {
+                    max_low = Some(low);
+                }
+                if max_high.is_none_or(|current| compare(high, current).is_gt()) {
+                    max_high = Some(high);
+                }
+                let side_order = match state["side"].as_str().unwrap() {
+                    "pre" => 0_u8,
+                    "post" => 1_u8,
+                    _ => panic!("unexpected chronological mark side"),
+                };
+                chronological.push((
+                    state["slot"].as_u64().unwrap(),
+                    state["transaction_index"].as_u64().unwrap(),
+                    state["log_index"].as_u64().unwrap(),
+                    side_order,
+                ));
+            }
+            assert!(chronological.windows(2).all(|pair| pair[0] <= pair[1]));
+
+            for (bound, maximum, expected_cents) in [
+                (
+                    "full_window_global_max_fdv_low",
+                    max_low.unwrap(),
+                    low_cents,
+                ),
+                (
+                    "full_window_global_max_fdv_high",
+                    max_high.unwrap(),
+                    high_cents,
+                ),
+            ] {
+                let winner = &case["global_maxima"][bound];
+                assert_eq!(
+                    compare(
+                        maximum,
+                        ratio(winner["fdv_cents_unrounded"].as_str().unwrap())
+                    ),
+                    Ordering::Equal
+                );
+                assert_eq!(winner["fdv_cents"].as_u64(), Some(expected_cents));
+                assert!(states.iter().any(|state| {
+                    state["signature"].as_str() == winner["signature"].as_str()
+                        && state["side"] == winner["side"]
+                        && state["log_index"] == winner["log_index"]
+                }));
+            }
+            assert_eq!(
+                case["certificate"]["stored_lower_fdv_cents"].as_u64(),
+                Some(low_cents)
+            );
+            let certified_upper = ratio(
+                case["certificate"]["fdv_upper_unrounded_cents"]
+                    .as_str()
+                    .unwrap(),
+            );
+            let certified_uncertainty = ratio(
+                case["certificate"]["combined_relative_uncertainty_including_cent_rounding"]
+                    .as_str()
+                    .unwrap(),
+            );
+            assert_eq!(
+                compare(
+                    certified_upper,
+                    ratio(
+                        case["global_maxima"]["full_window_global_max_fdv_high"]
+                            ["fdv_cents_unrounded"]
+                            .as_str()
+                            .unwrap()
+                    )
+                ),
+                Ordering::Equal
+            );
+            let recomputed_uncertainty = (
+                certified_upper.0 - U512::from(low_cents) * certified_upper.1,
+                certified_upper.0,
+            );
+            assert_eq!(
+                compare(recomputed_uncertainty, certified_uncertainty),
+                Ordering::Equal
+            );
+            assert!(
+                certified_uncertainty.0 * U512::from(100)
+                    <= certified_uncertainty.1 * U512::from(2)
+            );
+
+            for (pre, binding) in curve_pre.iter().zip(bindings) {
+                assert_eq!(pre["signature"], binding["signature"]);
+                assert_eq!(pre["event_sha256"], binding["event_sha256"]);
+                assert_eq!(binding["trade_roles"]["mint"], case["mint"]);
+                assert!(
+                    transfer_is_bound(binding),
+                    "transfer role binding failed for {}",
+                    binding["signature"]
+                );
+                let t = U512::from(pre["pre_virtual_token_raw"].as_u64().unwrap());
+                let a = U512::from(pre["event_token_amount_raw"].as_u64().unwrap());
+                let signed_delta = pre["actual_curve_native_delta_lamports"].as_i64().unwrap();
+                let d = U512::from(signed_delta.unsigned_abs());
+                let event_sol_amount =
+                    U512::from(pre["event_sol_amount_lamports"].as_u64().unwrap());
+                assert_eq!(d, event_sol_amount);
+                assert_eq!(
+                    signed_delta.is_positive(),
+                    pre["side_of_trade"].as_str() == Some("buy")
+                );
+                let candidate = U512::from(
+                    pre["candidate_previous_post_virtual_sol_lamports"]
+                        .as_u64()
+                        .unwrap(),
+                );
+                let low = U512::from(
+                    pre["pre_virtual_sol_interval_low_lamports"]
+                        .as_u64()
+                        .unwrap(),
+                );
+                let high = U512::from(
+                    pre["pre_virtual_sol_interval_high_lamports"]
+                        .as_u64()
+                        .unwrap(),
+                );
+                assert!(low <= candidate && candidate <= high);
+                assert_eq!(
+                    high - low + U512::from(1),
+                    U512::from(
+                        pre["pre_virtual_sol_interval_integer_count"]
+                            .as_u64()
+                            .unwrap()
+                    )
+                );
+                let formula = pre["pre_virtual_sol_interval_formula"].as_str().unwrap();
+                let (derived_low, derived_high) = match formula {
+                    "buy_exact_token_out_cost_formula" => {
+                        assert!(signed_delta > 0 && t > a);
+                        (
+                            ceil_div((d - U512::from(1)) * (t - a), a),
+                            ceil_div(d * (t - a), a) - U512::from(1),
+                        )
+                    }
+                    "sell_sdk" => {
+                        assert!(signed_delta < 0);
+                        (
+                            ceil_div(d * (t + a), a),
+                            ceil_div((d + U512::from(1)) * (t + a), a) - U512::from(1),
+                        )
+                    }
+                    "exact_sol_in_net_minus_1" => {
+                        assert!(signed_delta > 0);
+                        (
+                            ((d - U512::from(1)) * t) / (a + U512::from(1)) + U512::from(2) - d,
+                            ((d - U512::from(1)) * t) / a + U512::from(1) - d,
+                        )
+                    }
+                    _ => panic!("unexpected curve quote interval formula"),
+                };
+                assert_eq!((low, high), (derived_low, derived_high));
+                let sdk_output = |q: U512| match formula {
+                    "buy_exact_token_out_cost_formula" => a * q / (t - a) + U512::from(1),
+                    "sell_sdk" => a * q / (t + a),
+                    "exact_sol_in_net_minus_1" => (d - U512::from(1)) * t / (q + d - U512::from(1)),
+                    _ => unreachable!(),
+                };
+                let expected_output = if formula == "exact_sol_in_net_minus_1" {
+                    a
+                } else {
+                    d
+                };
+                assert_eq!(sdk_output(low), expected_output);
+                assert_eq!(sdk_output(high), expected_output);
+                assert_ne!(sdk_output(low - U512::from(1)), expected_output);
+                assert_ne!(sdk_output(high + U512::from(1)), expected_output);
+                assert!(pre["pre_virtual_sol_lamports"].is_null());
+            }
+
+            let sample = &case["raw_birth_create_and_first_trade_sample"];
+            assert_eq!(sample["signature"], case["sample_binding_signature"]);
+            assert!(
+                sample["log_messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|line| { line.as_str().unwrap().contains("Instruction: CreateV2") })
+            );
+            assert!(
+                sample["log_messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|line| { line.as_str().unwrap().contains("Instruction: Buy") })
+            );
+            assert!(
+                sample["log_messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|line| { line.as_str().unwrap().contains("Program data:") })
+            );
+            for event_name in ["create_event", "trade_event"] {
+                let event = &sample["event_payloads"][event_name];
+                let event_bytes = bytes_from_hex(event["data_hex"].as_str().unwrap());
+                assert_eq!(
+                    format!("{:x}", Sha256::digest(&event_bytes)),
+                    event["sha256"].as_str().unwrap()
+                );
+            }
+            assert_eq!(
+                sample["event_payloads"]["trade_event"]["sha256"],
+                case["sample_binding"]["event_sha256"]
+            );
+            assert_eq!(
+                &bytes_from_hex(
+                    sample["event_payloads"]["create_event"]["data_hex"]
+                        .as_str()
+                        .unwrap()
+                )[..8],
+                &[27, 114, 169, 77, 222, 235, 99, 118]
+            );
+            assert!(
+                !sample["pre_balances_lamports"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                !sample["post_balances_lamports"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(sample["pre_token_balances"].as_array().unwrap().is_empty());
+            assert!(
+                sample["post_token_balances"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|balance| {
+                        balance["mint"].as_str() == case["mint"].as_str()
+                            && balance["uiTokenAmount"]["decimals"].as_u64() == Some(6)
+                    })
+            );
+        }
+        assert_eq!(state_total, 1_715);
+        assert_eq!(pre_total, 684);
+
+        let mut bad_authority = fixture["cases"][0]["sample_binding"].clone();
+        bad_authority["scoped_transfers"][0]["authority"] =
+            serde_json::json!("11111111111111111111111111111111");
+        assert!(!transfer_is_bound(&bad_authority));
+        let mut bad_mint = fixture["cases"][0]["sample_binding"].clone();
+        bad_mint["scoped_transfers"][0]["mint"] =
+            serde_json::json!("So11111111111111111111111111111111111111112");
+        assert!(!transfer_is_bound(&bad_mint));
+        let mut bad_amount = fixture["cases"][0]["sample_binding"].clone();
+        bad_amount["scoped_transfers"][0]["amount_raw"] = serde_json::json!(
+            bad_amount["scoped_transfers"][0]["amount_raw"]
+                .as_u64()
+                .unwrap()
+                + 1
+        );
+        assert!(!transfer_is_bound(&bad_amount));
+        let mut out_of_scope = fixture["cases"][0]["sample_binding"].clone();
+        out_of_scope["scoped_transfers"][0]["inner_index"] = out_of_scope["subtree_end"].clone();
+        assert!(!transfer_is_bound(&out_of_scope));
+        let mut wrong_cpi_height = fixture["cases"][0]["sample_binding"].clone();
+        wrong_cpi_height["scoped_transfers"][0]["stack_height"] =
+            wrong_cpi_height["trade_stack_height"].clone();
+        assert!(!transfer_is_bound(&wrong_cpi_height));
+        let mut bad_opcode = fixture["cases"][0]["sample_binding"].clone();
+        bad_opcode["scoped_transfers"][0]["raw_hex"] = serde_json::Value::String(format!(
+            "03{}",
+            &bad_opcode["scoped_transfers"][0]["raw_hex"]
+                .as_str()
+                .unwrap()[2..]
+        ));
+        bad_opcode["scoped_transfers"][0]["opcode"] = serde_json::json!(3);
+        assert!(!transfer_is_bound(&bad_opcode));
+
+        let reset = fixture["cases"][0]["curve_pre_states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["signature"].as_str().unwrap().starts_with("8NqJJo"))
+            .unwrap();
+        assert!(
+            reset["candidate_previous_post_virtual_sol_lamports"]
+                .as_u64()
+                .unwrap()
+                >= reset["pre_virtual_sol_interval_low_lamports"]
+                    .as_u64()
+                    .unwrap()
+        );
+        assert!(
+            reset["candidate_previous_post_virtual_sol_lamports"]
+                .as_u64()
+                .unwrap()
+                <= reset["pre_virtual_sol_interval_high_lamports"]
+                    .as_u64()
+                    .unwrap()
+        );
+        assert!(
+            reset["pre_virtual_sol_interval_integer_count"]
+                .as_u64()
+                .unwrap()
+                > 1
+        );
+        assert!(reset["pre_virtual_sol_lamports"].is_null());
+
+        let flk = &fixture["cases"][1];
+        let peak_price_state = flk["states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .max_by(|left, right| {
+                compare(
+                    ratio(left["price_usd_high"].as_str().unwrap()),
+                    ratio(right["price_usd_high"].as_str().unwrap()),
+                )
+            })
+            .unwrap();
+        assert_eq!(peak_price_state["fdv_low_cents"].as_u64(), Some(373_427));
+        assert_eq!(peak_price_state["fdv_high_cents"].as_u64(), Some(373_562));
+        assert!(
+            peak_price_state["fdv_high_cents"].as_u64().unwrap()
+                < flk["global_maxima"]["full_window_global_max_fdv_high"]["fdv_cents"]
+                    .as_u64()
+                    .unwrap()
+        );
+    }
+
+    #[test]
     fn solana_tracker_doy_full_neighborhood_marks_and_supply_match() {
         use alloy_primitives::U512;
         use sha2::{Digest, Sha256};

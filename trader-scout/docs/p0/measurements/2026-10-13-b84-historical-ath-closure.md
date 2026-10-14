@@ -1,14 +1,14 @@
 # B8.4 historical ATH closures — 2026-10-13
 
-Seventy-four guarded writes extend the immutable 679-token diagnostic cohort from
-434 numeric / 245 unknown to **508 numeric / 171 unknown** (Oct 14 Moscow). This is a
+Seventy-seven guarded writes extend the immutable 679-token diagnostic cohort from
+434 numeric / 245 unknown to **511 numeric / 168 unknown** (Oct 14 Moscow). This is a
 candidate-cohort checkpoint, not a coverage percentage for all annual network
 launches. Numeric records retain source-specific price kinds and historical
 scope; annual all-market ATH is still incomplete.
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Solana | 74 | 36 |
+| Solana | 77 | 33 |
 | BSC | 13 | 0 |
 | Base | 403 | 100 |
 | Robinhood | 18 | 35 |
@@ -252,3 +252,17 @@ liquidity metadata and null ATH dates. Total74closures: SOL60/Base2/RH12;
 fixedcohort508numeric/171unknown. The separate70-closure bundle predates
 these last four updates. See [batch14 evidence](2026-10-14-solana-first-buy-batch14.md)
 and ADR-021 amendment42. Bd556 remains rejected by its5.9% price conflict.
+
+## Chronological FDV windows (Oct14)
+
+EWbab/FLk/2b4 add three bounded chronological FDV references after1715 states,
+684 actual scoped token transfers, direction-specific quote intervals and
+six finalized birth/winner recaptures reconcile. Their combined uncertainties
+are below0.12%, including cent rounding. FLk's largest FDV precedes its price
+peak, so peak-price supply alone is rejected as the maximum. Full workspace
+fmt/Clippy/1234tests passed before atomic guarded writes; null ATH dates and
+holder/liquidity metadata are preserved. Current77closures are SOL63/Base2/RH12,
+fixedcohort511numeric/168unknown. The74-closure archive predates these writes.
+See [chronological FDV evidence](2026-10-14-solana-chronological-fdv-window.md),
+ADR-021 amendment43. Conditional SDK-model PRE references and missing annual/
+all-market coverage remain explicit; no automatic production adapter is added.

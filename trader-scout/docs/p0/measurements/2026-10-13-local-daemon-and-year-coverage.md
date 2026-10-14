@@ -275,3 +275,23 @@ Source binary remains7c1ca5c; checkoutcc49996; workspace1233tests passed.
 This70-closure dump has archive/row verification, while the separate full
 restore above validates the68-closure dump. A full70-dump restore is not
 claimed. Both immutable checkpoint packages remain preserved.
+
+## Seventy-four-closure archive checkpoint (2026-10-14)
+
+The next consistent schema10 dump runs03:47:51–03:49:03UTC and includes all74
+guarded closure rows, including the four first-buy recoveries. Its fixed
+cohort is508numeric/171unknown. Streamed ATH-table reconciliation matches all
+74 rows exactly across source, observation time, FDV, ATH date, holders and
+liquidity before packing. All39 payloads, including36 exports, pass hash and
+0600/0700 mode verification; secrets are excluded.
+
+Private archive:
+`.scout-data/deployment/2026-10-14-b84-74-closures/trader-scout-state-schema10-b84-74-closures-20261014.tar`,
+3,015,116,800bytes, SHA-256
+`7893ea60a0b463baaac7c4d9b89bc372f361e80c04ab2e7982b06d7e5d360a15`.
+Dump SHA-256:
+`95a02e34540efeec71af8474fb15bb86c60190c76b9c4e75cdc6b081ec74f4b4`.
+Binary remains7c1ca5c; checkoutfb167df; linked round14b checks include1233
+passing tests. This archive was not full-restored; the separately verified
+68-closure restore above retains its own scope and exit-code caveat. This
+package is a partial ATH checkpoint, not annual/all-market completion.

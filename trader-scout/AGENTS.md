@@ -49,9 +49,11 @@
 - PumpSwap spot использует signed real+virtual quote reserves; post-vq меняется при удержании комиссий, а `BoostBuyAndBurn` не является покупкой кошелька (`crates/scout-dex-solana/src/pump_amm_event.rs`, `docs/p0/measurements/2026-10-11-solana-virtual-reserve-source-audit.md`).
 - Исторический PumpSwap `BuyEvent`: проверять `ix_name`; у `buy_exact_quote_in` quote-поля имеют иной gross/net смысл и curve использует net−1 (ADR-021 amendment 28, `solana_tracker_avx_legacy_pool_spot_case.json`).
 - Pump Mayhem curve mark использует virtual quote/token и фактическую эмиссию; Mayhem updates не обязаны равняться trade `sol_amount`, а ST `pool_id == mint` требует curve-specific проверки (ADR-021 amendment 34).
+- PumpSwap vault, созданный перед первой покупкой в той же транзакции, отсутствует в transaction-start preTokenBalances: восстанавливать ordered initialization/funding и проверять trade-CPI scope, не подставлять zero (ADR-021 amendments 41–42; `crates/scout-devtracker/src/birdeye.rs`).
 - PumpSwap 16 нулевых хвостовых байт могут быть двумя `u64` cashback, а не `i128` virtual reserves: декодировать полный датированный IDL, не именовать поле по длине/нулю (ADR-021 amendments 29/32).
 - Solana Tracker chart: сохранять exact wire query и проверять scale/epoch; price-default control без `timezone` дал правильные UTC метки, explicit `timezone=UTC` сдвинул их на−7200s (`docs/p0/measurements/2026-10-11-solana-jc-chart-supply-bounds.md`).
 - Не искать текст по `.env*`/secret files: `rg` ограничивать конкретными source/docs каталогами; credentials читать только внутри процесса по exact variable и никогда не выводить URL/header/exception с ключом.
+- Диагностический proof после передачи SHA другим агентам неизменяем: исправление — новый versioned файл; reader проверяет hash до/после чтения (`docs/p0/measurements/2026-10-14-solana-chronological-fdv-window.md`).
 
 Следовать `docs/ROADMAP.md`. Не писать все CLI отдельно. Сначала контракт данных и hand-checked corpus; затем сквозной ограниченный slice, расширение сетей/DEX и оптимизация по профилю. После каждой задачи: перечислить измененные файлы, выполненные проверки, полученные результаты, ограничения и следующий task ID. Фиксировать изменения небольшими законченными коммитами, когда среда действительно дает доступ к git.
 
