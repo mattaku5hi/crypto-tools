@@ -1684,3 +1684,53 @@ while all raw captures and the initial manifest status were preserved.
 The source remains `solana-tracker-window-peak-supply-mayhem-curve-mark-fx-validated-v1`,
 with `ath_at=NULL` and preserved holders/liquidity. No automatic adapter,
 runner threshold, full Mayhem transition rule or all-market coverage is added.
+
+## Amendment 37 (2026-10-14) — terminal signature pagination for curve supply
+
+Eight further native-SOL Mayhem curve marks retain amendments 34–36's
+source, price kind and provider-window limits. Their complete captured
+±3-second neighborhoods contain 140 TradeEvents. All global neighborhood
+maxima occur at the provider timestamp's second or one second before it,
+within 2% at both dated SOL/USD endpoints. Every event in these neighborhoods
+is in the actual captured FX minute; no neighboring minute was substituted.
+The `ApRm3VBA…` control's global maximum differs by about 8.7%, so it remains
+unknown. The AMM input is not evaluated using the curve formula.
+
+A full `getSignaturesForAddress` page of 1,000 rows is not terminal. For
+`EzqFMWBu…`, two bounded continuations return 564 and zero rows, with the
+exclusive `before` cursor chained to the preceding page's last signature and
+the same explicit birth `until` cursor. All 1,564 signatures have known
+timestamps and unique signatures: 228 successful effects and 1,336 failed
+transactions. The successful set plus explicit birth equals all 229 filtered
+birth-to-peak TFA transactions. Failed rows and raw pages remain retained;
+failed execution does not mint or burn. Other candidates' scoped signature
+sets also match their complete TFA histories. Unknown timestamps, a
+nonterminal page or an unreconciled set would leave supply unknown.
+
+All eight have two birth mint instructions totaling `2e15` raw units,
+birth authority revocation, no burn/unknown supply opcode through the peak
+and metadata-only current mint extensions. Birth-to-peak success counts are
+14 / 202 / 65 / 22 / 62 / 84 / 25 / 229. Actual peak supply is 2B six-decimal
+tokens. Stored FDV uses the exact saved provider price times this supply;
+cent floors are 565,021 / 2,435,430 / 851,171 / 609,137 / 1,100,700 /
+1,208,986 / 1,150,218 / 1,052,206. Independent SDK mark × FX low/high values
+are corroboration bands, not uncertainty in supply or a bound on all-market
+maximum FDV. No provider `highest_market_cap` with implicit 1B supply is used.
+
+Standard finalized transaction recaptures match complete TFA messages and
+selected metadata. Native transfers are scoped to each actual Pump buy;
+curve and fee/creator legs and ceiling fee rounding reconcile. These eight
+selected transactions have no extra creator-vault amount. Golden
+`solana_tracker_mayhem_curve_mark_batch8_cases.json` adds terminal pagination,
+failed-signature retention and the negative price control to the shared
+captured-byte regression. Root price, supply and native proof SHA-256 values
+are `d037e37306bac71c38f626b2b7a4f672c28096ed37aa7f048d4ab69b81b8ba15`,
+`26f6ee8acea9d10cec2ccaf18636e0d989c6778f9dca6f555918312f1a98e63c`
+and `c32571e54b60cadfaa03dcefd98fcd529d6f79951915224c8e5d6a69b754fd94`.
+The separate final worker proof is
+`c2544e49bc8dd8932062603fdb33950cf9ac7ef09caa12b445d8b00e101fed6b`;
+its prior revisions and all raw captures remain separate. The source remains
+`solana-tracker-window-peak-supply-mayhem-curve-mark-fx-validated-v1`, with
+`ath_at=NULL`, preserved holders/liquidity and unknown recording-window
+start. This adds manual cases, not a general adapter or annual all-market
+coverage claim.

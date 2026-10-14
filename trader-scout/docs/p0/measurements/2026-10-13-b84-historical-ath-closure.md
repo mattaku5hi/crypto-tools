@@ -1,14 +1,14 @@
 # B8.4 historical ATH closures — 2026-10-13
 
-Forty guarded writes extend the immutable 679-token diagnostic cohort from
-434 numeric / 245 unknown to **474 numeric / 205 unknown** (Oct 14 Moscow). This is a
+Forty-eight guarded writes extend the immutable 679-token diagnostic cohort from
+434 numeric / 245 unknown to **482 numeric / 197 unknown** (Oct 14 Moscow). This is a
 candidate-cohort checkpoint, not a coverage percentage for all annual network
 launches. Numeric records retain source-specific price kinds and historical
 scope; annual all-market ATH is still incomplete.
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Solana | 40 | 70 |
+| Solana | 48 | 62 |
 | BSC | 13 | 0 |
 | Base | 403 | 100 |
 | Robinhood | 18 | 35 |
@@ -196,3 +196,11 @@ seven writes; it must not be described as including the 33-closure checkpoint.
 curve-mark records. Its Fg proof distinguishes the raw signature cursor
 interval from successful transactions inside the supply timestamp scope;
 outside/failed rows and the original mismatch status remain explicit.
+
+[Batch 8](2026-10-14-solana-ath-gap-closure-batch8.md) adds eight further
+curve marks. Ezq supply verification explicitly continues the 1,000-row
+signature page to 564 and zero rows, retaining 1,336 failed signatures and
+matching all 229 successful transactions including birth. The 140 positive
+neighboring events pass actual-minute FX and native execution validation;
+the negative curve control and AMM remain unpromoted. The sealed package
+still contains the earlier 26-closure checkpoint, not these 48 closures.

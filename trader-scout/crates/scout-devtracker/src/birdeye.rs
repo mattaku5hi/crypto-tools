@@ -6195,13 +6195,14 @@ mod tests {
                     499_152,
                     546_571,
                     642_711,
-                ],
-                &[2_u64, 2, 1, 2, 4, 2, 5],
-                &[1_u64, 1, 0, 1, 3, 1, 4],
-                &[-1_i64, -1, -1, -1, -2, -2, -2],
+                ][..],
+                &[2_u64, 2, 1, 2, 4, 2, 5][..],
+                &[1_u64, 1, 0, 1, 3, 1, 4][..],
+                &[-1_i64, -1, -1, -1, -2, -2, -2][..],
                 36_usize,
                 5_usize,
                 Some("5N9Zfj9tNob9ShYFrCXzapKCLFR7uR8Zsf4CUjMGpump"),
+                &[true, true][..],
             ),
             (
                 include_str!(
@@ -6215,13 +6216,36 @@ mod tests {
                     683_696,
                     651_093,
                     2_236_670,
-                ],
-                &[6_u64, 10, 47, 14, 70, 14, 23],
-                &[5_u64, 9, 46, 13, 69, 13, 22],
-                &[-1_i64, 0, -1, -1, -1, -1, -1],
+                ][..],
+                &[6_u64, 10, 47, 14, 70, 14, 23][..],
+                &[5_u64, 9, 46, 13, 69, 13, 22][..],
+                &[-1_i64, 0, -1, -1, -1, -1, -1][..],
                 101_usize,
                 3_usize,
                 None,
+                &[true][..],
+            ),
+            (
+                include_str!(
+                    "../tests/fixtures/solana_tracker_mayhem_curve_mark_batch8_cases.json"
+                ),
+                &[
+                    565_021_u64,
+                    2_435_430,
+                    851_171,
+                    609_137,
+                    1_100_700,
+                    1_208_986,
+                    1_150_218,
+                    1_052_206,
+                ][..],
+                &[14_u64, 202, 65, 22, 62, 84, 25, 229][..],
+                &[13_u64, 201, 64, 21, 61, 83, 24, 228][..],
+                &[0_i64, -1, -1, -1, 0, -1, -1, -1][..],
+                140_usize,
+                1_usize,
+                None,
+                &[false][..],
             ),
         ];
 
@@ -6234,6 +6258,7 @@ mod tests {
             expected_total_events,
             expected_nonzero_fees,
             extra_fee_mint,
+            expected_prior_control_matches,
         ) in datasets
         {
             let fixture: serde_json::Value = serde_json::from_str(fixture_text).unwrap();
@@ -6521,7 +6546,7 @@ mod tests {
                         assert!(!failed["err"].is_null());
                     }
                 }
-                if extra_fee_mint.is_none() && index == 0 {
+                if mint == "FgFgrJLZ8Q7GBUzBsnHoeE4vyN2zjfMp6czb8nPVpump" {
                     let outside = supply["signature_query_rows_outside_peak_time_bound"]
                         .as_array()
                         .unwrap();
@@ -6540,11 +6565,34 @@ mod tests {
                         supply["successful_signature_rows"].as_u64().unwrap() + 1
                     );
                 }
+                if mint == "EzqFMWBuU7YJmBZBPg6hWuaNh3kofJU55vK2pt91pump" {
+                    let pages = supply["signature_pages"].as_array().unwrap();
+                    let failed = supply["failed_signature_query_rows_retained"]
+                        .as_array()
+                        .unwrap();
+                    assert_eq!(pages.len(), 3);
+                    assert_eq!(pages[0]["rows"].as_u64(), Some(1_000));
+                    assert_eq!(pages[1]["rows"].as_u64(), Some(564));
+                    assert_eq!(pages[2]["rows"].as_u64(), Some(0));
+                    assert_eq!(failed.len(), 1_336);
+                    assert!(failed.iter().all(|entry| !entry["err"].is_null()));
+                    assert_eq!(
+                        1_564_u64,
+                        supply["successful_signature_rows"].as_u64().unwrap()
+                            + u64::try_from(failed.len()).unwrap()
+                    );
+                    assert_eq!(supply["history_rows"].as_u64(), Some(229));
+                }
             }
             assert_eq!(total_events, expected_total_events);
-            assert!(nonzero_fees >= expected_nonzero_fees);
+            assert_eq!(nonzero_fees, expected_nonzero_fees);
 
-            for control in fixture["negative_price_controls"].as_array().unwrap() {
+            for (control_index, control) in fixture["negative_price_controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+            {
                 assert_eq!(
                     control["both_fx_endpoints_within_2pct"].as_bool(),
                     Some(false)
@@ -6585,12 +6633,16 @@ mod tests {
                     let high = fraction(base.0 * high_fx.0, base.1 * high_fx.1);
                     prices.push((event, low, high));
                 }
-                assert!(prices.iter().any(|(event, low, high)| {
+                let earlier_price_match = prices.iter().any(|(event, low, high)| {
                     event["event"]["timestamp"].as_i64().unwrap()
                         < i64::try_from(control["maximum_event_second"].as_u64().unwrap()).unwrap()
                         && within_two_percent(*low, provider)
                         && within_two_percent(*high, provider)
-                }));
+                });
+                assert_eq!(
+                    earlier_price_match,
+                    expected_prior_control_matches[control_index]
+                );
                 let max_low = prices.iter().max_by(|a, b| compare(a.1, b.1)).unwrap();
                 let max_high = prices.iter().max_by(|a, b| compare(a.2, b.2)).unwrap();
                 assert_eq!(max_low.0["signature"], max_high.0["signature"]);
