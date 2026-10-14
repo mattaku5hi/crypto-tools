@@ -2556,3 +2556,40 @@ checks current arithmetic. No JC row update or runner-membership change.
 `5d5de769d005faac30d0e46a80145c3a540064984a7a1b22da30d3eab8524ab0`.
 JC correction root certificate:
 `dd7dd7fb01560ec2510dcc8d2bb03e9b2f56feca1eacb424fbdde1cc46282571`.
+
+## Amendment 55 (2026-10-14) — Fnfp and BQJF historical observed windows
+
+Reuse `onchain-pool-window-supply-cex-reference-v1` for two additional
+conditional actual-vault ratio references. The February 17 dated PumpSwap IDL
+binds the selected trades; current pool tails and deployed reserve semantics
+remain unknown. Complete captured ±3-second neighborhoods and both PRE/POST
+states are required. No annual, lifetime, all-market or continuous-price claim.
+
+Fnfp's 126 trade events yield 252 own-minute FX marks. A finalized 289-signature
+census has 203 successful and 86 failed rows; its successful set plus exclusive
+birth/latest anchors equals all 205 captured full successful transactions.
+Birth issues 1e15 raw, then revokes mint authority; no additional mint or burn
+occurs through the last mark. Both canonical winner/latest objects match the
+retained history. Lower FDV floor is 3505032 cents, upper outward ceiling
+3510446. Both global price/FX extrema pass the existing 2% corroboration gate.
+
+BQJF's terminal one-transaction neighborhood yields two marks. Its saved
+311-signature history contains 254 successful full transactions with exact
+successful-set equality. Two birth mints issue 2e15 raw; two pre-price burns
+leave 1028873600726182 raw for both price states. A later third burn explains
+the lower current snapshot and is not applied before its transaction. The
+winning transaction must match both the old supply capture and fresh canonical
+object. Own-minute Coinbase low/high are both $86.42; FDV floor is 833938 cents,
+upper outward ceiling 833939. Retain sub-cent precision before outward rounding.
+
+Guard each write with pinned original provider data, independently checked
+raw price/supply history, its captured regression, isolated workspace checks
+and the original missing-row version. Preserve null date and holder/liquidity
+metadata. Both values are below the runner threshold. No live decoder, runner
+gate, fee accounting or production fallback change.
+
+Request accounting: three new Helius methods for Fnfp; four Helius methods
+and one public Coinbase GET for BQJF. Existing historical supply and provider
+captures are reused. No new Solana Tracker or Codex requests, no retries.
+
+Measurement: `docs/p0/measurements/2026-10-14-solana-fnfp-bqjf-observed-windows.md`.

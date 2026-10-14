@@ -55,6 +55,7 @@
 - Не искать текст по `.env*`/secret files: `rg` ограничивать конкретными source/docs каталогами; credentials читать только внутри процесса по exact variable и никогда не выводить URL/header/exception с ключом.
 - Датированный Pump IDL проверять по SHA до интерпретации: `pump-sdk-source-2026-10-14/package` содержит современный4.1, а не1.31; buy1.31 имеет обязательный `track_volume` (measurement `2026-10-14-solana-pump-curve-wire-tail-source-check.md`).
 - Диагностический proof после передачи SHA другим агентам неизменяем: исправление — новый versioned файл; reader проверяет hash до/после чтения (`docs/p0/measurements/2026-10-14-solana-chronological-fdv-window.md`).
+- Solana Tracker joined probe может иметь NULL raw path при сохранённом ответе: искать исходный keyed-probe capture по response SHA перед новым API-запросом (`docs/p0/measurements/2026-10-14-solana-81kia-cross-quote-window.md`).
 
 Следовать `docs/ROADMAP.md`. Не писать все CLI отдельно. Сначала контракт данных и hand-checked corpus; затем сквозной ограниченный slice, расширение сетей/DEX и оптимизация по профилю. После каждой задачи: перечислить измененные файлы, выполненные проверки, полученные результаты, ограничения и следующий task ID. Фиксировать изменения небольшими законченными коммитами, когда среда действительно дает доступ к git.
 

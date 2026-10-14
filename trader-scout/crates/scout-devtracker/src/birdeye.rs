@@ -14364,4 +14364,600 @@ mod tests {
         let width = (upper.0 * lower.1 - lower.0 * upper.1, upper.1 * lower.1);
         assert!(width.0 * U512::from(50) <= lower.0 * width.1);
     }
+
+    #[test]
+    fn solana_tracker_fnfp_historical_supply_fdv_window_replays_exactly() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+        use std::collections::{HashMap, HashSet};
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_fnfp_historical_supply_fdv_window_case.json"
+        ))
+        .unwrap();
+        let fraction = |numerator: U512, denominator: U512| (numerator, denominator);
+        let fraction_text = |text: &str| {
+            let (numerator, denominator) = text.split_once('/').unwrap();
+            fraction(numerator.parse().unwrap(), denominator.parse().unwrap())
+        };
+        let decimal_fraction = |text: &str| {
+            let decimal = ExactDecimal::parse(text).unwrap();
+            let denominator = (0..u32::try_from(decimal.scale).unwrap())
+                .try_fold(U512::from(1), |value, _| value.checked_mul(U512::from(10)))
+                .unwrap();
+            fraction(U512::from(decimal.coefficient), denominator)
+        };
+        let compare =
+            |left: (U512, U512), right: (U512, U512)| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let floor = |value: (U512, U512)| value.0 / value.1;
+        let ceil = |value: (U512, U512)| (value.0 + value.1 - U512::from(1)) / value.1;
+        let within_two_percent = |actual: (U512, U512), expected: (U512, U512)| {
+            (actual.0 * expected.1).abs_diff(expected.0 * actual.1) * U512::from(100)
+                <= expected.0 * actual.1 * U512::from(2)
+        };
+
+        let certificate_raw = fixture["root_certificate_json_raw"].as_str().unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(certificate_raw.as_bytes())),
+            fixture["root_certificate_sha256"]
+        );
+        assert_eq!(
+            fixture["root_certificate_sha256"],
+            "f06a8ff53cbee314a1d3a1f185926a3a2f75e34ed76bdd350823710f8d02840b"
+        );
+        let certificate: serde_json::Value = serde_json::from_str(certificate_raw).unwrap();
+        assert_eq!(
+            certificate["schema"],
+            "fnfp-combined-observed-window-certificate-v2"
+        );
+        assert_eq!(certificate["rawgate_pass"], true);
+        assert_eq!(certificate["network_calls"], 3);
+        assert_eq!(certificate["database_writes"], 0);
+        assert_eq!(certificate["annual_allmarket_lifetime_complete"], false);
+        assert_eq!(certificate["conditional_vault_ratio_model"], true);
+        assert_eq!(certificate["historical_virtual_quote_reserves"], "unknown");
+        assert_eq!(certificate["price_states"], 252);
+        assert_eq!(certificate["history_successes"], 205);
+        assert_eq!(certificate["independent_supply_assertions_checked"], true);
+        assert_eq!(
+            certificate["independent_price_audit_sha256"],
+            fixture["independent_price_audit_sha256"]
+        );
+        assert_eq!(
+            certificate["independent_supply_audit_sha256"],
+            fixture["independent_supply_audit_sha256"]
+        );
+        let cert_row = &certificate["rows"][0];
+        assert_eq!(cert_row["source"], fixture["source_kind"]);
+        assert_eq!(cert_row["mint"], fixture["mint"]);
+        assert_eq!(cert_row["pool"], fixture["pool"]);
+        assert_eq!(cert_row["lower_fdv_cents"], 3_505_032);
+        assert_eq!(cert_row["upper_fdv_ceil_cents"], 3_510_446);
+        assert_eq!(cert_row["reference_width_fraction"], "13/8417");
+        assert_eq!(
+            fixture["root_supply_certificate"]["raw_supply_at_all_captured_price_states"],
+            "1000000000000000"
+        );
+        assert_eq!(
+            fixture["root_supply_certificate"]["later_current_supply_raw"],
+            "979689874421880"
+        );
+        for (key, expected) in [
+            (
+                "root_supply_certificate",
+                "4a5c215a958c02d699823b8d8ffc1992ab7c881d9631f3a80363b7a2fcee86c5",
+            ),
+            (
+                "price_proof",
+                "ac0b94031f902f046680d96f23b488665610e9b0171e1e47d4c3c70267417907",
+            ),
+            (
+                "independent_price_audit",
+                "b3aec6f4b58485f1a9fecdedb8f0a0eee660fcf80261356dd908790343197d75",
+            ),
+            (
+                "independent_supply_audit",
+                "74ed8a8d6e32936c4f23a3e9efac034b8d2d7c4611339a42e01d21ef93549c44",
+            ),
+        ] {
+            assert_eq!(fixture["source_sha256"][key], expected);
+            assert!(
+                certificate["source_sha256"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .any(|value| value == expected)
+            );
+        }
+
+        assert_eq!(
+            fixture["source_kind"],
+            "onchain-pool-window-supply-cex-reference-v1"
+        );
+        assert_eq!(
+            fixture["mint"],
+            "FnfpZNNNGHbZF9yARYj8583tQKARRZEozS9cWVjw73wQ"
+        );
+        assert_eq!(
+            fixture["pool_program"],
+            "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+        );
+        assert_eq!(fixture["decimals"], 6);
+        assert_eq!(fixture["root_certificate_pending"], false);
+        assert_eq!(fixture["status"], "root_certified");
+
+        let supply = &fixture["historical_supply"];
+        assert_eq!(supply["exact_through_latest_captured_mark"], true);
+        assert_eq!(supply["raw"], "1000000000000000");
+        assert_eq!(
+            supply["later_current_mint_supply_raw_not_used"],
+            "979689874421880"
+        );
+        assert_eq!(supply["successful_history_window_transactions"], 205);
+        assert_eq!(supply["census_rows"], 289);
+        assert_eq!(supply["census_successes"], 203);
+        assert_eq!(supply["census_failures_retained"], 86);
+        assert_eq!(supply["mint_to_count"], 1);
+        assert_eq!(supply["burn_count"], 0);
+        assert_eq!(supply["mint_to_checked_count"], 0);
+        assert_eq!(supply["burn_checked_count"], 0);
+        assert_eq!(supply["authority_revocation_before_window"], true);
+        let initialize = bytes_from_hex(
+            supply["birth_initialize_mint2"]["data_hex"]
+                .as_str()
+                .unwrap(),
+        );
+        assert_eq!(initialize.len(), 35);
+        assert_eq!(initialize[0], 20);
+        assert_eq!(initialize[1], 6);
+        assert_eq!(
+            bs58::encode(&initialize[2..34]).into_string(),
+            "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"
+        );
+        assert_eq!(initialize[34], 0);
+        let mint_to = bytes_from_hex(supply["birth_mint_to"]["data_hex"].as_str().unwrap());
+        assert_eq!(mint_to.len(), 9);
+        assert_eq!(mint_to[0], 7);
+        assert_eq!(
+            u64::from_le_bytes(mint_to[1..9].try_into().unwrap()),
+            1_000_000_000_000_000
+        );
+        assert_eq!(
+            bytes_from_hex(
+                supply["birth_revoke_mint_authority"]["data_hex"]
+                    .as_str()
+                    .unwrap()
+            ),
+            [6, 0, 0]
+        );
+        assert_eq!(
+            fixture["independent_supply_audit_excerpt"]["birth_operation_order"],
+            json!([[3, 2], [3, 12], [3, 13]])
+        );
+
+        let current_mint = &supply["current_mint"];
+        assert_eq!(
+            current_mint["owner"],
+            "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        );
+        assert_eq!(current_mint["raw_len"], 380);
+        assert_eq!(current_mint["snapshot_slot"], 456_634_945);
+        assert_eq!(current_mint["decimals"], 6);
+        assert_eq!(current_mint["mint_authority_option"], 0);
+        assert_eq!(current_mint["freeze_authority_option"], 0);
+        assert_eq!(
+            current_mint["extensions"],
+            json!([{"type":18,"length":64},{"type":19,"length":142}])
+        );
+
+        let states = fixture["price_states"].as_array().unwrap();
+        assert_eq!(states.len(), 252);
+        assert_eq!(fixture["expected"]["window_transaction_count"], 128);
+        assert_eq!(fixture["expected"]["target_event_signature_count"], 126);
+        let fx = fixture["coinbase_fx_minutes"].as_array().unwrap();
+        assert_eq!(fx.len(), 1);
+        let fx_minute = fx[0]["minute"].as_i64().unwrap();
+        let fx_low = decimal_fraction(fx[0]["low_usd_per_sol"].as_str().unwrap());
+        let fx_high = decimal_fraction(fx[0]["high_usd_per_sol"].as_str().unwrap());
+        let supply_raw = U512::from(1_000_000_000_000_000_u64);
+        let decimal_scale = U512::from(1_000_000_u64);
+        let provider = decimal_fraction(fixture["provider_price_usd_decimal"].as_str().unwrap());
+        let mut sig_sides = HashMap::<String, u8>::new();
+        let mut signatures = HashSet::new();
+        let mut events = HashMap::<String, String>::new();
+        let mut event_counts = HashMap::<&str, usize>::new();
+        let mut lows = Vec::with_capacity(states.len());
+        let mut highs = Vec::with_capacity(states.len());
+        for state in states {
+            let block_time = state["block_time"].as_i64().unwrap();
+            assert_eq!(block_time / 60 * 60, fx_minute);
+            let signature = state["signature"].as_str().unwrap().to_owned();
+            let side_bit = match state["side"].as_str().unwrap() {
+                "pre" => 1,
+                "post" => 2,
+                _ => panic!("unexpected reserve side"),
+            };
+            let event = state["event"].as_str().unwrap();
+            assert!(matches!(event, "BuyEvent" | "SellEvent"));
+            if side_bit == 1 {
+                *event_counts.entry(event).or_default() += 1;
+            }
+            let event_hash = state["event_sha256"].as_str().unwrap().to_owned();
+            if let Some(previous) = events.insert(signature.clone(), event_hash.clone()) {
+                assert_eq!(previous, event_hash);
+            }
+            let sides = sig_sides.entry(signature.clone()).or_default();
+            assert_eq!(*sides & side_bit, 0);
+            *sides |= side_bit;
+            signatures.insert(signature);
+
+            let base = U512::from_str_radix(state["base_raw"].as_str().unwrap(), 10).unwrap();
+            let quote = U512::from_str_radix(state["quote_raw"].as_str().unwrap(), 10).unwrap();
+            assert!(base > U512::ZERO && quote > U512::ZERO);
+            let native = fraction(
+                quote * U512::from(1_000_000),
+                base * U512::from(1_000_000_000),
+            );
+            let low = fraction(native.0 * fx_low.0, native.1 * fx_low.1);
+            let high = fraction(native.0 * fx_high.0, native.1 * fx_high.1);
+            assert_eq!(
+                compare(low, fraction_text(state["low"].as_str().unwrap())),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(
+                compare(high, fraction_text(state["high"].as_str().unwrap())),
+                std::cmp::Ordering::Equal
+            );
+            lows.push(low);
+            highs.push(high);
+        }
+        assert_eq!(signatures.len(), 126);
+        assert!(sig_sides.values().all(|sides| *sides == 3));
+        assert_eq!(event_counts.get("BuyEvent"), Some(&41));
+        assert_eq!(event_counts.get("SellEvent"), Some(&85));
+
+        let max_low_index = lows
+            .iter()
+            .enumerate()
+            .max_by(|left, right| compare(*left.1, *right.1))
+            .unwrap()
+            .0;
+        let max_high_index = highs
+            .iter()
+            .enumerate()
+            .max_by(|left, right| compare(*left.1, *right.1))
+            .unwrap()
+            .0;
+        let max_low = lows[max_low_index];
+        let max_high = highs[max_high_index];
+        let winner_index = states
+            .iter()
+            .position(|state| {
+                state["signature"]
+                    == "5fSaUEmsYZCYvACwrkpPnNSXh26VakX96kc5uJ9nVVWSgLgQ2Y1sLVugwkiTXMoXSP6pwbtHS8M4JbYTzK7KCRca"
+                    && state["side"] == "post"
+            })
+            .unwrap();
+        assert_eq!(
+            compare(lows[winner_index], max_low),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare(highs[winner_index], max_high),
+            std::cmp::Ordering::Equal
+        );
+        assert!(within_two_percent(max_low, provider));
+        assert!(within_two_percent(max_high, provider));
+        let lower_cents = fraction(
+            max_low.0 * supply_raw * U512::from(100),
+            max_low.1 * decimal_scale,
+        );
+        let upper_cents = fraction(
+            max_high.0 * supply_raw * U512::from(100),
+            max_high.1 * decimal_scale,
+        );
+        assert_eq!(floor(lower_cents), U512::from(3_505_032));
+        assert_eq!(ceil(upper_cents), U512::from(3_510_446));
+        let price_audit_maxima = &fixture["price_audit_excerpt"]["global_maxima"];
+        assert_eq!(
+            compare(
+                max_low,
+                fraction_text(price_audit_maxima["low"]["low"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare(
+                max_high,
+                fraction_text(price_audit_maxima["high"]["high"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn solana_tracker_bqjf_historical_supply_fdv_window_replays_exactly() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_bqjf_historical_supply_fdv_window_case.json"
+        ))
+        .unwrap();
+        let certificate_raw = fixture["root_certificate_json_raw"].as_str().unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(certificate_raw.as_bytes())),
+            fixture["root_certificate_sha256"]
+        );
+        assert_eq!(
+            fixture["root_certificate_sha256"],
+            "8966371b13b4f6e24970bfd6597077e78550fbac89a27a040b7ce6bcbd334946"
+        );
+        let certificate: serde_json::Value = serde_json::from_str(certificate_raw).unwrap();
+        assert_eq!(certificate["rawgate_pass"], true);
+        assert_eq!(certificate["annual_allmarket_lifetime_complete"], false);
+        assert_eq!(certificate["conditional_vault_ratio_model"], true);
+        assert_eq!(certificate["historical_virtual_quote_reserves"], "unknown");
+        assert_eq!(certificate["database_writes"], 0);
+        assert_eq!(certificate["price_states"], 2);
+        assert_eq!(certificate["history_successes"], 254);
+        let cert_row = &certificate["rows"][0];
+        assert_eq!(cert_row["source"], fixture["source_kind"]);
+        assert_eq!(cert_row["mint"], fixture["mint"]);
+        assert_eq!(cert_row["pool"], fixture["pool"]);
+        assert_eq!(cert_row["ath_at"], serde_json::Value::Null);
+        assert_eq!(cert_row["lower_fdv_cents"], 833_938);
+        assert_eq!(cert_row["upper_fdv_ceil_cents"], 833_939);
+        assert_eq!(
+            fixture["source_kind"],
+            "onchain-pool-window-supply-cex-reference-v1"
+        );
+        assert_eq!(
+            fixture["expected"]["annual_allmarket_lifetime_complete"],
+            false
+        );
+        assert_eq!(fixture["expected"]["ath_at"], serde_json::Value::Null);
+        assert_eq!(fixture["expected"]["conditional_vault_ratio_model"], true);
+        assert_eq!(
+            fixture["expected"]["historical_virtual_quote_reserves"],
+            "unknown"
+        );
+
+        let source_hashes = [
+            (
+                "price_proof",
+                "cf7378100ee72d08350fcea88fb66fba3c2d7e62662116ecc6c04edc891371a7",
+            ),
+            (
+                "root_supply_certificate",
+                "c3ff1c9c08924b5f648a6dd4ec0b73f0dfddd645702e31fdbc5bd78efe229856",
+            ),
+            (
+                "independent_raw_audit",
+                "5f99dccb226889d61f302b158eb3fe023d21030db9245ef68c1a5850a26dc92f",
+            ),
+        ];
+        for (key, expected) in source_hashes {
+            assert_eq!(fixture["source_sha256"][key], expected);
+            assert!(
+                certificate["source_sha256"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .any(|value| value.as_str() == Some(expected))
+            );
+        }
+
+        let fraction_text = |text: &str| {
+            let (numerator, denominator) = text.split_once('/').unwrap();
+            (
+                numerator.parse::<U512>().unwrap(),
+                denominator.parse::<U512>().unwrap(),
+            )
+        };
+        let decimal_fraction = |text: &str| {
+            let decimal = ExactDecimal::parse(text).unwrap();
+            let denominator = (0..u32::try_from(decimal.scale).unwrap())
+                .try_fold(U512::from(1), |value, _| value.checked_mul(U512::from(10)))
+                .unwrap();
+            (U512::from(decimal.coefficient), denominator)
+        };
+        let compare =
+            |left: (U512, U512), right: (U512, U512)| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let floor = |value: (U512, U512)| value.0 / value.1;
+        let ceil = |value: (U512, U512)| (value.0 + value.1 - U512::from(1)) / value.1;
+        let within_two_percent = |actual: (U512, U512), expected: (U512, U512)| {
+            (actual.0 * expected.1).abs_diff(expected.0 * actual.1) * U512::from(100)
+                <= expected.0 * actual.1 * U512::from(2)
+        };
+
+        let supply = &fixture["historical_supply"];
+        assert_eq!(supply["full_signature_set_equal"], true);
+        assert_eq!(supply["signature_census_rows"], 311);
+        assert_eq!(supply["successful_transactions"], 254);
+        assert_eq!(supply["failed_retained"], 57);
+        assert_eq!(supply["decimals"], 6);
+        let birth = &supply["initialize_mint2"];
+        let initialize_data = bytes_from_hex(birth["data_hex"].as_str().unwrap());
+        assert_eq!(initialize_data.len(), 35);
+        assert_eq!(&initialize_data[..2], &[20, 6]);
+        assert_eq!(
+            bs58::encode(&initialize_data[2..34]).into_string(),
+            "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"
+        );
+        assert_eq!(initialize_data[34], 0);
+        assert_eq!(birth["outer_index"], 0);
+        assert_eq!(birth["inner_index"], 2);
+        assert_eq!(birth["accounts"][0], fixture["mint"]);
+
+        let birth_mints = supply["mint_to"].as_array().unwrap();
+        assert_eq!(birth_mints.len(), 2);
+        let mut minted = U512::ZERO;
+        for (mint, inner_index) in birth_mints.iter().zip([19, 20]) {
+            let data = bytes_from_hex(mint["data_hex"].as_str().unwrap());
+            assert_eq!(data.len(), 9);
+            assert_eq!(data[0], 7);
+            assert_eq!(
+                u64::from_le_bytes(data[1..9].try_into().unwrap()),
+                1_000_000_000_000_000
+            );
+            assert_eq!(mint["signature"], birth["signature"]);
+            assert_eq!(mint["outer_index"], 0);
+            assert_eq!(mint["inner_index"], inner_index);
+            assert_eq!(mint["accounts"][0], fixture["mint"]);
+            assert_eq!(
+                mint["accounts"][2],
+                "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"
+            );
+            minted += U512::from(1_000_000_000_000_000_u64);
+        }
+        let revoke = &supply["mint_authority_revoke"];
+        assert_eq!(
+            bytes_from_hex(revoke["data_hex"].as_str().unwrap()),
+            [6, 0, 0]
+        );
+        assert_eq!(revoke["signature"], birth["signature"]);
+        assert_eq!(revoke["outer_index"], 0);
+        assert_eq!(revoke["inner_index"], 21);
+        assert_eq!(revoke["accounts"][0], fixture["mint"]);
+
+        let trade_cpi = &fixture["matched_trade_cpi"];
+        assert_eq!(
+            trade_cpi["raw_transaction_response_sha256"],
+            "e5dc782c3148c810923ea219fd7627654dc7145bbaaa0b6825f4ce3285e110cd"
+        );
+        assert_eq!(trade_cpi["parent_outer_index"], 3);
+        assert_eq!(trade_cpi["inner_index_within_parent"], 0);
+        assert_eq!(trade_cpi["stack_height"], 2);
+        assert_eq!(
+            trade_cpi["parent_program"],
+            "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9"
+        );
+        assert_eq!(trade_cpi["program"], fixture["program"]);
+        for role in ["pool", "mint", "base_vault", "quote_vault"] {
+            assert_eq!(trade_cpi["account_roles"][role], fixture[role]);
+        }
+        assert_eq!(
+            trade_cpi["account_roles"]["quote_mint"],
+            "So11111111111111111111111111111111111111112"
+        );
+        assert_eq!(trade_cpi["account_positions"]["pool"], 0);
+        assert_eq!(trade_cpi["account_positions"]["mint"], 3);
+        assert_eq!(trade_cpi["account_positions"]["quote_mint"], 4);
+        assert_eq!(trade_cpi["account_positions"]["base_vault"], 7);
+        assert_eq!(trade_cpi["account_positions"]["quote_vault"], 8);
+
+        let states = fixture["price_states"].as_array().unwrap();
+        assert_eq!(states.len(), 2);
+        let target_time = fixture["target_event"]["timestamp"].as_i64().unwrap();
+        let burns = supply["burns"].as_array().unwrap();
+        assert_eq!(burns.len(), 3);
+        let mut burned_before = U512::ZERO;
+        for (index, burn) in burns.iter().enumerate() {
+            let data = bytes_from_hex(burn["data_hex"].as_str().unwrap());
+            assert_eq!(data.len(), 9);
+            assert_eq!(data[0], 8);
+            let amount = u64::from_le_bytes(data[1..9].try_into().unwrap());
+            assert_eq!(burn["accounts"][1], fixture["mint"]);
+            let burn_time = burn["block_time"].as_i64().unwrap();
+            if index < 2 {
+                assert!(burn_time < target_time);
+                burned_before += U512::from(amount);
+            } else {
+                assert!(burn_time > target_time);
+                assert_eq!(amount, 16_211_903_500);
+            }
+        }
+        let supply_at_window = minted - burned_before;
+        assert_eq!(supply_at_window.to_string(), "1028873600726182");
+        assert_eq!(
+            supply_at_window.to_string(),
+            supply["raw_at_both_price_states"].as_str().unwrap()
+        );
+        assert_eq!(
+            supply["later_supply_after_post_window_burn_raw"],
+            "1028857388822682"
+        );
+        assert_eq!(supply["current_supply_raw_not_used"], "1028857388822682");
+        assert_ne!(
+            supply_at_window.to_string(),
+            supply["current_supply_raw_not_used"]
+        );
+
+        let fx = &fixture["coinbase_minute"];
+        assert_eq!(fx["low_usd_per_sol"], "86.42");
+        assert_eq!(fx["high_usd_per_sol"], "86.42");
+        let fx_low = decimal_fraction(fx["low_usd_per_sol"].as_str().unwrap());
+        let fx_high = decimal_fraction(fx["high_usd_per_sol"].as_str().unwrap());
+        let provider = decimal_fraction(fixture["provider_price_usd_per_token"].as_str().unwrap());
+        let mut low_prices = Vec::new();
+        let mut high_prices = Vec::new();
+        for state in states {
+            assert_eq!(state["signature"], fixture["target_event"]["signature"]);
+            assert_eq!(state["event"], "BuyEvent");
+            assert_eq!(state["event_sha256"], fixture["target_event"]["sha256"]);
+            assert_eq!(state["block_time"], target_time);
+            let native = (
+                U512::from_str_radix(state["quote_raw"].as_str().unwrap(), 10).unwrap()
+                    * U512::from(1_000_000),
+                U512::from_str_radix(state["base_raw"].as_str().unwrap(), 10).unwrap()
+                    * U512::from(1_000_000_000),
+            );
+            let low = (native.0 * fx_low.0, native.1 * fx_low.1);
+            let high = (native.0 * fx_high.0, native.1 * fx_high.1);
+            assert_eq!(
+                compare(low, fraction_text(state["low"].as_str().unwrap())),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(
+                compare(high, fraction_text(state["high"].as_str().unwrap())),
+                std::cmp::Ordering::Equal
+            );
+            assert!(within_two_percent(low, provider));
+            assert!(within_two_percent(high, provider));
+            low_prices.push(low);
+            high_prices.push(high);
+        }
+        let maximum_low = *low_prices.iter().max_by(|a, b| compare(**a, **b)).unwrap();
+        let maximum_high = *high_prices.iter().max_by(|a, b| compare(**a, **b)).unwrap();
+        let winner = states
+            .iter()
+            .position(|state| state["side"] == "post")
+            .unwrap();
+        assert_eq!(
+            compare(low_prices[winner], maximum_low),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare(high_prices[winner], maximum_high),
+            std::cmp::Ordering::Equal
+        );
+        let divisor = U512::from(1_000_000_u64);
+        let fdv_low = (
+            maximum_low.0 * supply_at_window * U512::from(100),
+            maximum_low.1 * divisor,
+        );
+        let fdv_high = (
+            maximum_high.0 * supply_at_window * U512::from(100),
+            maximum_high.1 * divisor,
+        );
+        assert_eq!(floor(fdv_low), U512::from(833_938));
+        assert_eq!(ceil(fdv_high), U512::from(833_939));
+        assert_eq!(
+            floor(fdv_low),
+            U512::from(
+                fixture["expected"]["fdv_lower_cents_floor"]
+                    .as_u64()
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            ceil(fdv_high),
+            U512::from(
+                fixture["expected"]["fdv_upper_cents_ceil"]
+                    .as_u64()
+                    .unwrap()
+            )
+        );
+    }
 }

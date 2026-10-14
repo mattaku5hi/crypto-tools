@@ -1,0 +1,232 @@
+{
+  "schema": "solana-tracker-bqjf-historical-supply-fdv-window-case-v1",
+  "source_kind": "onchain-pool-window-supply-cex-reference-v1",
+  "root_certificate_sha256": "8966371b13b4f6e24970bfd6597077e78550fbac89a27a040b7ce6bcbd334946",
+  "root_certificate_json_raw": "{\n  \"schema\": \"bqjf-combined-observed-window-certificate-v1\",\n  \"rawgate_pass\": true,\n  \"annual_allmarket_lifetime_complete\": false,\n  \"conditional_vault_ratio_model\": true,\n  \"historical_virtual_quote_reserves\": \"unknown\",\n  \"network_calls\": 4,\n  \"public_fx_gets\": 1,\n  \"database_writes\": 0,\n  \"price_states\": 2,\n  \"history_successes\": 254,\n  \"rows\": [\n    {\n      \"mint\": \"BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump\",\n      \"pool\": \"2mQBJRfTco9SmKhWe3WkyzEuBXpNS8LyxkTo4RwVomme\",\n      \"source\": \"onchain-pool-window-supply-cex-reference-v1\",\n      \"lower_fdv_cents\": 833938,\n      \"upper_fdv_ceil_cents\": 833939,\n      \"reference_width_fraction\": \"0\",\n      \"provider_price_usd_decimal\": \"0.00000810660163111226\",\n      \"provider_peak_timestamp_ms\": 1777205355213,\n      \"provider_response_sha256\": \"8cfcfd4c67f7f4dd2a1e4c8409840a3f299ab9d8ef5e67303e1bde8d6d0049a5\",\n      \"ath_at\": null\n    }\n  ],\n  \"source_sha256\": {\n    \".scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/proof-v1.json\": \"cf7378100ee72d08350fcea88fb66fba3c2d7e62662116ecc6c04edc891371a7\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/manifest.json\": \"c1f7212f81b04b9820a07a4c01ef3f5b2dada8506b0b876a8d94a0581c73cf9c\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/requests/01-signatures-page-1.json\": \"6bf7eb706370dbca36585b3bdbf787f7cc1d8f3dea6a6567181f4a5a15926051\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/01-signatures-page-1.json\": \"4267aadd666735979cece6efdf9cb95b28807672e4086b429054358d50122f58\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/requests/02-transactions-page-1.json\": \"1500689223ef2701f40ea3db1aef041b1306e882b2517743bc2a80fe4b9800c7\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/02-transactions-page-1.json\": \"82e4763f1e35f8f50335ee3eff7bc68b1fe9d1617af2358a0a97039ace9ceacd\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/requests/03-transactions-page-2.json\": \"acfe8274825a9ce38a57156759e9a2ed40c84b35493a078a1324d9c2b56460df\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/03-transactions-page-2.json\": \"0787a6ca5ada1c2ee03be3c3e21febdfb568e0a8a772b33ec9dd72560fc16c51\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/requests/04-transactions-page-3.json\": \"05f13f1271c10e19ddf665ce8397e9c207c10e9b232b50fc828cc202b56cec71\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/04-transactions-page-3.json\": \"06cc066a39b2df1f2ac6625e1e01831cea4a105e97fafb0a85b44b48f0768c8b\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/requests/05-transactions-page-4.json\": \"3548658d056898aac4e8f34798b60f2189aee91297bd05fd3e03374011b8d5c5\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/05-transactions-page-4.json\": \"d2fde3c120c1bc807a65ee3a0b4920fc2ae77e981cd5170072357842080b4f08\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/decode_supply.py\": \"2b87c629169fcb522af51cb867abf5510dcb4bb8fcbacdfb6c7f72f421ee58dc\",\n    \".scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/manifest.json\": \"daa0545c030aec7b92c034b455bff846250180ef1e47b03b0cbd11bfb8dee3e6\",\n    \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-window-page01.response.json\": \"e5dc782c3148c810923ea219fd7627654dc7145bbaaa0b6825f4ce3285e110cd\",\n    \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-window-page02.response.json\": \"a11219e098b340f8a02f5ee256a96e35b617bbc6cdb7cdf90ea612eec9d66d1a\",\n    \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/accounts-finalized.response.json\": \"1b41fb511a8e8059c862b31a0d039886232537cf7492f595dae6a02855d74d91\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-14-batch10/analysis/amm-independent-verifier.py\": \"e4e9b70afec5f4f1af8a261f4734ae949eab5f7903ab7e989e13dee740d4b77a\",\n    \".scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/input.json\": \"e3f275424e8740c5151e6c5265ef86211bf79ba480b16043fd06697f56b01336\",\n    \".scout-data/diagnostics/solana-gap-closure-2026-10-14-batch5/pump-amm-idl-82dacacf15.json\": \"5a15060f412974e53068bae7e89aa6004defbb70ef0c56e3902ce75d124accb6\",\n    \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-coinbase-minute.response.json\": \"f8dc3915594a0039d8ebdc9a26ed8aafc3d4d9b0bfcfacb7d975fbd085a8227f\",\n    \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-tracker-remaining-100-2026-10-11/raw/b826b86f2275b4be75d6a10700b3fd5d46528f8f5a73cb0ba849429dc71a3e0d-8cfcfd4c67f7f4dd2a1e4c8409840a3f299ab9d8ef5e67303e1bde8d6d0049a5.json\": \"8cfcfd4c67f7f4dd2a1e4c8409840a3f299ab9d8ef5e67303e1bde8d6d0049a5\",\n    \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-window-page01.request.json\": \"938cca5a259c80abd65d0ef6239b3de7ba813cad82932f76d327c2e09f65bb21\",\n    \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-window-page02.request.json\": \"07379f1c6174501fa2ee9f1270df9937b1be2d0fb2c421116ac5371744d65ec2\",\n    \".scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/root-supply-certificate-v1.json\": \"c3ff1c9c08924b5f648a6dd4ec0b73f0dfddd645702e31fdbc5bd78efe229856\",\n    \".scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/canonical-phase/plan.json\": \"deb7f6c3454300b1d94d9ac0480e3c640ef90ffbaba35eba17b1f933de8c5f35\",\n    \".scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/canonical-phase/captures/winning-canonical.response.json\": \"524a20aa4575cb096d42427abf21d063da13a0e07ab15c84d984526477cc0c85\",\n    \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/accounts-finalized.request.json\": \"d8405e149e7d080a5d8f494300de86a268e8cd198cafe5901c4d3e0ab4e76229\",\n    \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-coinbase-minute.request.json\": \"03e948ea34cc447c8e52fb8fe6594c7134b5991c70e6191a1dbe1557c0cf1b86\",\n    \".scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/independent-raw-audit-v1.json\": \"5f99dccb226889d61f302b158eb3fe023d21030db9245ef68c1a5850a26dc92f\"\n  },\n  \"root_supply_certificate\": {\n    \"schema\": \"bqjf-historical-supply-observed-window-certificate-v1\",\n    \"mint\": \"BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump\",\n    \"pool\": \"2mQBJRfTco9SmKhWe3WkyzEuBXpNS8LyxkTo4RwVomme\",\n    \"source\": \"onchain-pool-window-supply-cex-reference-v1\",\n    \"raw_gate_pass\": true,\n    \"conditional_actual_vault_ratio_model\": true,\n    \"historical_virtual_quote_reserves\": \"unknown\",\n    \"annual_allmarket_lifetime_complete\": false,\n    \"ath_at\": null,\n    \"price_states\": 2,\n    \"window_successes\": 1,\n    \"history_successes\": 254,\n    \"census_rows\": 311,\n    \"census_failures_retained\": 57,\n    \"history_terminal\": true,\n    \"full_signature_set_equal\": true,\n    \"birth_mints\": [\n      {\n        \"kind\": \"mint\",\n        \"opcode\": 7,\n        \"amount_raw\": 1000000000000000,\n        \"decimals_checked\": null,\n        \"signature\": \"58gPwaTwpCtgGhG97i5ADCWCqWnoXprdMb6Y8GawTVDB6Ga32wPYro7Z7xRoMvVm92vWrcigVXPJeHQcGLt8KMyg\",\n        \"slot\": 406338070,\n        \"transaction_index\": 697,\n        \"block_time_unix_s\": 1773484451,\n        \"outer_index\": 0,\n        \"inner_index\": 19,\n        \"program_id\": \"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb\"\n      },\n      {\n        \"kind\": \"mint\",\n        \"opcode\": 7,\n        \"amount_raw\": 1000000000000000,\n        \"decimals_checked\": null,\n        \"signature\": \"58gPwaTwpCtgGhG97i5ADCWCqWnoXprdMb6Y8GawTVDB6Ga32wPYro7Z7xRoMvVm92vWrcigVXPJeHQcGLt8KMyg\",\n        \"slot\": 406338070,\n        \"transaction_index\": 697,\n        \"block_time_unix_s\": 1773484451,\n        \"outer_index\": 0,\n        \"inner_index\": 20,\n        \"program_id\": \"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb\"\n      }\n    ],\n    \"mint_authority_revocations\": [\n      {\n        \"signature\": \"58gPwaTwpCtgGhG97i5ADCWCqWnoXprdMb6Y8GawTVDB6Ga32wPYro7Z7xRoMvVm92vWrcigVXPJeHQcGLt8KMyg\",\n        \"outer_index\": 0,\n        \"inner_index\": 21,\n        \"data_hex\": \"060000\"\n      }\n    ],\n    \"burns\": [\n      {\n        \"kind\": \"burn\",\n        \"opcode\": 8,\n        \"amount_raw\": 961501865698423,\n        \"decimals_checked\": null,\n        \"signature\": \"2nDbJv91P9YXRKjSvm6B33QkTEGZkEy2gw34dKC9x4fr5sCBaudymBmrPLDfqcQUiquStqkP5pUAgVT2nb3ecGT5\",\n        \"slot\": 406565244,\n        \"transaction_index\": 1008,\n        \"block_time_unix_s\": 1773573949,\n        \"outer_index\": 0,\n        \"inner_index\": 0,\n        \"program_id\": \"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb\"\n      },\n      {\n        \"kind\": \"burn\",\n        \"opcode\": 8,\n        \"amount_raw\": 9624533575395,\n        \"decimals_checked\": null,\n        \"signature\": \"mR5PwinDFCDmzp9PSnyQ7VH4kvTCEFA86Yk7iXTnTXwn36we4gvZdp59igF8H1Nr5Guyp6cDfyGFLhGXDhuqQmQ\",\n        \"slot\": 406799914,\n        \"transaction_index\": 235,\n        \"block_time_unix_s\": 1773666460,\n        \"outer_index\": 5,\n        \"inner_index\": -1,\n        \"program_id\": \"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb\"\n      },\n      {\n        \"kind\": \"burn\",\n        \"opcode\": 8,\n        \"amount_raw\": 16211903500,\n        \"decimals_checked\": null,\n        \"signature\": \"2jL6k2vTqzhZ8bQfM4BtEMDthKPe88TKzxys1h1JUmQGRhN4BoVb6apzcwp6D7hqKTXaFhScx1RsPKLfyKpEGnMW\",\n        \"slot\": 415851783,\n        \"transaction_index\": 139,\n        \"block_time_unix_s\": 1777233551,\n        \"outer_index\": 2,\n        \"inner_index\": -1,\n        \"program_id\": \"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb\"\n      }\n    ],\n    \"historical_supply_raw_at_both_price_states\": \"1028873600726182\",\n    \"later_current_supply_raw\": \"1028857388822682\",\n    \"token2022_extensions\": [\n      [\n        18,\n        64\n      ],\n      [\n        19,\n        162\n      ]\n    ],\n    \"lower_fdv_cents\": 833938,\n    \"upper_fdv_ceil_cents\": 833939,\n    \"reference_width_fraction\": \"0\",\n    \"network_calls_this_phase\": 3,\n    \"public_fx_gets_this_phase\": 1,\n    \"database_writes\": 0,\n    \"source_sha256\": {\n      \".scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/proof-v1.json\": \"cf7378100ee72d08350fcea88fb66fba3c2d7e62662116ecc6c04edc891371a7\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/manifest.json\": \"c1f7212f81b04b9820a07a4c01ef3f5b2dada8506b0b876a8d94a0581c73cf9c\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/requests/01-signatures-page-1.json\": \"6bf7eb706370dbca36585b3bdbf787f7cc1d8f3dea6a6567181f4a5a15926051\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/01-signatures-page-1.json\": \"4267aadd666735979cece6efdf9cb95b28807672e4086b429054358d50122f58\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/requests/02-transactions-page-1.json\": \"1500689223ef2701f40ea3db1aef041b1306e882b2517743bc2a80fe4b9800c7\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/02-transactions-page-1.json\": \"82e4763f1e35f8f50335ee3eff7bc68b1fe9d1617af2358a0a97039ace9ceacd\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/requests/03-transactions-page-2.json\": \"acfe8274825a9ce38a57156759e9a2ed40c84b35493a078a1324d9c2b56460df\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/03-transactions-page-2.json\": \"0787a6ca5ada1c2ee03be3c3e21febdfb568e0a8a772b33ec9dd72560fc16c51\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/requests/04-transactions-page-3.json\": \"05f13f1271c10e19ddf665ce8397e9c207c10e9b232b50fc828cc202b56cec71\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/04-transactions-page-3.json\": \"06cc066a39b2df1f2ac6625e1e01831cea4a105e97fafb0a85b44b48f0768c8b\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/requests/05-transactions-page-4.json\": \"3548658d056898aac4e8f34798b60f2189aee91297bd05fd3e03374011b8d5c5\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/history/BQJFjhrD/05-transactions-page-4.json\": \"d2fde3c120c1bc807a65ee3a0b4920fc2ae77e981cd5170072357842080b4f08\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-13/supply/decode_supply.py\": \"2b87c629169fcb522af51cb867abf5510dcb4bb8fcbacdfb6c7f72f421ee58dc\",\n      \".scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/manifest.json\": \"daa0545c030aec7b92c034b455bff846250180ef1e47b03b0cbd11bfb8dee3e6\",\n      \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-window-page01.response.json\": \"e5dc782c3148c810923ea219fd7627654dc7145bbaaa0b6825f4ce3285e110cd\",\n      \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-window-page02.response.json\": \"a11219e098b340f8a02f5ee256a96e35b617bbc6cdb7cdf90ea612eec9d66d1a\",\n      \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/accounts-finalized.response.json\": \"1b41fb511a8e8059c862b31a0d039886232537cf7492f595dae6a02855d74d91\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-14-batch10/analysis/amm-independent-verifier.py\": \"e4e9b70afec5f4f1af8a261f4734ae949eab5f7903ab7e989e13dee740d4b77a\",\n      \".scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/input.json\": \"e3f275424e8740c5151e6c5265ef86211bf79ba480b16043fd06697f56b01336\",\n      \".scout-data/diagnostics/solana-gap-closure-2026-10-14-batch5/pump-amm-idl-82dacacf15.json\": \"5a15060f412974e53068bae7e89aa6004defbb70ef0c56e3902ce75d124accb6\",\n      \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-coinbase-minute.response.json\": \"f8dc3915594a0039d8ebdc9a26ed8aafc3d4d9b0bfcfacb7d975fbd085a8227f\",\n      \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-tracker-remaining-100-2026-10-11/raw/b826b86f2275b4be75d6a10700b3fd5d46528f8f5a73cb0ba849429dc71a3e0d-8cfcfd4c67f7f4dd2a1e4c8409840a3f299ab9d8ef5e67303e1bde8d6d0049a5.json\": \"8cfcfd4c67f7f4dd2a1e4c8409840a3f299ab9d8ef5e67303e1bde8d6d0049a5\",\n      \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-window-page01.request.json\": \"938cca5a259c80abd65d0ef6239b3de7ba813cad82932f76d327c2e09f65bb21\",\n      \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-bqjf-price-pilot-2026-10-14/captures/BQJFjhrD-window-page02.request.json\": \"07379f1c6174501fa2ee9f1270df9937b1be2d0fb2c421116ac5371744d65ec2\"\n    }\n  },\n  \"independent_raw_audit_sha256\": \"5f99dccb226889d61f302b158eb3fe023d21030db9245ef68c1a5850a26dc92f\"\n}\n",
+  "source_sha256": {
+    "price_proof": "cf7378100ee72d08350fcea88fb66fba3c2d7e62662116ecc6c04edc891371a7",
+    "root_supply_certificate": "c3ff1c9c08924b5f648a6dd4ec0b73f0dfddd645702e31fdbc5bd78efe229856",
+    "independent_raw_audit": "5f99dccb226889d61f302b158eb3fe023d21030db9245ef68c1a5850a26dc92f",
+    "canonical_transaction": "canonical_object_matches_cached_history"
+  },
+  "mint": "BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump",
+  "pool": "2mQBJRfTco9SmKhWe3WkyzEuBXpNS8LyxkTo4RwVomme",
+  "program": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+  "token_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+  "base_vault": "6gD6DtuZNqkoj8yxHMhxYk8AuNYa2NSsMnWQEDm4NU2c",
+  "quote_vault": "8kGfRGN72yoYXnYKug8itKVkF3SWta6ERDG7AngfZA1P",
+  "base_decimals": 9,
+  "quote_decimals": 6,
+  "mint_decimals": 6,
+  "provider_price_usd_per_token": "0.00000810660163111226",
+  "provider_timestamp_ms": 1777205355213,
+  "coinbase_minute": {
+    "timestamp": 1777205340,
+    "low_usd_per_sol": "86.42",
+    "high_usd_per_sol": "86.42"
+  },
+  "target_event": {
+    "name": "BuyEvent",
+    "sha256": "cecfa506d9dd7e20563d1e9de1fac338fbd5fe9c9d9e27a72568686e087469a2",
+    "signature": "3k553755L3HFou7KJRtWxTaENUKtpumrNjrtKjRCurvxivmzQeUFmmXeFMkuZWDTHk7RYujqvqeH5sGKqBNbtdKt",
+    "timestamp": 1777205354,
+    "transaction_count": 1,
+    "instruction_scope": "matched PumpSwap BuyEvent CPI; pre/post vault snapshots",
+    "pool_tail_bytes_uninterpreted": 58
+  },
+  "price_states": [
+    {
+      "signature": "3k553755L3HFou7KJRtWxTaENUKtpumrNjrtKjRCurvxivmzQeUFmmXeFMkuZWDTHk7RYujqvqeH5sGKqBNbtdKt",
+      "side": "pre",
+      "block_time": 1777205354,
+      "event": "BuyEvent",
+      "event_sha256": "cecfa506d9dd7e20563d1e9de1fac338fbd5fe9c9d9e27a72568686e087469a2",
+      "base_raw": "41004053256073",
+      "quote_raw": "3826198230",
+      "low": "1653300255183/205020266280365000",
+      "high": "1653300255183/205020266280365000"
+    },
+    {
+      "signature": "3k553755L3HFou7KJRtWxTaENUKtpumrNjrtKjRCurvxivmzQeUFmmXeFMkuZWDTHk7RYujqvqeH5sGKqBNbtdKt",
+      "side": "post",
+      "block_time": 1777205354,
+      "event": "BuyEvent",
+      "event_sha256": "cecfa506d9dd7e20563d1e9de1fac338fbd5fe9c9d9e27a72568686e087469a2",
+      "base_raw": "40899535290814",
+      "quote_raw": "3835977962",
+      "low": "8287630386901/1022488382270350000",
+      "high": "8287630386901/1022488382270350000"
+    }
+  ],
+  "historical_supply": {
+    "raw_at_both_price_states": "1028873600726182",
+    "decimals": 6,
+    "birth_signature": "58gPwaTwpCtgGhG97i5ADCWCqWnoXprdMb6Y8GawTVDB6Ga32wPYro7Z7xRoMvVm92vWrcigVXPJeHQcGLt8KMyg",
+    "initialize_mint2": {
+      "signature": "58gPwaTwpCtgGhG97i5ADCWCqWnoXprdMb6Y8GawTVDB6Ga32wPYro7Z7xRoMvVm92vWrcigVXPJeHQcGLt8KMyg",
+      "slot": 406338070,
+      "transaction_index": 697,
+      "block_time": 1773484451,
+      "outer_index": 0,
+      "inner_index": 2,
+      "tag": 20,
+      "data_hex": "140606c5c1ce638d2567d26468b05eb951d1a28dcc6e123482b5c675149770e62bf200",
+      "accounts": [
+        "BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump"
+      ]
+    },
+    "mint_to": [
+      {
+        "signature": "58gPwaTwpCtgGhG97i5ADCWCqWnoXprdMb6Y8GawTVDB6Ga32wPYro7Z7xRoMvVm92vWrcigVXPJeHQcGLt8KMyg",
+        "slot": 406338070,
+        "transaction_index": 697,
+        "block_time": 1773484451,
+        "outer_index": 0,
+        "inner_index": 19,
+        "tag": 7,
+        "data_hex": "070080c6a47e8d0300",
+        "accounts": [
+          "BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump",
+          "E9e3i6ZhAWnGrewZYMmqZopWVwUCyxVkvAEZGe8vJkhm",
+          "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"
+        ]
+      },
+      {
+        "signature": "58gPwaTwpCtgGhG97i5ADCWCqWnoXprdMb6Y8GawTVDB6Ga32wPYro7Z7xRoMvVm92vWrcigVXPJeHQcGLt8KMyg",
+        "slot": 406338070,
+        "transaction_index": 697,
+        "block_time": 1773484451,
+        "outer_index": 0,
+        "inner_index": 20,
+        "tag": 7,
+        "data_hex": "070080c6a47e8d0300",
+        "accounts": [
+          "BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump",
+          "HTDb71eMLJawp5cFsnnhMQdg9SpKTmyzBNKiu2ta9tMg",
+          "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"
+        ]
+      }
+    ],
+    "mint_authority_revoke": {
+      "signature": "58gPwaTwpCtgGhG97i5ADCWCqWnoXprdMb6Y8GawTVDB6Ga32wPYro7Z7xRoMvVm92vWrcigVXPJeHQcGLt8KMyg",
+      "slot": 406338070,
+      "transaction_index": 697,
+      "block_time": 1773484451,
+      "outer_index": 0,
+      "inner_index": 21,
+      "tag": 6,
+      "data_hex": "060000",
+      "accounts": [
+        "BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump",
+        "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"
+      ]
+    },
+    "burns": [
+      {
+        "signature": "2nDbJv91P9YXRKjSvm6B33QkTEGZkEy2gw34dKC9x4fr5sCBaudymBmrPLDfqcQUiquStqkP5pUAgVT2nb3ecGT5",
+        "slot": 406565244,
+        "transaction_index": 1008,
+        "block_time": 1773573949,
+        "outer_index": 0,
+        "inner_index": 0,
+        "tag": 8,
+        "data_hex": "0877e427197b6a0300",
+        "accounts": [
+          "HTDb71eMLJawp5cFsnnhMQdg9SpKTmyzBNKiu2ta9tMg",
+          "BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump",
+          "BwWK17cbHxwWBKZkUYvzxLcNQ1YVyaFezduWbtm2de6s"
+        ]
+      },
+      {
+        "signature": "mR5PwinDFCDmzp9PSnyQ7VH4kvTCEFA86Yk7iXTnTXwn36we4gvZdp59igF8H1Nr5Guyp6cDfyGFLhGXDhuqQmQ",
+        "slot": 406799914,
+        "transaction_index": 235,
+        "block_time": 1773666460,
+        "outer_index": 5,
+        "inner_index": -1,
+        "tag": 8,
+        "data_hex": "08e3a6e7e2c0080000",
+        "accounts": [
+          "9Ef8RGqdY2EtsGbX38r4vejXR2rFjYxGxV3SDDbmREWG",
+          "BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump",
+          "EUuE11dqDzEHWopPnqQPD5cvQX57j7BmEnzGS1SMDk9X"
+        ]
+      },
+      {
+        "signature": "2jL6k2vTqzhZ8bQfM4BtEMDthKPe88TKzxys1h1JUmQGRhN4BoVb6apzcwp6D7hqKTXaFhScx1RsPKLfyKpEGnMW",
+        "slot": 415851783,
+        "transaction_index": 139,
+        "block_time": 1777233551,
+        "outer_index": 2,
+        "inner_index": -1,
+        "tag": 8,
+        "data_hex": "080c044ec603000000",
+        "accounts": [
+          "B9Yj7LCWxuJFhLnvrEjriZ8aEQ4AJrxQ9x1ANpgeiiTp",
+          "BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump",
+          "3KcPSJ8ouE7H1feoWHmhDwXhLnXhpxP6R6713uytFmBM"
+        ]
+      }
+    ],
+    "later_supply_after_post_window_burn_raw": "1028857388822682",
+    "current_supply_raw_not_used": "1028857388822682",
+    "signature_census_rows": 311,
+    "successful_transactions": 254,
+    "failed_retained": 57,
+    "full_signature_set_equal": true,
+    "current_mint": {
+      "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+      "raw_len": 400,
+      "decimals": 6,
+      "initialized": true,
+      "mint_authority_option": 0,
+      "freeze_authority_option": 0,
+      "extensions": [
+        [
+          18,
+          64
+        ],
+        [
+          19,
+          162
+        ]
+      ]
+    }
+  },
+  "expected": {
+    "state_count": 2,
+    "winner_signature": "3k553755L3HFou7KJRtWxTaENUKtpumrNjrtKjRCurvxivmzQeUFmmXeFMkuZWDTHk7RYujqvqeH5sGKqBNbtdKt",
+    "winner_side": "post",
+    "fdv_lower_cents_floor": 833938,
+    "fdv_upper_cents_ceil": 833939,
+    "annual_allmarket_lifetime_complete": false,
+    "ath_at": null,
+    "conditional_vault_ratio_model": true,
+    "historical_virtual_quote_reserves": "unknown",
+    "within_2pct": true
+  },
+  "matched_trade_cpi": {
+    "raw_transaction_response_sha256": "e5dc782c3148c810923ea219fd7627654dc7145bbaaa0b6825f4ce3285e110cd",
+    "slot": 415780549,
+    "transaction_index": 62,
+    "parent_outer_index": 3,
+    "parent_program": "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9",
+    "inner_index_within_parent": 0,
+    "stack_height": 2,
+    "program": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+    "account_roles": {
+      "pool": "2mQBJRfTco9SmKhWe3WkyzEuBXpNS8LyxkTo4RwVomme",
+      "mint": "BQJFjhrDmCCov7WY5tjrx9zdRTNEBUb1iGVCYZ1Apump",
+      "quote_mint": "So11111111111111111111111111111111111111112",
+      "base_vault": "6gD6DtuZNqkoj8yxHMhxYk8AuNYa2NSsMnWQEDm4NU2c",
+      "quote_vault": "8kGfRGN72yoYXnYKug8itKVkF3SWta6ERDG7AngfZA1P"
+    },
+    "account_positions": {
+      "pool": 0,
+      "mint": 3,
+      "quote_mint": 4,
+      "base_vault": 7,
+      "quote_vault": 8
+    }
+  }
+}
