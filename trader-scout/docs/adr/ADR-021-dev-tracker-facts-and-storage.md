@@ -1583,3 +1583,54 @@ The independent price, supply and native-execution proofs have SHA-256 values
 and `fdec592f71aded401a17f542f7f72780968bbd8037a6c4f4be17083b0590b158`.
 This manual validation adds no automatic adapter/promotion rule and changes
 no runner threshold or selection definition.
+
+## Amendment 35 (2026-10-14) — Mayhem marks with separate native fee legs
+
+Seven further selected Mayhem curve cases use amendment 34's mark/source
+semantics. Complete ±3-second windows contain 36 TradeEvents in total. The
+global maximum in each captured window occurs one or two seconds **before**
+the provider timestamp; both dated SOL/USD minute endpoints agree within 2%.
+The observed two-second offset is retained explicitly; the earlier three
+cases' one-second offset was an observation, not proof of exact provider
+clock alignment. No higher captured state is omitted. Two negative controls
+have earlier matching states but later higher marks differing by 6–17%;
+selecting only the matching earlier state would be unsupported. They remain
+unpromoted, as does the separately captured PumpSwap candidate.
+
+Birth-to-peak successful history counts are 2/2/1/2/4/2/5, each reconciling
+with the finalized signature query plus explicit birth. Each mint has two
+birth `MintTo` instructions totaling `2e15` raw units, authority revocation,
+no burn through the price peak, and an observed Token-2022 mint with only
+metadata extensions 18/19. Thus the selected provider maximum FDV cent floors
+are 500,586 / 487,004 / 522,541 / 703,446 / 499,152 / 546,571 / 642,711.
+Provider market-cap fields with a nominal 1B denominator are not reused.
+
+The selected successful standard transactions bind actual Pump `buy`
+instructions and mint/native-SOL account roles. Some are direct Pump calls;
+one is a nested Mayhem-router call. Native System transfers are scoped to
+the buy invocation using instruction group/order and stack depth. Transfers
+into `bonding_curve` equal the event `sol_amount`; fee-recipient transfers
+match `fee`. Ceiling rounding of the event's SOL amount and fee basis points
+reproduces protocol and creator fee fields. An individual creator-vault
+transfer matches `creator_fee`; the `5N9Zfj9t…` transaction also transfers
+890,880 lamports into that vault. This extra amount is retained separately,
+without calling it creator fee or assigning it a rent purpose without a
+separate proof. Fee-payer balance changes also include transaction fees,
+account funding and other flows; they are not substituted for event quote
+amount or for the curve mark. No PnL/trader attribution rule changes here.
+
+The source remains
+`solana-tracker-window-peak-supply-mayhem-curve-mark-fx-validated-v1`, with
+`ath_at=NULL`, preserved holders/liquidity and unknown provider recording
+window. Golden `solana_tracker_mayhem_curve_mark_fee_cases.json` exercises
+captured event-CPI decoding, maximum selection, exact FX and supply math,
+raw System transfer amounts, fee rounding and the two non-cherry-picked
+negative controls. Independent price, supply and native proofs are pinned by
+SHA-256 `f3b4ad42d145575ccdb25c425333a69a24908e866b2b86a1858b216493326b2b`,
+`4bde343662cc8e4693b9fff64a3ee72bb4718bf39d9476713f724909ab03a31a`
+and `5b1f92f85e35462704a2671f6657549fb9598a41c2213497f48ed1396a93ceee`.
+The separate worker audit hash is
+`db9b6230f5b41ad3608c9411f2d6867bbcaa4971c53da35839befb20dc840cf6`.
+This adds manually validated cases, not a general automatic adapter rule;
+annual all-market coverage and full Mayhem transition semantics remain
+unproven.

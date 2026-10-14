@@ -204,3 +204,29 @@ were active during snapshot work. These timings are operational observations,
 not isolated throughput benchmarks. A fresh full restore was not performed for
 this dump; the earlier schema-10 full restore proofs remain separately dated
 in [portable deployment validation](2026-10-11-portable-deployment-validation.md).
+
+## B8.4 state package after 26 guarded closures (2026-10-14 Moscow)
+
+A new consistent PostgreSQL custom dump completed in 78.99 seconds, bracketed
+by `2026-10-13T23:55:55Z–23:57:14Z`, while the daemon remained active. Its
+3,013,515,453 bytes have SHA-256
+`e71fae6bc2fe4f2f3dd4ce2d26cd81e60db51e3c902f079e37ea3e0d92b7232e`.
+The archive table of contents passed validation. This snapshot includes the
+26 committed guarded closures: 460 numeric / 219 unknown in the frozen
+679-token candidate cohort. It precedes any batch-6 promotion.
+
+The protected schema-10 package is
+`.scout-data/deployment/2026-10-14-b84-26-closures/trader-scout-state-schema10-b84-26-closures-20261014.tar`,
+3,013,990,400 bytes, SHA-256
+`67650d1b3540f3d582ee1026ce63176db4331c6eb90518594cc014ac74adb6b3`.
+All 39 payload files were verified and extracted; the 36 export files are
+individually dated in provenance. The package contains the database dump,
+configuration, exports and provenance; `deploy/.env` is supplied separately.
+Packing, verification and extraction took 38.39 seconds. A fresh full database
+restore was not performed for this package; the prior isolated restore and
+schema-10 round trip remain separate evidence.
+
+The live binary is unchanged from source `7c1ca5c…`; verified test/documentation
+changes are at `7da9765…`. The service has zero restarts. This package is a
+new partial-ATH checkpoint, not a claim that B8.4 or annual market-wide ATH
+coverage is complete.

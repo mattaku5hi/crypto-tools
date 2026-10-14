@@ -6162,4 +6162,375 @@ mod tests {
             (numerator.parse().unwrap(), denominator.parse().unwrap())
         }
     }
+
+    #[test]
+    fn solana_tracker_mayhem_fee_curve_marks_reconcile_scoped_buys() {
+        use alloy_primitives::U512;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_mayhem_curve_mark_fee_cases.json"
+        ))
+        .unwrap();
+        let fraction = |numerator: U512, denominator: U512| (numerator, denominator);
+        let decimal_fraction = |value: &str| {
+            let decimal = ExactDecimal::parse(value).unwrap();
+            let denominator = (0..u32::try_from(decimal.scale).unwrap())
+                .try_fold(U512::from(1), |value, _| value.checked_mul(U512::from(10)))
+                .unwrap();
+            fraction(U512::from(decimal.coefficient), denominator)
+        };
+        let compare =
+            |left: (U512, U512), right: (U512, U512)| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let within_two_percent = |left: (U512, U512), right: (U512, U512)| {
+            let difference = (left.0 * right.1).abs_diff(right.0 * left.1);
+            difference * U512::from(100) <= right.0 * left.1 * U512::from(2)
+        };
+        let ceil_fee = |amount: u64, bps: u64| {
+            (U512::from(amount) * U512::from(bps) + U512::from(9_999_u64)) / U512::from(10_000_u64)
+        };
+        let expected_fdv_cents = [
+            500_586_u64,
+            487_004,
+            522_541,
+            703_446,
+            499_152,
+            546_571,
+            642_711,
+        ];
+        let expected_history_rows = [2_u64, 2, 1, 2, 4, 2, 5];
+        let expected_successful_rows = [1_u64, 1, 0, 1, 3, 1, 4];
+        let mut total_events = 0;
+        let mut nonzero_fees = 0;
+
+        for (index, row) in fixture["rows"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(
+                row["source"].as_str(),
+                Some("solana-tracker-window-peak-supply-mayhem-curve-mark-fx-validated-v1")
+            );
+            assert!(row["ath_at"].is_null());
+            let mint = row["mint"].as_str().unwrap();
+            let provider = decimal_fraction(row["provider_price_usd"].as_str().unwrap());
+            let provider_second = row["timestamp_ms"].as_u64().unwrap() / 1_000;
+            let mut marks = Vec::new();
+            for mark in row["neighborhood"]["events"].as_array().unwrap() {
+                let program_id = bs58::decode(mark["program_id"].as_str().unwrap())
+                    .into_vec()
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+                assert_eq!(program_id, scout_dex_solana::PUMP_PROGRAM_ID_BYTES);
+                assert_eq!(
+                    mark["program_id"].as_str(),
+                    Some("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+                );
+                let instruction = scout_core::RawSolanaInstruction {
+                    program_id,
+                    accounts: Vec::new(),
+                    data: bytes_from_hex(mark["event_cpi_data_hex"].as_str().unwrap()),
+                    instruction_index: 0,
+                };
+                let expected = &mark["event"];
+                let event = match scout_dex_solana::classify_pump_event(&instruction) {
+                    scout_dex_solana::PumpEventOutcome::Trade(event) => event,
+                    other => panic!("expected Pump TradeEvent, got {other:?}"),
+                };
+                assert_eq!(bs58::encode(event.mint).into_string(), mint);
+                assert_eq!(event.sol_amount, expected["sol_amount"].as_u64().unwrap());
+                assert_eq!(
+                    event.token_amount,
+                    expected["token_amount"].as_u64().unwrap()
+                );
+                assert_eq!(event.timestamp, expected["timestamp"].as_i64().unwrap());
+                assert_eq!(
+                    event.virtual_sol_reserves,
+                    expected["virtual_sol_reserves"].as_u64().unwrap()
+                );
+                assert_eq!(
+                    event.virtual_token_reserves,
+                    expected["virtual_token_reserves"].as_u64().unwrap()
+                );
+                assert_eq!(
+                    event.real_sol_reserves,
+                    expected["real_sol_reserves"].as_u64().unwrap()
+                );
+                assert_eq!(
+                    event.real_token_reserves,
+                    expected["real_token_reserves"].as_u64().unwrap()
+                );
+                assert_eq!(event.mayhem_mode, Some(true));
+                assert_eq!(event.trailing_bytes, 0);
+                assert_eq!(event.data_len, instruction.data.len());
+                let event_offset = event.timestamp - i64::try_from(provider_second).unwrap();
+                assert!((-3..=3).contains(&event_offset));
+
+                let price_sol = fraction(
+                    U512::from(event.virtual_sol_reserves),
+                    U512::from(event.virtual_token_reserves) * U512::from(1_000_u64),
+                );
+                let low_fx = decimal_fraction(mark["fx_low_usd"].as_str().unwrap());
+                let high_fx = decimal_fraction(mark["fx_high_usd"].as_str().unwrap());
+                let low_price = fraction(price_sol.0 * low_fx.0, price_sol.1 * low_fx.1);
+                let high_price = fraction(price_sol.0 * high_fx.0, price_sol.1 * high_fx.1);
+                assert_eq!(
+                    compare(
+                        low_price,
+                        fraction_from_text(mark["usd_low_fraction"].as_str().unwrap())
+                    ),
+                    std::cmp::Ordering::Equal
+                );
+                assert_eq!(
+                    compare(
+                        high_price,
+                        fraction_from_text(mark["usd_high_fraction"].as_str().unwrap())
+                    ),
+                    std::cmp::Ordering::Equal
+                );
+                assert!(within_two_percent(
+                    low_price,
+                    fraction_from_text(mark["usd_low_fraction"].as_str().unwrap())
+                ));
+                assert!(within_two_percent(
+                    high_price,
+                    fraction_from_text(mark["usd_high_fraction"].as_str().unwrap())
+                ));
+                marks.push((mark, price_sol, low_price, high_price));
+            }
+            total_events += marks.len();
+            assert_eq!(
+                marks.len(),
+                usize::try_from(row["neighborhood"]["event_count"].as_u64().unwrap()).unwrap()
+            );
+            let low_max = marks
+                .iter()
+                .max_by(|left, right| compare(left.2, right.2))
+                .unwrap();
+            let high_max = marks
+                .iter()
+                .max_by(|left, right| compare(left.3, right.3))
+                .unwrap();
+            assert_eq!(low_max.0["signature"], high_max.0["signature"]);
+            assert_eq!(
+                low_max.0["signature"],
+                row["neighborhood"]["maximum_event_signature"]
+            );
+            let selected_offset = low_max.0["event"]["timestamp"].as_i64().unwrap()
+                - i64::try_from(provider_second).unwrap();
+            assert!((-3..=3).contains(&selected_offset));
+            assert!((-2..=-1).contains(&selected_offset));
+            assert!(within_two_percent(low_max.2, provider));
+            assert!(within_two_percent(high_max.3, provider));
+            assert!(
+                row["neighborhood"]["both_fx_endpoints_within_2pct"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(
+                row["neighborhood"]["selected_max_offset_seconds"].as_i64(),
+                Some(selected_offset)
+            );
+
+            let event = &low_max.0["event"];
+            let native = &row["native_execution"];
+            assert_eq!(native["signature"], low_max.0["signature"]);
+            assert_eq!(native["mint"].as_str(), Some(mint));
+            assert_eq!(
+                native["roles"]["program"].as_str(),
+                Some("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+            );
+            assert_eq!(native["roles"]["mint"].as_str(), Some(mint));
+            assert_eq!(
+                native["roles"]["system_program"].as_str(),
+                Some("11111111111111111111111111111111")
+            );
+            assert!(
+                native["scoped_system_transfers_only_within_buy_invocation"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert!(
+                native["no_fee_payer_equals_trade_amount_assumption"]
+                    .as_bool()
+                    .unwrap()
+            );
+            let buy_data = bytes_from_hex(native["buy_instruction_data_hex"].as_str().unwrap());
+            assert_eq!(
+                &buy_data[..8],
+                &scout_dex_solana::BUY_INSTRUCTION_DISCRIMINATOR
+            );
+            assert!(native["buy_outer_index"].as_u64().is_some());
+            assert!(native["buy_inner_index"].as_i64().is_some());
+
+            let roles = &native["roles"];
+            let mut sums = std::collections::BTreeMap::<String, U512>::new();
+            let mut creator_transfers = Vec::new();
+            for transfer in native["system_transfers"].as_array().unwrap() {
+                assert_eq!(transfer["from"], roles["user"]);
+                let role = transfer["role"].as_str().unwrap();
+                let recipient_role = match role {
+                    "bonding_curve" => "bonding_curve",
+                    "fee_recipient" => "fee_recipient",
+                    "creator_vault" => "creator_vault",
+                    other => panic!("unexpected transfer role {other}"),
+                };
+                assert_eq!(transfer["to"], roles[recipient_role]);
+                let data = bytes_from_hex(transfer["data_hex"].as_str().unwrap());
+                assert_eq!(data.len(), 12);
+                assert_eq!(u32::from_le_bytes(data[..4].try_into().unwrap()), 2);
+                let amount = u64::from_le_bytes(data[4..12].try_into().unwrap());
+                assert_eq!(transfer["lamports"].as_u64(), Some(amount));
+                *sums.entry(role.to_string()).or_default() += U512::from(amount);
+                if role == "creator_vault" {
+                    creator_transfers.push(amount);
+                }
+            }
+            for role in ["bonding_curve", "fee_recipient", "creator_vault"] {
+                assert_eq!(
+                    sums.get(role).copied().unwrap_or(U512::ZERO),
+                    U512::from(native["role_sums_lamports"][role].as_u64().unwrap())
+                );
+            }
+            assert_eq!(
+                sums.get("bonding_curve").copied().unwrap_or(U512::ZERO),
+                U512::from(event["sol_amount"].as_u64().unwrap())
+            );
+            assert_eq!(
+                sums.get("fee_recipient").copied().unwrap_or(U512::ZERO),
+                U512::from(event["fee"].as_u64().unwrap())
+            );
+            let creator_fee = event["creator_fee"].as_u64().unwrap();
+            if creator_fee > 0 {
+                assert!(creator_transfers.contains(&creator_fee));
+            }
+            let creator_sum = sums.get("creator_vault").copied().unwrap_or(U512::ZERO);
+            let extra = creator_sum - U512::from(creator_fee);
+            assert_eq!(
+                extra,
+                U512::from(native["creator_vault_extra_lamports"].as_u64().unwrap())
+            );
+            let expected_extra = if mint == "5N9Zfj9tNob9ShYFrCXzapKCLFR7uR8Zsf4CUjMGpump" {
+                890_880
+            } else {
+                0
+            };
+            assert_eq!(extra, U512::from(expected_extra));
+            let fee = event["fee"].as_u64().unwrap();
+            let fee_bps = event["fee_basis_points"].as_u64().unwrap();
+            let creator_bps = event["creator_fee_basis_points"].as_u64().unwrap();
+            assert_eq!(
+                U512::from(fee),
+                ceil_fee(event["sol_amount"].as_u64().unwrap(), fee_bps)
+            );
+            assert_eq!(
+                U512::from(creator_fee),
+                ceil_fee(event["sol_amount"].as_u64().unwrap(), creator_bps)
+            );
+            nonzero_fees += usize::from(fee > 0);
+            if mint == "5WrHHbJwcs6DN1BtZpikeVRxFnam4K1hGZCKM4BBpump" {
+                assert_eq!(fee, 0);
+                assert_eq!(creator_fee, 0);
+            }
+            if fee == 0 {
+                assert_eq!(creator_fee, 0);
+            }
+
+            let supply = &row["supply"];
+            let supply_raw = supply["total_birth_mints_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<U512>()
+                .unwrap();
+            let birth_mints = supply["birth_mint_instructions"].as_array().unwrap();
+            assert_eq!(birth_mints.len(), 2);
+            let mint_sum = birth_mints
+                .iter()
+                .map(|entry| U512::from(entry["amount_raw"].as_u64().unwrap()))
+                .fold(U512::ZERO, |sum, amount| sum + amount);
+            assert_eq!(mint_sum, U512::from(2_000_000_000_000_000_u64));
+            assert_eq!(supply_raw, mint_sum);
+            assert_eq!(supply["burns"].as_array().unwrap().len(), 0);
+            assert_eq!(
+                supply["history_rows"].as_u64(),
+                Some(expected_history_rows[index])
+            );
+            assert_eq!(
+                supply["successful_signature_rows"].as_u64(),
+                Some(expected_successful_rows[index])
+            );
+            assert!(
+                supply["signature_sets_equal_with_explicit_birth"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(
+                supply["peak_supply_bounds_raw"][0],
+                supply["peak_supply_bounds_raw"][1]
+            );
+            let fdv = provider.0 * supply_raw * U512::from(100)
+                / (provider.1 * U512::from(1_000_000_u64));
+            assert_eq!(fdv, U512::from(expected_fdv_cents[index]));
+            assert_eq!(fdv, U512::from(row["ath_fdv_cents"].as_u64().unwrap()));
+        }
+        assert_eq!(total_events, 36);
+        assert!(nonzero_fees >= 5);
+
+        for control in fixture["negative_price_controls"].as_array().unwrap() {
+            assert_eq!(
+                control["both_fx_endpoints_within_2pct"].as_bool(),
+                Some(false)
+            );
+            assert_eq!(control["selected_max_offset_seconds"].as_i64(), Some(3));
+            assert_eq!(
+                control["events"].as_array().unwrap().len(),
+                usize::try_from(control["event_count"].as_u64().unwrap()).unwrap()
+            );
+            let provider =
+                decimal_fraction(control["provider_price_usd_decimal"].as_str().unwrap());
+            let mut prices = Vec::new();
+            for event in control["events"].as_array().unwrap() {
+                let base = fraction(
+                    U512::from(
+                        event["virtual_sol_raw"]
+                            .as_str()
+                            .unwrap()
+                            .parse::<u64>()
+                            .unwrap(),
+                    ),
+                    U512::from(
+                        event["virtual_token_raw"]
+                            .as_str()
+                            .unwrap()
+                            .parse::<u64>()
+                            .unwrap(),
+                    ) * U512::from(1_000_u64),
+                );
+                let low_fx = decimal_fraction(event["fx_low_usd"].as_str().unwrap());
+                let high_fx = decimal_fraction(event["fx_high_usd"].as_str().unwrap());
+                let low = fraction(base.0 * low_fx.0, base.1 * low_fx.1);
+                let high = fraction(base.0 * high_fx.0, base.1 * high_fx.1);
+                prices.push((event, low, high));
+            }
+            assert!(prices.iter().any(|(event, low, high)| {
+                event["event"]["timestamp"].as_i64().unwrap()
+                    < i64::try_from(control["maximum_event_second"].as_u64().unwrap()).unwrap()
+                    && within_two_percent(*low, provider)
+                    && within_two_percent(*high, provider)
+            }));
+            let max_low = prices.iter().max_by(|a, b| compare(a.1, b.1)).unwrap();
+            let max_high = prices.iter().max_by(|a, b| compare(a.2, b.2)).unwrap();
+            assert_eq!(max_low.0["signature"], max_high.0["signature"]);
+            assert_eq!(max_low.0["signature"], control["maximum_event_signature"]);
+            assert_eq!(
+                max_low.0["event"]["timestamp"].as_i64().unwrap()
+                    - i64::try_from(control["peak_ms"].as_u64().unwrap() / 1_000).unwrap(),
+                3
+            );
+            assert!(!within_two_percent(max_low.1, provider));
+            assert!(!within_two_percent(max_high.2, provider));
+        }
+
+        fn fraction_from_text(text: &str) -> (U512, U512) {
+            let (numerator, denominator) = text.split_once('/').unwrap();
+            (numerator.parse().unwrap(), denominator.parse().unwrap())
+        }
+    }
 }
