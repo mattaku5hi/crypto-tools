@@ -9244,6 +9244,528 @@ mod tests {
     }
 
     #[test]
+    fn solana_tracker_5sz_historical_supply_own_minute_fdv_replays_exactly() {
+        use alloy_primitives::U512;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_5sz_historical_supply_fdv_window_cases.json"
+        ))
+        .unwrap();
+        let fraction = |text: &str| {
+            let (numerator, denominator) = text.split_once('/').unwrap();
+            (
+                U512::from_str_radix(numerator, 10).unwrap(),
+                U512::from_str_radix(denominator, 10).unwrap(),
+            )
+        };
+        let compare =
+            |left: (U512, U512), right: (U512, U512)| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let decimal = |text: &str| {
+            let (whole, tail) = text.split_once('.').unwrap();
+            let scale =
+                (0..tail.len()).fold(U512::from(1_u64), |scale, _| scale * U512::from(10_u64));
+            (
+                U512::from(whole.parse::<u64>().unwrap()) * scale
+                    + U512::from(tail.parse::<u64>().unwrap()),
+                scale,
+            )
+        };
+        for (key, expected) in [
+            (
+                "supply_history_parent",
+                "0943f4cafb94c1c23bcf0f160a0946c381e5bb686b5cdc1a5ceefb640c0c1312",
+            ),
+            (
+                "own_minute_price_analysis",
+                "d247088bac40da20b0318fcf971f9d2c26c26a00ac918512d061998143618ee8",
+            ),
+            (
+                "independent_own_minute_price_audit",
+                "d853ff336c904fcb762c5ede3d0463be776d9bb73cfde2a410ff3c07ae56cbf6",
+            ),
+            (
+                "independent_ledger_audit",
+                "bd65e057cb4f466bf654eded5163182cea544631c22f398c13e468cbfe21b17d",
+            ),
+            (
+                "coinbase_response",
+                "672eaaff785d0d4d86f8af341a8a2d4510abc7fd98be69a229e6414c44e65e03",
+            ),
+        ] {
+            assert_eq!(fixture["source_sha256"][key], expected);
+        }
+        assert_eq!(
+            fixture["source_kind"],
+            "onchain-pool-window-supply-cex-reference-v1"
+        );
+        assert_eq!(
+            fixture["source_sha256"]["root_certificate"],
+            "1f49e69010899a0d282f41d0e6fb850a03e968fbed650f5c3e9339b60af6c9c3"
+        );
+        let certificate = &fixture["root_certificate"];
+        let certificate_row = &certificate["rows"][0];
+        assert_eq!(certificate["rawgate_pass"], true);
+        assert_eq!(certificate["marks"].as_array().unwrap().len(), 20);
+        assert_eq!(certificate["successful_supply_history_transactions"], 605);
+        assert_eq!(certificate["failed_signature_census_transactions"], 152);
+        assert_eq!(certificate["price_transactions"], 10);
+        assert_eq!(certificate["historical_supply_end_raw"], "1703382837434538");
+        assert_eq!(
+            certificate["later_current_supply_raw_not_substituted"],
+            "1694540195901908"
+        );
+        assert_eq!(certificate["conditional_vault_ratio_model"], true);
+        assert_eq!(certificate["protocol_internal_spot_equivalence"], "unknown");
+        assert_eq!(certificate["own_minute_fx"], true);
+        assert_eq!(certificate["old_state_carried_to_provider_peak"], false);
+        assert_eq!(
+            certificate["price_endpoint_window_exhaustiveness"],
+            "unknown; latest10 captures retain older cursors"
+        );
+        assert_eq!(certificate["full_event_decoder_support"], false);
+        assert_eq!(certificate["annual_allmarket_lifetime_complete"], false);
+        assert_eq!(certificate["ath_at_policy"], "null");
+        assert_eq!(certificate["database_writes"], 0);
+        assert_eq!(certificate_row["source"], fixture["source_kind"]);
+        assert_eq!(
+            certificate_row["mint"],
+            "5SZJnFiptXoXsnsqvUretGomCanVBUHkTfLsmUELpump"
+        );
+        assert_eq!(certificate_row["observed_marks"], 20);
+        assert_eq!(certificate_row["historical_supply_exact"], true);
+        for key in [
+            "supply_history_parent",
+            "own_minute_price_analysis",
+            "independent_own_minute_price_audit",
+            "independent_ledger_audit",
+            "coinbase_response",
+        ] {
+            assert!(
+                certificate["source_sha256"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .any(|source_hash| source_hash == &fixture["source_sha256"][key])
+            );
+        }
+
+        let history = &fixture["supply_history_parent_excerpt"];
+        let price = &fixture["price_analysis_excerpt"];
+        let independent = &fixture["independent_price_audit_excerpt"];
+        let ledger = &fixture["independent_ledger_audit_excerpt"];
+        assert_eq!(history["mint"], price["mint"]);
+        assert_eq!(history["mint"], ledger["mint"]);
+        assert_eq!(
+            history["token_program"],
+            "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        );
+        assert_eq!(history["decimals"], 6);
+        assert_eq!(history["summary"]["tfa_transaction_count"], 605);
+        assert_eq!(history["summary"]["tfa_success_ops"], 7);
+        assert_eq!(history["summary"]["signature_success_count"], 604);
+        assert_eq!(history["summary"]["signature_failed_count"], 152);
+        assert_eq!(history["summary"]["price_marks"], 20);
+        assert_eq!(
+            history["summary"]["birth_mint_to_total_raw"],
+            "2000000000000000"
+        );
+        assert_eq!(
+            history["summary"]["window_end_supply_raw"],
+            "1703382837434538"
+        );
+        assert_eq!(
+            history["summary"]["later_current_supply_raw"],
+            "1694540195901908"
+        );
+        assert_eq!(history["summary"]["unclassified_instruction_count"], 0);
+        assert_eq!(history["unclassified_target_token_instruction_count"], 0);
+        assert_eq!(
+            history["successful_signature_set_reconciliation"]["missing_signatures"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            history["successful_signature_set_reconciliation"]["unexpected_signatures"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            history["successful_signature_set_reconciliation"]["rows_canonical_ordered_for_replay"],
+            true
+        );
+        assert_eq!(ledger["result"], "pass");
+        assert_eq!(ledger["raw_instruction_audit"]["malformed_count"], 0);
+        assert_eq!(
+            ledger["raw_instruction_audit"]["known_nonsupply_count"],
+            710
+        );
+        assert_eq!(
+            ledger["raw_instruction_audit"]["operation_types"]["mint_to"],
+            2
+        );
+        assert_eq!(
+            ledger["raw_instruction_audit"]["operation_types"]["burn"],
+            4
+        );
+        assert_eq!(
+            ledger["raw_instruction_audit"]["operation_types"]["set_authority"],
+            1
+        );
+        assert_eq!(ledger["birth_mint"]["initialize_mint_count"], 1);
+        assert_eq!(ledger["birth_mint"]["mint_to_raw_each"], "1000000000000000");
+        assert_eq!(history["initialize_mint_in_birth"][0]["opcode"], 20);
+        assert_eq!(history["initialize_mint_in_birth"][0]["wire_len"], 35);
+        assert_eq!(
+            history["initialize_mint_in_birth"][0]["target_account_positions"],
+            serde_json::json!([0])
+        );
+        assert_eq!(ledger["current_mint_extensions"]["request_index"], 17);
+        assert_eq!(
+            ledger["current_mint_extensions"]["raw_account_data_bytes"],
+            412
+        );
+        assert_eq!(ledger["current_mint_extensions"]["no_mint_authority"], true);
+        assert_eq!(
+            ledger["current_mint_extensions"]["no_freeze_authority"],
+            true
+        );
+        assert_eq!(
+            ledger["supply_replay"]["current_supply_raw"],
+            "1694540195901908"
+        );
+        assert_eq!(
+            ledger["supply_replay"]["birth_to_window_end_raw"],
+            "1703382837434538"
+        );
+        assert_eq!(ledger["signature_census"]["exact_set"], true);
+        assert_eq!(ledger["signature_census"]["terminal"], true);
+        assert_eq!(ledger["signature_census"]["failed"], 152);
+        assert_eq!(ledger["signature_census"]["successful_tfa_rows"], 605);
+
+        let operations = history["historical_supply_operations"].as_array().unwrap();
+        let independent_ops = ledger["raw_instruction_audit"]["operations"]
+            .as_array()
+            .unwrap();
+        assert_eq!(operations.len(), 7);
+        assert_eq!(independent_ops.len(), operations.len());
+        let mut replayed_supply = U512::ZERO;
+        let mut burn_count = 0;
+        for (operation, raw_operation) in operations.iter().zip(independent_ops) {
+            assert_eq!(operation["signature"], raw_operation["signature"]);
+            assert_eq!(operation["outer_index"], raw_operation["outer_index"]);
+            assert_eq!(operation["inner_index"], raw_operation["inner_index"]);
+            assert_eq!(operation["opcode"], raw_operation["opcode"]);
+            assert_eq!(
+                operation["raw_instruction_data_sha256"],
+                raw_operation["raw_data_sha256"]
+            );
+            assert_eq!(
+                raw_operation["positions"],
+                operation["target_account_positions"]
+            );
+            assert_eq!(
+                raw_operation["accounts"],
+                operation["instruction_account_keys"]
+            );
+            assert_eq!(operation["supply_before_raw"], replayed_supply.to_string());
+            match operation["classification"].as_str().unwrap() {
+                "mint_to" => {
+                    assert_eq!(operation["opcode"], 7);
+                    assert_eq!(operation["wire_len"], 9);
+                    assert_eq!(operation["amount_raw"], "1000000000000000");
+                    assert_eq!(operation["instruction_account_keys"][0], history["mint"]);
+                    assert_eq!(
+                        raw_operation["accounts"][usize::try_from(
+                            raw_operation["positions"][0].as_u64().unwrap()
+                        )
+                        .unwrap()],
+                        history["mint"]
+                    );
+                    replayed_supply +=
+                        U512::from_str_radix(operation["amount_raw"].as_str().unwrap(), 10)
+                            .unwrap();
+                }
+                "burn" => {
+                    assert_eq!(operation["opcode"], 8);
+                    assert_eq!(operation["wire_len"], 9);
+                    assert_eq!(operation["instruction_account_keys"][1], history["mint"]);
+                    assert_eq!(
+                        raw_operation["accounts"][usize::try_from(
+                            raw_operation["positions"][0].as_u64().unwrap()
+                        )
+                        .unwrap()],
+                        history["mint"]
+                    );
+                    replayed_supply -=
+                        U512::from_str_radix(operation["amount_raw"].as_str().unwrap(), 10)
+                            .unwrap();
+                    burn_count += 1;
+                }
+                "set_authority" => {
+                    assert_eq!(operation["opcode"], 6);
+                    assert_eq!(operation["wire_len"], 3);
+                    assert_eq!(operation["new_authority_option"], 0);
+                    assert_eq!(operation["instruction_account_keys"][0], history["mint"]);
+                    assert_eq!(
+                        raw_operation["accounts"][usize::try_from(
+                            raw_operation["positions"][0].as_u64().unwrap()
+                        )
+                        .unwrap()],
+                        history["mint"]
+                    );
+                }
+                other => panic!("unexpected supply operation {other}"),
+            }
+            assert_eq!(operation["supply_after_raw"], replayed_supply.to_string());
+            assert_eq!(
+                operation["supply_before_raw"],
+                raw_operation["supply_before"]
+            );
+            assert_eq!(operation["supply_after_raw"], raw_operation["supply_after"]);
+        }
+        assert_eq!(burn_count, 4);
+        let history_marks = history["price_boundary_supply_and_fdv"].as_array().unwrap();
+        let first_price_time = history_marks[0]["block_time_unix_s"].as_u64().unwrap();
+        assert!(operations[3..6].iter().all(|operation| {
+            operation["classification"] == "burn"
+                && operation["block_time_unix_s"].as_u64().unwrap() < first_price_time
+        }));
+        assert!(
+            operations[6]["block_time_unix_s"].as_u64().unwrap()
+                > history_marks[5]["block_time_unix_s"].as_u64().unwrap()
+        );
+        assert!(
+            operations[6]["block_time_unix_s"].as_u64().unwrap()
+                < history_marks[6]["block_time_unix_s"].as_u64().unwrap()
+        );
+        assert_eq!(
+            replayed_supply.to_string(),
+            history["summary"]["window_end_supply_raw"]
+        );
+        assert!(
+            U512::from_str_radix(
+                history["summary"]["window_end_supply_raw"]
+                    .as_str()
+                    .unwrap(),
+                10
+            )
+            .unwrap()
+                > U512::from_str_radix(
+                    history["summary"]["later_current_supply_raw"]
+                        .as_str()
+                        .unwrap(),
+                    10
+                )
+                .unwrap()
+        );
+
+        let candles: serde_json::Value =
+            serde_json::from_str(fixture["coinbase_candles"].to_string().as_str()).unwrap();
+        assert_eq!(candles.as_array().unwrap().len(), 70);
+        let marks = history["price_boundary_supply_and_fdv"].as_array().unwrap();
+        let swaps = price["per_swap_and_state_evidence"].as_array().unwrap();
+        assert_eq!(marks.len(), 20);
+        assert_eq!(swaps.len(), 10);
+        assert_eq!(independent["audit_pass"], true);
+        assert!(
+            independent["checks"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|check| check == true)
+        );
+        let fx_gaps = independent["typed_gaps"].as_array().unwrap();
+        assert!(
+            fx_gaps
+                .iter()
+                .any(|gap| gap.as_str().unwrap().contains("no absent bool"))
+        );
+        assert!(
+            fx_gaps
+                .iter()
+                .any(|gap| gap.as_str().unwrap().contains("not complete history"))
+        );
+        assert!(
+            history["limitations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap.as_str().unwrap().contains("not protocol-internal"))
+        );
+        assert!(ledger["limitations"].as_array().unwrap().iter().any(|gap| {
+            gap.as_str()
+                .unwrap()
+                .contains("Unknown PumpSwap 16-byte wire tail")
+        }));
+
+        let mut max_low: Option<(U512, U512)> = None;
+        let mut max_high: Option<(U512, U512)> = None;
+        let mut price_maxima = ["low", "close", "high"].map(|kind| (kind, None));
+        let mut seen_marks = std::collections::HashSet::new();
+        let mut buy_count = 0;
+        let mut sell_count = 0;
+        for swap in swaps {
+            match swap["trade_label_matches"][0].as_str().unwrap() {
+                "BuyExactQuoteIn" => buy_count += 1,
+                "Sell" => sell_count += 1,
+                other => panic!("unexpected selected-pool trade label {other}"),
+            }
+            for state in swap["states"].as_array().unwrap() {
+                let signature = swap["signature"].as_str().unwrap();
+                let phase = state["phase"].as_str().unwrap();
+                assert!(seen_marks.insert((signature.to_owned(), phase.to_owned())));
+                let mark = marks
+                    .iter()
+                    .find(|mark| mark["signature"] == signature && mark["phase"] == phase)
+                    .unwrap();
+                assert_eq!(mark["slot"], swap["slot"]);
+                assert_eq!(mark["transaction_index"], swap["transaction_index"]);
+                assert_eq!(
+                    mark["block_time_unix_s"],
+                    state["observed_at_trade_boundary_unix_s"]
+                );
+                assert_eq!(mark["source_fx_minute_unix_s"], state["fx_minute_unix_s"]);
+                assert_eq!(state["base_mint"], history["mint"]);
+                assert_eq!(state["base_vault"], price["base_vault"]);
+                assert_eq!(state["quote_vault"], price["quote_vault"]);
+                assert_eq!(state["quote_mint"], price["quote_mint"]);
+                assert_eq!(state["base_decimals"], 6);
+                assert_eq!(state["quote_decimals"], 9);
+                let candle = candles
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row[0].as_u64() == state["fx_minute_unix_s"].as_u64())
+                    .unwrap();
+                for (kind, candle_index, exact_key) in [
+                    ("low", 1, "usd_per_token_low_exact"),
+                    ("close", 4, ""),
+                    ("high", 2, "usd_per_token_high_exact"),
+                ] {
+                    let fx = decimal(&candle[candle_index].to_string());
+                    let quote =
+                        U512::from_str_radix(state["quote_amount_raw"].as_str().unwrap(), 10)
+                            .unwrap();
+                    let base = U512::from_str_radix(state["base_amount_raw"].as_str().unwrap(), 10)
+                        .unwrap();
+                    let usd = (quote * fx.0, base * U512::from(1_000_u64) * fx.1);
+                    if !exact_key.is_empty() {
+                        assert_eq!(
+                            compare(usd, fraction(state[exact_key].as_str().unwrap())),
+                            std::cmp::Ordering::Equal
+                        );
+                    }
+                    if price_maxima
+                        .iter()
+                        .find(|(name, _)| *name == kind)
+                        .unwrap()
+                        .1
+                        .is_none_or(|previous| compare(usd, previous).is_gt())
+                    {
+                        let entry = price_maxima
+                            .iter_mut()
+                            .find(|(name, _)| *name == kind)
+                            .unwrap();
+                        entry.1 = Some(usd);
+                    }
+                    if kind == "low" || kind == "high" {
+                        let supply =
+                            U512::from_str_radix(mark["supply_raw"].as_str().unwrap(), 10).unwrap();
+                        let fdv = (usd.0 * supply, usd.1 * U512::from(1_000_000_u64));
+                        let target = if kind == "low" {
+                            &mut max_low
+                        } else {
+                            &mut max_high
+                        };
+                        if target.is_none_or(|previous| compare(fdv, previous).is_gt()) {
+                            *target = Some(fdv);
+                        }
+                        let replay = ledger["price_replay"]["per_state_results"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|row| row["signature"] == signature && row["phase"] == phase)
+                            .unwrap();
+                        assert_eq!(replay["supply_raw"], mark["supply_raw"]);
+                        assert_eq!(
+                            compare(
+                                usd,
+                                fraction(
+                                    replay[if kind == "low" {
+                                        "usd_low_exact"
+                                    } else {
+                                        "usd_high_exact"
+                                    }]
+                                    .as_str()
+                                    .unwrap()
+                                )
+                            ),
+                            std::cmp::Ordering::Equal
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(seen_marks.len(), 20);
+        assert_eq!((buy_count, sell_count), (9, 1));
+        assert_eq!(price["capture_scope"]["unique_transaction_union_count"], 11);
+        let max_low = max_low.unwrap();
+        let max_high = max_high.unwrap();
+        assert_eq!(
+            max_low.0 * U512::from(100) / max_low.1,
+            U512::from(4904124_u64)
+        );
+        assert_eq!(
+            (max_high.0 * U512::from(100) + max_high.1 - U512::from(1)) / max_high.1,
+            U512::from(4909636_u64)
+        );
+        assert_eq!(
+            compare(
+                max_low,
+                fraction(certificate_row["lower_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare(
+                max_high,
+                fraction(certificate_row["upper_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(certificate_row["lower_fdv_cents"], 4904124);
+        assert_eq!(certificate_row["upper_fdv_cents_floor_diagnostic"], 4909635);
+        assert_eq!(certificate_row["upper_fdv_cents_ceiling"], 4909636);
+        assert_eq!(ledger["price_replay"]["global_high_cents_floor"], 4909635);
+        assert_eq!(
+            ledger["price_replay"]["global_high_cents_outward_ceil"],
+            4909636
+        );
+        let provider = decimal(price["provider_reference"]["price_usd"].as_str().unwrap());
+        for (kind, value) in price_maxima {
+            let value = value.unwrap();
+            let independent_max = fraction(
+                independent["global_own_minute_extrema"][kind]["usd_fraction"]
+                    .as_str()
+                    .unwrap(),
+            );
+            assert_eq!(compare(value, independent_max), std::cmp::Ordering::Equal);
+            assert!(
+                compare(
+                    value,
+                    (provider.0 * U512::from(98), provider.1 * U512::from(100))
+                )
+                .is_ge()
+            );
+            assert!(
+                compare(
+                    value,
+                    (provider.0 * U512::from(102), provider.1 * U512::from(100))
+                )
+                .is_le()
+            );
+        }
+    }
+
+    #[test]
     fn solana_tracker_6sfb_7rwy_bounded_vault_fdv_windows_replay_exactly() {
         use alloy_primitives::U512;
         use sha2::{Digest, Sha256};

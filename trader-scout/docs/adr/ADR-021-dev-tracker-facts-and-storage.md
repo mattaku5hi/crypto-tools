@@ -2409,3 +2409,53 @@ Root certificate:
 `b9394a5fd978140d755f42fdc8571af62d458f1a4b3d419a112b9e7ec3b31bc2`.
 Independent raw/supply audit:
 `770c96b2a13a6fc6c131b013d7b54ce308d9e412d9b24476dc2d6abf2e1d5243`.
+
+## Amendment 52 (2026-10-14) — 5SZ own-minute states and historical mint supply
+
+An empty provider-peak swap window does not invalidate the provider quote.
+5SZ's ±3-second selected-pool/vault scans contain only configuration activity.
+Three bounded descending address queries recover ten earlier swaps and twenty
+PRE/POST vault states, from 21:59:26 to 23:03:48 UTC on March 19. Price each
+state with its own minute's Coinbase SOL/USD, not a later provider-peak candle.
+All captured states are retained; their global low/high maxima agree within
+2% with the saved 23:06:13 provider reference. Older address cursors remain;
+this is not an exhaustive price window, annual or all-market scan. Real-vault
+pricing remains conditional and protocol-internal spot equivalence unknown.
+
+Birth/current supply spans 15.27%, so current supply is not an acceptable
+historical shortcut. A terminal mint-signature census has 756 unique rows:
+604 successful and 152 failed. Add its excluded latest-price anchor to obtain
+605 successes, exactly matched by seven nonempty TFA pages plus an empty
+terminal eighth page. Replay in canonical slot/transaction-index order.
+This proves the captured supply-history set, not all-market price coverage.
+
+All 718 target Token2022 references are independently classified: one mint
+initialization, seven supply operations and 710 non-supply operations, with
+no unknown/malformed target instructions. Two birth MintTo operations issue
+1e15 raw units each, followed by authority revocation and four later burns.
+Burn's mint is account 1, unlike MintTo's account 0; exploratory producer v1
+used the wrong position and is preserved as failed evidence. Corrected v2
+binds actual bytes, accounts and outer/inner instruction locators.
+
+Three early burns leave 1703382837434545 raw units; a 7-raw burn between the
+third and fourth captured swaps leaves 1703382837434538. Each boundary uses
+its own historical supply. None of the ten price transactions changes supply.
+The later snapshot's 1694540195901908 raw units is not substituted. It binds
+request index 17, Token2022 owner, decimals 6, absent mint/freeze authorities,
+and metadata-only TLVs 18/64 bytes and 19/174 bytes.
+
+Existing `onchain-pool-window-supply-cex-reference-v1` admits this conditional
+observed-window reference. Recompute every raw vault/own-minute FX/supply
+mark, then global FDV extrema. Lower floor is 4904124 cents; upper outward
+ceil is 4909636. Producer high-floor 4909635 is a diagnostic, not an upper
+bound. This interval does not bound unknown model error. Keep date null and
+holder/liquidity fields unchanged; no runner-gate or production fallback change.
+Writes require matching source/certificate/golden, isolated workspace checks,
+original provider observation and missing-row version.
+
+Root certificate:
+`1f49e69010899a0d282f41d0e6fb850a03e968fbed650f5c3e9339b60af6c9c3`.
+Independent ledger audit:
+`bd65e057cb4f466bf654eded5163182cea544631c22f398c13e468cbfe21b17d`.
+Independent own-minute price audit:
+`d853ff336c904fcb762c5ede3d0463be776d9bb73cfde2a410ff3c07ae56cbf6`.
