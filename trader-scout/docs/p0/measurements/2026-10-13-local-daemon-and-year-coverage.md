@@ -318,3 +318,24 @@ claimed: the separate68-closure restore retains its own validated scope and
 exit-code caveat. All immutable earlier archives remain preserved. This
 package includes the latest78 closures and still does not establish annual
 or all-market ATH completeness.
+
+## Fresh79-closure state checkpoint (2026-10-14)
+
+The schema10 private package now includes the guarded vC95 reference: fixed
+cohort513numeric/166unknown and79new values (SOL65/Base2/RH12). The consistent
+dump ran05:24:23–05:25:38UTC; its ATH table has1,365,812rows. All79closures
+match six exact dump fields, including source and observed version. Export
+capture is separately dated. The39payloads (36exports, config, dump and
+provenance) passed archive verification, extraction, every payload hash and
+0600/0700mode checks. Secrets are supplied separately and excluded.
+
+Archive3,015,772,160bytes, SHA-256:
+`823dcd10d864344c5e3b26e32325330012c5d33121a7d6c42c3d58280a4c6301`.
+Dump3,015,294,453bytes, SHA-256:
+`4c1aa992f0a5f01547394a2155355fbdd0adc2e79914f9af2db4968b389bc879`.
+Configuration checkoutfd689f7; unchanged live binary7c1ca5c. Full workspace
+fmt/Clippy/1234tests passed against scout_test in48.16seconds. Source proof,
+corrected dated curve-wire audit, raw-flow gaps, golden and write manifests
+are pinned in provenance. Full restore of this79-closure dump was not run;
+the independently verified68-closure restore remains a separate checkpoint.
+Annual/all-market ATH is incomplete and B8.4 remains active.

@@ -304,3 +304,6 @@ Full fmt/Clippy/1234tests passed before the atomic guarded write; holder/
 liquidity metadata and null ATH date are preserved. Current79closures are
 SOL65/Base2/RH12; fixedcohort513numeric/166unknown. The78-closure archive above
 predates this latest write. Annual/all-market ATH remains incomplete.
+
+The fresh79-closure private package includes that write; all79rows and all
+39payload hashes/modes are verified. See the [state checkpoint](2026-10-13-local-daemon-and-year-coverage.md). Its own full restore is not claimed.
