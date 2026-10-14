@@ -1,0 +1,11 @@
+[Unit]
+Description=Clean unused Cargo debug artifacts under Projects
+
+[Service]
+Type=oneshot
+ExecStart="@WORKSPACE_ROOT@/scripts/target-gc.sh" --recursive "%h/Projects"
+Environment="PATH=%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min
+UMask=0077
