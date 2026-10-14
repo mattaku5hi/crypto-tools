@@ -320,3 +320,6 @@ Full fmt/Clippy/1235tests passed before the atomic guarded write; metadata
 and null ATH date are preserved. Current80closures are SOL66/Base2/RH12;
 fixedcohort514numeric/165unknown. The79-closure package predates this write.
 Annual/all-market ATH remains incomplete.
+
+The fresh80-closure private package includes all80 exact dump rows and
+39verified payloads; see the [state checkpoint](2026-10-13-local-daemon-and-year-coverage.md). Its own full restore is not claimed.

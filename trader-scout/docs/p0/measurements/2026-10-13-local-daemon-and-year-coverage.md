@@ -339,3 +339,29 @@ corrected dated curve-wire audit, raw-flow gaps, golden and write manifests
 are pinned in provenance. Full restore of this79-closure dump was not run;
 the independently verified68-closure restore remains a separate checkpoint.
 Annual/all-market ATH is incomplete and B8.4 remains active.
+
+## Fresh80-closure state checkpoint (2026-10-14)
+
+The schema10 private package includes4ev and all previous guarded references:
+fixedcohort514numeric/165unknown,80new values (SOL66/Base2/RH12). The
+consistent dump ran06:10:57–06:12:09UTC; its ATH table has1,365,812rows.
+All80closures match source, observed version, FDV, date, holders and liquidity
+exactly.36separately dated exports, config, dump and provenance form39payloads;
+archive verification, extraction, every hash and0600/0700mode checks passed.
+Secrets remain separate.
+
+Archive3,015,915,520bytes, SHA-256:
+`da1845d77e947508b3f3fe1703402342a912654597162280cf171a823687bba2`.
+Dump3,015,440,589bytes, SHA-256:
+`4b0bd5d31d4454c883df20fa9118accdcf36249f5be91bf3f1182785158e9a70`.
+Configuration checkout26509f6; unchanged live binary7c1ca5c. Full workspace
+fmt/Clippy/1235tests passed against scout_test in48.12seconds. Observed4ev
+source,96 unproven PRE diagnostics and the bundled-sale gap are pinned in
+provenance. Full restore of this80-closure dump was not run; the68-closure
+restore remains separately verified. B8.4/annual all-market ATH is incomplete.
+
+Reproducible old extraction scratch was rehashed against retained archives
+before cleanup; all source archives, dumps and proofs remain. An additional
+17.1GB of apparent Rust incremental compiler-cache data was removed after
+checking there were no active workspace compilers. Tested binaries and
+dependencies remained; this build-cache footprint is not daemon memory.
