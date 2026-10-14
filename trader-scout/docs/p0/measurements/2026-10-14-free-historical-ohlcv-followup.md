@@ -1,0 +1,35 @@
+# Free historical OHLCV follow-up — 2026-10-14
+
+## Result
+
+No newly confirmed no-key source supplies a documented year/lifetime pool OHLCV history across Solana, BSC, Base, and Robinhood Chain. DexPaprika's current endpoint reference and live response reject the relevant older windows on keyless access. Its public marketing pages conflict with the endpoint contract, but the dated requests below establish that the API route currently used by the project does not provide free year history. GoldRush documents pool-pair OHLCV for Solana, BSC, and Base, but requires an API key and its streaming network enum does not include Robinhood Chain. Neither source supports an all-four, no-key closure of B8.4.
+
+This does not mean every unknown record is irrecoverable. It means B8.4 still needs exact-token, bounded primary evidence: protocol-specific histories where their semantics and scope are proven, or project-controlled chain replay with a stated block range and pool/DEX coverage. Unsupported history remains unknown. A maximum from a single discovered pool or short provider window is not a canonical lifetime ATH.
+
+## DexPaprika conflict and live check
+
+The current [pool OHLCV reference](https://docs.dexpaprika.com/api-reference/pools/get-ohlcv-data-for-a-pool-pair) defines `start`, `end`, `interval`, and `limit` (up to 1,000 candles), and lists these access windows: keyless last 24 hours, free registered key last 7 days, Dev last 30 days, Pro/Enterprise unlimited. The same page says out-of-window dates are trimmed or rejected according to plan. The [token OHLCV endpoint](https://docs.dexpaprika.com/api-reference/tokens/get-ohlcv-data-for-a-token) is marked paid and describes token candles aggregated across pools; it does not provide a free-key path to year history. Pricing lists Free pool history as seven days and Pro as unlimited ([pricing](https://dexpaprika.com/api/pricing)).
+
+Two unauthenticated GET requests were made on 2026-10-14. Both used a 15-second timeout, disabled redirects, and a 256 KiB body cap, with no retries or custom credential headers:
+
+| Route | Requested period | Response | Evidence |
+|---|---|---:|---|
+| Token OHLCV for Base `0x00b0a07ec58d87dc09606e3166e1312f679e3b07` | 2025-10-14 UTC, one daily candle | 403 `plan_required`; response says token OHLCV requires Dev or Pro | [Exact request](https://api.dexpaprika.com/networks/base/tokens/0x00b0a07ec58d87dc09606e3166e1312f679e3b07/ohlcv?start=2025-10-14T00%3A00%3A00Z&end=2025-10-15T00%3A00%3A00Z&interval=24h&limit=2) |
+| Pool OHLCV for known Base pool ID `0x97bfae4087592d108a3a5ba107973fa53852e5a185052eaf70eeda4869228961` | 2026-05-02 UTC, one daily candle | 403 `plan_required`; response says older than 24 hours needs a key, free key allows 7 days, Pro unlimited | [Exact request](https://api.dexpaprika.com/networks/base/pools/0x97bfae4087592d108a3a5ba107973fa53852e5a185052eaf70eeda4869228961/ohlcv?start=2026-05-02T00%3A00%3A00Z&end=2026-05-03T00%3A00%3A00Z&interval=24h&limit=2) |
+
+The responses and metadata are privately retained under `.scout-data/diagnostics/ath-public-history-next-2026-10-14/`; raw response hashes are recorded in `summary.json` and `pool-summary.json`. No key was used. The 403 pool response decides the current keyless-retention question for this route; it does not test a free registered key. The supplied 32-byte V4 pool ID was not validated as a DexPaprika-supported pool address: the plan rejection precedes any confirmed pool lookup, so this attempt proves neither paid pool coverage nor that candles exist for this ID. The token endpoint's error decides that its full-pool aggregation route is not a no-key fallback. The marketing page for [Base API coverage](https://dexpaprika.com/api/base) describes the same history depth on every tier and broad unauthenticated access; that claim conflicts with the live API result and endpoint-specific contract, so it is not evidence of a year-history entitlement. “Unlimited” on Pro means no documented time-window cap, not guaranteed complete token life, all-pool coverage, or correct historical price aggregation.
+
+Prior project checks already found DexPaprika's runtime `price_stats.ath` undocumented by the response schema, with no quote/source-pool provenance and observed outliers; its value is not equivalent to Codex ATH FDV. Those limitations and prior free-tier findings are recorded in [2026-10-11 follow-up](2026-10-11-public-historical-ath-followup.md) and [2026-10-13 options](2026-10-13-ath-year-history-options.md). This pass adds no second `price_stats.ath` probe.
+
+## Other documented candidate: GoldRush
+
+GoldRush's [OHLCV Pairs query reference](https://goldrush.dev/docs/skills/goldrush-streaming-api/references/endpoints/) describes one-shot pair OHLCV with `open`, `high`, `low`, `close`, quote metadata, a timeframe parameter, and a maximum of five pair addresses per query. Its chain enum includes `BASE_MAINNET`, `BSC_MAINNET`, and `SOLANA_MAINNET`, but not Robinhood Chain ([chain enum](https://goldrush.dev/docs/api-reference/streaming-api/types/chain-name/)). The operation authenticates with `GOLDRUSH_API_KEY`; its documented cost is one credit/call. The current public product material advertises a free API key with 25,000 credits, but this is registered-key access, not anonymous access ([official migration/start page](https://goldrush.dev/migrate/from-alchemy/)). The documentation gives configurable timeframe but does not establish a year/lifetime retention guarantee in the reviewed endpoint reference. No GoldRush requests were made because this task forbids account/key provisioning and GoldRush cannot cover Robinhood Chain under the documented streaming enum.
+
+Accordingly, GoldRush is at most a future three-network evaluation candidate if a user-managed free key becomes available and its timeframe/retention behavior is verified. It cannot close this all-four-network cohort as documented today. No endpoint should be treated as covering DEXes absent from its supported protocol/chain matrix.
+
+## Scope, counts, and next step
+
+- Reviewed official DexPaprika OHLCV, token OHLCV, pricing, and Base coverage material; reviewed official GoldRush OHLCV/query, chain-enum, and access material.
+- Made **2 public unauthenticated GET requests**, both to DexPaprika, and captured both bounded responses. No redirects, retries, key, private RPC credentials, database writes, or ATH writes were used.
+- No source in this pass is a viable no-key, four-network year/lifetime candle provider. The two DexPaprika requests were rejected. GoldRush is key-gated, lacks Robinhood in the documented chain enum, and its long-history retention is unverified.
+- Next B8.4 work: continue token-specific evidence closure using saved exact pool/launch data and protocol-level histories; record the precise block/time interval, asset/quote identity, price kind, supply basis, and coverage gaps for each candidate. Do not promote a provider-window or one-pool high to lifetime ATH without evidence meeting the project policy.
