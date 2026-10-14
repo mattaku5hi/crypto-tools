@@ -35,6 +35,7 @@
 
 ## Порядок разработки
 
+- CI Bookworm build с общим Cargo-кэшем запускать под UID/GID runner: root-каталоги блокируют host `cargo metadata`, когда он докачивает зависимости других платформ (`.github/workflows/trader-scout-release.yml`).
 - DB-тесты ATH используют уникальные токены на запуск: прежний `observed_at` может заблокировать seed и скрыть неверное ожидание (`crates/scout-devtracker/src/ath.rs`).
 - Для временного checkout задавать отдельный `CARGO_TARGET_DIR`: переиспользованный test binary может читать фикстуры через `CARGO_MANIFEST_DIR` уже удалённой копии (`bins/buyer-intersect/tests/budget.rs`).
 - Zora `coinSwaps.currencyAmountWithPrice.priceUsdc` относится к quote asset; raw `coinAmount` и quote scale сверять с receipt, иначе получается ложное расхождение цены (`docs/p0/measurements/2026-10-13-ath-year-history-options.md`).
