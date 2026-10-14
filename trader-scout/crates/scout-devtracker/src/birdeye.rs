@@ -13220,4 +13220,438 @@ mod tests {
             (numerator.parse().unwrap(), denominator.parse().unwrap())
         }
     }
+
+    #[test]
+    fn solana_tracker_9qv7_canonical_window_fdv_replays_exactly() {
+        use alloy_primitives::U512;
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_9qv7_historical_supply_fdv_window_case.json"
+        ))
+        .unwrap();
+        let fraction = |numerator: U512, denominator: U512| (numerator, denominator);
+        let decimal_fraction = |value: &str| {
+            let decimal = ExactDecimal::parse(value).unwrap();
+            let denominator = (0..u32::try_from(decimal.scale).unwrap())
+                .try_fold(U512::from(1), |value, _| value.checked_mul(U512::from(10)))
+                .unwrap();
+            fraction(U512::from(decimal.coefficient), denominator)
+        };
+        let fraction_from_text = |value: &str| {
+            let (numerator, denominator) = value.split_once('/').unwrap();
+            fraction(numerator.parse().unwrap(), denominator.parse().unwrap())
+        };
+        let compare =
+            |left: (U512, U512), right: (U512, U512)| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let within_two_percent = |left: (U512, U512), right: (U512, U512)| {
+            let difference = (left.0 * right.1).abs_diff(right.0 * left.1);
+            difference * U512::from(100) <= right.0 * left.1 * U512::from(2)
+        };
+        let floor = |value: (U512, U512)| value.0 / value.1;
+        let ceil = |value: (U512, U512)| (value.0 + value.1 - U512::from(1)) / value.1;
+
+        assert_eq!(
+            fixture["source_kind"].as_str(),
+            Some("onchain-pool-window-supply-cex-reference-v1")
+        );
+        let certificate = &fixture["root_certificate"];
+        assert_eq!(
+            certificate["schema"].as_str(),
+            Some("root-9qv7-64-own-minute-observed-vault-marks-historical-supply-certificate-v1")
+        );
+        assert_eq!(certificate["rawgate_pass"].as_bool(), Some(true));
+        assert_eq!(certificate["rows"][0]["source"], fixture["source_kind"]);
+        assert_eq!(certificate["rows"][0]["observed_marks"].as_u64(), Some(64));
+        assert_eq!(
+            certificate["rows"][0]["lower_fdv_cents"].as_u64(),
+            Some(1_873_509)
+        );
+        assert_eq!(
+            certificate["rows"][0]["upper_fdv_cents_ceiling"].as_u64(),
+            Some(1_874_591)
+        );
+        assert_eq!(
+            certificate["rows"][0]["historical_supply_exact"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            certificate["rows"][0]["conditional_vault_ratio_model"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            certificate["price_endpoint_window_exhaustiveness"].as_str(),
+            Some(
+                "terminal configured selected-pool +/-3s transaction window; other pools/time ranges unknown"
+            )
+        );
+        assert_eq!(
+            certificate["annual_allmarket_lifetime_complete"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(fixture["root_certificate_pending"].as_bool(), Some(false));
+        assert_eq!(
+            fixture["root_certificate_sha256"].as_str(),
+            Some("2f56c6a7a863fee1293255d7635a5d031800bbcce5505c8de2ad53888da2acd8")
+        );
+        assert_eq!(
+            fixture["mint"].as_str(),
+            Some("9Qv7rMQnXh8nGgoedmxAnp8RxbwRKrVtkK9nrYUppump")
+        );
+        assert_eq!(
+            fixture["pool_program"].as_str(),
+            Some("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
+        );
+        assert_eq!(fixture["decimals"].as_u64(), Some(6));
+        assert_eq!(
+            fixture["historical_supply"]["exact_through_latest_mark"].as_bool(),
+            Some(true)
+        );
+        let supply_raw = fixture["historical_supply"]["raw"]
+            .as_str()
+            .unwrap()
+            .parse::<U512>()
+            .unwrap();
+        assert_eq!(supply_raw, U512::from(2_000_000_000_000_000_u64));
+        assert_eq!(
+            fixture["historical_supply"]["later_current_snapshot_used_for_historical_denominator"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_ne!(
+            supply_raw,
+            U512::from(
+                fixture["historical_supply"]["later_current_mint_snapshot_raw"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap()
+            )
+        );
+
+        let birth = &fixture["historical_supply"];
+        let birth_instructions = birth["birth_mint_to_instructions"].as_array().unwrap();
+        assert_eq!(birth_instructions.len(), 2);
+        let mut mint_sum = U512::ZERO;
+        let destinations = [
+            "G4iRZMdVqnz5UeiNg2jG5mSPHmupRrnTMTe1Z9VAH3pE",
+            "F9HZF9UaEhny1FYSoBfdiYHi4PcAfXsm3a2Lu9KmmWih",
+        ];
+        for (index, instruction) in birth_instructions.iter().enumerate() {
+            let wire = bytes_from_hex(instruction["data_hex"].as_str().unwrap());
+            assert_eq!(wire.len(), 9);
+            assert_eq!(wire[0], 7);
+            assert_eq!(instruction["opcode"].as_u64(), Some(7));
+            assert_eq!(instruction["mint_position"].as_u64(), Some(0));
+            assert_eq!(instruction["signature"], birth["birth_signature"]);
+            assert_eq!(instruction["outer_index"].as_u64(), Some(2));
+            assert_eq!(
+                instruction["inner_index"].as_u64(),
+                Some(19 + u64::try_from(index).unwrap())
+            );
+            assert_eq!(
+                instruction["program_id"].as_str(),
+                Some("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+            );
+            assert_eq!(
+                instruction["instruction_accounts"][0]["role"].as_str(),
+                Some("mint")
+            );
+            assert_eq!(
+                instruction["instruction_accounts"][0]["position"].as_u64(),
+                Some(0)
+            );
+            assert_eq!(
+                instruction["instruction_accounts"][0]["address"],
+                fixture["mint"]
+            );
+            assert_eq!(
+                instruction["instruction_accounts"][1]["role"].as_str(),
+                Some("destination_token_account")
+            );
+            assert_eq!(
+                instruction["instruction_accounts"][1]["position"].as_u64(),
+                Some(1)
+            );
+            assert_eq!(
+                instruction["instruction_accounts"][1]["address"].as_str(),
+                Some(destinations[index])
+            );
+            assert_eq!(
+                instruction["instruction_accounts"][2]["role"].as_str(),
+                Some("authority")
+            );
+            assert_eq!(
+                instruction["instruction_accounts"][2]["position"].as_u64(),
+                Some(2)
+            );
+            assert_eq!(
+                instruction["instruction_accounts"][2]["address"].as_str(),
+                Some("TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM")
+            );
+            let amount = U512::from(u64::from_le_bytes(wire[1..9].try_into().unwrap()));
+            assert_eq!(
+                amount,
+                U512::from(instruction["amount_raw"].as_u64().unwrap())
+            );
+            mint_sum += amount;
+        }
+        assert_eq!(mint_sum, supply_raw);
+        let revoke = &birth["authority_revoke"];
+        let revoke_wire = bytes_from_hex(revoke["data_hex"].as_str().unwrap());
+        assert_eq!(revoke_wire, [6, 0, 0]);
+        assert_eq!(revoke["signature"], birth["birth_signature"]);
+        assert_eq!(revoke["outer_index"].as_u64(), Some(2));
+        assert_eq!(revoke["inner_index"].as_u64(), Some(21));
+        assert_eq!(
+            revoke["program_id"].as_str(),
+            Some("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+        );
+        assert_eq!(
+            revoke["instruction_accounts"][0]["role"].as_str(),
+            Some("mint")
+        );
+        assert_eq!(
+            revoke["instruction_accounts"][0]["address"],
+            fixture["mint"]
+        );
+        assert_eq!(
+            revoke["instruction_accounts"][1]["role"].as_str(),
+            Some("current_authority")
+        );
+        assert_eq!(
+            revoke["instruction_accounts"][1]["address"].as_str(),
+            Some("TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM")
+        );
+        assert!(revoke["new_authority"].is_null());
+        assert!(
+            birth["target_burn_instructions_through_latest_mark"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        let census = &fixture["canonical_history_census"];
+        assert_eq!(
+            census["capture_status"].as_str(),
+            Some("captured_within_budget")
+        );
+        assert_eq!(census["helius_methods_used_of_8"].as_u64(), Some(3));
+        assert_eq!(census["signature_rows"].as_u64(), Some(482));
+        assert_eq!(census["successful_signature_rows"].as_u64(), Some(249));
+        assert_eq!(census["failed_signature_rows"].as_u64(), Some(233));
+        assert_eq!(
+            census["signature_census_below_1000_limit"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            census["all_successes_present_in_full_tfa_or_window_captures"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            census["captured_union_equals_census_plus_birth_and_latest_exclusive_anchors"]
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            census["canonical_gettransaction_comparisons"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        for canonical in census["canonical_gettransaction_comparisons"]
+            .as_array()
+            .unwrap()
+        {
+            assert_eq!(
+                canonical["full_object_exactly_matches_tfa"].as_bool(),
+                Some(true)
+            );
+        }
+        let anchors = census["exclusive_anchor_signatures"].as_array().unwrap();
+        assert_eq!(anchors.len(), 2);
+        assert_eq!(anchors[0], birth["birth_signature"]);
+        assert_eq!(
+            anchors[1],
+            census["canonical_gettransaction_comparisons"][0]["signature"]
+        );
+
+        let unrelated = &fixture["unrelated_mint_burn_control"];
+        let unrelated_wire = bytes_from_hex(unrelated["data_hex"].as_str().unwrap());
+        assert_eq!(unrelated_wire[0], 8);
+        assert_eq!(
+            U512::from(u64::from_le_bytes(unrelated_wire[1..9].try_into().unwrap())),
+            U512::from(2_151_737_884_738_u64)
+        );
+        assert_eq!(unrelated["burn_mint_account_position"].as_u64(), Some(1));
+        assert_eq!(
+            unrelated["burn_mint"].as_str(),
+            Some("BsaTzLaSN5BPG5SeHwX7VGJLEvpfcmb9zQsVUVzhWu5n")
+        );
+        assert_ne!(unrelated["burn_mint"], fixture["mint"]);
+        assert_eq!(unrelated["reduces_target_supply"].as_bool(), Some(false));
+
+        let window = &fixture["window"];
+        assert_eq!(window["terminal"].as_bool(), Some(true));
+        assert_eq!(window["transaction_rows"].as_u64(), Some(37));
+        assert_eq!(window["selected_pool_events"].as_u64(), Some(32));
+        assert_eq!(window["state_count"].as_u64(), Some(64));
+        let provider = decimal_fraction(fixture["provider_price_usd"].as_str().unwrap());
+        let mut marks = Vec::new();
+        for state in window["states"].as_array().unwrap() {
+            assert_eq!(state["pool"], fixture["pool"]);
+            assert_eq!(state["mint"], fixture["mint"]);
+            assert_eq!(state["base_vault"], fixture["base_vault"]);
+            assert_eq!(state["quote_mint"], fixture["quote_mint"]);
+            assert_eq!(state["quote_vault"], fixture["quote_vault"]);
+            assert!(
+                (-3..=3).contains(&state["offset_from_provider_peak_seconds"].as_i64().unwrap())
+            );
+            assert!(
+                state["state_side"].as_str() == Some("pre")
+                    || state["state_side"].as_str() == Some("post")
+            );
+            assert_eq!(state["supply_raw"].as_str(), Some("2000000000000000"));
+            let base = U512::from(
+                state["state_vault_raw"]["base"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap(),
+            );
+            let quote = U512::from(
+                state["state_vault_raw"]["quote"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap(),
+            );
+            let native = fraction(
+                quote * U512::from(1_000_000_u64),
+                base * U512::from(1_000_000_000_u64),
+            );
+            let candle_low = fraction_from_text(
+                state["coinbase_low_high_close_usd"]["low"]
+                    .as_str()
+                    .unwrap(),
+            );
+            let candle_high = fraction_from_text(
+                state["coinbase_low_high_close_usd"]["high"]
+                    .as_str()
+                    .unwrap(),
+            );
+            let candle_close = fraction_from_text(
+                state["coinbase_low_high_close_usd"]["close"]
+                    .as_str()
+                    .unwrap(),
+            );
+            let prices = [
+                fraction(native.0 * candle_low.0, native.1 * candle_low.1),
+                fraction(native.0 * candle_high.0, native.1 * candle_high.1),
+                fraction(native.0 * candle_close.0, native.1 * candle_close.1),
+            ];
+            for (label, price) in ["low", "high", "close"].into_iter().zip(prices) {
+                assert_eq!(
+                    compare(
+                        price,
+                        fraction_from_text(state["usd_price_fraction"][label].as_str().unwrap())
+                    ),
+                    std::cmp::Ordering::Equal
+                );
+                let fdv = fraction(
+                    price.0 * supply_raw * U512::from(100),
+                    price.1 * U512::from(1_000_000_u64),
+                );
+                assert_eq!(
+                    compare(
+                        fdv,
+                        fraction_from_text(state["fdv_cents_fraction"][label].as_str().unwrap())
+                    ),
+                    std::cmp::Ordering::Equal
+                );
+            }
+            marks.push((state, prices[0], prices[1], prices[2]));
+        }
+        assert_eq!(marks.len(), 64);
+        assert_eq!(
+            marks
+                .iter()
+                .filter(|(state, _, _, _)| state["state_side"] == "pre")
+                .count(),
+            32
+        );
+        assert_eq!(
+            marks
+                .iter()
+                .filter(|(state, _, _, _)| state["state_side"] == "post")
+                .count(),
+            32
+        );
+        let low_max = marks
+            .iter()
+            .max_by(|left, right| compare(left.1, right.1))
+            .unwrap();
+        let high_max = marks
+            .iter()
+            .max_by(|left, right| compare(left.2, right.2))
+            .unwrap();
+        let close_max = marks
+            .iter()
+            .max_by(|left, right| compare(left.3, right.3))
+            .unwrap();
+        for (label, maximum, price) in [
+            ("low", low_max, low_max.1),
+            ("high", high_max, high_max.2),
+            ("close", close_max, close_max.3),
+        ] {
+            let expected = &window["global_maxima"][label];
+            assert_eq!(maximum.0["signature"], expected["signature"]);
+            assert_eq!(maximum.0["state_side"], expected["state_side"]);
+            assert_eq!(
+                compare(
+                    price,
+                    fraction_from_text(expected["price_fraction"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+        }
+        assert!(within_two_percent(low_max.1, provider));
+        assert!(within_two_percent(high_max.2, provider));
+        assert_eq!(
+            fixture["price_endpoints_within_2pct"]["low"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            fixture["price_endpoints_within_2pct"]["high"].as_bool(),
+            Some(true)
+        );
+
+        let low_fdv = fraction_from_text(
+            window["global_maxima"]["low"]["fdv_cents_fraction"]
+                .as_str()
+                .unwrap(),
+        );
+        let high_fdv = fraction_from_text(
+            window["global_maxima"]["high"]["fdv_cents_fraction"]
+                .as_str()
+                .unwrap(),
+        );
+        assert_eq!(floor(low_fdv), U512::from(1_873_509_u64));
+        assert_eq!(ceil(high_fdv), U512::from(1_874_591_u64));
+        assert_eq!(window["lower_fdv_cents_floor"].as_u64(), Some(1_873_509));
+        assert_eq!(window["upper_fdv_cents_ceil"].as_u64(), Some(1_874_591));
+        assert_eq!(fixture["unknowns"].as_array().unwrap().len(), 2);
+        assert!(
+            fixture["unknowns"][0]
+                .as_str()
+                .unwrap()
+                .contains("30 unparsed trailing bytes")
+        );
+        assert!(
+            fixture["unknowns"][1]
+                .as_str()
+                .unwrap()
+                .contains("not full protocol spot")
+        );
+    }
 }

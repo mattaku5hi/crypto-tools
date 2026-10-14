@@ -2459,3 +2459,43 @@ Independent ledger audit:
 `bd65e057cb4f466bf654eded5163182cea544631c22f398c13e468cbfe21b17d`.
 Independent own-minute price audit:
 `d853ff336c904fcb762c5ede3d0463be776d9bb73cfde2a410ff3c07ae56cbf6`.
+
+## Amendment 53 (2026-10-14) — 9Qv7 canonical census and observed AMM states
+
+Use the existing `onchain-pool-window-supply-cex-reference-v1` for 9Qv7's
+64 independently bound PRE/POST vault states, from 32 selected PumpSwap
+trade events in a terminal 37-successful-transaction ±3-second window.
+The dated February 17 IDL, actual event-CPI pool/vault identities and raw
+token-balance owner/mint/decimal fields bind these observations. Own-minute
+Coinbase SOL/USD low/high extrema both pass the existing 2% provider gate.
+Real-vault pricing remains conditional; internal virtual-reserve semantics
+and all-market or lifetime coverage remain unknown.
+
+The old signature-set mismatch is a query-boundary difference: four successful
+transactions in second 1777066196 are excluded by the historical TFA query's
+strict upper bound but present in the price-window capture; the explicit birth
+is excluded by the signature query's `until`. A fresh below-limit census through
+the latest price anchor contains 482 unique signatures, 249 successful and
+233 failed. Its successful set plus excluded birth/latest anchors equals the
+251 captured full successful transactions exactly. Standard finalized winning
+and latest-anchor transactions match the saved full TFA objects.
+
+Canonical supply replay finds two birth MintTo instructions of 1e15 raw each
+and mint-authority revocation, with no target burns or unknown/malformed supply
+instructions through the latest mark. A captured LP-mint Burn belongs to
+another mint and must not reduce the target supply. All 64 marks use exact
+2e15 raw supply; the later 1021739553566068 current snapshot is not substituted.
+Observed FDV lower floor is 1873509 cents, upper outward ceil is 1874591;
+1874590 high-floor is diagnostic. The FX interval does not bound model error.
+Provider millisecond precision is not a precise on-chain maximum timestamp.
+
+Keep ATH date null and holder/liquidity metadata unchanged. Guard writes with
+the exact source/certificate/golden, full isolated workspace checks, original
+provider observation and missing-row version. No runner gate or live fallback
+change. Three fresh Helius methods of an eight-method cap were used; no new
+Solana Tracker, Codex or Coinbase request was needed.
+
+Root certificate:
+`2f56c6a7a863fee1293255d7635a5d031800bbcce5505c8de2ad53888da2acd8`.
+Independent raw audit:
+`3768934269820dd9063ffae886318555b886b4d4a73c59f3fb5d4721a694033e`.
