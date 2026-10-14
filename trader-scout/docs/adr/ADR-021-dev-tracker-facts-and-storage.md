@@ -2331,3 +2331,45 @@ HUvd raw supply audit:
 `beecf24559a5933981f67e633b37c77f08a5fb5f1192cc74df7a78d1f3add517`.
 QBH raw birth/current-bound audit:
 `b5a2550daacae56d18a74fd97b9aaf68cac54f8c7af735a448de98d212d5bd6f`.
+
+## Amendment 50 (2026-10-14) — F4 observed vault marks with unresolved event tails
+
+F4 uses existing `onchain-pool-window-bounded-supply-cex-reference-v1` for
+a conditional selected-pool reference. All 61 successful captured transactions
+have independently bound PRE/POST base and WSOL vault balances, yielding 122
+observed real-vault-ratio marks. The captured mint-address window ends with
+an empty page; this does not prove coverage of other addresses, markets or
+the year. Actual account indexes, mints, pool ownership, raw amounts and 6/9
+decimal scaling are checked against transaction metadata. Recompute each
+ratio with exact same-minute Coinbase low/high FX; both global price extrema
+agree within2% with the saved provider peak.
+
+The 61 events each retain 16 unparsed trailing bytes. The zero byte pattern
+does not name fields or establish zero virtual reserves. Published January 9 IDL
+does not define these fields; the February 17 cashback update is later than the
+February 13 transactions and cannot establish historical semantics. We therefore
+do not claim a complete event decoder or protocol-internal spot equivalence.
+The observed real-vault model remains conditional, and any error from unknown
+event/pool semantics is outside the numerical supply/FX interval.
+
+Raw Token-2022 birth instructions bind InitializeMint2 at outer 4/inner 2,
+one 1e15 MintTo at outer 4/inner 12, and mint-authority revocation at outer 4/inner 13.
+The later mint snapshot binds exact requested index 79 at slot 455686275,
+999605614638751raw supply at 6 decimals, absent mint/freeze authorities, and
+metadata-only TLVs 18 (64 bytes) and 19 (179 bytes). Thus historical supply is bounded
+between current and birth; exact burn timing is unknown. Across all 122 marks,
+lower=max low price times current supply and upper=max high price times birth
+supply. Outward cents are 4387106–4397126. The approximately 0.23% interval
+does not bound model error or establish annual/all-market/lifetime ATH.
+
+Keep ATH date null, preserve holder/liquidity fields, and change no runner
+threshold or automatic production fallback. A write requires the matching
+golden source/certificate, full isolated workspace checks, and unchanged
+original provider observation plus missing-row version.
+
+Root certificate:
+`59ca8c53df1fe04f8c198a2ed72f7f899479eadd177496950b98fbe9e514a7c3`.
+Independent raw/model audit:
+`4400fe289254568bb41357f329e51dd54dec1566734728772069bc59da55fb16`.
+Independent raw supply-bound audit:
+`33d8e99b4aefab3f6140db6005108b72a2cd10b538ff2a4ff9376efcaeaa522c`.

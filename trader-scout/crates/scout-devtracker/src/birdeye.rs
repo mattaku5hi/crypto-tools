@@ -8918,6 +8918,332 @@ mod tests {
     }
 
     #[test]
+    fn solana_tracker_f4_bounded_vault_fdv_window_replays_exactly() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+        use std::collections::{BTreeMap, HashSet};
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_f4_bounded_vault_fdv_case_v1.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["schema"],
+            "solana-tracker-f4-bounded-vault-fdv-case-v1"
+        );
+        assert_eq!(fixture["status"], "captured_bounded_regression");
+        let proof_raw = fixture["proof_json_raw"].as_str().unwrap();
+        let certificate_raw = fixture["root_certificate_json_raw"].as_str().unwrap();
+        let supply_audit_raw = fixture["independent_supply_audit_json_raw"]
+            .as_str()
+            .unwrap();
+        let hash = |raw: &str| format!("{:x}", Sha256::digest(raw.as_bytes()));
+        assert_eq!(hash(proof_raw), fixture["source_sha256"]["proof"]);
+        assert_eq!(
+            hash(certificate_raw),
+            fixture["source_sha256"]["root_certificate"]
+        );
+        assert_eq!(
+            hash(supply_audit_raw),
+            fixture["source_sha256"]["independent_supply_audit"]
+        );
+        assert_eq!(
+            fixture["source_sha256"]["proof"],
+            "bc0817656ddd75111102c1f0f06b5624516ce986adee9c30bde90ff60854d81b"
+        );
+        assert_eq!(
+            fixture["source_sha256"]["raw_vault_audit"],
+            "403586dffefe3ba9efa1759b90b49dc769538fdce146f49a246dffc9ac3705fb"
+        );
+        assert_eq!(
+            fixture["source_sha256"]["independent_model_audit"],
+            "4400fe289254568bb41357f329e51dd54dec1566734728772069bc59da55fb16"
+        );
+        assert_eq!(
+            fixture["source_kind"],
+            "onchain-pool-window-bounded-supply-cex-reference-v1"
+        );
+        let proof: serde_json::Value = serde_json::from_str(proof_raw).unwrap();
+        let certificate: serde_json::Value = serde_json::from_str(certificate_raw).unwrap();
+        let supply_audit: serde_json::Value = serde_json::from_str(supply_audit_raw).unwrap();
+        let raw_states: serde_json::Value =
+            serde_json::from_str(fixture["raw_states_json_raw"].as_str().unwrap()).unwrap();
+        let fraction = |value: &str| {
+            let (numerator, denominator) = value.split_once('/').unwrap();
+            (
+                U512::from_str_radix(numerator, 10).unwrap(),
+                U512::from_str_radix(denominator, 10).unwrap(),
+            )
+        };
+        let compare =
+            |left: (U512, U512), right: (U512, U512)| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let decimal_fraction = |value: &str| {
+            let value = value.strip_prefix('-').unwrap_or(value);
+            let (whole, decimals) = value.split_once('.').unwrap();
+            let decimal_places = u32::try_from(decimals.len()).unwrap();
+            let denominator = U512::from(10_u64.pow(decimal_places));
+            let numerator = U512::from(whole.parse::<u64>().unwrap()) * denominator
+                + U512::from(decimals.parse::<u64>().unwrap());
+            (numerator, denominator)
+        };
+        let price_model = &proof["price_model"];
+        let supply = &proof["supply_bounds"];
+        let fdv = &proof["fdv_bound"];
+        let certificate_row = &certificate["rows"][0];
+        assert_eq!(fixture["source_kind"], certificate_row["source"]);
+        assert_eq!(
+            certificate_row["source"],
+            "onchain-pool-window-bounded-supply-cex-reference-v1"
+        );
+        assert_eq!(
+            certificate["source_sha256"][".scout-data/diagnostics/solana-f4-bounded-vault-fdv-2026-10-14/proof-v1.json"],
+            fixture["source_sha256"]["proof"]
+        );
+        assert!(
+            certificate["source_sha256"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|source_hash| source_hash
+                    == &fixture["source_sha256"]["independent_supply_audit"])
+        );
+        assert_eq!(
+            serde_json::json!([
+                certificate["schema"],
+                certificate["rawgate_pass"],
+                certificate["observed_marks"],
+                certificate["successful_transactions"],
+                certificate["conditional_vault_ratio_model"],
+                certificate["protocol_internal_spot_equivalence"],
+                certificate["unknown_tail_events"],
+                certificate["unknown_tail_bytes_each"],
+                certificate["tail_field_semantics"],
+                certificate["unknown_tail_zero_default_inferred"],
+                certificate["full_event_decoder_support"],
+                certificate["annual_allmarket_lifetime_complete"],
+                certificate["network_calls_during_root_audit"],
+                certificate["database_writes"],
+                certificate_row["mint"],
+                certificate_row["pool"],
+                certificate_row["observed_marks"],
+                certificate_row["lower_fdv_cents"],
+                certificate_row["upper_fdv_cents_ceiling"],
+                certificate_row["historical_supply_exact"],
+                certificate_row["historical_virtual_quote_reserves"],
+            ]),
+            serde_json::json!([
+                "root-f4-122-observed-vault-marks-bounded-supply-certificate-v1",
+                true,
+                122,
+                61,
+                true,
+                "unknown",
+                61,
+                16,
+                "unknown",
+                false,
+                false,
+                false,
+                0,
+                0,
+                "F4esbK8e3f6nY5J5McN4JSc5ZCurimUsVGNaQBZApump",
+                "DQUS8tqcYJ6ZZ2ufKrWosexKMMXsWvNoxgKgd63xBdHY",
+                122,
+                4387106,
+                4397126,
+                false,
+                "unknown",
+            ])
+        );
+        assert!(
+            supply_audit["raw_supply_audit_pass"] == true
+                && supply_audit["checks"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .all(|pass| pass == true)
+        );
+        let marks = proof["recomputed_122_marks"].as_array().unwrap();
+        let raw_states = raw_states.as_array().unwrap();
+        assert_eq!(marks.len(), 122);
+        assert_eq!(raw_states.len(), 122);
+        assert_eq!(price_model["captured_successful_transactions"], 61);
+        assert_eq!(price_model["raw_balance_states"], 122);
+
+        let supply_low = U512::from_str_radix(
+            supply["current_later_snapshot_supply_raw"]
+                .as_str()
+                .unwrap(),
+            10,
+        )
+        .unwrap();
+        let supply_high =
+            U512::from_str_radix(supply["birth_supply_raw"].as_str().unwrap(), 10).unwrap();
+        let scale = U512::from(1_000_000_u64);
+        let mut max_low = None;
+        let mut max_high = None;
+        let mut sides = BTreeMap::new();
+        let mut signatures = HashSet::new();
+        for (mark, raw) in marks.iter().zip(raw_states) {
+            assert_eq!(mark["signature"], raw["signature"]);
+            assert_eq!(mark["slot"], raw["slot"]);
+            assert_eq!(mark["transaction_index"], raw["transaction_index"]);
+            assert_eq!(mark["state_side"], raw["side"]);
+            assert_eq!(mark["base_vault_raw"], raw["base_raw"]);
+            assert_eq!(mark["quote_vault_raw"], raw["quote_raw"]);
+            assert_eq!(
+                mark["coinbase_minute_unix_s"],
+                raw["coinbase_minute_unix_s"]
+            );
+            assert_eq!(raw["stored_state_raw_matches"], true);
+            assert_eq!(raw["stored_usd_mark_matches"], true);
+            assert_eq!(raw["base_mint"], proof["mint"]);
+            assert_eq!(raw["quote_mint"], price_model["quote_mint"]);
+            assert_eq!(raw["base_decimals"], 6);
+            assert_eq!(raw["quote_decimals"], 9);
+            assert_eq!(mark["event_tail_bytes_unparsed"], 16);
+            assert_eq!(
+                mark["event_tail_sha256"],
+                "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"
+            );
+            signatures.insert(mark["signature"].as_str().unwrap());
+            *sides
+                .entry(mark["state_side"].as_str().unwrap())
+                .or_insert(0) += 1;
+
+            let quote =
+                U512::from_str_radix(mark["quote_vault_raw"].as_str().unwrap(), 10).unwrap();
+            let base = U512::from_str_radix(mark["base_vault_raw"].as_str().unwrap(), 10).unwrap();
+            for endpoint in ["low", "close", "high"] {
+                let fx = decimal_fraction(raw[&format!("coinbase_{endpoint}")].as_str().unwrap());
+                let price = (quote * fx.0, base * U512::from(1_000_u64) * fx.1);
+                assert_eq!(
+                    compare(
+                        price,
+                        fraction(mark[&format!("usd_{endpoint}_fraction")].as_str().unwrap())
+                    ),
+                    std::cmp::Ordering::Equal
+                );
+            }
+            let low_price = fraction(mark["usd_low_fraction"].as_str().unwrap());
+            let high_price = fraction(mark["usd_high_fraction"].as_str().unwrap());
+            let low = (low_price.0 * supply_low, low_price.1 * scale);
+            let high = (high_price.0 * supply_high, high_price.1 * scale);
+            if max_low.is_none_or(|previous| compare(low, previous).is_gt()) {
+                max_low = Some(low);
+            }
+            if max_high.is_none_or(|previous| compare(high, previous).is_gt()) {
+                max_high = Some(high);
+            }
+        }
+        assert_eq!(signatures.len(), 61);
+        assert_eq!(sides.get("pre"), Some(&61));
+        assert_eq!(sides.get("post"), Some(&61));
+        let max_low = max_low.unwrap();
+        let max_high = max_high.unwrap();
+        assert_eq!(
+            compare(
+                max_low,
+                fraction(fdv["lower_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare(
+                max_low,
+                fraction(certificate_row["lower_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare(
+                max_high,
+                fraction(fdv["upper_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare(
+                max_high,
+                fraction(certificate_row["upper_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            max_low.0 * U512::from(100) / max_low.1,
+            U512::from(fdv["lower_cents_floor"].as_u64().unwrap())
+        );
+        let upper_cents = (max_high.0 * U512::from(100) + max_high.1 - U512::from(1)) / max_high.1;
+        assert_eq!(
+            upper_cents,
+            U512::from(fdv["upper_cents_ceil"].as_u64().unwrap())
+        );
+        let width = (
+            max_high.0 * max_low.1 - max_low.0 * max_high.1,
+            max_high.0 * max_low.1,
+        );
+        assert!(compare(width, (U512::from(1), U512::from(50))).is_le());
+        assert_eq!(fdv["within_two_percent_supply_fx_interval"], true);
+
+        let birth_revoke = &supply["birth_mint_authority_revocation"];
+        let current = &supply["current_snapshot"];
+        assert_eq!(
+            serde_json::json!([
+                proof["schema"],
+                proof["status"],
+                proof["mint"],
+                proof["price_model"]["kind"],
+                proof["price_model"]["pool"],
+                proof["price_model"]["raw_vault_ratio_audit_sha256"],
+                proof["supply_bounds"]["decimals"],
+                proof["supply_bounds"]["birth_supply_raw"],
+                proof["supply_bounds"]["current_later_snapshot_supply_raw"],
+                proof["supply_bounds"]["exact_historical_supply_claimed"],
+                proof["supply_bounds"]["birth_mint_to_instructions"][0]["amount_raw"],
+                birth_revoke["new_authority_option"],
+                current["mint_address_index"],
+                current["response_slot"],
+                current["mint_authority_option_tag"],
+                current["extension_ids_lengths"],
+                price_model["unknown_event_tail"]["event_count"],
+                price_model["unknown_event_tail"]["length_bytes"],
+                proof["limitations"][0],
+                proof["limitations"][2],
+            ]),
+            serde_json::json!([
+                "solana-f4-bounded-observed-vault-ratio-fdv-supply-v1",
+                "conditional_bounded_observed_vault_ratio_window",
+                "F4esbK8e3f6nY5J5McN4JSc5ZCurimUsVGNaQBZApump",
+                "observed real token-vault balance ratio × same-minute Coinbase SOL/USD",
+                "DQUS8tqcYJ6ZZ2ufKrWosexKMMXsWvNoxgKgd63xBdHY",
+                "403586dffefe3ba9efa1759b90b49dc769538fdce146f49a246dffc9ac3705fb",
+                6,
+                "1000000000000000",
+                "999605614638751",
+                false,
+                "1000000000000000",
+                0,
+                79,
+                455686275,
+                0,
+                [[18, 64], [19, 179]],
+                61,
+                [16],
+                "Unknown16-byte tail remains unparsed.",
+                "No lifetime, all-pool, or exact historical supply claim.",
+            ])
+        );
+        for endpoint in ["low", "high"] {
+            let deviation = decimal_fraction(
+                price_model["extrema"][endpoint]["difference_from_provider_peak_percent"]
+                    .as_str()
+                    .unwrap(),
+            );
+            assert!(compare(deviation, (U512::from(2), U512::from(1))).is_le());
+        }
+    }
+
+    #[test]
     fn solana_tracker_h4_and_9sef_historical_supply_fdv_windows_replay_exactly() {
         use alloy_primitives::U512;
         use sha2::{Digest, Sha256};
