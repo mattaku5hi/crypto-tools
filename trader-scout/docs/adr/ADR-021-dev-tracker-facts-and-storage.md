@@ -2275,3 +2275,59 @@ Independent raw audit v2:
 `523ea53ab2d50702f99afca6d3cf7de2fa6480c156ff27d692971dd062f7b388`.
 Writes require captured-case/full-workspace checks and unchanged original
 provider observation/missing-row version, guarded atomically for both rows.
+
+## Amendment 49 (2026-10-14) — typed nontrade/CPI recovery and bounded supply
+
+Two selected-pool price gaps can be resolved without inventing trade data.
+QBH's80-byte payload is the dated Jan9 CloseUserVolumeAccumulatorEvent,
+fully decoded and matched to its actual close-user instruction/event CPI.
+It is separate volume-accounting metadata with no pool/mint/reserve fields,
+not a swap or an unknown silently discarded event. Its57trades and114vault
+marks remain intact. HUvd's on-chain logs are truncated; standard getTransaction
+has the same truncation. The actual canonical receipt is byte-identical to
+TFA, and its uniquely matched PumpSwap EventCPI/full439-byte BuyEvent and
+clean preceding stack bind the trade, accounts, reserves and fee identities.
+This recovers two marks beside90already verified, not missing log text.
+
+HUvd has39TFA pages, including terminal empty page39. All3721successful
+transactions equal the terminal signature census:5210before-anchor records
+plus one pinned window anchor,3721successes and1490failed signatures retained
+without ledger effects. Raw one1B birth MintTo, birth mint-authority revocation
+and two pre-window burns reconstruct993824561055834raw@6 for every mark.
+Current861553990334431raw is later and lower; do not substitute it. Token2022
+metadata discriminators and3-byte SetAuthority(None) are parsed as their full
+wire structures, distinct from4-byte COption tags in account data. No unknown
+or malformed target-token instructions remain in that ledger.
+
+HUvd uses existing `onchain-pool-window-supply-cex-reference-v1`:92observed
+marks with exact historical supply. Floor global lower4351545cents; ceil
+global upper4360735cents. The producer's high-floor4360734 is a diagnostic,
+not an outward upper bound. Recovered buy_exact_quote_in instruction has24
+raw bytes against25in dated Feb17IDL; missing track_volume bool has no
+inferred default. Observed vault model is conditional; historical virtual
+quote reserves and deployed revision remain unknown. Fee gross/net identities
+and actual vault deltas are verified independently of that missing argument.
+
+QBH uses new `onchain-pool-window-bounded-supply-cex-reference-v1` to make the
+supply interval explicit. Raw birth issues1B and revokes authority; later
+current supply998812646101067raw@6 bounds any historical window supply below
+birth1e15 and above current. Exact burn history is not claimed. For all114
+observed marks, lower=max observed low price times current supply; upper=max
+observed high price times birth supply. Outward cents3815036–3826187 cover a
+0.2914% reference interval. This differs from multiplying a provider point
+price by current supply, so it has a separate source kind. All mark prices
+and global extrema are recomputed with exact reserve ratios/Coinbase minute FX.
+
+Both observed price endpoint maxima agree within2% with saved provider peaks.
+Reference widths do not bound unknown model error, other markets or annual/
+lifetime coverage. Keep ATH dates null and holder/liquidity metadata unchanged;
+no runner thresholds or production fallback change. Atomic writes require
+exact source-kind match in golden/root certificate, current missing-row versions,
+original provider observations and full isolated workspace validation.
+
+Root certificate:
+`14f855e2c82e11c75d1455d93ac9b2d554d6e2109f3c0ea22439e596e185e785`.
+HUvd raw supply audit:
+`beecf24559a5933981f67e633b37c77f08a5fb5f1192cc74df7a78d1f3add517`.
+QBH raw birth/current-bound audit:
+`b5a2550daacae56d18a74fd97b9aaf68cac54f8c7af735a448de98d212d5bd6f`.

@@ -397,3 +397,17 @@ vault models remain conditional, with unknown historical virtual reserves;
 annual ATH remains incomplete. Sealed80 package predates three latest writes.
 No live binary restart, runner threshold change or new full dump is needed
 for this reference update. B8.4 proceeds to remaining price/model gaps.
+
+## QBH/HUvd closure and live monitoring (2026-10-14)
+
+Typed nontrade volume metadata resolves QBH's80-byte event; actual canonical
+EventCPI resolves HUvd's truncated-log binding. Both scoped price gates pass.
+HUvd full3721-success history proves its historical supply; QBH birth/current
+bounds are narrow enough without claiming exact history. Root206-mark replay,
+independent raw audits and1238tests pass; atomic writes add4351545/3815036cents
+and preserve null dates/holders/liquidity. Cohort519numeric/160unknown,85new
+references since434 (SOL71/Base2/RH12). The latest two sealed packages79/80
+predate five new writes. Annual/all-market ATH is incomplete. No binary
+restart or new full snapshot occurred. Live heartbeat/cursor checks report
+zero incidents and the unchanged daemonPID92417. Remaining scoped gaps:
+Base100/RH35/SOL25/BSC0. Source/model/ABI limitations remain in amendment49.

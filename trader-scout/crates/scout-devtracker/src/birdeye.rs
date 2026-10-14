@@ -8146,6 +8146,778 @@ mod tests {
     }
 
     #[test]
+    fn solana_tracker_qbh_nontrade_and_huvd_truncated_cpi_gaps_replay() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_qbh_huvd_metadata_cpi_cases_v1.json"
+        ))
+        .unwrap();
+        let hash = |raw: &str| format!("{:x}", Sha256::digest(raw.as_bytes()));
+        macro_rules! check {
+            ($actual:expr, $expected:expr $(,)?) => {
+                assert_eq!($actual, $expected)
+            };
+        }
+        let qbh_raw = fixture["qbh_proof_json_raw"].as_str().unwrap();
+        let huvd_raw = fixture["huvd_proof_json_raw"].as_str().unwrap();
+        let audit_raw = fixture["rawgate_audit_json_raw"].as_str().unwrap();
+        check!(hash(qbh_raw), fixture["source_sha256"]["qbh_proof"]);
+        check!(hash(huvd_raw), fixture["source_sha256"]["huvd_proof"]);
+        check!(hash(audit_raw), fixture["source_sha256"]["rawgate_audit"]);
+        let cert_raw = fixture["root_certificate_json_raw"].as_str().unwrap();
+        let all_qbh_raw = fixture["qbh_all_114_json_raw"].as_str().unwrap();
+        let correction_raw = fixture["provenance_correction_json_raw"].as_str().unwrap();
+        check!(hash(cert_raw), fixture["source_sha256"]["root_certificate"]);
+        check!(hash(all_qbh_raw), fixture["source_sha256"]["qbh_all_114"]);
+        check!(
+            hash(correction_raw),
+            fixture["source_sha256"]["provenance_correction"]
+        );
+        check!(
+            fixture["source_sha256"]["root_certificate"],
+            "14f855e2c82e11c75d1455d93ac9b2d554d6e2109f3c0ea22439e596e185e785"
+        );
+        check!(
+            fixture["source_sha256"]["qbh_all_114"],
+            "0247fd7edd68b3649b7ab06677ec65d38d934b371f827dd5f88dc4e17a5a01ac"
+        );
+        check!(
+            fixture["source_sha256"]["provenance_correction"],
+            "ae14409bb6de34fb71e3c1a42bb36aec4aaf9e1a1fa6f5467897b870433020b2"
+        );
+        let certificate: serde_json::Value = serde_json::from_str(cert_raw).unwrap();
+        let qbh_all: serde_json::Value = serde_json::from_str(all_qbh_raw).unwrap();
+        let correction: serde_json::Value = serde_json::from_str(correction_raw).unwrap();
+        check!(
+            serde_json::json!([
+                correction["original_v1_announced_sha256"],
+                correction["original_body_available"],
+                correction["v1_overwritten_before_root_capture"],
+                correction["final_body_sha256"],
+                correction["new_numeric_claims"],
+            ]),
+            serde_json::json!([
+                "359c0fa0ebf2fdc9c76b5c02f732a49dfd51aaf33f3bfa6dd8b1775d7dc5616c",
+                false,
+                true,
+                "435ba3d19e87d932a222b8c0b9cf49b8d8ddeac4f82686e57627ca6daa05b62e",
+                false,
+            ])
+        );
+        let (qbh, huvd, audit): (serde_json::Value, serde_json::Value, serde_json::Value) = (
+            serde_json::from_str(qbh_raw).unwrap(),
+            serde_json::from_str(huvd_raw).unwrap(),
+            serde_json::from_str(audit_raw).unwrap(),
+        );
+        check!(
+            serde_json::json!([
+                fixture["source_kinds"]["qbh"],
+                fixture["source_kinds"]["huvd"]
+            ]),
+            serde_json::json!([
+                "onchain-pool-window-bounded-supply-cex-reference-v1",
+                "onchain-pool-window-supply-cex-reference-v1",
+            ]),
+        );
+        let nontrade = &qbh["evidence"]["nontrade_event_log"];
+        let event_cpi = &qbh["evidence"]["event_cpi"];
+        let close_ix = &qbh["evidence"]["pump_swap_close_instruction"];
+        check!(
+            serde_json::json!([
+                qbh["schema"],
+                qbh["target_mint"],
+                qbh["event_transaction"]["meta_err"],
+                nontrade["bytes"],
+                nontrade["field_bytes_consumed"],
+                nontrade["discriminator_hex"],
+                nontrade["sha256"],
+                nontrade["decoded_fields"]["timestamp"],
+                nontrade["decoded_fields"]["user"],
+                event_cpi["full_data_bytes"],
+                event_cpi["program"],
+                event_cpi["outer_index"],
+                event_cpi["inner_index"],
+                event_cpi["wrapper_discriminator_hex"],
+                event_cpi["matches_log_payload"],
+                close_ix["discriminator_hex"],
+                close_ix["inner_index"],
+                close_ix["outer_index"],
+                qbh["evidence"]["log_context"]["trade_buy_event_log_index"],
+                qbh["evidence"]["log_context"]["nontrade_payload_log_index"],
+                qbh["evidence"]["trade_event_log"]["type"],
+                qbh["price_gate_reuse"]["existing_decoded_price_states"],
+                qbh["price_gate_reuse"]["existing_decoded_selected_pool_events"],
+                qbh["price_gate_reuse"]["existing_gap_event_is_separate_from_pool_buy_event"],
+                qbh["price_gate_reuse"]["supply_gate"],
+            ]),
+            serde_json::json!([
+                "qbh-nontrade-event-resolution-v1",
+                "qbhDFrtEsfpn3sWapy3S8RnVKdH2cBKv4Yr2fMRpump",
+                null,
+                80,
+                80,
+                "929fbdac925838f4",
+                "f4ecaecd0c823c8fe416996ae572f6607fc77e8a1a1b14f67873366782079342",
+                1770535306,
+                "AgmLJBMDCqWynYnQiPCuj9ewsNNsBJXyzoUhD9LJzN51",
+                88,
+                "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+                3,
+                23,
+                "e445a52e51cb9a1d",
+                true,
+                "f945a4da9667548a",
+                22,
+                3,
+                95,
+                103,
+                "BuyEvent",
+                114,
+                57,
+                true,
+                "not closed by this audit; no FDV claim",
+            ]),
+        );
+        check!(
+            serde_json::json!([
+                qbh["evidence"]["dated_idl"]["sha256"],
+                qbh["evidence"]["dated_idl"]["event_name"],
+                qbh["evidence"]["dated_idl"]["event_discriminator_hex"],
+                qbh["evidence"]["log_context"]["close_instruction_log"],
+            ]),
+            serde_json::json!([
+                "773a430d6727446721c0f5028710e65484643fbf9c0cac50f0ba117594e5514b",
+                "CloseUserVolumeAccumulatorEvent",
+                "929fbdac925838f4",
+                "Program log: Instruction: CloseUserVolumeAccumulator",
+            ]),
+        );
+        check!(
+            serde_json::json!([
+                huvd["schema"],
+                huvd["status"],
+                huvd["scope"],
+                huvd["combined_state_count"],
+                huvd["saved_states_count"],
+                huvd["new_states"].as_array().unwrap().len(),
+                huvd["comparison_status"],
+                huvd["low_within_2pct"],
+                huvd["high_within_2pct"],
+                huvd["canonical_recapture"]["canonical_equals_TFA_full_object"],
+                huvd["canonical_recapture"]["log_truncated_marker"],
+                huvd["canonical_recapture"]["response_sha256"],
+                huvd["event_recovery"]["event_name"],
+                huvd["event_recovery"]["event_payload_bytes"],
+                huvd["event_recovery"]["exact_payload_cpi_matches"],
+                huvd["event_recovery"]["cpi_outer_index"],
+                huvd["event_recovery"]["cpi_inner_index"],
+                huvd["event_recovery"]["trade_outer_index"],
+                huvd["event_recovery"]["trade_inner_index"],
+                huvd["event_recovery"]["trade_instruction_count_in_tx"],
+                huvd["event_recovery"]["trade_accounts_pool_base_quote_vault_match"],
+                huvd["vault_binding"]["event_pre_reserves_match"],
+                huvd["vault_binding"]["pre_base_raw"],
+                huvd["vault_binding"]["pre_quote_raw"],
+                huvd["vault_binding"]["post_base_raw"],
+                huvd["vault_binding"]["post_quote_raw"],
+                huvd["global_maxima"]["usd_low_fraction"]["fraction"],
+                huvd["global_maxima"]["usd_high_fraction"]["fraction"],
+            ]),
+            serde_json::json!([
+                "huvd-canonical-event-cpi-log-truncation-recovery-price-proof-v1",
+                "recovered_selected_event_context_candidate",
+                "Selected pool, all 45 previously verified events plus this single recovered event, exact captured ±3-second window only; not all-pools lifetime ATH.",
+                92,
+                90,
+                2,
+                "both_endpoints_within_2pct",
+                true,
+                true,
+                true,
+                true,
+                "3d02c10ecd46889452cdff87762ce50b9f909837c91f5e017c18691862fb63ef",
+                "BuyEvent",
+                439,
+                1,
+                6,
+                20,
+                6,
+                14,
+                1,
+                true,
+                true,
+                "196656575562011",
+                "89514001595",
+                "196293514766293",
+                "89679896138",
+                "59476247547849/1358344002846350000",
+                "119203672847067/2716688005692700000",
+            ]),
+        );
+        let abi_gap = &audit["unparsed_abi_gaps"][0];
+        check!(
+            serde_json::json!([
+                audit["schema"],
+                audit["rawgate_pass"],
+                audit["all_pass"],
+                audit["huvd"]["historical_virtual_quote_reserve"]["status"],
+                audit["huvd"]["historical_virtual_quote_reserve"]["used_in_recovered_marks"],
+                audit["huvd"]["trade_instruction_abi_observation"]["wire_bytes"],
+                audit["huvd"]["trade_instruction_abi_observation"]["dated_idl_declared_extra_option_bool_bytes"],
+                audit["checks"]["huvd_idl_declared_trade_args_wire_length_consistent"],
+                abi_gap["captured_wire_bytes"],
+                abi_gap["idl_declared_bytes"],
+                abi_gap["fatal_to_observed_vault_marks"],
+                abi_gap["status"],
+                audit["source_sha256"]["qbh_proof"],
+                audit["source_sha256"]["huvd_proof"],
+            ]),
+            serde_json::json!([
+                "solana-qbh-huvd-independent-rawgate-audit-v1",
+                true,
+                false,
+                "unknown",
+                false,
+                24,
+                1,
+                false,
+                24,
+                25,
+                false,
+                "unparsed ABI gap; no bool/default inferred",
+                fixture["source_sha256"]["qbh_proof"],
+                fixture["source_sha256"]["huvd_proof"],
+            ]),
+        );
+        assert!(
+            audit["checks"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .all(|(name, value)| {
+                    if name == "huvd_idl_declared_trade_args_wire_length_consistent" {
+                        value == false
+                    } else {
+                        value == true
+                    }
+                })
+        );
+        assert!(
+            audit["checks"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(name, _)| name.starts_with("qbh_"))
+                .all(|(_, value)| value == true)
+        );
+        assert!(
+            qbh["price_gate_reuse"]["supply_gate"]
+                .as_str()
+                .unwrap()
+                .contains("no FDV claim")
+        );
+        {
+            let raw = fixture["qbh_bounded_fdv_json_raw"].as_str().unwrap();
+            check!(hash(raw), fixture["source_sha256"]["qbh_bounded_fdv"]);
+            check!(
+                fixture["source_sha256"]["qbh_bounded_fdv"],
+                "e545116e191cfcd3bd369d3d57ab0439470578b1610ede766753ed7d6b7e9b0a"
+            );
+            let bound: serde_json::Value = serde_json::from_str(raw).unwrap();
+            let fraction = |value: &str| {
+                let (numerator, denominator) = value.split_once('/').unwrap();
+                (
+                    U512::from_str_radix(numerator, 10).unwrap(),
+                    U512::from_str_radix(denominator, 10).unwrap(),
+                )
+            };
+            let compare = |left: (U512, U512), right: (U512, U512)| {
+                (left.0 * right.1).cmp(&(right.0 * left.1))
+            };
+            let ceil = |n: U512, d: U512| (n + d - U512::from(1)) / d;
+            let supply = &bound["supply_bounds"];
+            let fdv = &bound["fdv_bound"];
+            let low_price = fraction(
+                bound["price_window"]["extrema"]["low"]["usd_fraction"]
+                    .as_str()
+                    .unwrap(),
+            );
+            let high_price = fraction(
+                bound["price_window"]["extrema"]["high"]["usd_fraction"]
+                    .as_str()
+                    .unwrap(),
+            );
+            let scale = U512::from(1_000_000_u64);
+            let low = (
+                low_price.0
+                    * U512::from_str_radix(
+                        supply["current_later_snapshot_supply_raw"]
+                            .as_str()
+                            .unwrap(),
+                        10,
+                    )
+                    .unwrap(),
+                low_price.1 * scale,
+            );
+            let high = (
+                high_price.0
+                    * U512::from_str_radix(supply["birth_supply_raw"].as_str().unwrap(), 10)
+                        .unwrap(),
+                high_price.1 * scale,
+            );
+            assert_eq!(
+                compare(low, fraction(fdv["lower_usd_fraction"].as_str().unwrap())),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(
+                compare(high, fraction(fdv["upper_usd_fraction"].as_str().unwrap())),
+                std::cmp::Ordering::Equal
+            );
+            let width = (high.0 * low.1 - low.0 * high.1, high.0 * low.1);
+            assert_eq!(
+                compare(
+                    width,
+                    fraction(fdv["width_fraction_of_upper"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+            assert!(compare(width, (U512::from(1), U512::from(50))).is_le());
+            check!(
+                serde_json::json!([
+                    bound["schema"],
+                    bound["mint"],
+                    bound["status"],
+                    bound["price_window"]["states_count"],
+                    bound["price_window"]["selected_pool_event_count"],
+                    bound["price_window"]["scope"],
+                    supply["historical_supply_exact"],
+                    supply["birth_supply_raw"],
+                    supply["current_later_snapshot_supply_raw"],
+                    supply["birth"]["successful_receipt_in_raw_batch"],
+                    supply["birth"]["birth_mint_to_sum_raw"],
+                    supply["birth"]["mint_authority_revocation"]["new_authority_option"],
+                    supply["current_snapshot"]["requested_address_index"],
+                    supply["current_snapshot"]["context_slot"],
+                    supply["current_snapshot"]["extension_ids_and_lengths"],
+                    fdv["lower_cents_floor"],
+                    fdv["upper_cents_ceil"],
+                    fdv["within_two_percent"],
+                    fdv["width_percent_of_upper"],
+                ]),
+                serde_json::json!([
+                    "solana-qbh-conservative-observed-window-fdv-supply-bound-v1",
+                    "qbhDFrtEsfpn3sWapy3S8RnVKdH2cBKv4Yr2fMRpump",
+                    "bounded_observed_selected_pool_window",
+                    114,
+                    57,
+                    "Verified selected-pool pre/post states in the captured provider-peak ±3-second window only; not lifetime ATH or all-pool coverage. The formerly unsupported 80-byte event is separately classified as nontrade.",
+                    false,
+                    "1000000000000000",
+                    "998812646101067",
+                    true,
+                    "1000000000000000",
+                    0,
+                    98,
+                    455686275,
+                    [[18, 64], [19, 169]],
+                    3815036,
+                    3826187,
+                    true,
+                    "0.291400939",
+                ]),
+            );
+            assert_eq!(
+                low.0 * U512::from(100) / low.1,
+                U512::from(fdv["lower_cents_floor"].as_u64().unwrap())
+            );
+            assert_eq!(
+                ceil(high.0 * U512::from(100), high.1),
+                U512::from(fdv["upper_cents_ceil"].as_u64().unwrap())
+            );
+            check!(
+                serde_json::json!([
+                    qbh_all["schema"],
+                    qbh_all["mint"],
+                    qbh_all["source"],
+                    qbh_all["marks"].as_array().unwrap().len(),
+                    qbh_all["supply_lower_raw"],
+                    qbh_all["supply_upper_raw"],
+                    qbh_all["historical_supply_exact"],
+                    qbh_all["unknown_historical_virtual_quote_reserves"],
+                    qbh_all["annual_allmarket_lifetime_complete"],
+                ]),
+                serde_json::json!([
+                    "root-qbh-all-114-observed-marks-bounded-supply-v1",
+                    "qbhDFrtEsfpn3sWapy3S8RnVKdH2cBKv4Yr2fMRpump",
+                    "onchain-pool-window-bounded-supply-cex-reference-v1",
+                    114,
+                    "998812646101067",
+                    "1000000000000000",
+                    false,
+                    true,
+                    false,
+                ])
+            );
+            let certificate_qbh = &certificate["rows"][1];
+            check!(
+                serde_json::json!([
+                    certificate["schema"],
+                    certificate["rawgate_pass"],
+                    certificate["observed_marks"],
+                    certificate_qbh["source"],
+                    certificate_qbh["observed_marks"],
+                    certificate_qbh["lower_fdv_cents"],
+                    certificate_qbh["upper_fdv_cents_ceiling"],
+                    certificate_qbh["historical_supply_exact"],
+                    certificate_qbh["conditional_vault_ratio_model"],
+                    certificate_qbh["historical_virtual_quote_reserves"],
+                ]),
+                serde_json::json!([
+                    "root-qbh-huvd-206-observed-marks-certificate-v1",
+                    true,
+                    206,
+                    qbh_all["source"],
+                    114,
+                    3815036,
+                    3826187,
+                    false,
+                    true,
+                    "unknown",
+                ])
+            );
+            for (path, expected_hash) in [
+                (
+                    ".scout-data/diagnostics/solana-qbh-conservative-fdv-bound-2026-10-14/root-all-114-state-replay-v1.json",
+                    "0247fd7edd68b3649b7ab06677ec65d38d934b371f827dd5f88dc4e17a5a01ac",
+                ),
+                (
+                    ".scout-data/diagnostics/solana-qbh-conservative-fdv-bound-2026-10-14/independent-raw-bound-audit-v3.json",
+                    "b5a2550daacae56d18a74fd97b9aaf68cac54f8c7af735a448de98d212d5bd6f",
+                ),
+            ] {
+                check!(certificate["source_sha256"][path], expected_hash);
+            }
+            let lower_supply =
+                U512::from_str_radix(qbh_all["supply_lower_raw"].as_str().unwrap(), 10).unwrap();
+            let upper_supply =
+                U512::from_str_radix(qbh_all["supply_upper_raw"].as_str().unwrap(), 10).unwrap();
+            let scale = U512::from(1_000_000_u64);
+            let mut max_low: Option<(U512, U512)> = None;
+            let mut max_high: Option<(U512, U512)> = None;
+            for mark in qbh_all["marks"].as_array().unwrap() {
+                assert_eq!(mark["event_cpi_matched"], true);
+                let low_price = fraction(mark["price_low_fraction"].as_str().unwrap());
+                let high_price = fraction(mark["price_high_fraction"].as_str().unwrap());
+                let low_fdv = (low_price.0 * lower_supply, low_price.1 * scale);
+                let high_fdv = (high_price.0 * upper_supply, high_price.1 * scale);
+                assert_eq!(
+                    compare(
+                        low_fdv,
+                        fraction(mark["fdv_lower_usd_fraction"].as_str().unwrap())
+                    ),
+                    std::cmp::Ordering::Equal
+                );
+                assert_eq!(
+                    compare(
+                        high_fdv,
+                        fraction(mark["fdv_upper_usd_fraction"].as_str().unwrap())
+                    ),
+                    std::cmp::Ordering::Equal
+                );
+                if max_low.is_none_or(|previous| compare(low_fdv, previous).is_gt()) {
+                    max_low = Some(low_fdv);
+                }
+                if max_high.is_none_or(|previous| compare(high_fdv, previous).is_gt()) {
+                    max_high = Some(high_fdv);
+                }
+            }
+            let max_low = max_low.unwrap();
+            let max_high = max_high.unwrap();
+            assert_eq!(
+                compare(
+                    max_low,
+                    fraction(qbh_all["global_lower_fraction"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(
+                compare(
+                    max_high,
+                    fraction(qbh_all["global_upper_fraction"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(
+                max_low.0 * U512::from(100) / max_low.1,
+                U512::from(qbh_all["lower_fdv_cents"].as_u64().unwrap())
+            );
+            assert_eq!(
+                ceil(max_high.0 * U512::from(100), max_high.1),
+                U512::from(qbh_all["upper_fdv_cents_ceiling"].as_u64().unwrap())
+            );
+            let width = (
+                max_high.0 * max_low.1 - max_low.0 * max_high.1,
+                max_high.0 * max_low.1,
+            );
+            assert!(compare(width, (U512::from(1), U512::from(50))).is_le());
+            assert_eq!(
+                compare(
+                    max_low,
+                    fraction(certificate_qbh["lower_usd_fraction"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(
+                compare(
+                    max_high,
+                    fraction(certificate_qbh["upper_usd_fraction"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+        }
+        assert!(
+            huvd["remaining_caveats"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|caveat| {
+                    caveat
+                        .as_str()
+                        .unwrap()
+                        .contains("No supply history or FDV")
+                })
+        );
+        let huvd_supply_raw = fixture["huvd_supply_v3_json_raw"].as_str().unwrap();
+        let supply_case: serde_json::Value = serde_json::from_str(huvd_supply_raw).unwrap();
+        check!(
+            supply_case["source_sha256"],
+            fixture["source_sha256"]["huvd_supply_v3"]
+        );
+        check!(
+            fixture["source_sha256"]["huvd_supply_v3"],
+            "987c2f979a65d832ddf89efa25b70d53c5cfa0ae4c3cceb24a2a33bc57a68a2b"
+        );
+        let supply = &supply_case["supply"];
+        let raw_u512 =
+            |value: &serde_json::Value| U512::from_str_radix(value.as_str().unwrap(), 10).unwrap();
+        let fraction = |value: &str| {
+            let (numerator, denominator) = value.split_once('/').unwrap();
+            (
+                U512::from_str_radix(numerator, 10).unwrap(),
+                U512::from_str_radix(denominator, 10).unwrap(),
+            )
+        };
+        let compare_fraction =
+            |left: (U512, U512), right: (U512, U512)| (left.0 * right.1).cmp(&(right.0 * left.1));
+        check!(
+            serde_json::json!([
+                supply_case["schema"],
+                supply_case["mint"],
+                supply_case["observed_price_mark_count"],
+                supply["decimals"],
+                supply["initial_supply_raw"],
+                supply["mint_sum_raw_in_window"],
+                supply["burn_sum_raw_in_window"],
+                supply["window_end_supply_raw"],
+                supply["birth_supply_reconciles_to_window_end"],
+                supply["current_snapshot_supply_raw"],
+                supply["current_supply_after_later_time_differs_from_window_end_raw"],
+                supply_case["quality_gaps"]["unknown_token_opcode_count"],
+                supply_case["quality_gaps"]["malformed_token_instruction_count"],
+                supply_case["quality_gaps"]["same_transaction_supply_change_mark_count"],
+                supply["history_completeness"]["complete_for_supply_at_each_observed_window_transaction"],
+                supply["history_completeness"]["not_full_history_through_current_account_snapshot"],
+                supply_case["price_window"]["scope"],
+            ]),
+            serde_json::json!([
+                "solana-huvd-window-supply-and-fdv-replay-v3",
+                "HUvdhx4exbZK9Rp2rfwGvcL6bTPTuYeQqKFER6b5X3aF",
+                92,
+                6,
+                "1000000000000000",
+                "1000000000000000",
+                "6175438944166",
+                "993824561055834",
+                true,
+                "861553990334431",
+                "-132270570721403",
+                0,
+                0,
+                0,
+                true,
+                true,
+                "all 45 previous decoded selected-pool events plus one canonical-recovered event; all 46 events and their 92 pre/post states are a captured ±3s neighborhood only, not full life / all pools",
+            ]),
+        );
+        let mint = &supply["mint_instructions"][0];
+        let initialize = &supply["initialization_instructions_in_birth_tx"][0];
+        let revoke = &supply["mint_authority_changes"][0];
+        check!(
+            serde_json::json!([
+                supply["mint_instructions"].as_array().unwrap().len(),
+                mint["opcode"],
+                mint["outer_index"],
+                mint["inner_index"],
+                mint["amount_raw"],
+                initialize["opcode"],
+                initialize["decimals_in_instruction"],
+                revoke["new_authority_option"],
+                revoke["outer_index"],
+                revoke["inner_index"],
+                supply["current_account_raw_binding"]["raw_supply_raw"],
+                supply["current_account_raw_binding"]["response_context_slot"],
+            ]),
+            serde_json::json!([
+                1,
+                7,
+                3,
+                12,
+                "1000000000000000",
+                20,
+                6,
+                0,
+                3,
+                13,
+                "861553990334431",
+                455686275,
+            ]),
+        );
+        let burn_total = supply["burn_instructions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .fold(U512::from(0), |sum, burn| {
+                sum + raw_u512(&burn["amount_raw"])
+            });
+        assert_eq!(burn_total, raw_u512(&supply["burn_sum_raw_in_window"]));
+        assert_eq!(
+            raw_u512(&supply["initial_supply_raw"]) - burn_total,
+            raw_u512(&supply["window_end_supply_raw"])
+        );
+
+        let state_supply = raw_u512(&supply["window_end_supply_raw"]);
+        let one_million = U512::from(1_000_000_u64);
+        let endpoints = ["low", "close", "high"];
+        type FdvMaximum = ((U512, U512), String, String);
+        let mut maxima: Vec<Option<FdvMaximum>> = vec![None; 3];
+        let marks = supply_case["marks"].as_array().unwrap();
+        assert_eq!(marks.len(), 92);
+        let mut recovered = 0;
+        for mark in marks {
+            check!(
+                mark["supply_raw_at_transaction_boundary"],
+                "993824561055834"
+            );
+            assert!(
+                mark["supply_operations_in_transaction"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            if mark["recovered_canonical_event"] == true {
+                recovered += 1;
+            }
+            for (index, endpoint) in endpoints.iter().enumerate() {
+                let price = fraction(
+                    mark[&format!("price_{endpoint}_fraction")]
+                        .as_str()
+                        .unwrap(),
+                );
+                let fdv = (price.0 * state_supply, price.1 * one_million);
+                let stored = fraction(
+                    mark[&format!("fdv_{endpoint}_usd_fraction")]
+                        .as_str()
+                        .unwrap(),
+                );
+                assert_eq!(compare_fraction(fdv, stored), std::cmp::Ordering::Equal);
+                assert_eq!(
+                    fdv.0 * U512::from(100) / fdv.1,
+                    U512::from(
+                        mark[&format!("fdv_{endpoint}_cents_floor")]
+                            .as_u64()
+                            .unwrap()
+                    )
+                );
+                if maxima[index]
+                    .as_ref()
+                    .is_none_or(|(previous, _, _)| compare_fraction(fdv, *previous).is_gt())
+                {
+                    maxima[index] = Some((
+                        fdv,
+                        mark["signature"].as_str().unwrap().to_owned(),
+                        mark["state_side"].as_str().unwrap().to_owned(),
+                    ));
+                }
+            }
+        }
+        assert_eq!(recovered, 2);
+        for (index, endpoint) in endpoints.iter().enumerate() {
+            let (actual, signature, side) = maxima[index].as_ref().unwrap();
+            let expected = &supply_case["global_window_fdv_maxima"][endpoint];
+            assert_eq!(
+                compare_fraction(
+                    *actual,
+                    fraction(expected["fdv_usd_fraction"].as_str().unwrap())
+                ),
+                std::cmp::Ordering::Equal
+            );
+            check!(
+                serde_json::json!([signature, side]),
+                serde_json::json!([expected["signature"], expected["state_side"]]),
+            );
+            assert_eq!(
+                actual.0 * U512::from(100) / actual.1,
+                U512::from(expected["fdv_cents_floor"].as_u64().unwrap())
+            );
+        }
+        let certificate_huvd = &certificate["rows"][0];
+        let huvd_high = maxima[2].as_ref().unwrap().0;
+        check!(
+            serde_json::json!([
+                certificate_huvd["mint"],
+                certificate_huvd["source"],
+                certificate_huvd["observed_marks"],
+                certificate_huvd["lower_fdv_cents"],
+                certificate_huvd["upper_fdv_cents_ceiling"],
+                certificate_huvd["historical_supply_exact"],
+                certificate_huvd["conditional_vault_ratio_model"],
+                certificate_huvd["historical_virtual_quote_reserves"],
+                certificate["rawgate_pass"],
+            ]),
+            serde_json::json!([
+                "HUvdhx4exbZK9Rp2rfwGvcL6bTPTuYeQqKFER6b5X3aF",
+                "onchain-pool-window-supply-cex-reference-v1",
+                92,
+                4351545,
+                4360735,
+                true,
+                true,
+                "unknown",
+                true,
+            ])
+        );
+        assert_eq!(
+            compare_fraction(
+                huvd_high,
+                fraction(certificate_huvd["upper_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        let huvd_high_ceil =
+            (huvd_high.0 * U512::from(100) + huvd_high.1 - U512::from(1)) / huvd_high.1;
+        check!(
+            huvd_high_ceil,
+            U512::from(
+                certificate_huvd["upper_fdv_cents_ceiling"]
+                    .as_u64()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
     fn solana_tracker_h4_and_9sef_historical_supply_fdv_windows_replay_exactly() {
         use alloy_primitives::U512;
         use sha2::{Digest, Sha256};
