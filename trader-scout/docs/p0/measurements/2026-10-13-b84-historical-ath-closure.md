@@ -1,14 +1,14 @@
 # B8.4 historical ATH closures — 2026-10-13
 
-Seventy-seven guarded writes extend the immutable 679-token diagnostic cohort from
-434 numeric / 245 unknown to **511 numeric / 168 unknown** (Oct 14 Moscow). This is a
+Seventy-eight guarded writes extend the immutable 679-token diagnostic cohort from
+434 numeric / 245 unknown to **512 numeric / 167 unknown** (Oct 14 Moscow). This is a
 candidate-cohort checkpoint, not a coverage percentage for all annual network
 launches. Numeric records retain source-specific price kinds and historical
 scope; annual all-market ATH is still incomplete.
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Solana | 77 | 33 |
+| Solana | 78 | 32 |
 | BSC | 13 | 0 |
 | Base | 403 | 100 |
 | Robinhood | 18 | 35 |
@@ -266,3 +266,19 @@ fixedcohort511numeric/168unknown. The74-closure archive predates these writes.
 See [chronological FDV evidence](2026-10-14-solana-chronological-fdv-window.md),
 ADR-021 amendment43. Conditional SDK-model PRE references and missing annual/
 all-market coverage remain explicit; no automatic production adapter is added.
+
+## Fht global-window lower reference (Oct14)
+
+Fht adds$1,339,443.48 under the existing combined2% conservative policy.
+All four actual vault states in the terminal window and both dated trades
+reconcile; the maximum is708ms before the provider timestamp. Birth/current
+raw mint checks and two finalized transaction confirmations pass. Stored
+holders12 remain below50; no list-membership change is inferred. After full
+fmt/Clippy/1234tests, the guarded write preserves metadata and null ATH date.
+Current78closures are SOL64/Base2/RH12, fixedcohort512numeric/167unknown.
+See [Fht evidence](2026-10-14-solana-fht-global-window.md), amendment44.
+6SFB/7rWY remain unpromoted despite acceptable prices because47 instruction
+wire variants remain unresolved; the bounded official-source search is
+[documented separately](2026-10-14-pumpswap-legacy-instruction-wire-research.md).
+The chronological three-case golden now verifies corrected certificate-v4
+and original current-mint capture hashes; numeric values are unchanged.

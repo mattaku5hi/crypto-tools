@@ -66,8 +66,8 @@ mutations. ADR-021 amendment43 records these limits and the conditional model.
 
 Final full replay SHA-256:
 `414d4555fda934b0a8eab435430ff7efcabc746ca9ae02d134214cf4d2ef2d2d`.
-Root independent certificate-v3:
-`2897e4dfac148afb0c91e8a8f2bd66d75d6cde25fbdee166c89b8fbfb11d90ed`.
+Root independent certificate-v4:
+`e85185acd8d78c9c348808e7fb0d286754a4a2ba4563911fac34bb8347d69251`.
 Root scoped token-transfer proof:
 `fc16c015c3b9d2bdf9c1218eef8d30fa849f2636251ea2386dc08c8b6463a323`.
 Six finalized standard recaptures of births and FDV-winning transactions
@@ -77,9 +77,19 @@ match entire messages and selected metadata; manifest SHA-256:
 The initial root certificate-v2 read a transient v25 body while its producer
 was still correcting max selection. Its source hash is stale and it is not
 accepted. Both the invalid certificate and a supersession note are retained;
-the unavailable transient body is not reconstructed. Certificate-v3 pins the
+the unavailable transient body is not reconstructed. Certificate-v4 pins the
 final replay before and after independent verification. Maximum values did
 not change, but the provenance correction is necessary.
+
+Certificate-v3 had a separate metadata error: its helper parsed the correct
+current mint bytes but hashed older capture filenames for two nested source
+fields. Certificate-v4 fixes those filenames and pins the actual captures.
+An independent comparison confirms all monetary/model fields and raw mint
+bytes are unchanged. The regression now embeds the original request/response
+bodies and checks their hashes against every mint certificate. A separate
+audit verifies all18 earlier conservative cases have correct capture links;
+they are unaffected. The old certificate and original write manifest remain
+preserved, with a new correction sidecar; no numeric database rewrite.
 
 Network phases are separate: the main capture/history used25Helius methods
 under its27-method allocation; the current wrapper-IDL probe used2; finalized
@@ -93,7 +103,7 @@ The stored source is
 with lower floors, null ATH dates and preserved holder/liquidity metadata.
 The captured-case golden is
 `solana_tracker_chronological_fdv_window_cases.json`, SHA-256
-`bb9e9ebc04d7730bd23add291c6e7354c034c0a496af7197ce834b5e3ca2e171`.
+`9222b33100a115bba789490abdb215461742febcd2f9c27ef3432a6cde074b95`.
 Its regression verifies all states, exact raw FX multiplication, actual trade/
 token-transfer roles and bytes, invocation boundaries, integer-interval edge
 controls, mixed direction/rounding and the earlier-FDV counterexample.

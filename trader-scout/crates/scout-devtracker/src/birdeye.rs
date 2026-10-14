@@ -2174,6 +2174,13 @@ mod tests {
         assert_eq!(fixture["intervals_are_exact_peak_supply"], false);
         let cases = fixture["cases"].as_array().unwrap();
         assert_eq!(cases.len(), 14);
+        let fht_fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_fht_conservative_fdv_bound_case.json"
+        ))
+        .unwrap();
+        let mut cases_to_replay = cases.iter().collect::<Vec<_>>();
+        cases_to_replay.push(&fht_fixture["case"]);
+        assert_eq!(cases_to_replay.len(), 15);
 
         let fraction = |value: &str| {
             let (n, d) = value.split_once('/').unwrap();
@@ -2187,6 +2194,13 @@ mod tests {
                 .try_fold(U512::from(1), |v, _| v.checked_mul(U512::from(10)))
                 .unwrap()
         };
+        let decimal_ratio = |value: &str| {
+            let decimal = ExactDecimal::parse(value).unwrap();
+            (
+                U512::from(decimal.coefficient),
+                pow10(u32::try_from(decimal.scale).unwrap()),
+            )
+        };
         let matches_two_percent = |reference: (U512, U512), cents: i64| {
             (reference.0 * U512::from(100))
                 .abs_diff(U512::from(u64::try_from(cents).unwrap()) * reference.1)
@@ -2195,7 +2209,7 @@ mod tests {
         let mut eligible = Vec::new();
         let mut rejected = Vec::new();
 
-        for case in cases {
+        for case in cases_to_replay {
             let mint = case["mint"].as_str().unwrap();
             let raw_b64 = case["current_mint"]["raw_account_base64"].as_str().unwrap();
             let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -2422,7 +2436,195 @@ mod tests {
             }
         }
 
-        assert_eq!(eligible.len(), 12);
+        let fht_case = &fht_fixture["case"];
+        let hash = |raw: &str| format!("{:x}", Sha256::digest(raw.as_bytes()));
+        let same = |a: (U512, U512), b: (U512, U512)| a.0 * b.1 == b.0 * a.1;
+        assert_eq!(
+            fht_fixture["certificate_sha256"],
+            "abdb98ca0674c9f2b04fc3eabb3c0d1d95f3b3341a0f8ee3dd64218b792bcd33"
+        );
+        let current = &fht_case["current_mint"];
+        let capture = &fht_fixture["current_mint_capture"];
+        let (request_raw, response_raw) = (
+            capture["request_json_raw"].as_str().unwrap(),
+            capture["response_json_raw"].as_str().unwrap(),
+        );
+        let (request_sha, response_sha) = (hash(request_raw), hash(response_raw));
+        assert_eq!(
+            (request_sha.as_str(), response_sha.as_str()),
+            (
+                "60dedd3c6b5c410ac12e55897987ffdfae486caa838d8ce6cdb563748eb53d27",
+                "def69007a71b4a64aed415157a215a17d9e57939357ebb7093883637d2089996"
+            )
+        );
+        assert_eq!(
+            (request_sha.as_str(), response_sha.as_str()),
+            (
+                current["snapshot_request_sha256"].as_str().unwrap(),
+                current["snapshot_response_sha256"].as_str().unwrap()
+            )
+        );
+        let (request, response): (serde_json::Value, serde_json::Value) = (
+            serde_json::from_str(request_raw).unwrap(),
+            serde_json::from_str(response_raw).unwrap(),
+        );
+        let addresses = request["params"][0].as_array().unwrap();
+        assert_eq!(
+            addresses.iter().filter(|a| *a == &fht_case["mint"]).count(),
+            1
+        );
+        assert_eq!(
+            addresses.iter().position(|a| a == &fht_case["mint"]),
+            Some(5)
+        );
+        assert_eq!(
+            (
+                current["snapshot_selected_original_index"].as_u64(),
+                current["singleton_selected_view_of_original_capture"].as_bool()
+            ),
+            (Some(5), Some(true))
+        );
+        assert_eq!(request["params"][1]["commitment"], "finalized");
+        assert_eq!(
+            response["result"]["context"]["slot"],
+            current["snapshot_context_slot"]
+        );
+        assert_eq!(
+            (
+                response["result"]["value"][5]["owner"].as_str(),
+                response["result"]["value"][5]["data"][0].as_str()
+            ),
+            (
+                current["owner"].as_str(),
+                current["raw_account_base64"].as_str()
+            )
+        );
+
+        let wire_raw = fht_fixture["wire_proof_json_raw"].as_str().unwrap();
+        assert_eq!(
+            hash(wire_raw),
+            "b3e6bc95aaeae0a350b383ef0b8353ecf77b810c0d58dfcd822d9a6a967d84d9"
+        );
+        let wire: serde_json::Value = serde_json::from_str(wire_raw).unwrap();
+        assert_eq!(
+            (
+                wire["state_count"].as_u64(),
+                wire["trade_count"].as_u64(),
+                wire["dated_official_idl"]["version"].as_str()
+            ),
+            (Some(4), Some(2), Some("feb17"))
+        );
+        assert_eq!(
+            wire["dated_official_idl"]["sha256"],
+            "5a15060f412974e53068bae7e89aa6004defbb70ef0c56e3902ce75d124accb6"
+        );
+        let manifest_raw = fht_fixture["canonical_manifest_json_raw"].as_str().unwrap();
+        assert_eq!(
+            hash(manifest_raw),
+            "aa5e97995587ae83a97ccdeeda9b225a3c8169c42a9c6cd5984043c466596030"
+        );
+        let manifest: serde_json::Value = serde_json::from_str(manifest_raw).unwrap();
+        assert_eq!(
+            (
+                manifest["status"].as_str(),
+                manifest["authorized_method_cap"].as_u64(),
+                manifest["attempts"].as_array().map(Vec::len)
+            ),
+            (Some("passed"), Some(2), Some(2))
+        );
+        assert_eq!(
+            (
+                manifest["attempts"][0]["signature"].as_str(),
+                manifest["attempts"][1]["signature"].as_str()
+            ),
+            (
+                fht_case["birth_signature"].as_str(),
+                wire["rows"][1]["signature"].as_str()
+            )
+        );
+        assert!(
+            manifest["comparison"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["whole_transaction_equal"] == true && r["entire_meta_equal"] == true)
+        );
+
+        let provider = decimal_ratio(fht_case["provider_price_usd_decimal"].as_str().unwrap());
+        for state in fht_fixture["global_states"].as_array().unwrap() {
+            let native = fraction(state["spot_sol_per_token"].as_str().unwrap());
+            let quote =
+                U512::from_str_radix(state["quote_lamports"].as_str().unwrap(), 10).unwrap();
+            let base = U512::from_str_radix(state["base_raw"].as_str().unwrap(), 10).unwrap();
+            assert_eq!(native.0 * base * U512::from(1_000), quote * native.1);
+            let candle = &state["sol_usd_candle"];
+            for (usd, fx) in [
+                (
+                    fraction(state["usd_low"].as_str().unwrap()),
+                    decimal_ratio(candle[3].as_str().unwrap()),
+                ),
+                (
+                    fraction(state["usd_high"].as_str().unwrap()),
+                    decimal_ratio(candle[2].as_str().unwrap()),
+                ),
+            ] {
+                assert!(same(usd, (native.0 * fx.0, native.1 * fx.1)));
+                let (a, b) = (usd.0 * provider.1, provider.0 * usd.1);
+                assert!(a.abs_diff(b) * U512::from(100) <= b * U512::from(2));
+            }
+        }
+        assert!(
+            fht_fixture["global_states"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["offset_ms_from_tracker_peak"] == -708)
+        );
+        assert_eq!(
+            fht_case["provider_peak_ms_original"].as_u64().unwrap()
+                - fht_case["provider_peak_ms"].as_u64().unwrap(),
+            708
+        );
+        let combined = fraction(fht_fixture["combined_uncertainty_max"].as_str().unwrap());
+        assert!(combined.0 * U512::from(100) <= combined.1 * U512::from(2));
+        for tx in wire["rows"].as_array().unwrap() {
+            let trade = &tx["trade_instruction"];
+            let data = bytes_from_hex(trade["data_hex"].as_str().unwrap());
+            assert_eq!(data.len(), 25);
+            assert_eq!(
+                &data[..8],
+                &[0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]
+            );
+            assert_eq!(
+                (
+                    trade["account_count"].as_u64(),
+                    trade["dated_idl_expected_bytes"].as_u64(),
+                    trade["dated_idl_account_count"].as_u64()
+                ),
+                (Some(23), Some(25), Some(23))
+            );
+            assert_eq!(
+                (
+                    tx["event_cpi"]["authority_present"].as_bool(),
+                    tx["event_cpi"]["stack_height"].as_u64(),
+                    tx["event"]["name"].as_str()
+                ),
+                (Some(true), Some(2), Some("BuyEvent"))
+            );
+            let event = bytes_from_hex(tx["event"]["payload_hex"].as_str().unwrap());
+            let cert_tx = fht_fixture["target_transactions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["signature"] == tx["signature"])
+                .unwrap();
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&event)),
+                cert_tx["event_sha256"]
+            );
+        }
+
+        assert_eq!(eligible.len(), 13);
         assert_eq!(rejected, ["4evPrwwv", "vC95xGRq"]);
         let price = ExactDecimal::parse("1").unwrap();
         let rounded = fdv_cent_bounds_for_nonincreasing_supply(price, 505, 495, 3).unwrap();
@@ -6782,9 +6984,9 @@ mod tests {
             Some("414d4555fda934b0a8eab435430ff7efcabc746ca9ae02d134214cf4d2ef2d2d")
         );
         assert_eq!(
-            fixture["provenance"]["artifact_sha256"]["root_full_fdv_certificate_v3_sha256"]
+            fixture["provenance"]["artifact_sha256"]["root_full_fdv_certificate_v4_sha256"]
                 .as_str(),
-            Some("2897e4dfac148afb0c91e8a8f2bd66d75d6cde25fbdee166c89b8fbfb11d90ed")
+            Some("e85185acd8d78c9c348808e7fb0d286754a4a2ba4563911fac34bb8347d69251")
         );
         assert_eq!(
             fixture["provenance"]["artifact_sha256"]["root_curve_token_transfers_v1_sha256"]
@@ -6802,6 +7004,33 @@ mod tests {
             Some(684)
         );
         assert_eq!(fixture["fx_minutes"].as_array().unwrap().len(), 84);
+        let request_raw = fixture["current_mint_capture"]["request_json_raw"]
+            .as_str()
+            .unwrap();
+        let response_raw = fixture["current_mint_capture"]["response_json_raw"]
+            .as_str()
+            .unwrap();
+        let request_sha256 = format!("{:x}", Sha256::digest(request_raw.as_bytes()));
+        let response_sha256 = format!("{:x}", Sha256::digest(response_raw.as_bytes()));
+        assert_eq!(
+            request_sha256,
+            fixture["provenance"]["artifact_sha256"]["current_mint_capture_request_sha256"]
+        );
+        assert_eq!(
+            response_sha256,
+            fixture["provenance"]["artifact_sha256"]["current_mint_capture_response_sha256"]
+        );
+        let request: serde_json::Value = serde_json::from_str(request_raw).unwrap();
+        let response: serde_json::Value = serde_json::from_str(response_raw).unwrap();
+        assert_eq!(request["method"], "getMultipleAccounts");
+        assert_eq!(request["params"][1]["commitment"], "finalized");
+        assert_eq!(request["params"][1]["encoding"], "base64");
+        assert_eq!(
+            response["result"]["context"]["slot"].as_u64(),
+            Some(456_670_470)
+        );
+        assert_eq!(request["params"][0].as_array().unwrap().len(), 6);
+        assert_eq!(response["result"]["value"].as_array().unwrap().len(), 6);
         assert_eq!(
             fixture["scope"]["limitations"]["exact_deployed_mayhem_wrapper_pre_q"],
             false
@@ -7055,6 +7284,25 @@ mod tests {
                 case["certificate"]["stored_lower_fdv_cents"].as_u64(),
                 Some(low_cents)
             );
+            let current_mint = &case["certificate"]["current_mint"];
+            assert_eq!(current_mint["snapshot_request_sha256"], request_sha256);
+            assert_eq!(current_mint["snapshot_response_sha256"], response_sha256);
+            assert_eq!(
+                current_mint["snapshot_context_slot"],
+                response["result"]["context"]["slot"]
+            );
+            assert_eq!(current_mint["snapshot_value_count"].as_u64(), Some(6));
+            assert_eq!(current_mint["snapshot_is_finalized"], true);
+            let mint_index = request["params"][0]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|mint| mint.as_str() == case["mint"].as_str())
+                .unwrap();
+            let account = &response["result"]["value"][mint_index];
+            assert_eq!(account["owner"], current_mint["owner"]);
+            assert_eq!(account["data"][0], current_mint["raw_account_base64"]);
+            assert_eq!(account["data"][1], "base64");
             let certified_upper = ratio(
                 case["certificate"]["fdv_upper_unrounded_cents"]
                     .as_str()

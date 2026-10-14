@@ -2024,8 +2024,49 @@ Six finalized standard recaptures confirm all three birth and FDV-winning
 transactions. Guarded manual writes require a passing captured-case regression
 and workspace checks, exact original provider observation and the previous
 missing-row version. Root's independent final certificate is
-`2897e4dfac148afb0c91e8a8f2bd66d75d6cde25fbdee166c89b8fbfb11d90ed`,
+`e85185acd8d78c9c348808e7fb0d286754a4a2ba4563911fac34bb8347d69251`,
 pinning finalized replay
 `414d4555fda934b0a8eab435430ff7efcabc746ca9ae02d134214cf4d2ef2d2d`.
 The earlier root certificate-v2 pins a transient producer-overwritten artifact
 and is explicitly invalid; the correction note retains that provenance gap.
+Certificate-v3 separately used incorrect nested capture filename hashes while
+parsing correct mint bytes. The final certificate-v4 and raw-capture golden
+checks correct that provenance; numeric/model fields are unchanged and the
+original write manifest is retained with a correction sidecar.
+
+## Amendment 44 (2026-10-14) — Fht global window without a later trade
+
+FhtWtm6M… applies the existing amendment40 combined lower-bound policy to
+the complete selected-pool ±3-second capture: two fully bound buys and all
+four actual vault PRE/POST states. Both dated instructions and complete event
+payloads match the February17 IDL, which predates the February18 peak. Their
+exact real-reserve marks and SOL/USD minute endpoints agree with the saved
+provider maximum. The window's global maximum is708ms before that timestamp;
+there is no later trade in the terminal capture. A separate trade on both
+sides of the timestamp is not required by the captured-window maximum gate.
+Both sides of every actual trade and all future captured states still
+participate; none are dropped to improve agreement.
+
+Birth issuance is1B tokens with mint authority revoked. Verified metadata-
+only current mint supply is999996024797032raw at6decimals; exact peak supply
+and complete burn history remain unknown. Provider price times current supply
+gives a floored lower reference133944348cents, within2% of the unrounded
+birth-supply upper and both independent global-price/FX/supply endpoints.
+Combined uncertainty is below0.025%. Retain the explicit amendment40 source,
+null ATH date and holder/liquidity metadata; no runner gates or generic
+production fallback change. The stored holder count is12, below50.
+
+Root certificate:
+`abdb98ca0674c9f2b04fc3eabb3c0d1d95f3b3341a0f8ee3dd64218b792bcd33`.
+The original mint-account request contains duplicates for unrelated targets;
+Fht occurs once. Its exact original index/value and capture hashes are checked
+without asserting the whole request is unique. Two finalized standard reads
+confirm birth and the price-winning transaction. A captured-case golden
+extends the shared lower-bound regression and tests original raw capture hashes.
+
+6SFB and7rWY also have acceptable global prices, but47 trade-instruction
+wire variants remain unexplained against their correctly dated November15
+IDL. They remain unpromoted. The earlier diagnostic mislabeled January9 as
+November15; corrected offline evidence preserves the old result separately.
+A separate audit finds no such incorrect pre-peak IDL in accepted closures.
+Annual/all-market ATH remains incomplete.

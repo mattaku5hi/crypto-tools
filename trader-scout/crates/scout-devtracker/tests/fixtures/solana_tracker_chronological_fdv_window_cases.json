@@ -4,7 +4,6 @@
     "source": "onchain-mint-history-curve-selected-pool-fdv-window-cpm-bounded-cex-v1",
     "artifact_sha256": {
       "full_fdv_replay_v25_sha256": "414d4555fda934b0a8eab435430ff7efcabc746ca9ae02d134214cf4d2ef2d2d",
-      "root_full_fdv_certificate_v3_sha256": "2897e4dfac148afb0c91e8a8f2bd66d75d6cde25fbdee166c89b8fbfb11d90ed",
       "root_curve_token_transfers_v1_sha256": "fc16c015c3b9d2bdf9c1218eef8d30fa849f2636251ea2386dc08c8b6463a323",
       "cpm_pre_q_inversion_interval_audit_v2_sha256": "54d1aee7ef3f1727010f27f4a98a307019214a08a5b4a10cc65ae519671ce2f8",
       "canonical_recapture_manifest_sha256": "c58ac6e1b807ff1aa0d3564642d443569c9af8e6085e7c0992063fb6b8a200d0",
@@ -13,7 +12,10 @@
       "official_pump_sdk_idl_member_sha256": "0ba934dd633279d22c33b8ed247e0c06accf81f5c91537d68c2d20b592aa0f57",
       "supply_audit_v2_sha256": "df08bfd99fdacc14a96ba94f57935ceaf2a5a1a151bb5287ed1485cf19ca2af2",
       "coinbase_capture_sha256": "c60bdc1faa3ec9422f6132411a7d2788830ec2d494935d60c09d963dd71b343c",
-      "fx_allocation_sha256": "c3647cf72753154891d468515b716fa43a35ee53da8b3523dc22f147f5bd4e87"
+      "fx_allocation_sha256": "c3647cf72753154891d468515b716fa43a35ee53da8b3523dc22f147f5bd4e87",
+      "root_full_fdv_certificate_v4_sha256": "e85185acd8d78c9c348808e7fb0d286754a4a2ba4563911fac34bb8347d69251",
+      "current_mint_capture_request_sha256": "f63e4ea7fdb52a49050abf12f7904648bbd8fb346e8720ad1efc608225d80ccf",
+      "current_mint_capture_response_sha256": "fe876b1e8e07da89120534bf12db1b66deaca87be0be65d9dcad268f9a680afc"
     },
     "network_calls": 0,
     "database_writes": 0,
@@ -37939,8 +37941,8 @@
             }
           ],
           "extension_set_exact": true,
-          "snapshot_request_sha256": "6b2b4f3708daaa91e6a6c5c68f682509ca4d4ab2dbd86c2c70e1dbc63c93fa42",
-          "snapshot_response_sha256": "d77667c88af5be93819ff08df82fc40684e40fe0be68b6b75c7ff971c056ccae",
+          "snapshot_request_sha256": "f63e4ea7fdb52a49050abf12f7904648bbd8fb346e8720ad1efc608225d80ccf",
+          "snapshot_response_sha256": "fe876b1e8e07da89120534bf12db1b66deaca87be0be65d9dcad268f9a680afc",
           "snapshot_context_slot": 456670470,
           "snapshot_value_count": 6,
           "snapshot_is_finalized": true,
@@ -71606,8 +71608,8 @@
             }
           ],
           "extension_set_exact": true,
-          "snapshot_request_sha256": "6b2b4f3708daaa91e6a6c5c68f682509ca4d4ab2dbd86c2c70e1dbc63c93fa42",
-          "snapshot_response_sha256": "d77667c88af5be93819ff08df82fc40684e40fe0be68b6b75c7ff971c056ccae",
+          "snapshot_request_sha256": "f63e4ea7fdb52a49050abf12f7904648bbd8fb346e8720ad1efc608225d80ccf",
+          "snapshot_response_sha256": "fe876b1e8e07da89120534bf12db1b66deaca87be0be65d9dcad268f9a680afc",
           "snapshot_context_slot": 456670470,
           "snapshot_value_count": 6,
           "snapshot_is_finalized": true,
@@ -136841,8 +136843,8 @@
             }
           ],
           "extension_set_exact": true,
-          "snapshot_request_sha256": "6b2b4f3708daaa91e6a6c5c68f682509ca4d4ab2dbd86c2c70e1dbc63c93fa42",
-          "snapshot_response_sha256": "d77667c88af5be93819ff08df82fc40684e40fe0be68b6b75c7ff971c056ccae",
+          "snapshot_request_sha256": "f63e4ea7fdb52a49050abf12f7904648bbd8fb346e8720ad1efc608225d80ccf",
+          "snapshot_response_sha256": "fe876b1e8e07da89120534bf12db1b66deaca87be0be65d9dcad268f9a680afc",
           "snapshot_context_slot": 456670470,
           "snapshot_value_count": 6,
           "snapshot_is_finalized": true,
@@ -140099,5 +140101,9 @@
       "high_usd_per_sol": "84.43",
       "close_usd_per_sol": "84.36"
     }
-  ]
+  ],
+  "current_mint_capture": {
+    "request_json_raw": "{\n  \"method\": \"getMultipleAccounts\",\n  \"params\": [\n    [\n      \"EWbabspXAJwQSsz29pqfXjShdS1H4SBGbDHP6o1Qpump\",\n      \"71N4yajEVTXmP9ohnY6Ve99zYp6bZ3CFGxrLJVndh2yZ\",\n      \"FLkQktRLkN116wYdvLmYoNsXricD73UZ5MG3iMfipump\",\n      \"FQLQDCt3z6jrLS3vbrFTih74dS1VxWpC57c7fJUd12jY\",\n      \"2b4p8ienk822cxGYpNgrJM7sP2cv7yrPjG4hCf4Dpump\",\n      \"J3RGxatfgrJpT1kfDrbk2LLfXjsz7sst6bW6fDHCy6mz\"\n    ],\n    {\n      \"commitment\": \"finalized\",\n      \"encoding\": \"base64\"\n    }\n  ],\n  \"provider\": \"helius\",\n  \"reserved_utc\": \"2026-10-14T02:20:26.253201+00:00\",\n  \"response_path\": \"/home/mattakushi/Projects/work_selfstudy/crypto/crypto-tools/trader-scout/.scout-data/diagnostics/solana-gap-closure-2026-10-14-batch13/captures/accounts-mints-pools-finalized.response.json\"\n}\n",
+    "response_json_raw": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"slot\":456670470,\"apiVersion\":\"4.3.0-alpha.2\"},\"value\":[{\"lamports\":3654000,\"data\":[\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASl93VFlrAgAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMi831r+upjif0N9e4XmY5A1F7yhPbatROaDUcJG5sk/EwCfAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyLzfWv66mOJ/Q317heZjkDUXvKE9tq1E5oNRwkbmyT8GAAAAU0xPUGFpBgAAAG9oR0VuZUMAAABodHRwczovL2lwZnMuaW8vaXBmcy9RbVY4NUJ5ODhEZHZiREJISGZYNFhacVppSGpESjdnYjEzSEJtQlFmTDE1RlZqAAAAAA==\",\"base64\"],\"owner\":\"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":397},{\"lamports\":2985840,\"data\":[\"8ZptBBGxbbz+AACFaqJO+Fsvscdn4VFd/kN3ZpMDdLkatclF6PrJlKQVV8i831r+upjif0N9e4XmY5A1F7yhPbatROaDUcJG5sk/BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAGoCWwVO8xwcKkG7/uXYciHXjG0laS/odO10gtg/hN0pI64hgkOsa//nEApiNYmxb7EdXjQ9g+jrrzo1QtQbSbW9yrwnq1LxDChsXiY8+gCzjGngPxI4rRQgDBNi8y2onsSg9e+KwAAAPOhB0YtXcjdJbDN3UFBMYBcuWnVsRKN8CXWdF3He5v9AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"base64\"],\"owner\":\"pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":301},{\"lamports\":3758400,\"data\":[\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA5M/pKMz1AwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANUSvFjLxyenRKX6qLdtNCqHKLK4NBNnEUNYNH03W9OfEwCuAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1RK8WMvHJ6dEpfqot200Kocosrg0E2cRQ1g0fTdb058VAAAAV2hlbiBQaG9uZSBtZWV0IEZhY2UhBgAAAFBPT3VjSEMAAABodHRwczovL2lwZnMuaW8vaXBmcy9RbVhkN2dhRk5MTVNCRDg0c0ZSbktvM0FpTXV5SzRtZnRYelF2b1A3SEJrVWE4AAAAAA==\",\"base64\"],\"owner\":\"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":412},{\"lamports\":2985840,\"data\":[\"8ZptBBGxbbz9AADfgJ9m9o8YPJ5qSB8IhD1v1B73HpYRwaRECTPBUFOWK9USvFjLxyenRKX6qLdtNCqHKLK4NBNnEUNYNH03W9OfBpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAEbLX8hzCn9tGUA6HPKk8Ca39M2HE+dyHd8s7faQjsY5Y5IcjFqpILo7Rve0Bb2hzInLo0ACpOJqbVQcGv91gLMzjpEK31bDeAxNEDP0GhNRBjuo61rpQx4EQwjODi2tlbiT85HTAAAAPOhB0YtXcjdJbDN3UFBMYBcuWnVsRKN8CXWdF3He5v9AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"base64\"],\"owner\":\"pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":301},{\"lamports\":3716640,\"data\":[\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAtHSHjYMpAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABeVvtKEgzz8yvII6vdo+0ftqDoqHzsu9mHSGv+9ZiNvEwCoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF5W+0oSDPPzK8gjq92j7R+2oOiofOy72YdIa/71mI28OAAAAVGhlIFJlY3J1aXRlciAHAAAAJFJFQ1JVVEMAAABodHRwczovL2lwZnMuaW8vaXBmcy9RbVg2b0FOM0VyRHBTa2hROFdYODI0ZEhmZ0ZNQ2NlR3lXRnBDTGNZNWdDeU53AAAAAA==\",\"base64\"],\"owner\":\"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":406},{\"lamports\":2985840,\"data\":[\"8ZptBBGxbbz/AAD/Fc5AXSfbSnh52yEn9WnaKOZqxpKinnaJGe3Oncn0fReVvtKEgzz8yvII6vdo+0ftqDoqHzsu9mHSGv+9ZiNvBpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAGKsAd7X25v6HlkqNzNtGLBUdEhr3YxxYIEl0j3mHCn5y+CQsIojXcE84MTn8eWkk2gktJwNSmDaOntQ7gu3pGgF6c3H2z2SM6hFXeSIlSgL4gks/mLtejAd0GQgRLQrtHjkAXuOQAAAC09YfsB9c8l+3ranmechAqpOnad7A34FAWHz0sGas3cAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"base64\"],\"owner\":\"pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":301}]},\"id\":1}"
+  }
 }
