@@ -2154,6 +2154,284 @@ mod tests {
     }
 
     #[test]
+    fn conservative_provider_window_fdv_bounds_replay_exactly() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_conservative_fdv_bound_cases.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["schema"],
+            "validated-provider-window-conservative-fdv-bounds-v1"
+        );
+        assert_eq!(
+            fixture["source"],
+            "solana-tracker-window-supply-lower-bound-2pct-pool-fx-validated-v1"
+        );
+        assert_eq!(fixture["automatic_adapter_rule_added"], false);
+        assert_eq!(fixture["intervals_are_exact_peak_supply"], false);
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 14);
+
+        let fraction = |value: &str| {
+            let (n, d) = value.split_once('/').unwrap();
+            (
+                U512::from_str_radix(n, 10).unwrap(),
+                U512::from_str_radix(d, 10).unwrap(),
+            )
+        };
+        let pow10 = |scale: u32| {
+            (0..scale)
+                .try_fold(U512::from(1), |v, _| v.checked_mul(U512::from(10)))
+                .unwrap()
+        };
+        let matches_two_percent = |reference: (U512, U512), cents: i64| {
+            (reference.0 * U512::from(100))
+                .abs_diff(U512::from(u64::try_from(cents).unwrap()) * reference.1)
+                <= reference.0 * U512::from(2)
+        };
+        let mut eligible = Vec::new();
+        let mut rejected = Vec::new();
+
+        for case in cases {
+            let mint = case["mint"].as_str().unwrap();
+            let raw_b64 = case["current_mint"]["raw_account_base64"].as_str().unwrap();
+            let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut raw = Vec::new();
+            let (mut accumulator, mut bits) = (0_u32, 0_u32);
+            for byte in raw_b64.bytes().filter(|byte| *byte != b'=') {
+                accumulator = (accumulator << 6)
+                    | u32::try_from(
+                        alphabet
+                            .iter()
+                            .position(|candidate| *candidate == byte)
+                            .unwrap(),
+                    )
+                    .unwrap();
+                bits += 6;
+                if bits >= 8 {
+                    bits -= 8;
+                    raw.push(u8::try_from((accumulator >> bits) & 0xff).unwrap());
+                }
+            }
+            let current = &case["current_mint"];
+            let owner = current["owner"].as_str().unwrap();
+            assert_eq!(
+                raw.len(),
+                usize::try_from(current["raw_account_length"].as_u64().unwrap()).unwrap()
+            );
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&raw)),
+                current["raw_account_sha256"].as_str().unwrap()
+            );
+            assert_eq!(raw[0..4], [0, 0, 0, 0]);
+            assert_eq!(
+                u64::from_le_bytes(raw[36..44].try_into().unwrap()).to_string(),
+                current["supply_raw"].as_str().unwrap()
+            );
+            assert_eq!(
+                raw[44],
+                u8::try_from(case["decimals"].as_u64().unwrap()).unwrap()
+            );
+            assert_eq!(current["supply_raw"], case["current_supply_raw"]);
+            assert_eq!(current["snapshot_is_finalized"], true);
+            if owner == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" {
+                assert_eq!(raw.len(), 82);
+                assert!(current["extensions"].as_array().unwrap().is_empty());
+            } else {
+                assert_eq!(owner, "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+                assert_eq!(raw[165], 1);
+                assert!(raw[82..165].iter().all(|byte| *byte == 0));
+                let mut offset = 166;
+                let mut types = Vec::new();
+                for extension in current["extensions"].as_array().unwrap() {
+                    let kind = u16::from_le_bytes(raw[offset..offset + 2].try_into().unwrap());
+                    let len = usize::from(u16::from_le_bytes(
+                        raw[offset + 2..offset + 4].try_into().unwrap(),
+                    ));
+                    let value = &raw[offset + 4..offset + 4 + len];
+                    assert_eq!(u64::from(kind), extension["type"].as_u64().unwrap());
+                    assert_eq!(
+                        u64::try_from(len).unwrap(),
+                        extension["length"].as_u64().unwrap()
+                    );
+                    assert_eq!(
+                        format!("{:x}", Sha256::digest(value)),
+                        extension["value_sha256"].as_str().unwrap()
+                    );
+                    types.push(kind);
+                    offset += 4 + len;
+                }
+                assert_eq!(offset, raw.len());
+                assert_eq!(types, [18, 19]);
+                assert_eq!(current["extension_set_exact"], true);
+            }
+
+            let audit = &case["birth_instruction_audit"];
+            assert_eq!(audit["strict_allowlist_pass"], true);
+            assert_eq!(audit["no_unrecognized_target_token_instruction"], true);
+            let instructions = audit["instructions"].as_array().unwrap();
+            let init: Vec<_> = instructions
+                .iter()
+                .filter(|ix| ix["kind"] == "initialize_mint2")
+                .collect();
+            let mints: Vec<_> = instructions
+                .iter()
+                .filter(|ix| ix["kind"] == "mint_to")
+                .collect();
+            let revokes: Vec<_> = instructions
+                .iter()
+                .filter(|ix| ix["kind"] == "set_mint_authority_none")
+                .collect();
+            assert_eq!(init.len(), 1);
+            assert!(!mints.is_empty());
+            assert_eq!(revokes.len(), 1);
+            let init_data = bytes_from_hex(init[0]["data_hex"].as_str().unwrap());
+            assert_eq!((init_data[0], init_data[1]), (20, raw[44]));
+            assert_eq!(audit["initialize_mint2"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                bs58::encode(&init_data[2..34]).into_string(),
+                audit["initialize_mint2"][0]["mint_authority"]
+                    .as_str()
+                    .unwrap()
+            );
+            let mut birth = 0_u128;
+            let mut last_mint = (-1_i64, -1_i64);
+            for mint_ix in &mints {
+                let data = bytes_from_hex(mint_ix["data_hex"].as_str().unwrap());
+                assert_eq!(data.len(), 9);
+                assert_eq!(data[0], 7);
+                let amount = u64::from_le_bytes(data[1..9].try_into().unwrap());
+                birth += u128::from(amount);
+                assert_eq!(mint_ix["accounts"][0].as_str(), Some(mint));
+                last_mint = last_mint.max((
+                    mint_ix["outer_index"].as_i64().unwrap(),
+                    mint_ix["inner_index"].as_i64().unwrap(),
+                ));
+            }
+            let revoke = &revokes[0];
+            assert_eq!(
+                bytes_from_hex(revoke["data_hex"].as_str().unwrap()),
+                [6, 0, 0]
+            );
+            assert_eq!(
+                audit["authority_revocation"]["kind"],
+                "set_mint_authority_none"
+            );
+            assert_eq!(
+                audit["authority_revocation"]["authority"],
+                audit["initialize_mint2"][0]["mint_authority"]
+            );
+            assert_eq!(revoke["accounts"][0].as_str(), Some(mint));
+            assert!(
+                (
+                    init[0]["outer_index"].as_i64().unwrap(),
+                    init[0]["inner_index"].as_i64().unwrap()
+                ) < last_mint
+            );
+            assert!(
+                last_mint
+                    < (
+                        revoke["outer_index"].as_i64().unwrap(),
+                        revoke["inner_index"].as_i64().unwrap()
+                    )
+            );
+            assert_eq!(
+                birth.to_string(),
+                case["birth_supply_raw"].as_str().unwrap()
+            );
+            assert_eq!(birth.to_string(), audit["mint_sum_raw"].as_str().unwrap());
+            assert_eq!(
+                audit["mint_instructions"].as_array().unwrap().len(),
+                mints.len()
+            );
+
+            let price =
+                ExactDecimal::parse(case["provider_price_usd_decimal"].as_str().unwrap()).unwrap();
+            let birth = case["birth_supply_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            let current = case["current_supply_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            let decimals = u8::try_from(case["decimals"].as_u64().unwrap()).unwrap();
+            assert!(case["both_snapshots_after_price_peak"].as_bool().unwrap());
+            let bounds =
+                fdv_cent_bounds_for_nonincreasing_supply(price, birth, current, decimals).unwrap();
+            let stored = case["stored_conservative_floor_cents"].as_i64().unwrap();
+            assert_eq!(
+                [bounds.lower_cents, bounds.upper_cents],
+                [
+                    case["fdv_cent_floors"][0].as_i64().unwrap(),
+                    case["fdv_cent_floors"][1].as_i64().unwrap()
+                ]
+            );
+            assert_eq!(bounds.lower_cents, stored);
+            assert!(!bounds.is_same_cent());
+            assert_eq!(case["cent_bounds_collapse"], false);
+            assert_eq!(case["peak_supply_exact"], false);
+            assert_eq!(case["full_history_complete"], false);
+            assert!(
+                case["source_scope"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not lifetime/all-market ATH")
+            );
+
+            let scale = price.scale.checked_add(i32::from(decimals)).unwrap();
+            let upper_num = U512::from(price.coefficient) * U512::from(birth);
+            let upper_den = pow10(u32::try_from(scale).unwrap());
+            let floor_gate = U512::from(u64::try_from(stored).unwrap()) * upper_den
+                >= upper_num * U512::from(98);
+            assert_eq!(
+                floor_gate,
+                case["floor_aware_interval_within_2pct"].as_bool().unwrap()
+            );
+            let low_gate = matches_two_percent(
+                fraction(case["reference_lower_fdv_fraction"].as_str().unwrap()),
+                stored,
+            );
+            let high_gate = matches_two_percent(
+                fraction(case["reference_upper_fdv_fraction"].as_str().unwrap()),
+                stored,
+            );
+            let spot_gate = low_gate && high_gate;
+            assert_eq!(
+                spot_gate,
+                case["independent_spot_supply_endpoints_within_2pct_of_stored"]
+                    .as_bool()
+                    .unwrap()
+            );
+            let accepted = floor_gate && spot_gate;
+            assert_eq!(
+                accepted,
+                case["eligible_manual_lower_bound_candidate"]
+                    .as_bool()
+                    .unwrap()
+            );
+            if accepted {
+                eligible.push(mint.to_owned());
+            } else {
+                rejected.push(case["prefix"].as_str().unwrap().to_owned());
+            }
+        }
+
+        assert_eq!(eligible.len(), 12);
+        assert_eq!(rejected, ["4evPrwwv", "vC95xGRq"]);
+        let price = ExactDecimal::parse("1").unwrap();
+        let rounded = fdv_cent_bounds_for_nonincreasing_supply(price, 505, 495, 3).unwrap();
+        assert_eq!((rounded.lower_cents, rounded.upper_cents), (49, 50));
+        assert!(u128::from(505_u64 - 495) * 100 <= 505 * 2); // Raw width alone passes.
+        assert!(U512::from(49) * U512::from(1_000) < U512::from(505) * U512::from(98)); // Floor-aware gate rejects.
+    }
+
+    #[test]
     fn two_solana_peak_prices_have_independent_pool_spot_corroboration() {
         use alloy_primitives::U256;
 

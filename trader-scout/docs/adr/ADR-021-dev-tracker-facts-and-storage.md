@@ -1833,3 +1833,54 @@ The guarded source is
 with `ath_at=NULL` and holders/liquidity preserved. The price remains a
 provider recording-window reference, not proof of annual/all-market coverage.
 No general adapter or runner threshold is changed.
+
+## Amendment 40 (2026-10-14) — named conservative FDV bounds within 2%
+
+The owner accepts 1–2% maximum uncertainty. Twelve individually verified
+Solana cases now permit a conservative lower FDV estimate without asserting
+exact peak supply. This manual policy is separate from the existing exact-cent
+bound collapse rule; no automatic adapter or runner threshold changes.
+
+For the saved provider-window maximum price P, actual birth issuance B and a
+finalized later mint supply C give [P*C/10^d, P*B/10^d]. Birth instructions
+prove InitializeMint2, issuance by its authority and subsequent permanent
+revocation. Current accounts are either exact legacy 82-byte mints or
+Token-2022 mints with only metadata pointer/token metadata extensions. The
+birth allowlist rejects unknown target-mint instructions, close authority,
+confidential supply and scaled/rebasing extensions. Both current and earlier
+supply snapshots are after the price maximum and agree; C<=B. Standard token
+semantics thus permit burns but prevent minting/reinitialization, giving a
+conditional nonincreasing-supply interval. This is not a complete burn ledger.
+
+Store L=floor(100*P*C/10^d) cents only when (U-L/100)/U<=2%, where
+U=P*B/10^d. Independently replay every pre/post state in the terminal ±3-second
+selected-pool neighborhood, select global maxima at each dated FX endpoint,
+and require the stored scalar to be within 2% of BOTH independent lower and
+upper price/supply endpoints. This combined gate includes cent rounding and
+does not stack separate 2% allowances. Two controls with about 44% supply
+uncertainty remain unknown; a synthetic cent-rounding case is also rejected.
+
+All twelve selected peak transactions were independently recaptured with
+standard finalized getTransaction and their messages/selected metadata match
+the saved history responses. Raw query identity, cursors, terminal pages,
+full dated IDL layouts, pool-owned vaults and actual FX minutes remain
+required. The earlier overly strict two-bracket price gate is not reused:
+a later lower price does not invalidate a matching maximum, while a higher
+state anywhere in the complete neighborhood must participate in the maximum.
+
+Golden solana_tracker_conservative_fdv_bound_cases.json retains actual mint
+bytes, ordered birth instruction bytes, exact rational intervals, twelve
+positive cases and two wide negative controls. Root interval proof SHA-256:
+d7a3d2c7a33a889d0375029399b46324a1092850ba087aceef58ad72e38ff802;
+canonical recapture manifest:
+7bc251534bdf93de79fedf7f31a2db8baf6b26da3771db39cabe6d74d1b2ec53.
+
+The explicit source is
+solana-tracker-window-supply-lower-bound-2pct-pool-fx-validated-v1.
+Guarded writes require the previous codex-missing zero row and its observed_at
+plus the exact saved observation price, original millisecond timestamp, pool
+and response hash; holders/liquidity are preserved and ath_at=NULL. The
+provider recording window and other-market/year coverage remain unknown.
+Stored FDV is a conservative reference estimate, not an exact peak or a
+wallet execution cost. Import-file labels contain runner counts rather than
+claiming exact FDV; source detail remains in ATH records and this evidence.

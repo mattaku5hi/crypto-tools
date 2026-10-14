@@ -1,14 +1,14 @@
 # B8.4 historical ATH closures — 2026-10-13
 
-Fifty-six guarded writes extend the immutable 679-token diagnostic cohort from
-434 numeric / 245 unknown to **490 numeric / 189 unknown** (Oct 14 Moscow). This is a
+Sixty-eight guarded writes extend the immutable 679-token diagnostic cohort from
+434 numeric / 245 unknown to **502 numeric / 177 unknown** (Oct 14 Moscow). This is a
 candidate-cohort checkpoint, not a coverage percentage for all annual network
 launches. Numeric records retain source-specific price kinds and historical
 scope; annual all-market ATH is still incomplete.
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Solana | 56 | 54 |
+| Solana | 68 | 42 |
 | BSC | 13 | 0 |
 | Base | 403 | 100 |
 | Robinhood | 18 | 35 |
@@ -216,3 +216,15 @@ adds one exact-cent record, with every captured pre/post state checked and a
 complete 921-transaction supply window. The burn occurs before the peak;
 maximum-FDV endpoint floors still agree. Other AMM price passes have their
 supply evidence recorded separately and are not silently treated as exact.
+
+## Conservative lower bounds (Oct 14)
+
+Twelve additional SOL observations were guarded-written with the explicit
+`solana-tracker-window-supply-lower-bound-2pct-pool-fx-validated-v1` source.
+These are lower reference estimates within the owner's accepted 2% combined
+price/supply/rounding uncertainty, not exact maximum FDV. See
+[case table and limits](2026-10-14-solana-conservative-fdv-bounds.md) and
+ADR-021 amendment 40. Holders/liquidity are preserved; `ath_at=NULL`. Two
+roughly 44% supply-bound controls remain unknown. Total closures since the
+immutable 434 baseline are 68: SOL54/Base2/RH12. Workspace fmt, all-target
+all-feature Clippy and 1232 tests passed against the isolated test database.
