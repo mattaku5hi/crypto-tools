@@ -1634,3 +1634,53 @@ The separate worker audit hash is
 This adds manually validated cases, not a general automatic adapter rule;
 annual all-market coverage and full Mayhem transition semantics remain
 unproven.
+
+## Amendment 36 (2026-10-14) — signature cursor versus supply time scope
+
+Seven further native-SOL Mayhem curve marks retain amendments 34–35's price
+kind, source and unknown recording-window limits. Their complete captured
+±3-second neighborhoods contain 101 TradeEvents; selected global maxima are
+at the provider timestamp's second or one second before it, agreeing at both
+dated FX endpoints within 2%. No higher neighboring state is omitted. The
+`AiEpwMiG…` control has an earlier matching state but its captured global
+maximum differs by about 8.6%; it remains unpromoted. Two AMM candidates are
+not evaluated with the curve formula.
+
+A signature cursor is not itself an exact timestamp boundary. For
+`FgFgrJLZ…`, `before=first_strict_post_peak_signature` retains one successful
+signature two seconds after the provider peak and two failed signatures
+inside the queried interval. The saved capture manifest's original mismatch
+status remains unchanged. A separate proof explicitly scopes returned
+signatures to successful transactions with known timestamps between birth
+and the peak, before comparing with the complete filtered TFA set; birth is
+added explicitly because `until=birth_signature` is exclusive. Out-of-scope
+and failed rows are retained, not silently discarded or counted as effects.
+A null/unknown signature time cannot be excluded by this rule. The raw
+query/response remains immutable. This corrects a query-scope comparison,
+not the on-chain transaction order or economic ledger policy.
+
+The seven complete birth-to-peak success counts are 6/10/47/14/70/14/23.
+All have two birth `MintTo` instructions totaling `2e15` raw units, birth
+mint-authority revocation, no burn or unknown supply opcode through the
+peak, and current metadata-only mint extensions. Actual peak supply is 2B
+six-decimal tokens. Exact maximum FDV cent floors are
+535,428 / 1,116,635 / 2,474,933 / 602,043 / 683,696 / 651,093 / 2,236,670.
+All selected standard finalized transactions reconcile with the captured
+TFA messages, balances and inner instructions. Native transfers are scoped
+to direct/nested Pump buys; curve and fee legs reconcile, with no additional
+creator-vault amount in these selected transactions.
+
+Golden `solana_tracker_mayhem_curve_mark_batch7_cases.json` uses the same
+captured-byte regression implementation as the preceding fee cases and
+additionally checks the explicit signature-time and failed-transaction
+boundary. Root price, supply and native proofs are pinned by SHA-256
+`25be858f6306b51dfb8f3ae53982a888c47d07d015afacb849c8e920df12185d`,
+`70398ca44cbf59fa6394dba162a703f261b597d1040751a2edb61ebae49040cf`
+and `b3831fbadb139490326f24ee657f15054252b04d1d9fa1839097894a86122a9c`.
+The final worker supply sidecar has SHA-256
+`64546a46fc73a917e5fdfb4d4c138e86d549b793e4083722526b4bb0f54aaecd`;
+its earlier strict-cursor-only analysis was revised before any promotion,
+while all raw captures and the initial manifest status were preserved.
+The source remains `solana-tracker-window-peak-supply-mayhem-curve-mark-fx-validated-v1`,
+with `ath_at=NULL` and preserved holders/liquidity. No automatic adapter,
+runner threshold, full Mayhem transition rule or all-market coverage is added.

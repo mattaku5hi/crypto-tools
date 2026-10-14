@@ -1,14 +1,14 @@
 # B8.4 historical ATH closures — 2026-10-13
 
-Thirty-three guarded writes extend the immutable 679-token diagnostic cohort from
-434 numeric / 245 unknown to **467 numeric / 212 unknown** (Oct 14 Moscow). This is a
+Forty guarded writes extend the immutable 679-token diagnostic cohort from
+434 numeric / 245 unknown to **474 numeric / 205 unknown** (Oct 14 Moscow). This is a
 candidate-cohort checkpoint, not a coverage percentage for all annual network
 launches. Numeric records retain source-specific price kinds and historical
 scope; annual all-market ATH is still incomplete.
 
 | Network | Numeric | Unknown |
 |---|---:|---:|
-| Solana | 33 | 77 |
+| Solana | 40 | 70 |
 | BSC | 13 | 0 |
 | Base | 403 | 100 |
 | Robinhood | 18 | 35 |
@@ -114,7 +114,7 @@ finalized supply; no burn precedes or overlaps the maximum-price second.
 Every write required the current zero-sentinel row to remain `codex-missing`
 with the expected observation timestamp. The ST writes additionally checked
 the stored provider price, timestamp, exact pool and raw-response hash. Known
-positive values were preserved. Holders/liquidity were preserved on all thirty
+positive values were preserved. Holders/liquidity were preserved on all thirty-seven
 complementary-source writes; the three primary Codex updates followed existing
 metadata-refresh behavior. Runner thresholds and membership rules are unchanged.
 Complementary records keep `ath_at=NULL`; the primary Codex timestamps retain
@@ -137,9 +137,9 @@ rows are retained under `.scout-data/diagnostics/`:
 
 The original frozen snapshot and previous sealed deployment archive were not
 rewritten. The live checkpoint is `b84-live-progress-2026-10-13.json`; the old
-deployment dump predates these thirty-three writes and is not claimed to include them.
+deployment dump predates these forty writes and is not claimed to include them.
 
-Golden fixtures and ADR-021 amendments 25–35 cover accepted and
+Golden fixtures and ADR-021 amendments 25–36 cover accepted and
 pending reviewed price kinds, supply-bound negative controls, per-event FX
 weighting and provenance.
 Full `cargo fmt --check`, workspace/all-targets/all-features Clippy with denied
@@ -191,3 +191,8 @@ Mayhem curve-mark records, with complete mint histories and separately
 reconciled native fee legs. All two negative price controls and the AMM
 pilot remain unpromoted. The protected 26-closure package predates these
 seven writes; it must not be described as including the 33-closure checkpoint.
+
+[Batch 7](2026-10-14-solana-ath-gap-closure-batch7.md) adds seven further
+curve-mark records. Its Fg proof distinguishes the raw signature cursor
+interval from successful transactions inside the supply timestamp scope;
+outside/failed rows and the original mismatch status remain explicit.
