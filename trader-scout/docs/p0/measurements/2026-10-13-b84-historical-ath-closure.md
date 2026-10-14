@@ -282,3 +282,6 @@ wire variants remain unresolved; the bounded official-source search is
 [documented separately](2026-10-14-pumpswap-legacy-instruction-wire-research.md).
 The chronological three-case golden now verifies corrected certificate-v4
 and original current-mint capture hashes; numeric values are unchanged.
+
+Latest78-closure state package includes all current writes, exact dump-row
+reconciliation and corrected capture provenance; see the [archive checkpoint](2026-10-13-local-daemon-and-year-coverage.md). Its own full restore is not claimed.

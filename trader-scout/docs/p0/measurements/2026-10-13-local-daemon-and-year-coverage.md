@@ -295,3 +295,26 @@ Binary remains7c1ca5c; checkoutfb167df; linked round14b checks include1233
 passing tests. This archive was not full-restored; the separately verified
 68-closure restore above retains its own scope and exit-code caveat. This
 package is a partial ATH checkpoint, not annual/all-market completion.
+
+## Seventy-eight-closure archive checkpoint (2026-10-14)
+
+The latest consistent schema10 dump runs04:40:47–04:42:02UTC after the
+chronological three-case and Fht guarded writes. Fixedcohort512numeric/
+167unknown. Before packing, streamed ATH-table reconciliation matches all78
+closure rows exactly across all six recorded fields. All39 payloads and36
+exports pass hashes and0600/0700 modes; secrets are excluded. Exports/config
+are separately captured from04:41:53UTC while the daemon continues running.
+
+Private archive:
+`.scout-data/deployment/2026-10-14-b84-78-closures/trader-scout-state-schema10-b84-78-closures-20261014.tar`,
+3,015,464,960bytes, SHA-256
+`600c01914a8ce61b6a06c2ea77040d43dd6d0b370103920a44424572120e826f`.
+Dump SHA-256:
+`93d9d1f31b4a4efc8d9be06c52d00159fde49ab5a4d4350dd53ce58d6b87bd67`.
+Checkout8ffc1f2; binary remains7c1ca5c; full round16 checks include1234tests.
+Supplemental provenance pins corrected certificate-v4, Fht evidence/goldens
+and guarded-write manifests. No full restore of this78-closure dump is
+claimed: the separate68-closure restore retains its own validated scope and
+exit-code caveat. All immutable earlier archives remain preserved. This
+package includes the latest78 closures and still does not establish annual
+or all-market ATH completeness.
