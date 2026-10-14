@@ -2132,3 +2132,49 @@ complete. Appended accounts remain unresolved. All684 conditional quote
 intervals and exact event-CPI identities still match; no monetary write is
 changed. Corrected audit SHA-256:
 `9ae25d1eeeaf46e0ffda5acf38f37d858b196cb754559523b1b17914e62bd784`.
+
+## Amendment 46 (2026-10-14) — observed 4ev reserve references with PRE gaps
+
+4evPrwwv… has111 successful transactions in the terminal birth-to-provider-
+peak+3s mint-address scope;20 failed signature records are retained. Two
+birth mints issue2B tokens and revoke mint authority. One actual burn before
+the peak leaves1121771374045406raw at6decimals. Current October supply is
+1121758849983755raw; later reductions are outside the captured history and
+must not substitute for supply in the price window.
+
+Use a separate observed-reference source:
+`onchain-mint-history-observed-curve-post-selected-pool-fdv-window-cex-v1`.
+Its dataset is exactly119 observed reserve marks: Create,96 curve POST and
+22 selected-pool PRE/POST vault states. Every mark is multiplied by the
+instruction-ordered historical supply and exact15-minute SOL/USD low/high.
+The inventory's price-times-raw-supply field is not normalized FDV; divide
+by10^6 before USD multiplication. Choose global maxima before cent rounding:
+lower floor719780cents, upper ceiling720530, both selected-pool POST at
+2026-04-19 15:00:58UTC (one second before the provider peak second).
+
+All96 conditional curve PRE intervals remain saved research diagnostics,
+explicitly outside the observed source. One bundled two-trade transaction
+reconciles only in aggregate; its per-sale SOL output is unproven. Therefore
+it cannot meet amendment43's single-curve-trade sell-flow premise. This is
+not a zero output or a verified PRE reserve. The119-mark reference includes
+all observations of its stated kinds and does not assert coverage of those
+PRE states. Raw reserve/event-CPI/SPL amounts and all22 actual pool vault
+balances are independently checked. Short buy wires, appended account roles,
+Mayhem-wrapper semantics and40 unparsed current-pool bytes remain gaps; no
+complete deployed ABI or historical virtual-quote value is inferred.
+
+Both observed global price endpoints agree within2% with the saved provider
+price; the combined reference FX/cent interval is below0.105%. That interval
+width does not bound error from unknown states, markets or ABI semantics.
+This is a scoped lower reference, not annual/all-market/lifetime ATH. ATH
+date remains null, holder/liquidity metadata is preserved, and no runner gate
+or automatic production fallback changes.
+
+Root certificate:
+`cb9f46719c24fa0190159b38da678485ffd32edd4d6422abc670ffe3161cd254`.
+Observed replay:
+`ec357d365bf7123aedb4bebfda79a4fb7ae03e0c563c8e07ed12233a965a1929`.
+Finalized birth/winner confirmation:
+`cbd88a9b8d431a9131597c1b2dce10581d2e65b68a273d86627e2c847dd43c0b`.
+The guarded manual write requires passing captured-case/workspace checks,
+exact original provider observation and the unchanged missing-row version.

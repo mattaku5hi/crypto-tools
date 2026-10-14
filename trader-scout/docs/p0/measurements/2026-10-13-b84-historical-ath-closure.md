@@ -307,3 +307,16 @@ predates this latest write. Annual/all-market ATH remains incomplete.
 
 The fresh79-closure private package includes that write; all79rows and all
 39payload hashes/modes are verified. See the [state checkpoint](2026-10-13-local-daemon-and-year-coverage.md). Its own full restore is not claimed.
+
+## 4ev observed reserve reference (Oct14)
+
+Terminal111-transaction supply history proves a historical peak supply larger
+than the current snapshot. All119 observed curve POST/Create and selected-
+pool PRE/POST marks give$7,197.80–$7,205.30, a reference interval below0.105%.
+All96 conditional PRE references remain research diagnostics; one bundled
+sale cannot be separately attributed from the transaction balance. A distinct
+observed source and amendment46 preserve those gaps. See [4ev evidence](2026-10-14-solana-4ev-observed-fdv.md).
+Full fmt/Clippy/1235tests passed before the atomic guarded write; metadata
+and null ATH date are preserved. Current80closures are SOL66/Base2/RH12;
+fixedcohort514numeric/165unknown. The79-closure package predates this write.
+Annual/all-market ATH remains incomplete.

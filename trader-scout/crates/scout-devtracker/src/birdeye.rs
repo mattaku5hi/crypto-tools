@@ -8146,6 +8146,502 @@ mod tests {
     }
 
     #[test]
+    fn solana_tracker_4ev_observed_curve_post_pool_fdv_replays_exactly() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_4ev_observed_curve_post_pool_fdv_window_case.json"
+        ))
+        .unwrap();
+        let hash = |raw: &str| format!("{:x}", Sha256::digest(raw.as_bytes()));
+        macro_rules! check {
+            ($actual:expr, $expected:expr $(,)?) => {
+                assert_eq!($actual, $expected)
+            };
+        }
+        let (cert_raw, replay_raw, canonical_raw) = (
+            fixture["root_certificate_json_raw"].as_str().unwrap(),
+            fixture["observed_replay_json_raw"].as_str().unwrap(),
+            fixture["canonical_manifest_json_raw"].as_str().unwrap(),
+        );
+        check!(
+            serde_json::json!([hash(cert_raw), hash(replay_raw), hash(canonical_raw)]),
+            serde_json::json!([
+                "cb9f46719c24fa0190159b38da678485ffd32edd4d6422abc670ffe3161cd254",
+                "ec357d365bf7123aedb4bebfda79a4fb7ae03e0c563c8e07ed12233a965a1929",
+                "cbd88a9b8d431a9131597c1b2dce10581d2e65b68a273d86627e2c847dd43c0b"
+            ]),
+        );
+        let (cert, replay, canonical): (serde_json::Value, serde_json::Value, serde_json::Value) = (
+            serde_json::from_str(cert_raw).unwrap(),
+            serde_json::from_str(replay_raw).unwrap(),
+            serde_json::from_str(canonical_raw).unwrap(),
+        );
+        check!(
+            serde_json::json!([
+                cert["source"],
+                cert["observed_mark_count"],
+                cert["network_calls"],
+                cert["database_writes"],
+                cert["conditional_curve_pre_diagnostics_count"],
+                cert["conditional_pre_marks_not_observed_or_promoted"],
+                fixture["source_hashes"],
+                cert["source_sha256"],
+                fixture["supply_source_hashes"],
+                cert["supply_binding"]["source_sha256"],
+                replay["counts"]["observed_marks"],
+                replay["counts"]["conditional_curve_pre_intervals_retained_diagnostic_only"],
+                replay["counts"]["conditional_pre_intervals_in_observed_maxima"]
+            ]),
+            serde_json::json!([
+                fixture["source_name"],
+                119,
+                0,
+                0,
+                96,
+                true,
+                cert["source_sha256"],
+                cert["source_sha256"],
+                cert["supply_binding"]["source_sha256"],
+                cert["supply_binding"]["source_sha256"],
+                119,
+                96,
+                0
+            ]),
+        );
+        check!(
+            serde_json::json!([
+                canonical["status"],
+                canonical["calls_used"],
+                canonical["calls"].as_array().unwrap().len()
+            ]),
+            serde_json::json!(["complete", 2, 2]),
+        );
+        assert!(
+            canonical["calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|c| c["http_status"] == 200 && c["matches_frozen_tfa_object"] == true)
+        );
+        let sigs = canonical["target_signatures"].as_array().unwrap();
+        assert!(sigs.iter().any(|r| r["label"] == "birth" && r["signature"] == "JdZDSakaWn65KXkioATKrKSNABbPWKMaxhATY7rLPRkDTXaYDQECVZiHYVtLMNxtWPmk7K2cyhKUiDG9g8ujqwS"));
+        assert!(sigs.iter().any(|r| r["label"] == "observed_window_winner"
+            && r["signature"] == cert["winner"]["signature"]));
+
+        let supply = &fixture["supply_binding"];
+        let birth = &supply["birth"];
+        let init = &birth["initialize_mint2"][0];
+        let bytes = bytes_from_hex(init["data_hex"].as_str().unwrap());
+        check!(
+            serde_json::json!([
+                birth["strict_allowlist_pass"],
+                birth["mint_sum_raw"],
+                bytes.len(),
+                bytes[0],
+                bytes[1],
+                bytes[34]
+            ]),
+            serde_json::json!([true, "2000000000000000", 35, 20, 6, 0]),
+        );
+        assert_eq!(
+            bs58::encode(&bytes[2..34]).into_string(),
+            init["mint_authority"]
+        );
+        check!(
+            serde_json::json!([
+                birth["authority_revocation"]["kind"],
+                fixture["mint_capture_index"]
+            ]),
+            serde_json::json!(["set_mint_authority_none", 12]),
+        );
+        let current = &supply["current_mint"];
+        check!(
+            serde_json::json!([
+                current["snapshot_is_finalized"],
+                current["snapshot_value_count"],
+                current["raw_account_length"],
+                current["mint_authority_none"],
+                current["extension_set_exact"],
+                current["extensions"][0]["type"],
+                current["extensions"][0]["length"],
+                current["extensions"][1]["type"],
+                current["extensions"][1]["length"]
+            ]),
+            serde_json::json!([true, 20, 411, true, true, 18, 64, 19, 173]),
+        );
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut raw = Vec::new();
+        let (mut acc, mut bits) = (0_u32, 0_u32);
+        for byte in current["raw_account_base64"]
+            .as_str()
+            .unwrap()
+            .bytes()
+            .filter(|b| *b != b'=')
+        {
+            acc = (acc << 6)
+                | u32::try_from(alphabet.iter().position(|c| *c == byte).unwrap()).unwrap();
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                raw.push(u8::try_from(acc >> bits).unwrap());
+                acc &= (1 << bits) - 1;
+            }
+        }
+        check!(
+            serde_json::json!([
+                raw.len(),
+                raw[..4].iter().all(|b| *b == 0),
+                raw[44],
+                raw[45],
+                format!("{:x}", Sha256::digest(&raw))
+            ]),
+            serde_json::json!([411, true, 6, 1, current["raw_account_sha256"]]),
+        );
+        check!(
+            serde_json::json!([
+                current["snapshot_request_sha256"],
+                current["snapshot_response_sha256"]
+            ]),
+            serde_json::json!([
+                "fc78555c299aa488995eccb8f66730599cbe4a30acff4badc0f2a45bcc51cf15",
+                "ad472a7c58c59bb56860484192668c252abfcacb6ff8b601af5a7b3989e64727"
+            ]),
+        );
+        assert_ne!(
+            supply["supply_at_price_window_end_raw"],
+            current["supply_raw"]
+        );
+        assert_eq!(supply["supply_at_price_window_end_raw"], "1121771374045406");
+
+        let flow = &fixture["native_flow_and_schema_gaps"];
+        check!(
+            serde_json::json!([
+                flow["curve_buy_event_inputs_exact_scoped_system_transfer"],
+                flow["curve_parented_token_transfers_exact"],
+                flow["curve_single_trade_transaction_pda_lamport_delta_mismatches"],
+                flow["curve_multi_trade_transaction_group_delta_exact"],
+                flow["pool_unparsed_trailing_bytes"]
+            ]),
+            serde_json::json!([60, 96, 2, 1, 40]),
+        );
+        let bundled = &flow["bundled_trade_reconciliation"];
+        check!(
+            serde_json::json!([
+                bundled["target_curve_trade_event_count"],
+                bundled["grouped_balance_matches"],
+                bundled["signed_event_sol_lamports_sum"],
+                bundled["whole_transaction_curve_pda_lamport_delta"]
+            ]),
+            serde_json::json!([2, true, "2", "2"]),
+        );
+        let shapes = flow["curve_instruction_shapes"].as_array().unwrap();
+        assert_eq!(
+            shapes
+                .iter()
+                .filter(|r| r["data_bytes"] == 24
+                    && matches!(r["ix_name"].as_str(), Some("buy" | "buy_exact_sol_in")))
+                .map(|r| r["count"].as_u64().unwrap())
+                .sum::<u64>(),
+            31
+        );
+        assert!(shapes.iter().all(|r| r["data_bytes"] != 25
+            || !matches!(r["ix_name"].as_str(), Some("buy" | "buy_exact_sol_in"))
+            || matches!(r["track_volume_byte"].as_u64(), Some(0 | 1))));
+        assert_eq!(
+            flow["unresolved_trailing_account_shapes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["extra_account_count"].as_u64().unwrap() > 0)
+                .map(|r| r["count"].as_u64().unwrap())
+                .sum::<u64>(),
+            55
+        );
+        let limits = flow["limits"].as_array().unwrap();
+        assert!(
+            limits
+                .iter()
+                .any(|r| r.as_str().unwrap().contains("no false default applied"))
+                && limits.iter().any(|r| r
+                    .as_str()
+                    .unwrap()
+                    .contains("No per-instruction lamport delta is exposed"))
+        );
+
+        let ratio = |s: &str| {
+            let (n, d) = s.split_once('/').unwrap();
+            (
+                U512::from_str_radix(n, 10).unwrap(),
+                U512::from_str_radix(d, 10).unwrap(),
+            )
+        };
+        let cmp = |a: (U512, U512), b: (U512, U512)| (a.0 * b.1).cmp(&(b.0 * a.1));
+        let equal =
+            |a: &str, b: &str| assert_eq!(cmp(ratio(a), ratio(b)), std::cmp::Ordering::Equal);
+        let ceil = |n: U512, d: U512| (n + d - U512::from(1)) / d;
+        let decimal = |s: &str| {
+            let d = ExactDecimal::parse(s).unwrap();
+            (
+                U512::from(d.coefficient),
+                (0..u32::try_from(d.scale).unwrap())
+                    .try_fold(U512::from(1), |v, _| v.checked_mul(U512::from(10)))
+                    .unwrap(),
+            )
+        };
+        let pass_2pct = |a: (U512, U512), b: (U512, U512)| {
+            let x = a.0 * b.1;
+            let y = b.0 * a.1;
+            x.abs_diff(y) * U512::from(100) <= y * U512::from(2)
+        };
+        let marks = fixture["observed_marks"].as_array().unwrap();
+        let diagnostics = &fixture["excluded_pre_interval_diagnostics"];
+        check!(
+            serde_json::json!([
+                marks.len(),
+                diagnostics["count"],
+                diagnostics["diagnostic_rows"].as_array().unwrap().len()
+            ]),
+            serde_json::json!([119, 96, 96]),
+        );
+        check!(
+            serde_json::json!([
+                marks
+                    .iter()
+                    .filter(|m| m["mark_kind"] == "create_post")
+                    .count(),
+                marks
+                    .iter()
+                    .filter(|m| m["mark_kind"] == "trade_post")
+                    .count(),
+                marks
+                    .iter()
+                    .filter(|m| m["venue"] == "pumpswap_selected_pool")
+                    .count()
+            ]),
+            serde_json::json!([1, 96, 22]),
+        );
+        assert!(marks.iter().all(|m| m["mark_kind"] != "trade_pre_interval"));
+        let events = supply["supply_events"].as_array().unwrap();
+        let source_rows = replay["observed_mark_rows"].as_array().unwrap();
+        let mut maxima = [None, None, None, None];
+        for mark in marks {
+            let native = (
+                U512::from(
+                    mark["reserve_quote_raw"]
+                        .as_str()
+                        .unwrap()
+                        .parse::<u64>()
+                        .unwrap(),
+                ),
+                U512::from_str_radix(mark["reserve_token_raw"].as_str().unwrap(), 10).unwrap()
+                    * U512::from(1_000),
+            );
+            equal(
+                mark["native_price_sol_per_token_fraction"]
+                    .as_str()
+                    .unwrap(),
+                &format!("{}/{}", native.0, native.1),
+            );
+            let pos = (
+                mark["slot"].as_u64().unwrap(),
+                mark["transaction_index"].as_u64().unwrap(),
+            );
+            let raw_supply = events
+                .iter()
+                .filter(|e| {
+                    (
+                        e["slot"].as_u64().unwrap(),
+                        e["transaction_index"].as_u64().unwrap(),
+                    ) <= pos
+                })
+                .fold(U512::from(0), |sum, e| {
+                    let amount = U512::from(e["amount_raw"].as_u64().unwrap());
+                    if e["kind"] == "mint" {
+                        sum + amount
+                    } else {
+                        assert_eq!(e["kind"], "burn");
+                        sum - amount
+                    }
+                });
+            assert_eq!(
+                raw_supply,
+                U512::from_str_radix(mark["supply_raw_6_decimals"].as_str().unwrap(), 10).unwrap()
+            );
+            equal(
+                mark["inventory_native_price_times_raw_supply_unscaled_fraction"]
+                    .as_str()
+                    .unwrap(),
+                &format!("{}/{}", native.0 * raw_supply, native.1),
+            );
+            let fx_low = ratio(mark["coinbase_sol_usd_low_fraction"].as_str().unwrap());
+            let fx_high = ratio(mark["coinbase_sol_usd_high_fraction"].as_str().unwrap());
+            let low_price = (native.0 * fx_low.0, native.1 * fx_low.1);
+            let high_price = (native.0 * fx_high.0, native.1 * fx_high.1);
+            let low = (
+                low_price.0 * raw_supply,
+                low_price.1 * U512::from(1_000_000),
+            );
+            let high = (
+                high_price.0 * raw_supply,
+                high_price.1 * U512::from(1_000_000),
+            );
+            for (field, value) in [
+                ("price_usd_low_fraction", low_price),
+                ("price_usd_high_fraction", high_price),
+                ("fdv_usd_low_fraction", low),
+                ("fdv_usd_high_fraction", high),
+            ] {
+                equal(
+                    mark[field].as_str().unwrap(),
+                    &format!("{}/{}", value.0, value.1),
+                );
+            }
+            assert_eq!(
+                (
+                    low.0 * U512::from(100) / low.1,
+                    ceil(high.0 * U512::from(100), high.1)
+                ),
+                (
+                    U512::from(mark["fdv_usd_low_floor_cents"].as_u64().unwrap()),
+                    U512::from(mark["fdv_usd_high_ceil_cents"].as_u64().unwrap())
+                )
+            );
+            for (i, value) in [low, high, low_price, high_price].into_iter().enumerate() {
+                if maxima[i].is_none_or(|old| cmp(value, old).is_gt()) {
+                    maxima[i] = Some(value);
+                }
+            }
+            let source = source_rows
+                .iter()
+                .find(|r| {
+                    r["signature"] == mark["signature"]
+                        && r["venue"] == mark["venue"]
+                        && r["mark_kind"] == mark["mark_kind"]
+                        && r["log_index"] == mark["log_index"]
+                        && r["event_sha256"] == mark["event_sha256"]
+                })
+                .unwrap();
+            for field in [
+                "native_price_sol_per_token_fraction",
+                "supply_raw_6_decimals",
+                "price_usd_low_fraction",
+                "price_usd_high_fraction",
+                "fdv_usd_low_fraction",
+                "fdv_usd_high_fraction",
+                "fdv_usd_low_floor_cents",
+                "fdv_usd_high_ceil_cents",
+            ] {
+                assert_eq!(mark[field], source[field]);
+            }
+        }
+        let proof = &fixture["global_observed_fdv_maxima"];
+        for (value, expected) in [
+            (
+                maxima[0].unwrap(),
+                proof["low"]["exact_usd"].as_str().unwrap(),
+            ),
+            (
+                maxima[1].unwrap(),
+                proof["high"]["exact_usd"].as_str().unwrap(),
+            ),
+            (
+                maxima[2].unwrap(),
+                fixture["global_price_maxima"]["low"]["exact_usd_per_token"]
+                    .as_str()
+                    .unwrap(),
+            ),
+            (
+                maxima[3].unwrap(),
+                fixture["global_price_maxima"]["high"]["exact_usd_per_token"]
+                    .as_str()
+                    .unwrap(),
+            ),
+        ] {
+            equal(&format!("{}/{}", value.0, value.1), expected);
+        }
+        check!(
+            serde_json::json!([
+                proof["low"]["floor_cents"],
+                proof["high"]["ceil_cents"],
+                proof["observed_source_2pct_gate_pass"],
+                proof["low"]["winner"],
+                proof["high"]["winner"]
+            ]),
+            serde_json::json!([
+                719780,
+                720530,
+                true,
+                proof["low"]["winner"],
+                proof["low"]["winner"]
+            ]),
+        );
+        let winner = &proof["low"]["winner"];
+        assert_eq!(
+            winner["signature"],
+            "2ku1GWYraWgiRKtdtVpeLvqPUdBHx3xEx4Godpkty85kgYGzYkgvbh9SQV9EyHFDw8osJhVAN4GWhCSAJtnMSEjm"
+        );
+        assert_eq!(
+            i64::try_from(winner["block_time_unix_s"].as_u64().unwrap()).unwrap()
+                - i64::try_from(
+                    fixture["provider_reference"]["peak_timestamp_ms"]
+                        .as_u64()
+                        .unwrap()
+                        / 1_000
+                )
+                .unwrap(),
+            -1
+        );
+        assert!(marks.iter().any(|m| m["signature"] == winner["signature"]
+            && m["event_sha256"] == winner["event_sha256"]
+            && m["mark_kind"] == winner["mark_kind"]));
+        let provider_price = decimal(
+            fixture["provider_reference"]["saved_st_price_usd"]
+                .as_str()
+                .unwrap(),
+        );
+        assert!(
+            pass_2pct(maxima[2].unwrap(), provider_price)
+                && pass_2pct(maxima[3].unwrap(), provider_price)
+        );
+        let provider_fdv = ratio(
+            fixture["provider_reference"]["peak_supply_fdv_exact_usd"]
+                .as_str()
+                .unwrap(),
+        );
+        assert!(
+            pass_2pct(maxima[0].unwrap(), provider_fdv)
+                && pass_2pct(maxima[1].unwrap(), provider_fdv)
+        );
+        let width = ratio(
+            proof["combined_interval_width_over_upper"]
+                .as_str()
+                .unwrap(),
+        );
+        assert!(
+            width.0 * U512::from(100) <= width.1 * U512::from(2)
+                && proof["combined_interval_width_within_2pct"] == true
+        );
+        assert_ne!(
+            fixture["historical_supply"]["supply_at_peak_plus3_window_end_raw"],
+            fixture["historical_supply"]["current_account_supply_raw_not_used"]
+        );
+        assert!(
+            fixture["scope"]["limits"]
+                .as_str()
+                .unwrap()
+                .contains("not all venues")
+        );
+        assert!(
+            cert["scope"]
+                .as_str()
+                .unwrap()
+                .contains("Interval width does not bound unknown-market/state error")
+        );
+    }
+
+    #[test]
     fn solana_tracker_doy_full_neighborhood_marks_and_supply_match() {
         use alloy_primitives::U512;
         use sha2::{Digest, Sha256};
