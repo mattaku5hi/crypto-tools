@@ -13654,4 +13654,714 @@ mod tests {
                 .contains("not full protocol spot")
         );
     }
+
+    #[test]
+    fn solana_tracker_81kia_cross_quote_fdv_vq_models_replay_exactly() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+
+        type Fraction = (U512, U512);
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_81kia_cross_quote_fdv_vq_models_case.json"
+        ))
+        .unwrap();
+        let hash = |raw: &str| format!("{:x}", Sha256::digest(raw.as_bytes()));
+        let u512 = |raw: &str| U512::from_str_radix(raw, 10).unwrap();
+        let fraction = |raw: &str| {
+            let (numerator, denominator) = raw.split_once('/').unwrap();
+            (u512(numerator), u512(denominator))
+        };
+        let fraction_at = |value: &serde_json::Value| {
+            (
+                u512(value["numerator"].as_str().unwrap()),
+                u512(value["denominator"].as_str().unwrap()),
+            )
+        };
+        let compare = |left: Fraction, right: Fraction| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let ceil = |numerator: U512, denominator: U512| {
+            (numerator + denominator - U512::from(1)) / denominator
+        };
+        let fx_ratio = |raw: &str| {
+            let value = ExactDecimal::parse(raw).unwrap();
+            let denominator = (0..u32::try_from(value.scale).unwrap())
+                .try_fold(U512::from(1), |number, _| {
+                    number.checked_mul(U512::from(10))
+                })
+                .unwrap();
+            (U512::from(value.coefficient), denominator)
+        };
+
+        assert_eq!(
+            fixture["schema"],
+            "solana-tracker-81kia-cross-quote-fdv-vq-models-case-v1"
+        );
+        assert_eq!(
+            fixture["source"],
+            "onchain-selected-pool-cross-quote-observed-fdv-window-vq-model-cex-v1"
+        );
+        assert_eq!(fixture["root_certificate_pending"], false);
+
+        let raw_json = fixture["raw_json"].as_object().unwrap();
+        let source_hashes = fixture["source_sha256"].as_object().unwrap();
+        for (name, raw) in raw_json {
+            assert_eq!(hash(raw.as_str().unwrap()), source_hashes[name]);
+        }
+        let certificate_raw = fixture["root_certificate_json_raw"].as_str().unwrap();
+        assert_eq!(hash(certificate_raw), fixture["root_certificate_sha256"]);
+        assert_eq!(hash(certificate_raw), source_hashes["root_certificate"]);
+        let proof: serde_json::Value =
+            serde_json::from_str(raw_json["combined_model_replay"].as_str().unwrap()).unwrap();
+        let supply_proof: serde_json::Value =
+            serde_json::from_str(raw_json["supply_proof"].as_str().unwrap()).unwrap();
+        let supply_audit: serde_json::Value =
+            serde_json::from_str(raw_json["independent_supply_audit"].as_str().unwrap()).unwrap();
+        let price_audit: serde_json::Value =
+            serde_json::from_str(raw_json["independent_price_audit"].as_str().unwrap()).unwrap();
+        let cf3: serde_json::Value =
+            serde_json::from_str(raw_json["cf3_vault_window"].as_str().unwrap()).unwrap();
+        let quote_window: serde_json::Value =
+            serde_json::from_str(raw_json["quote_vault_window"].as_str().unwrap()).unwrap();
+        let target_capture: serde_json::Value =
+            serde_json::from_str(raw_json["target_canonical_capture"].as_str().unwrap()).unwrap();
+        let certificate: serde_json::Value = serde_json::from_str(certificate_raw).unwrap();
+        assert_eq!(certificate["rawgate_pass"], true);
+        assert_eq!(certificate["rows"].as_array().unwrap().len(), 1);
+        let cert_row = &certificate["rows"][0];
+        assert_eq!(cert_row["mint"], proof["scope"]["target_mint"]);
+        assert_eq!(cert_row["pool"], proof["scope"]["target_pool"]);
+        assert_eq!(cert_row["source"], fixture["source"]);
+        assert_eq!(cert_row["observed_marks"], 4);
+        assert_eq!(cert_row["vq_models"], 2);
+        assert_eq!(cert_row["lower_fdv_cents"], 9_117_056);
+        assert_eq!(cert_row["upper_fdv_cents_ceiling"], 9_188_784);
+        assert_eq!(
+            cert_row["provider_response_sha256"],
+            "e81a6182bbe9b5e34f088ca7e17e5d20b108acc16407bd8b15ad47cae604582e"
+        );
+        assert_eq!(
+            certificate["historical_supply_operations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            33
+        );
+        assert_eq!(certificate["successful_history_transactions"], 127);
+        assert_eq!(certificate["successful_history_through_target"], 85);
+        assert_eq!(certificate["failed_signature_census_transactions"], 165);
+        assert_eq!(certificate["conditional_vq_model"], true);
+        assert_eq!(certificate["deployment_revision_verified"], false);
+        assert_eq!(certificate["annual_allmarket_lifetime_complete"], false);
+        assert_eq!(certificate["later_current_supply_not_substituted"], true);
+        assert_eq!(certificate["actual_new_helius_methods"], 14);
+        assert_eq!(certificate["duplicate_vault_requests"], 4);
+        assert_eq!(certificate["new_market_provider_calls"], 0);
+        assert_eq!(certificate["network_calls_during_root_audit"], 0);
+        assert_eq!(certificate["database_writes"], 0);
+
+        assert_eq!(
+            proof["scope"]["target_mint"],
+            "81kiaJSjaU9w6FVwRVT2K5TP1EhDghAXCm6Y4zmRpump"
+        );
+        assert_eq!(
+            proof["scope"]["target_pool"],
+            "eqEmQJtbfXvoaEkS3iJ1B1VZwRtE1Zns7ebGrb5dKoz"
+        );
+        assert_eq!(
+            proof["scope"]["quote_mint"],
+            "87eaXHno6VtRXUyuYpSVm8oYpSpHjLMQE9mvbcnKpump"
+        );
+        assert_eq!(proof["scope"]["date"], serde_json::Value::Null);
+        for scope in ["annual_ath", "all_market", "lifetime_ath"] {
+            assert_eq!(proof["scope"][scope], false);
+        }
+        assert_eq!(proof["marks"].as_array().unwrap().len(), 4);
+        let mut observed_pairs = std::collections::BTreeSet::new();
+        for mark in proof["marks"].as_array().unwrap() {
+            observed_pairs.insert((
+                mark["state"].as_str().unwrap(),
+                mark["model"].as_str().unwrap(),
+            ));
+        }
+        assert_eq!(
+            observed_pairs,
+            std::collections::BTreeSet::from([
+                ("target_pre", "documented_pre_event_field"),
+                ("target_pre", "post_event_field_sensitivity"),
+                ("target_post", "documented_pre_event_field"),
+                ("target_post", "post_event_field_sensitivity"),
+            ])
+        );
+
+        let boundary = &proof["cross_quote_boundary"];
+        let previous_net = u512(boundary["previous_protocol_fee"].as_str().unwrap())
+            - u512(boundary["previous_buyback_fee"].as_str().unwrap())
+            + u512(boundary["previous_creator_fee"].as_str().unwrap());
+        assert_eq!(previous_net, U512::from(13_512));
+        assert_eq!(
+            u512(boundary["previous_sell_vq_field"].as_str().unwrap()) - previous_net,
+            u512(boundary["next_sell_vq_field"].as_str().unwrap())
+        );
+        let next_net = u512(boundary["next_protocol_fee"].as_str().unwrap())
+            - u512(boundary["next_buyback_fee"].as_str().unwrap())
+            + u512(boundary["next_creator_fee"].as_str().unwrap());
+        assert_eq!(next_net, U512::from(3_711_003_129_u64));
+        assert_eq!(
+            u512(boundary["next_sell_vq_field"].as_str().unwrap()) + next_net,
+            u512(
+                proof["models"]["post_event_field_sensitivity"]["cf3_vq"]
+                    .as_u64()
+                    .unwrap()
+                    .to_string()
+                    .as_str()
+            )
+        );
+        assert_eq!(boundary["target_strictly_between"], true);
+        assert_eq!(boundary["physical_vaults_continuous"], true);
+
+        let supply_summary = &supply_proof["supply"];
+        let ops = supply_summary["supply_ops"].as_array().unwrap();
+        assert_eq!(ops.len(), 32);
+        assert_eq!(supply_summary["mint_to_count"], 1);
+        assert_eq!(supply_summary["revoke_count"], 1);
+        assert_eq!(supply_summary["burn_count"], 30);
+        assert_eq!(supply_summary["mint_authority_revoked_in_birth_tx"], true);
+        assert_eq!(supply_summary["current_not_used_for_target"], true);
+        let birth = u512(supply_summary["birth_mint_to_raw"].as_str().unwrap());
+        let mut running_supply = U512::from(0);
+        let mut target_pre = None;
+        let mut target_burn = U512::from(0);
+        let mut burns = U512::from(0);
+        let mut target_seen = false;
+        for op in ops {
+            let opcode = op["opcode"].as_u64().unwrap();
+            let amount = op
+                .get("amount_raw")
+                .and_then(serde_json::Value::as_str)
+                .map(u512)
+                .unwrap_or_default();
+            if opcode == 7 {
+                assert_eq!(amount, birth);
+                running_supply = amount;
+            } else if opcode == 8 {
+                if op["signature"] == proof["scope"]["target_transaction"] {
+                    target_pre = Some(running_supply);
+                    target_burn = amount;
+                    target_seen = true;
+                    assert_eq!(op["outer_index"], 2);
+                    assert_eq!(op["inner_index"], 1);
+                    assert_eq!(op["mint_account_index"], 1);
+                    assert_eq!(op["data_hex"], "08e4c47e83bc000000");
+                }
+                running_supply -= amount;
+                burns += amount;
+            }
+        }
+        assert!(target_seen);
+        assert_eq!(
+            target_pre.unwrap(),
+            u512(supply_summary["target_pre_tx_raw"].as_str().unwrap())
+        );
+        assert_eq!(
+            target_pre.unwrap() - target_burn,
+            u512(supply_summary["target_post_tx_raw"].as_str().unwrap())
+        );
+        assert_eq!(
+            birth - burns,
+            u512(supply_summary["current_finalized_raw"].as_str().unwrap())
+        );
+        assert_eq!(
+            supply_audit["mint_identity"]["current_supply_raw"],
+            supply_summary["current_finalized_raw"]
+        );
+        assert_eq!(
+            supply_audit["mint_identity"]["current_mint_authority_option"],
+            0
+        );
+        assert_eq!(
+            supply_audit["mint_identity"]["current_freeze_authority_option"],
+            0
+        );
+        assert_eq!(
+            supply_audit["mint_identity"]["tlv_extensions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(supply_audit["history_census"]["SFA_successful"], 83);
+        assert_eq!(supply_audit["history_census"]["SFA_failed"], 165);
+        assert_eq!(supply_audit["history_census"]["TFA_page_counts"][0], 100);
+        assert_eq!(supply_audit["history_census"]["TFA_page_counts"][1], 27);
+        assert_eq!(supply_audit["history_census"]["TFA_page_counts"][2], 0);
+        assert_eq!(
+            supply_audit["history_census"]["SFA_success_set_equals_TFA_before_target_excluding_birth"],
+            true
+        );
+        assert_eq!(
+            supply_audit["history_census"]["TFA_through_target_equals_SFA_successes_plus_birth_plus_target"],
+            true
+        );
+
+        let event_wire = fixture["target_event_wire"].as_array().unwrap();
+        let abi_events = price_audit["abi"]["target_event_cpis"].as_array().unwrap();
+        assert_eq!(event_wire.len(), 2);
+        assert_eq!(abi_events.len(), 2);
+        for (wire, abi) in event_wire.iter().zip(abi_events) {
+            let bytes = bytes_from_hex(wire["data_hex"].as_str().unwrap());
+            assert_eq!(
+                bytes.len(),
+                usize::try_from(wire["payload_bytes"].as_u64().unwrap()).unwrap()
+            );
+            assert_eq!(
+                bytes.len(),
+                usize::try_from(abi["len"].as_u64().unwrap()).unwrap()
+            );
+            assert_eq!(format!("{:x}", Sha256::digest(&bytes)), wire["sha256"]);
+            assert_eq!(
+                bytes[..8]
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>(),
+                wire["discriminator_hex"]
+            );
+            let vq_offset = usize::try_from(
+                abi["offsets"]["virtual_quote_reserves"]["offset"]
+                    .as_u64()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(abi["offsets"]["virtual_quote_reserves"]["type"], "i128");
+            assert_eq!(abi["offsets"]["timestamp"]["offset"], 8);
+            assert_eq!(
+                bytes.len() - 8,
+                if abi["event"] == "BuyEvent" { 496 } else { 200 }
+            );
+            let vq_bytes: [u8; 16] = bytes[vq_offset..vq_offset + 16].try_into().unwrap();
+            assert_eq!(i128::from_le_bytes(vq_bytes).to_string(), "1355816852107");
+        }
+        let buy = &event_wire[0];
+        let buy_bytes = bytes_from_hex(buy["data_hex"].as_str().unwrap());
+        let base_supply_offset = usize::try_from(
+            abi_events[0]["offsets"]["base_supply"]["offset"]
+                .as_u64()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(abi_events[0]["offsets"]["base_supply"]["type"], "u64");
+        let base_supply_bytes: [u8; 8] = buy_bytes[base_supply_offset..base_supply_offset + 8]
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            u64::from_le_bytes(base_supply_bytes).to_string(),
+            supply_summary["target_post_tx_raw"]
+        );
+        assert_eq!(base_supply_offset, 472);
+        assert_eq!(proof["target_event"]["all_buy_fee_fields_zero"], true);
+
+        let marks = proof["marks"].as_array().unwrap();
+        let reference = fraction(proof["price_gate"]["reference_usd"].as_str().unwrap());
+        let mut model_maxima: std::collections::BTreeMap<&str, (Fraction, Fraction)> =
+            std::collections::BTreeMap::new();
+        for mark in marks {
+            let model = mark["model"].as_str().unwrap();
+            let state = mark["state"].as_str().unwrap();
+            let supply_raw = u512(mark["supply_raw"].as_str().unwrap());
+            assert_eq!(
+                supply_raw,
+                if state == "target_pre" {
+                    u512(supply_summary["target_pre_tx_raw"].as_str().unwrap())
+                } else {
+                    u512(supply_summary["target_post_tx_raw"].as_str().unwrap())
+                }
+            );
+            assert_eq!(mark["fx_minute_start_unix"], 1791672300);
+            assert_eq!(
+                u512(mark["target_quote_vault_raw"].as_str().unwrap())
+                    + u512(mark["target_virtual_quote_raw"].as_str().unwrap()),
+                u512(mark["target_effective_quote_raw"].as_str().unwrap())
+            );
+            assert_eq!(
+                u512(mark["cf3_wsol_quote_vault_raw"].as_str().unwrap())
+                    + u512(mark["cf3_virtual_quote_raw"].as_str().unwrap()),
+                u512(mark["cf3_effective_quote_raw"].as_str().unwrap())
+            );
+            assert_eq!(
+                u512(mark["target_virtual_quote_raw"].as_str().unwrap()),
+                U512::from(1_355_816_852_107_u64)
+            );
+            assert_eq!(
+                u512(mark["cf3_virtual_quote_raw"].as_str().unwrap()),
+                U512::from(proof["models"][model]["cf3_vq"].as_u64().unwrap())
+            );
+            let target_quote = u512(mark["target_effective_quote_raw"].as_str().unwrap());
+            let cross_quote = u512(mark["cf3_effective_quote_raw"].as_str().unwrap());
+            let target_base = u512(mark["target_base_raw"].as_str().unwrap());
+            let cross_base = u512(mark["cf3_quote87_base_vault_raw"].as_str().unwrap());
+            let mut endpoints = Vec::new();
+            for (key, expected_key) in [
+                ("fx_sol_usd_low", "price_usd_low"),
+                ("fx_sol_usd_high", "price_usd_high"),
+            ] {
+                let (fx_num, fx_den) = fx_ratio(mark[key].as_str().unwrap());
+                let price = (
+                    target_quote * cross_quote * fx_num,
+                    target_base * cross_base * U512::from(1000) * fx_den,
+                );
+                assert_eq!(
+                    compare(price, fraction_at(&mark[expected_key])),
+                    std::cmp::Ordering::Equal
+                );
+                let difference = (price.0 * reference.1).abs_diff(reference.0 * price.1);
+                assert!(difference * U512::from(50) <= reference.0 * price.1);
+                let fdv = (price.0 * supply_raw, price.1 * U512::from(1_000_000));
+                let expected_fdv = if key == "fx_sol_usd_low" {
+                    fraction_at(&mark["fdv_usd_low"])
+                } else {
+                    fraction_at(&mark["fdv_usd_high"])
+                };
+                assert_eq!(compare(fdv, expected_fdv), std::cmp::Ordering::Equal);
+                endpoints.push((price, fdv));
+            }
+            let model_max = model_maxima
+                .entry(model)
+                .or_insert((endpoints[0].1, endpoints[1].1));
+            if compare(endpoints[0].1, model_max.0).is_gt() {
+                model_max.0 = endpoints[0].1;
+            }
+            if compare(endpoints[1].1, model_max.1).is_gt() {
+                model_max.1 = endpoints[1].1;
+            }
+        }
+        assert_eq!(model_maxima.len(), 2);
+        let lower = model_maxima
+            .values()
+            .map(|value| value.0)
+            .min_by(|a, b| compare(*a, *b))
+            .unwrap();
+        let upper = model_maxima
+            .values()
+            .map(|value| value.1)
+            .max_by(|a, b| compare(*a, *b))
+            .unwrap();
+        assert_eq!(lower.0 * U512::from(100) / lower.1, U512::from(9_117_056));
+        assert_eq!(
+            ceil(upper.0 * U512::from(100), upper.1),
+            U512::from(9_188_784)
+        );
+        assert_eq!(
+            compare(
+                lower,
+                fraction(cert_row["lower_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare(
+                upper,
+                fraction(cert_row["upper_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        let width = (upper.0 * lower.1 - lower.0 * upper.1, upper.1 * lower.1);
+        assert!(width.0 * U512::from(50) <= lower.0 * width.1);
+        assert_eq!(
+            fixture["rpc_method_accounting"],
+            json!({
+                "quote_scan_methods": 6,
+                "vault_window_methods": 6,
+                "supply_canonical_methods": 2,
+                "actual_methods_total": 14,
+                "duplicate_page_responses": 4,
+                "unique_response_bodies": 10,
+                "retries": 0,
+                "redirects": 0
+            })
+        );
+        assert_eq!(quote_window["capture_status"]["methods_used"], 6);
+        assert_eq!(
+            quote_window["capture_status"]["empty_terminal_pages_per_address"],
+            true
+        );
+        let addresses = quote_window["capture_status"]["address_records"]
+            .as_array()
+            .unwrap();
+        assert_eq!(addresses.len(), 3);
+        assert!(addresses.iter().all(|record| {
+            record["status"] == "terminal" && record["pagination_terminal"] == true
+        }));
+        assert_eq!(cf3["helius_methods_attempted"], 6);
+        assert_eq!(
+            target_capture["result"]["transaction"]["signatures"][0],
+            proof["scope"]["target_transaction"]
+        );
+    }
+
+    #[test]
+    fn solana_tracker_jc_cross_quote_fdv_retained_fee_correction_replays_exactly() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+
+        type Fraction = (U512, U512);
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_jc_cross_quote_fdv_window_corrected_case.json"
+        ))
+        .unwrap();
+        let hash = |raw: &str| format!("{:x}", Sha256::digest(raw.as_bytes()));
+        let u512 = |raw: &str| U512::from_str_radix(raw, 10).unwrap();
+        let fraction = |raw: &str| {
+            let (numerator, denominator) = raw.split_once('/').unwrap();
+            (u512(numerator), u512(denominator))
+        };
+        let fraction_at = |value: &serde_json::Value| {
+            (
+                u512(value["numerator"].as_str().unwrap()),
+                u512(value["denominator"].as_str().unwrap()),
+            )
+        };
+        let compare = |left: Fraction, right: Fraction| (left.0 * right.1).cmp(&(right.0 * left.1));
+        let ceil = |numerator: U512, denominator: U512| {
+            (numerator + denominator - U512::from(1)) / denominator
+        };
+        let decimal_ratio = |raw: &str| {
+            let value = ExactDecimal::parse(raw).unwrap();
+            let denominator = (0..u32::try_from(value.scale).unwrap())
+                .try_fold(U512::from(1), |number, _| {
+                    number.checked_mul(U512::from(10))
+                })
+                .unwrap();
+            (U512::from(value.coefficient), denominator)
+        };
+
+        assert_eq!(
+            fixture["schema"],
+            "solana-tracker-jc-vq-retained-fee-correction-case-v1"
+        );
+        assert_eq!(
+            fixture["source"],
+            "onchain-selected-pool-cross-quote-observed-fdv-window-vq-model-cex-v1"
+        );
+        assert_eq!(fixture["root_certificate_pending"], false);
+        let raw = fixture["raw_json"].as_object().unwrap();
+        let hashes = fixture["source_sha256"].as_object().unwrap();
+        for (name, value) in raw {
+            assert_eq!(hash(value.as_str().unwrap()), hashes[name]);
+        }
+        let certificate_raw = fixture["root_certificate_json_raw"].as_str().unwrap();
+        assert_eq!(hash(certificate_raw), fixture["root_certificate_sha256"]);
+        assert_eq!(hash(certificate_raw), hashes["root_certificate"]);
+        let audit: serde_json::Value =
+            serde_json::from_str(raw["correction_audit"].as_str().unwrap()).unwrap();
+        let independent: serde_json::Value =
+            serde_json::from_str(raw["independent_audit"].as_str().unwrap()).unwrap();
+        let legacy_raw =
+            include_str!("../tests/fixtures/solana_tracker_jc_cross_quote_fdv_window_case.json");
+        let legacy: serde_json::Value = serde_json::from_str(legacy_raw).unwrap();
+        let proof: serde_json::Value =
+            serde_json::from_str(fixture["legacy_proof_json_raw"].as_str().unwrap()).unwrap();
+        let legacy_proof: serde_json::Value =
+            serde_json::from_str(legacy["proof_json_raw"].as_str().unwrap()).unwrap();
+        let certificate: serde_json::Value = serde_json::from_str(certificate_raw).unwrap();
+        assert_eq!(hash(legacy_raw), fixture["legacy_fixture_sha256"]);
+        assert_eq!(proof, legacy_proof);
+        assert_eq!(independent["all_sources_unchanged"], true);
+        assert_eq!(
+            independent["gates"]["all_10_price_model_fx_endpoint_pairs_within_2pct"],
+            true
+        );
+        assert_eq!(
+            independent["gates"]["combined_envelope_width_below_2pct"],
+            true
+        );
+        assert_eq!(
+            audit["fee_equation"]["documented_retained_amount_raw"],
+            "protocol_fee - buyback_fee + coin_creator_fee"
+        );
+        assert_eq!(
+            audit["fee_application"]["cf3_sell_retained_fee_raw"],
+            "20611"
+        );
+        assert_eq!(
+            audit["fee_application"]["target_sell_retained_fee_raw"],
+            "2221993"
+        );
+        assert_eq!(audit["fee_application"]["target_buyback_is_zero"], true);
+        assert_eq!(
+            audit["fee_application"]["jc_replay_v3_cf3_post_vq_omitted_buyback_addback_raw"],
+            "20610"
+        );
+        assert_eq!(
+            audit["jc_route_decoded_raw"]["idl_event_decode_exact_lengths"],
+            true
+        );
+        assert_eq!(
+            audit["jc_route_decoded_raw"]["cf3_sell"]["protocol_fee"],
+            "41221"
+        );
+        assert_eq!(
+            audit["jc_route_decoded_raw"]["cf3_sell"]["buyback_fee"],
+            "20610"
+        );
+        assert_eq!(
+            audit["jc_route_decoded_raw"]["cf3_sell"]["creator_fee"],
+            "0"
+        );
+        assert_eq!(
+            certificate["schema"],
+            "root-jc-vq-buyback-retained-fee-correction-certificate-v1"
+        );
+        assert_eq!(certificate["source"], fixture["source"]);
+        assert_eq!(
+            certificate["retained_fee_rule"],
+            "protocol_fee - buyback_fee + creator_fee"
+        );
+        assert_eq!(certificate["cf3_net_retained_fee_raw"], "20611");
+        assert_eq!(certificate["lower_fdv_cents"], 22_707_992);
+        assert_eq!(certificate["upper_fdv_cents_ceiling"], 22_722_407);
+        assert_eq!(
+            certificate["old_upper_ceil_cents_historical_diagnostic"],
+            22_722_406
+        );
+        assert_eq!(certificate["stored_lower_unchanged"], true);
+        assert_eq!(certificate["conditional_vq_model"], true);
+        assert_eq!(certificate["deployment_revision_verified"], false);
+        assert_eq!(certificate["annual_allmarket_lifetime_complete"], false);
+        assert_eq!(certificate["network_calls"], 0);
+        assert_eq!(certificate["database_writes"], 0);
+
+        let source_marks = proof["observed_marks"].as_array().unwrap();
+        let mut source_by_name = std::collections::BTreeMap::new();
+        for mark in source_marks {
+            source_by_name.insert(mark["name"].as_str().unwrap(), mark);
+        }
+        let audit_marks = audit["marks_old_and_corrected_exact"].as_array().unwrap();
+        assert_eq!(audit_marks.len(), 10);
+        assert_eq!(certificate["marks"].as_array().unwrap().len(), 10);
+        let mut maxima: std::collections::BTreeMap<&str, (Fraction, Fraction)> =
+            std::collections::BTreeMap::new();
+        let reference = decimal_ratio("0.00023536979981208752");
+        for mark in audit_marks {
+            let name = mark["mark"].as_str().unwrap();
+            let model = mark["model"].as_str().unwrap();
+            let source = source_by_name[name];
+            let alternate = model == "post_event_field_sensitivity";
+            let source_model = if alternate {
+                &source["post_event_field_sensitivity"]
+            } else {
+                source
+            };
+            assert_eq!(mark["target_base_raw"], source["target_base_raw"]);
+            assert_eq!(mark["cf3_base_raw"], source["cf3_base_raw"]);
+            assert_eq!(mark["supply_raw"], source["supply_raw"]);
+            assert_eq!(
+                mark["target_effective_quote_raw_old"],
+                source_model["target_effective_quote_raw"]
+            );
+            let old_cf3 = if alternate {
+                &source_model["quote_effective_quote_raw"]
+            } else {
+                &source["cf3_effective_quote_raw"]
+            };
+            assert_eq!(mark["cf3_effective_quote_raw_old"], *old_cf3);
+            let fee_delta = if model == "pre_event_field" && name == "route_quote_post" {
+                20_610_u64
+            } else if alternate && name != "route_quote_post" {
+                20_611_u64
+            } else {
+                0_u64
+            };
+            assert_eq!(
+                u512(mark["cf3_effective_quote_raw_corrected"].as_str().unwrap()),
+                u512(old_cf3.as_str().unwrap()) + U512::from(fee_delta)
+            );
+            assert_eq!(
+                mark["target_effective_quote_raw_corrected"],
+                mark["target_effective_quote_raw_old"]
+            );
+            let quote = u512(
+                mark["target_effective_quote_raw_corrected"]
+                    .as_str()
+                    .unwrap(),
+            );
+            let cf3_quote = u512(mark["cf3_effective_quote_raw_corrected"].as_str().unwrap());
+            let target_base = u512(mark["target_base_raw"].as_str().unwrap());
+            let cf3_base = u512(mark["cf3_base_raw"].as_str().unwrap());
+            let supply = u512(mark["supply_raw"].as_str().unwrap());
+            let mut endpoints = Vec::new();
+            for (endpoint, fx) in [("low", "110.31"), ("high", "110.38")] {
+                let (fx_n, fx_d) = decimal_ratio(fx);
+                let price = (
+                    quote * cf3_quote * fx_n,
+                    target_base * cf3_base * U512::from(1000) * fx_d,
+                );
+                assert_eq!(
+                    compare(
+                        price,
+                        fraction_at(&mark[format!("price_{endpoint}_corrected")])
+                    ),
+                    std::cmp::Ordering::Equal
+                );
+                let difference = (price.0 * reference.1).abs_diff(reference.0 * price.1);
+                assert!(difference * U512::from(50) <= reference.0 * price.1);
+                let fdv = (price.0 * supply, price.1 * U512::from(1_000_000));
+                assert_eq!(
+                    compare(fdv, fraction_at(&mark[format!("fdv_{endpoint}_corrected")])),
+                    std::cmp::Ordering::Equal
+                );
+                endpoints.push(fdv);
+            }
+            let model_max = maxima.entry(model).or_insert((endpoints[0], endpoints[1]));
+            if compare(endpoints[0], model_max.0).is_gt() {
+                model_max.0 = endpoints[0];
+            }
+            if compare(endpoints[1], model_max.1).is_gt() {
+                model_max.1 = endpoints[1];
+            }
+        }
+        let lower = maxima
+            .values()
+            .map(|value| value.0)
+            .min_by(|left, right| compare(*left, *right))
+            .unwrap();
+        let upper = maxima
+            .values()
+            .map(|value| value.1)
+            .max_by(|left, right| compare(*left, *right))
+            .unwrap();
+        assert_eq!(lower.0 * U512::from(100) / lower.1, U512::from(22_707_992));
+        assert_eq!(
+            ceil(upper.0 * U512::from(100), upper.1),
+            U512::from(22_722_407)
+        );
+        assert_eq!(
+            compare(
+                lower,
+                fraction(certificate["lower_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare(
+                upper,
+                fraction(certificate["upper_usd_fraction"].as_str().unwrap())
+            ),
+            std::cmp::Ordering::Equal
+        );
+        let old_upper = fraction(&format!(
+            "{}/{}",
+            audit["merged_envelope"]["old"]["upper"]["numerator"]
+                .as_str()
+                .unwrap(),
+            audit["merged_envelope"]["old"]["upper"]["denominator"]
+                .as_str()
+                .unwrap()
+        ));
+        assert_eq!(
+            ceil(old_upper.0 * U512::from(100), old_upper.1),
+            U512::from(22_722_406)
+        );
+        let width = (upper.0 * lower.1 - lower.0 * upper.1, upper.1 * lower.1);
+        assert!(width.0 * U512::from(50) <= lower.0 * width.1);
+    }
 }

@@ -22,7 +22,7 @@ current account has14 zero bytes beyond the pinned IDL. These are explicit
 conditions, not proven away by the small resulting reference interval.
 
 Across both models, the conservative observed maximum reference is
-$227,079.92–$227,224.06. Its FX/model/cent width is0.0634328423%; that width
+$227,079.92–$227,224.07. Its corrected FX/model/cent width is about0.0634799%; that width
 does not bound unknown market or deployed-schema errors. Model-wise global
 prices agree within2% with the original Solana Tracker observation. The
 window is [1791672251,1791672258), not lifetime/all-market/annual coverage.
@@ -61,3 +61,13 @@ and keeps ATH date null. The fixed679-key cohort is515numeric/164unknown,
 reference, not a claim of annual ATH completion. The latest sealed80-closure
 package predates this write. A new full bundle is deferred to a completed
 milestone rather than duplicated for every reference update.
+
+Correction(2026-10-14): V2 net retained quote fee excludes the externally paid
+buyback. CF3 retains20611 raw, not41221; consistent POST-field sensitivity
+adds this to all four pre-CF3 pairings. Replaying the five marks preserves
+stored lower22707992cents and raises upper outward ceiling by one cent
+to22722407. Original frozen proofs/golden remain historical; a separate
+corrected regression verifies current arithmetic. Root correction certificate:
+`dd7dd7fb01560ec2510dcc8d2bb03e9b2f56feca1eacb424fbdde1cc46282571`.
+No JC row update or source/runner-gate change. See
+`2026-10-14-solana-81kia-cross-quote-window.md` and ADR-021 amendment54.

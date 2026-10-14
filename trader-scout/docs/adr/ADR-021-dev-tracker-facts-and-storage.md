@@ -2499,3 +2499,60 @@ Root certificate:
 `2f56c6a7a863fee1293255d7635a5d031800bbcce5505c8de2ad53888da2acd8`.
 Independent raw audit:
 `3768934269820dd9063ffae886318555b886b4d4a73c59f3fb5d4721a694033e`.
+
+## Amendment 54 (2026-10-14) — 81kia quote-state bracket and retained VQ fees
+
+Apply the existing conditional
+`onchain-selected-pool-cross-quote-observed-fdv-window-vq-model-cex-v1` to
+81kia's two physical transaction states under both VQ field interpretations.
+Terminal histories for CF3 and both token vaults contain only the 22:45:32
+and 22:45:54 boundary transactions. Previous POST balances equal next PRE,
+bracketing the target transaction at 22:45:46 and provider time 22:45:47.033.
+Do not carry a future POST value backward. Both canonical boundary transactions
+match their captured TFA rows. This proves the captured interval, not all history.
+
+Full event bytes bind the pinned October 8 Pump IDL. Declared signed-i128
+offsets include the eight-byte event discriminator: BuyEvent offset455 in
+504 total bytes, Boost offset168 in208 total bytes. Do not apply these offsets
+to stripped Borsh bodies. Historical deployed revision remains unknown.
+
+V2 net retained quote fees are `protocol_fee - buyback_fee + creator_fee`:
+buyback leaves the vault during the trade. Prior CF3 boundary fields satisfy
+17575414476 - (27023 - 13511) = 17575400964. The next event's net retained fee
+is3711003129 raw. The PRE-field model uses17575400964 VQ; POST-field sensitivity
+reconstructs pre-VQ as21286404093. Target Buy/Boost VQ fields agree and all
+target fees are zero. These are explicit model conditions, not deployed-code
+verification or an executable wallet price. BoostBuyAndBurn is not a purchase
+by a tracked wallet.
+
+The complete captured127-success mint history plus a fresh below-limit
+248-signature census (83 successes/165 failures, exclusive birth/target
+anchors) proves85 full transactions through target. One birth MintTo issues
+1e15 raw, authority is revoked, and30 target Burns explain the later supply.
+The target burn809659974884 raw precedes the BuyEvent CPI; PRE supply is
+968626467018737, POST967816807043853. Pair each price with its own supply;
+the event's `base_supply` is POST. Current mint TLVs are metadata-only.
+
+All eight price/FX endpoints pass2%. Take the minimum of model-wise global
+lower FDV maxima and maximum upper FDV maxima: lower floor9117056 cents,
+upper outward ceil9188784. The0.78060058% reference width does not bound unknown
+model/deployment/market errors. Preserve null date and holder/liquidity metadata.
+Guard the source/certificate/golden, isolated workspace checks and original
+provider/missing-row versions. No runner gate or live decoder change.
+
+Request accounting is14 actual new Helius methods:6 first quote/vault/canonical
+calls,6 accidental parallel calls (4 repeated vault scopes,2 pool histories),
+then2 mint/canonical calls. All calls are retained; the extra phase is not
+reported as six total. No new Codex, Solana Tracker or FX-provider request.
+
+The same fee audit corrects JC's derived VQ sensitivity: net CF3 retained fee
+is20611, not41221. Apply the POST-field pre-state adjustment to all four CF3
+PRE pairings. Replaying all five marks under both models keeps stored lower
+22707992 cents and raises the diagnostic upper ceiling to22722407 (+1 cent).
+Original frozen proofs/golden remain historical; a separate corrected regression
+checks current arithmetic. No JC row update or runner-membership change.
+
+81kia root certificate:
+`5d5de769d005faac30d0e46a80145c3a540064984a7a1b22da30d3eab8524ab0`.
+JC correction root certificate:
+`dd7dd7fb01560ec2510dcc8d2bb03e9b2f56feca1eacb424fbdde1cc46282571`.
