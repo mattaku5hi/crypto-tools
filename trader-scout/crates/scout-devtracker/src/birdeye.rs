@@ -15330,4 +15330,314 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn owner_accepted_discordance_supply_intervals_preserve_quality_gates() {
+        use alloy_primitives::U512;
+        use sha2::{Digest, Sha256};
+
+        const SOURCE: &str = "solana-tracker-owner-accepted-discordance-supply-bound-v1";
+        const TOKEN_2022: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+        const TOKEN_LEGACY: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/solana_tracker_owner_accepted_discordance_case.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["schema"], SOURCE);
+        assert_eq!(fixture["source"], SOURCE);
+        assert_eq!(fixture["scope"], "provider-recording-window-unknown");
+        assert!(fixture["ath_at"].is_null());
+        assert_eq!(fixture["cohort_size"], 15);
+        assert_eq!(fixture["owner_authorized_manual_acceptance"], true);
+        assert_eq!(
+            fixture["provider_onchain_price_corroboration_claimed"],
+            false
+        );
+        assert_eq!(fixture["all_market_ath_claimed"], false);
+        assert_eq!(fixture["annual_coverage_claimed"], false);
+        assert_eq!(
+            fixture["policy_sha256"],
+            "bd26eb6f6177efead535dfe9e44d94e327f939dbe03f3a07bac002797445bf2c"
+        );
+        assert_eq!(
+            fixture["feasibility_sha256"],
+            "487ed489d94c6d9cba2ccc78f20426a108f570b3865d494631053ef4541ec0eb"
+        );
+        assert_eq!(
+            fixture["raw_supply_independent_audit_sha256"],
+            "c62f68ed5f8360f8979d1ec66bf286afa6eb2419397b048eb1378bf7da5dd49a"
+        );
+
+        let pow10 = |scale: u32| {
+            (0..scale)
+                .try_fold(U512::from(1), |value, _| value.checked_mul(U512::from(10)))
+                .unwrap()
+        };
+        let decode_base64 = |encoded: &str| {
+            let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut output = Vec::new();
+            let (mut accumulator, mut bits) = (0_u32, 0_u32);
+            for byte in encoded.bytes().filter(|byte| *byte != b'=') {
+                accumulator = (accumulator << 6)
+                    | u32::try_from(
+                        alphabet
+                            .iter()
+                            .position(|candidate| *candidate == byte)
+                            .unwrap(),
+                    )
+                    .unwrap();
+                bits += 6;
+                if bits >= 8 {
+                    bits -= 8;
+                    output.push(u8::try_from((accumulator >> bits) & 0xff).unwrap());
+                }
+            }
+            output
+        };
+
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 15);
+        let mut wide_count = 0;
+        for case in cases {
+            let mint = case["mint"].as_str().unwrap();
+            assert_eq!(case["source"], SOURCE, "{mint}");
+            assert_eq!(case["scope"], "provider-recording-window-unknown");
+            assert!(case["ath_at"].is_null());
+            assert_eq!(case["owner_accepted_provider_onchain_discordance"], true);
+            assert_eq!(case["quality_preserved"]["holders"], true);
+            assert_eq!(case["quality_preserved"]["liquidity"], true);
+            assert_eq!(case["quality_preserved"]["runner_gates_unchanged"], true);
+
+            let provider_body = case["provider_response_raw_json"].as_str().unwrap();
+            let response_sha = format!("{:x}", Sha256::digest(provider_body.as_bytes()));
+            assert_eq!(
+                response_sha,
+                case["provider_response_sha256"].as_str().unwrap()
+            );
+            let observation =
+                crate::solana_tracker_ath::parse_ath_observation(mint, provider_body.as_bytes())
+                    .unwrap();
+            assert_eq!(observation.response_sha256, response_sha);
+            assert_eq!(
+                observation.highest_price_usd.as_deref(),
+                Some(case["provider_price_usd"].as_str().unwrap())
+            );
+            assert_eq!(
+                observation.timestamp_ms,
+                case["provider_peak_timestamp_ms"].as_i64()
+            );
+            assert_eq!(
+                observation.pool_id.as_deref(),
+                case["provider_peak_pool_id"].as_str()
+            );
+            assert_eq!(
+                observation.highest_market_cap_usd.as_deref(),
+                Some(case["provider_reported_market_cap_usd"].as_str().unwrap())
+            );
+
+            let supply = &case["supply"];
+            assert_eq!(supply["decimals"], 6);
+            assert_eq!(supply["current_snapshot_finalized"], true);
+            let birth = supply["birth_raw_upper"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            let current = supply["current_raw"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap();
+            assert!(current > 0 && current <= birth, "{mint}");
+            assert_eq!(supply["monotone_nonincreasing_supply_observed"], true);
+            let current_mint = &supply["current_mint_account"];
+            assert_eq!(supply["current_mint_request_address"], mint);
+            assert_eq!(supply["current_snapshot_finalized"], true);
+            let raw = decode_base64(current_mint["raw_account_base64"].as_str().unwrap());
+            assert_eq!(
+                raw.len(),
+                usize::try_from(current_mint["raw_account_length"].as_u64().unwrap()).unwrap()
+            );
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&raw)),
+                current_mint["raw_account_sha256"].as_str().unwrap()
+            );
+            assert_eq!(raw[0..4], [0, 0, 0, 0]);
+            assert_eq!(raw[46..50], [0, 0, 0, 0]);
+            assert_eq!(
+                u64::from_le_bytes(raw[36..44].try_into().unwrap()).to_string(),
+                current.to_string()
+            );
+            assert_eq!(raw[44], 6);
+            assert_eq!(raw[45], 1);
+            assert_eq!(current_mint["mint_authority_option_tag"], 0);
+            assert_eq!(current_mint["freeze_authority_option_tag"], 0);
+            let owner = current_mint["owner"].as_str().unwrap();
+            if owner == TOKEN_LEGACY {
+                assert_eq!(raw.len(), 82);
+                assert!(current_mint["extensions"].as_array().unwrap().is_empty());
+            } else {
+                assert_eq!(owner, TOKEN_2022);
+                assert_eq!(raw[165], 1);
+                assert!(raw[82..165].iter().all(|byte| *byte == 0));
+                let extensions = current_mint["extensions"].as_array().unwrap();
+                let mut offset = 166;
+                let mut kinds = Vec::new();
+                for extension in extensions {
+                    let kind = u16::from_le_bytes(raw[offset..offset + 2].try_into().unwrap());
+                    let len = usize::from(u16::from_le_bytes(
+                        raw[offset + 2..offset + 4].try_into().unwrap(),
+                    ));
+                    let payload = &raw[offset + 4..offset + 4 + len];
+                    assert_eq!(u64::from(kind), extension["type"].as_u64().unwrap());
+                    assert_eq!(
+                        u64::try_from(len).unwrap(),
+                        extension["length"].as_u64().unwrap()
+                    );
+                    assert_eq!(
+                        format!("{:x}", Sha256::digest(payload)),
+                        extension["payload_sha256"].as_str().unwrap()
+                    );
+                    kinds.push(kind);
+                    offset += 4 + len;
+                }
+                assert_eq!(offset, raw.len());
+                assert_eq!(kinds, [18, 19]);
+            }
+
+            let birth_receipt = &supply["birth_receipt"];
+            assert_eq!(birth_receipt["source_object_hash_match"], true);
+            assert_eq!(
+                birth_receipt["source_expected_object_sha256"],
+                birth_receipt["source_actual_object_canonical_sha256"]
+            );
+            assert_eq!(birth_receipt["mintto_sum_matches_join"], true);
+            assert_eq!(birth_receipt["initialize_decimals_match"], true);
+            assert_eq!(birth_receipt["revocation_present"], true);
+            let init = &birth_receipt["initialize_mint_instructions"][0];
+            assert_eq!(init["mint_account"], mint);
+            assert_eq!(init["opcode"], 20);
+            assert_eq!(init["initialized_decimals"], 6);
+            let mint_tos = birth_receipt["mintto_instructions"].as_array().unwrap();
+            assert!(!mint_tos.is_empty());
+            let mut sum = 0_u128;
+            let mut last_mint_position = (0_i64, 0_i64);
+            for mint_to in mint_tos {
+                assert_eq!(mint_to["mint_account"], mint);
+                assert_eq!(mint_to["opcode"], 7);
+                assert_eq!(mint_to["wire_len"], 9);
+                sum = sum
+                    .checked_add(mint_to["amount_raw"].as_str().unwrap().parse().unwrap())
+                    .unwrap();
+                last_mint_position = (
+                    mint_to["outer_index"].as_i64().unwrap(),
+                    mint_to["inner_index"].as_i64().unwrap(),
+                );
+            }
+            assert_eq!(sum, birth);
+            assert_eq!(
+                birth_receipt["mintto_sum_raw"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u128>()
+                    .unwrap(),
+                birth
+            );
+            let revoke = &birth_receipt["mint_authority_revocations"][0];
+            assert_eq!(revoke["mint_account"], mint);
+            assert_eq!(revoke["opcode"], 6);
+            assert_eq!(revoke["new_authority_option"], 0);
+            assert!(
+                last_mint_position
+                    < (
+                        revoke["outer_index"].as_i64().unwrap(),
+                        revoke["inner_index"].as_i64().unwrap()
+                    )
+            );
+
+            let price = ExactDecimal::parse(case["provider_price_usd"].as_str().unwrap()).unwrap();
+            let bounds =
+                fdv_cent_bounds_for_nonincreasing_supply(price, birth, current, 6).unwrap();
+            assert_eq!(
+                bounds.lower_cents,
+                supply["lower_fdv_floor_cents"].as_i64().unwrap()
+            );
+            let coefficient = U512::from(price.coefficient);
+            let effective_scale = u32::try_from(price.scale + 6).unwrap();
+            let denominator = pow10(effective_scale);
+            let upper_numerator = coefficient * U512::from(birth) * U512::from(100);
+            let upper_ceil = (upper_numerator + denominator - U512::from(1)) / denominator;
+            assert_eq!(
+                upper_ceil,
+                U512::from(supply["upper_fdv_ceil_cents"].as_u64().unwrap())
+            );
+            let width_num = U512::from(birth - current) * U512::from(100);
+            let is_narrow = width_num <= U512::from(birth) * U512::from(2);
+            assert_eq!(supply["interval_width_under_two_percent"], is_narrow);
+            if !is_narrow {
+                wide_count += 1;
+                assert!(
+                    upper_ceil
+                        < U512::from(
+                            fixture["wide_supply_interval_runner_threshold_guard_cents"]
+                                .as_u64()
+                                .unwrap()
+                        )
+                );
+                assert_eq!(supply["wide_interval_upper_below_runner_threshold"], true);
+            }
+        }
+        assert_eq!(wide_count, 6);
+        assert!(
+            fdv_cent_bounds_for_nonincreasing_supply(ExactDecimal::parse("1").unwrap(), 1, 2, 6)
+                .is_none()
+        );
+        assert!(
+            fdv_cent_bounds_for_nonincreasing_supply(ExactDecimal::parse("1").unwrap(), 1, 0, 6)
+                .is_none()
+        );
+
+        let cfg = crate::DevTrackerConfig::from_toml(include_str!(
+            "../../../config/dev-tracker.example.toml"
+        ))
+        .unwrap();
+        let make_launch = |launchpad: &str, holders: Option<i64>, liquidity: Option<i64>| {
+            scout_devdb::DevLaunchRow {
+                chain: "solana".into(),
+                creator: "owner-discordance-quality-control".into(),
+                token: format!(
+                    "quality-control-{launchpad}-{}",
+                    holders.unwrap_or_default()
+                ),
+                launchpad: launchpad.into(),
+                created_at: 1_700_000_000,
+                migrated_at: Some(1_700_000_060),
+                ath_fdv_cents: Some(100_000_000),
+                ath_holders: holders,
+                ath_max_liquidity_cents: liquidity,
+            }
+        };
+        let stats = |row| crate::dev_stats(&[row], 1_800_000_000, &cfg)[0].runners;
+        assert_eq!(stats(make_launch("pump", None, None)), 0);
+        assert_eq!(
+            stats(make_launch("pump", Some(cfg.top_runners.min_holders), None)),
+            1
+        );
+        assert_eq!(
+            stats(make_launch(
+                "bankr",
+                Some(cfg.top_runners.min_holders),
+                Some(0)
+            )),
+            0
+        );
+        assert_eq!(
+            stats(make_launch(
+                "bankr",
+                Some(cfg.top_runners.min_holders),
+                Some(100_000_000)
+            )),
+            1
+        );
+    }
 }

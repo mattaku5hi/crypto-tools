@@ -2624,3 +2624,39 @@ writes pin only these latest immutable proofs and the root certificate
 `6f6f0a6b32e8ddad82abeb42d14d4b8cebabf786692b6071ae1f8ac5534b54b2`.
 
 Measurement: `docs/p0/measurements/2026-10-14-solana-bbm-d28-bounded-windows.md`.
+
+## Amendment 57 (2026-10-14) — owner accepts the remaining SOL price disagreements
+
+The owner explicitly ends the targeted historical fill for the remaining 100
+Base keys and accepts the existing provider/on-chain price disagreements for
+the remaining 15 Solana keys in the frozen diagnostic cohort. This decision
+does not change ongoing facts ingestion, future provider acceptance or the
+Robinhood launch-marker policy. Base gaps remain unknown and documented.
+
+For these 15 Solana keys only, use the retained exact Solana Tracker peak price
+with an independently checked supply denominator. Prefer exact historical
+supply when proved; otherwise use the existing monotone current-to-birth
+supply interval and retain its full width. Store the lower FDV
+rounded down to cents and retain the upper ceiling and observed price
+disagreement in the audit. Only the provider/on-chain price agreement gate is
+waived. Nine intervals are within 2%; six are wider (up to about 49.5%). For
+these wider cases, require even the upper reference to remain below the
+unchanged $500k runner threshold. This accepts a conservative recorded value
+without using the uncertain denominator to award runner membership. It is not
+a general relaxation for future wide intervals. Missing mint identity,
+unproved supply bounds or unsupported extensions
+remain failures; accepting a price discrepancy supplies none of that evidence.
+
+Use the distinct source
+`solana-tracker-owner-accepted-discordance-supply-bound-v1`. It denotes an
+owner-accepted provider-recorded price reference with supply evidence, not
+on-chain price corroboration or verified annual/all-market ATH. Keep
+`ath_at=NULL`, original holders/liquidity and the existing runner/dev gates.
+The live Solana Tracker adapter still records price observations separately;
+this is a guarded, finite historical promotion, not a new automatic fallback.
+
+The frozen input and user decision are retained in the private versioned
+`solana15-owner-discordance-acceptance-2026-10-14/owner-policy-v2.json`;
+the initial draft remains immutable as v1.
+Captured regression and complete workspace checks must pass before promotion;
+every database row is guarded against its original source/value/version.
