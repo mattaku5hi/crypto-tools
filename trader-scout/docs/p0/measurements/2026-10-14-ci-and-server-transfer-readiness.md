@@ -99,3 +99,34 @@ server daemon starts. Private evidence:
 `.scout-data/deployment/2026-10-14-b84-95-closures/bundle-manifest.json`,
 `closure-dump-reconciliation.json`, and
 `.scout-data/maintenance/snapshot-retention-95-applied-2026-10-14.json`.
+
+## Subsequent full restore: 2026-10-14 14:41 UTC
+
+The same 95-reference archive was subsequently restored into a fresh isolated
+PostgreSQL 16 instance. `pg_restore --exit-on-error` exited 0 in 444 seconds.
+Read-only checks found migrations 1–10 and matched all 95 reference rows across
+source, observation time, FDV, optional ATH date, holders and liquidity, with
+zero missing or different rows. Restored counts include 28,495,679 launches,
+198,207 migrations, 1,366,918 ATH-table rows and 941 cursors. The quota row,
+daemon state and 30 delivery records were present; their inventory fingerprints
+were not compared against a separate source-side table export.
+
+The container ran as UID/GID 1000:1000, with 1 CPU, 1 GiB memory, 512 MiB shared
+memory, no network or ports, all capabilities dropped and no-new-privileges.
+The existing Docker daemon was rootful; the CLI and container process ran as
+the current user without sudo. Only a new private test directory was bound.
+The test container, data directory and extracted dump were removed afterwards.
+Production kept running with no restart or incident; its cursor age was 25
+seconds at the post-restore check. Complete archives 80/95 remain retained.
+
+The first invocation used an unsupported dash filename and exited 1 before
+restoring any user tables; the successful stdin retry and both exit codes are
+recorded separately. The archive/progress/reconciliation hashes checked before
+the restore still matched afterwards. The frozen bundle provenance retains its
+historical “not restored yet” statement; this later sidecar records the new
+result without changing the archive. Proof:
+`.scout-data/deployment/2026-10-14-b84-95-closures-restore-audit-v1/restore-verification-v1.json`,
+SHA-256 `c0d91c6c81897748b15892feca80e41a557e4d1970762a5f0ef69f33195954d7`.
+This validates the local restore of this snapshot. B8.4 annual ATH gaps,
+B9.1 actual GitHub release execution and the final stopped-source VPS cutover
+remain pending.
