@@ -156,3 +156,131 @@ The approved two-archive retention policy now retains complete bundles 95/110;
 bundle 80 and temporary dump copies are pruned only after hash verification.
 Small provenance and raw audits remain. No production restart, restore,
 GitHub publication or VPS deployment was performed by this acceptance task.
+
+## Published preview workflow: 2026-10-15
+
+The release workflow is now published on `ci/trader-scout-release`. A push to
+that exact branch produces a `preview-<commit12>-run-<number>` Actions artifact;
+the tagged GitHub Release publishing step remains restricted to
+`trader-scout/vMAJOR.MINOR.PATCH`. No release tag was created by this task.
+
+The first real run on `8956d0a` failed its secret scan. The
+[v2 action default](https://github.com/gitleaks/gitleaks-action/blob/v2/src/index.js#L138)
+was Gitleaks 8.24.3, which did not apply the newly required allowlists. Replaying
+the same public-data controls with checksum-verified official 8.24.3 and
+8.30.1 binaries reproduced the difference. Both CI workflows now use
+`gitleaks-action@v3` (Node 24) and explicitly pin Gitleaks 8.30.1. New exceptions
+combine paths, affected rules, public field contexts and value shapes or exact
+known public values. They match individual findings, not whole JSON lines.
+Eight independent controls retain synthetic credentials beside public data
+on the same line, including API keys and Coinbase tokens.
+
+The fresh RustSec audit initially found four advisories against locked
+`rustls 0.23.45` (RUSTSEC-2026-0346 through -0349). Updating only this package
+to 0.23.46 cleared all vulnerabilities. Two unmaintained dependency warnings
+remain: `derivative 2.2.0` and `paste 1.0.15`. The new Cargo.lock SHA-256 is
+`3ba5cc8a1edf203ce8390a0f054699937af3430079455e5711671eddc75484e3`.
+Local fmt, workspace/all-target/all-feature Clippy, 1,248 Rust tests and all
+seven portable deployment tests passed after this update; database tests used
+only isolated `scout_test`. The final committed-history scan also passed.
+
+The next real CI run exposed a stale database-test assertion:
+`null_extrema_keeps_provider_metadata_and_validates_batch_identity` expected
+null after a `codex-missing` refresh, despite first inserting a known ATH of
+900 cents. Fresh PostgreSQL 16 reproduced the failure. Retaining 900 is the
+existing ADR-021 contract; production SQL needed no change. A read-only check
+of the older local test DB found the fixed fixture token already stored as
+`codex-missing` with `observed_at=1800000321`, which suppressed the test's
+older numeric seed and masked the stale assertion.
+
+The test now uses unique identities per run and checks retained ATH, original
+source/ATH date, refreshed observation time and holder/liquidity metadata.
+The test DB helper fails loudly on configured connection/migration errors.
+The focused regression passed twice against the same new test DB, followed
+by all 114 `scout-devtracker` tests. Full validation then passed fmt, Clippy,
+1,248 workspace tests and seven deployment tests against that disposable
+PostgreSQL 16 instance. Read-only before/after counts confirmed execution of
+the ATH regression, rather than a skipped connection. Temporary test-failure
+annotations used to diagnose the remote run were then removed from the
+workflow. The disposable DB, its private connection file and the separate
+verification build target were removed after capturing the proof.
+
+Reusing the main build target for a temporary checkout had retained a test
+binary with a removed `CARGO_MANIFEST_DIR`, causing unrelated mock-server
+fixture reads to fail. Validation was rerun with its own target. Stale
+workspace dev artifacts were removed while keeping dependency and release
+artifacts; Cargo reported 4,085 files / 7.3 GiB removed. No production state
+or runtime binary was changed.
+
+[Run 38645526529](https://github.com/mattaku5hi/crypto-tools/actions/runs/38645526529)
+passed all gates and compiled the four Bookworm release binaries, but failed
+packaging. A bounded diagnostic rerun,
+[38646988897](https://github.com/mattaku5hi/crypto-tools/actions/runs/38646988897),
+identified the exact failure: host `cargo metadata --locked --format-version 1`
+could not open the `anstyle-wincon-3.0.11.crate` cache path after the container
+build (`Permission denied`, OS error 13). Earlier local packaging/cache probes
+had passed and did not reproduce this directory-ownership condition. Neither
+failed run uploaded a release artifact.
+
+A minimized two-platform crate reproduced this exact write-permission seam:
+the root container built Linux dependencies, then host metadata tried to add
+an uncached Windows dependency beneath a root-owned 0755 cache directory.
+Running the same container as the host UID/GID made metadata pass. The release
+builder now uses that identity; temporary package-error annotations are
+removed. Private red/green proof:
+`.scout-data/checks/2026-10-15/b91/package-cache-permission-repro-v6/probe-result-v1.json`,
+SHA-256 `1b782350f18107858ad0198f8c8685a542f9a487ff22da4a1a5658f7987ae4fe`.
+
+The final run **succeeded** on exact source
+`7a4d34e825740c93a9fa6078fb3a19914e350d35`:
+[GitHub Actions run 38648161675](https://github.com/mattaku5hi/crypto-tools/actions/runs/38648161675).
+Offline checks, PostgreSQL-backed workspace tests, secret scan, dependency
+audit, Bookworm build, package creation, all four CLI `--help` smoke checks and
+artifact upload passed. Tagged publishing was skipped for this preview push.
+
+The generated Actions artifact is
+[`trader-scout-preview-7a4d34e82574-run-7-x86_64-unknown-linux-gnu`](https://github.com/mattaku5hi/crypto-tools/actions/runs/38648161675/artifacts/11933184967),
+16,240,734 bytes, retained until 2026-11-13 22:38:10 UTC. GitHub's artifact ZIP
+digest is `sha256:3bbc6d78826b63e6b7487588300f398158dcca8e06e11b8b8293433ee6553c1c`;
+this is distinct from the tarball checksum recorded in its `SHA256SUMS`.
+After downloading and unpacking the Actions ZIP, run
+`sha256sum --check SHA256SUMS` before extracting the versioned tarball.
+The artifact was verified through its successful CI steps and public metadata;
+it was not downloaded or independently rehashed on this workstation.
+
+No release tag or GitHub Release was created. The workflow is published on the
+preview/feature branches and has not been merged into default `main`; manual
+dispatch requires registering the workflow there. The tagged publish path is
+implemented but unexercised. Final server installation is B9 and still needs a
+host, a fresh stopped-source state snapshot and restore/state checks. The
+running workstation daemon and its executable were unchanged by this CI task.
+At 22:27 UTC it was active (PID 8386, one restart), heartbeat age 31 seconds and
+latest cursor age 246 seconds. The single existing `codex:solana` incident was
+still open; it did not stop facts ingestion.
+
+Immutable CI outcome proof:
+`.scout-data/checks/2026-10-15/b91/actions-monitor-final/run-38648161675-final.json`,
+SHA-256 `c4dd7d3217b6308591d0f6d2c2f3cd4338b069c592fbfb44948750bbeefca946`.
+Workflow YAML/Bash/version/invalid-tag/failure-propagation checks:
+`.scout-data/checks/2026-10-15/b91/workflow-uid-fix-validation-v1.json`,
+SHA-256 `c6951ba60d27602f3982ff238c7d235ab2dffaa97eea247a64113d8ae985921b`.
+
+Private proofs: `.scout-data/checks/2026-10-15/b91/`, especially
+`reports/final-review-v1.json`, `reports/version-mismatch-v1.json` and
+`reports/history-final-0647508.json.proof.json`; isolated Rust/Python validation:
+`.scout-data/checks/2026-10-15/b9-1-cargo-validation/validation-summary-v2.json`.
+The final fresh-DB full validation is
+`.scout-data/checks/2026-10-15/b91/full-validation-v2/validation-summary-v2.json`,
+SHA-256 `8d7f81ca0f73e14c7fbb4c3a64e2c2a08e36dd12cf33ed09190832963350dbfd`.
+
+Changed files (relative to the `trader-scout` checkout):
+
+- `../.github/workflows/trader-scout-release.yml`
+- `../.github/workflows/ci.yml`
+- `../.gitleaks.toml`
+- `Cargo.lock`
+- `crates/scout-devtracker/src/ath.rs`
+- `AGENTS.md`
+- `docs/ROADMAP.md`
+- `docs/TICKETS.md`
+- `docs/p0/measurements/2026-10-14-ci-and-server-transfer-readiness.md`
