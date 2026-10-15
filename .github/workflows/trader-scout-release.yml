@@ -1,0 +1,198 @@
+name: trader-scout release
+
+on:
+  push:
+    branches:
+      - "ci/trader-scout-release"
+    tags:
+      - "trader-scout/v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: offline checks
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: scout
+          POSTGRES_PASSWORD: scout
+          POSTGRES_DB: scout_test
+        ports:
+          - 55439:5432
+        options: >-
+          --health-cmd "pg_isready -U scout -d scout_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: trader-scout
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            trader-scout/target
+          key: ${{ runner.os }}-trader-scout-checks-${{ hashFiles('trader-scout/Cargo.lock') }}
+      - run: cargo fmt --all -- --check
+      - name: Portable runtime and private state bundle tests
+        run: python3 -m unittest discover -s deploy -p 'test_*.py' -v
+      - name: Deployment shell syntax
+        run: bash -n deploy/package-release.sh deploy/portable/prepare-runtime.sh deploy/db-dump.sh deploy/db-restore.sh deploy/systemd/install-user-service.sh
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Workspace tests (local PostgreSQL only)
+        env:
+          SCOUT_TEST_DATABASE_URL: postgres://scout:scout@127.0.0.1:55439/scout_test
+        run: cargo test --workspace --all-features
+
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: "8.30.1"
+
+  dependency-audit:
+    name: locked dependency audit
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: trader-scout
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - run: cargo install cargo-audit --locked
+      - name: Audit the locked dependency graph
+        run: |
+          sha256sum Cargo.lock > "$RUNNER_TEMP/trader-scout-cargo-lock.sha256"
+          cargo audit --file Cargo.lock
+          sha256sum --check "$RUNNER_TEMP/trader-scout-cargo-lock.sha256"
+
+  package:
+    name: Bookworm x86_64 package
+    needs: [checks, secret-scan, dependency-audit]
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: trader-scout
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            trader-scout/target-bookworm
+          key: ${{ runner.os }}-trader-scout-release-bookworm-${{ hashFiles('trader-scout/Cargo.lock') }}
+      - name: Build locked release binaries in the deploy Bookworm toolchain image
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE/trader-scout:/workspace" \
+            --volume "$HOME/.cargo:/usr/local/cargo" \
+            --workdir /workspace \
+            rust:1.98.1-bookworm \
+            bash -euo pipefail -c '
+              rustc --version | grep -F "1.98.1"
+              export CARGO_TARGET_DIR=/workspace/target-bookworm
+              cargo build --locked --release --target x86_64-unknown-linux-gnu \
+                -p dev-tracker -p buyer-intersect -p wallet-rank -p wallet-stats
+            '
+      - name: Package binaries, manifest and checksums
+        id: package
+        env:
+          BUILD_COMMIT: ${{ github.sha }}
+          BUILD_REF: ${{ github.ref_name }}
+          BUILD_REF_TYPE: ${{ github.ref_type }}
+          BUILD_EVENT: ${{ github.event_name }}
+          BUILD_RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          if [[ "$BUILD_EVENT" == "push" && "$BUILD_REF_TYPE" == "tag" ]]; then
+            [[ "$BUILD_REF" =~ ^trader-scout/v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "tag must be trader-scout/vMAJOR.MINOR.PATCH" >&2
+              exit 1
+            }
+            version="${BUILD_REF#trader-scout/}"
+            tag="$BUILD_REF"
+          elif [[ "$BUILD_EVENT" == "push" && "$BUILD_REF_TYPE" == "branch" && "$BUILD_REF" == "ci/trader-scout-release" ]]; then
+            version="preview-${BUILD_COMMIT:0:12}-run-${BUILD_RUN_NUMBER}"
+            tag=""
+          else
+            version="manual-${BUILD_COMMIT:0:12}-run-${BUILD_RUN_NUMBER}"
+            tag=""
+          fi
+          mkdir -p dist
+          deploy/package-release.sh \
+            "$version" "$BUILD_COMMIT" "$tag" \
+            target-bookworm/x86_64-unknown-linux-gnu/release dist
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Smoke the packaged CLIs on Debian Bookworm
+        env:
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive="trader-scout-${PACKAGE_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$RUNNER_TEMP/trader-scout-smoke"
+          tar -xzf "dist/$archive" -C "$RUNNER_TEMP/trader-scout-smoke"
+          docker run --rm \
+            --volume "$RUNNER_TEMP/trader-scout-smoke/trader-scout-${PACKAGE_VERSION}/bin:/release:ro" \
+            --workdir /release debian:bookworm-slim \
+            sh -ec 'for cli in dev-tracker buyer-intersect wallet-rank wallet-stats; do ./$cli --help >/dev/null; done'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trader-scout-${{ steps.package.outputs.version }}-x86_64-unknown-linux-gnu
+          path: |
+            trader-scout/dist/*.tar.gz
+            trader-scout/dist/manifest.json
+            trader-scout/dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: publish tagged GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/trader-scout/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: trader-scout-${{ needs.package.outputs.version }}-x86_64-unknown-linux-gnu
+          path: release-assets
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            release-assets/*.tar.gz release-assets/manifest.json release-assets/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$RELEASE_TAG"

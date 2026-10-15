@@ -25,6 +25,20 @@ spec:
       containers:
         - name: postgres
           image: postgres:16
+          args:
+            - -c
+            - shared_buffers=128MB
+            - -c
+            - work_mem=4MB
+            - -c
+            - maintenance_work_mem=64MB
+            - -c
+            - max_parallel_workers_per_gather=0
+            - -c
+            - max_connections=32
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
           env:
             - { name: POSTGRES_USER, value: scout }
             - { name: POSTGRES_DB, value: scout }
@@ -34,8 +48,13 @@ spec:
           ports: [{ containerPort: 5432 }]
           volumeMounts:
             - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 512Mi }
   volumeClaimTemplates:
     - metadata: { name: data }
       spec:
         accessModes: [ReadWriteOnce]
-        resources: { requests: { storage: 10Gi } }
+        # Annual data (~18.4 GiB), derive temp spill (~20 GiB), and WAL headroom.
+        resources: { requests: { storage: 60Gi } }

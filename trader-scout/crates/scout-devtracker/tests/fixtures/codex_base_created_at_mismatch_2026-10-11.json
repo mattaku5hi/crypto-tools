@@ -1,0 +1,34 @@
+{
+  "queried_interval": {
+    "start": 1791072000,
+    "end": 1791158400
+  },
+  "results": [
+    {
+      "createdAt": 1791092775,
+      "token": {
+        "address": "0x315fd1225783d9b4ff9b25082256870092ae4ba3",
+        "networkId": 8453,
+        "extrema": {
+          "athFdv": "10092",
+          "athFdvTimestamp": 1791092775
+        }
+      },
+      "holders": null,
+      "liquidity": "0"
+    },
+    {
+      "createdAt": 1775701583,
+      "token": {
+        "address": "0x3084d9ed7ebb5670a6192b4716b99256d52212c2",
+        "networkId": 8453,
+        "extrema": {
+          "athFdv": "1656",
+          "athFdvTimestamp": 1791636057
+        }
+      },
+      "holders": 11,
+      "liquidity": "9"
+    }
+  ]
+}

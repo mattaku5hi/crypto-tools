@@ -1,0 +1,43 @@
+# Base launchpad APIs как дополнение для ATH — 2026-10-11
+
+## Вывод
+
+У Base есть один заметный launchpad-specific кандидат на бесплатную историческую метрику: публичный REST API Flaunch документирует для токенов Flaunch поле `price.allTimeHigh` и исторические ряды OHLCV, включая `daily[].high`. Документация говорит, что API без ключа и без фиксированного лимита запросов (с просьбой не злоупотреблять). Это потенциально полезное дополнение для известного подмножества токенов, запущенных Flaunch, но не провайдер для произвольных Base адресов. Ключевой runtime-факт не подтверждён: два небольших GET к официально документированному host получили HTTP 521, поэтому endpoint сейчас нельзя считать доступным/готовым.
+
+Другие просмотренные first-party launchpad APIs дают данные о своих токенах, текущие метрики или список запусков, но проверенные docs не заявляют ATH/OHLCV. Не найдено оснований распространять их launchpad index на все Base токены. Для общего покрытия Base они остаются возможной discovery/context-частью, а не ATH источником.
+
+## Сравнение
+
+| Источник | Официально документированная возможность | Бесплатный доступ / глубина | Граница применимости и статус |
+|---|---|---|---|
+| **Flaunch** | REST API `GET /v1/base/tokens/{address}/price` документирует `price.allTimeHigh`, `priceHistory.daily/hourly/minutely/secondly` с OHLC `high`, `meta.timeRanges.*Start`; list endpoints имеют `limit` максимум 100 и `offset`. | Документация утверждает, что все endpoints публичны без authentication. Указывает «no limits», рекомендует 100–200 ms между запросами и пагинацию; на production-scale предлагает связаться с командой. Для history есть отдельный `timeRanges` start per timeframe, но нет обещания lifetime-retention и нет параметра запроса окна/страницы ряда. | Только Base mainnet и Base Sepolia указаны как supported networks. Только Flaunch-индексируемые токены, а не произвольные Base контракты. `docs`: schema/fields/access. `live probe`: два GET (список 3 токенов и token price на адресе из официального примера) получили HTTP 521 от host `dev-api.flayerlabs.xyz`; live availability, значения и полнота unknown. `allTimeHigh` семантически не определено: docs не дают валюту/ценовую формулу, supply basis или точный объект рынка. Соседние поля `marketCapETH`, `priceETH`, `startingMarketCapETH`, а в candles `marketCap` и `price`, делают смешение price ATH и market-cap/FDV ATH реальным риском. Не использовать поле как эквивалент Codex `athFdv`, пока семантика не подтверждена. |
+| **Zora Coins SDK/API** | `getCoin` даёт текущие `marketCap`, `totalSupply`, `tokenPrice`; `getCoinSwaps` — пагинируемую swap activity с timestamp и amount. Публичные docs не перечисляют direct ATH или OHLCV. | API key рекомендуется, чтобы избежать throttling и открыть все features; получение ключа требует входа/создания аккаунта в Zora Developer Settings. В проверенных docs нет free quota или retention commitment. | SDK по умолчанию Base (8453), но это собственные Zora coins. Свопы можно исследовать как потенциальный источник trade-event цен только после подтверждения схемы, quote amount, полноты пагинации и доступности API; docs сам по себе готовую реконструкцию ATH не доказывает. У Zora coin есть отдельный Uniswap v4 pool; объединение внешних пар и миграций не обещано. |
+| **Clanker** | Официальная документация публикует unauthenticated endpoints: token list/search, token by pool, batch lookup до 100 pool addresses и `/api/marketcap`, который «returns the market cap» по Uniswap v3 pool. | Без authentication для перечисленных public endpoints; количественный free quota / retention в README не указан. | Текущий pool market cap не равен историческому ATH. В reviewed public endpoint inventory нет documented OHLCV/ATH endpoint. Индекс — токены/пулы Clanker; наличие token in pool endpoint не доказывает полное покрытие внешних пар или migrations. |
+| **Bankr Launch API** | Публичный `GET /token-launches` возвращает 50 последних запусков; есть quote-token и fee/lifecycle endpoints. | Launch listing публичный без auth; ограничение 50 результатов явно documented. Остальные launch/deploy flows могут требовать ключ, но они не нужны для чтения ATH. | Официальные endpoint docs не дают произвольный token-price history, candle series или ATH. Launch feed пригоден для discovery недавно запущенных Bankr tokens, не ATH. Bankr работает также на Robinhood Chain, но этот раздел оценивает только пригодность Base-данных. |
+| **Noice / Virtuals** | Официальный сайт Noice подтверждает собственный Base/Solana launchpad, однако reviewed public product page не предоставляет developer data API/history contract. В просмотренных Virtuals first-party developer/whitepaper materials не найден generic Base-token ATH/OHLC endpoint. | Не установлены документированные бесплатные квоты/retention для такого API. | Отсутствие найденной API-страницы не доказывает отсутствия private/internal endpoint; публичная пригодность для этого запроса не подтверждена. |
+
+## Как применять Flaunch без ложного ATH
+
+1. Сначала проверить доступность endpoint с одной известной Flaunch mainnet монетой и сохранить HTTP status, полный redacted JSON, `meta.timeRanges`, длины массивов и первые/последние timestamps. Сейчас host отвечает 521 — не повторять массовые запросы до выяснения outage/host retirement.
+2. Проверить несколько Flaunch токенов с известным deployment time: есть ли первая candle не позже первого trade/deployment, пропуски по времени, достаточное количество daily points и совпадает ли `allTimeHigh` с `max(priceHistory.daily[].high)` / соответствующим `marketCap` high. Официальные docs не объясняют расхождения этих полей.
+3. Установить, является ли `allTimeHigh` token price, market cap или FDV; какая валюта у каждого числового поля и какой supply используется во времени. До этого нельзя подавать это значение в поле проекта `athFdv`.
+4. Область покрытия ограничить токенами, которые API явно знает. Проверить Flaunch graduation/DEX-переход и другие pools: документация не говорит, что history продолжает считать все рынки токена после migration либо агрегирует посторонние пулы.
+
+## Конкретный ограниченный следующий PoC
+
+Если Flaunch подтвердит доступность публичного endpoint, проверить максимум пять известных Base токенов: 2 Flaunch launches разных дат, 1 Flaunch мигрировавший/с внешним пулом, 1 Zora coin, 1 произвольный Base токен. На первом этапе это максимум пять `.../price` GET (без ключей). Записать минимальный/максимальный timestamps, наличие holes, `max(daily.high)`, reported `allTimeHigh`, `max(daily.marketCap)` и `max(daily.price)` отдельно. Это проверит пригодность Flaunch для его собственного subset и даст отрицательный контроль на arbitrary token; не является выборочной оценкой сети целиком. Не делать backfill миллионов адресов, пока не определена полевая семантика и нет хотя бы одной успешной live response.
+
+## Источники (first-party)
+
+- [Flaunch REST Data API](https://docs.flaunch.gg/references/restful-data-api) — no-auth statement, сеть, URL, price/ATH/history schema, pagination и rate-limit language. В документации примеры могут быть illustrative; live GET не подтвердил доступность.
+- [Flaunch Base mainnet subgraph docs](https://docs.flaunch.gg/references/subgraph) — отдельный subgraph для Base mainnet; Graph endpoint требует The Graph API key, поэтому это не свободный keyless replacement и наличие subgraph само по себе не заявляет ATH.
+- [Zora Coins SDK](https://docs.zora.co/coins/sdk) и [coin queries](https://docs.zora.co/coins/sdk/queries/coin) — API key guidance и поля текущей монеты/swap activities.
+- [Zora Coins protocol](https://docs.zora.co/coins) — выделенный Uniswap v4 pool и различия supply allocations у типов Zora coin.
+- [Clanker public API docs](https://github.com/clanker-devco/DOCS/blob/main/api-reference/public/README.md) — inventory публичных endpoints и текущего marketcap endpoint.
+- [Bankr Token Launching API](https://docs.bankr.bot/token-launching/api-reference/overview/) и [launching overview](https://docs.bankr.bot/token-launching/overview/) — публичный lifecycle API и listing 50 newest launches.
+- [Noice official product](https://noice.so/) — запуск собственного launchpad; просмотренная страница не документирует data API.
+
+## Выполненные действия и ограничения
+
+- Просмотрены первичные docs для перечисленных launchpads; выполнены два ограниченных keyless GET только к Flaunch public data host, оба получили HTTP 521. Запросы не использовали ключи/аккаунт и не меняли данные.
+- Не запускались код проекта, production pipeline, DB queries или платные/аутентифицированные API calls. Вывод — оценка пригодности опубликованных данных/API, а не доказательство полноты token universe.

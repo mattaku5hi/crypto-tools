@@ -2,11 +2,13 @@
 //! `migrate` applies the schema, `ingest` runs one pass over the sources of the
 //! given chains, `derive` prints the categories as JSON, `export` writes the
 //! wallet-tracker files (and sends changed lists), `run` is the 24/7 daemon
-//! (B5) that loops ingestion and derivation on the config's cadence, re-reading
+//! (B5) that loops facts, ATH, and derivation on configured cadences, re-reading
 //! the config every cycle. Secrets (database URL, RPC URLs, API keys, bot token)
 //! come from the environment and are never printed.
 
 mod backfill;
+mod birdeye_backfill;
+mod solana_tracker_backfill;
 
 use std::collections::BTreeSet;
 use std::process::ExitCode;
@@ -43,6 +45,10 @@ struct Args {
 enum Cmd {
     /// Apply the schema migrations.
     Migrate,
+    /// Save bounded Birdeye USD candle windows for tracked tokens; separate from ATH FDV.
+    BirdeyePrices(birdeye_backfill::BirdeyePricesArgs),
+    /// Save bounded Solana Tracker provider ATH price observations, separate from ATH FDV.
+    SolanaTrackerAth(solana_tracker_backfill::SolanaTrackerAthArgs),
     /// One ingestion pass over the sources of the given chains.
     Ingest {
         /// Comma-separated: solana, bsc, base, robinhood.
@@ -104,8 +110,8 @@ enum Cmd {
         #[arg(long)]
         test: bool,
     },
-    /// The daemon: ingestion every `schedule.ingest_every_minutes`, derivation
-    /// and delivery every `schedule.derive_every_minutes`; the config is
+    /// The daemon: facts, ATH, and derivation run at their configured cadences;
+    /// the config is
     /// re-read every cycle. Stops on SIGTERM / Ctrl-C.
     Run {
         #[arg(long, default_value = DEFAULT_CONFIG)]
@@ -157,7 +163,8 @@ impl IngestOpts {
             max_new_creators: s.max_new_creators,
             max_signer_lookups: s.max_signer_lookups,
             max_histories: s.max_dev_histories,
-            ath_requests: s.ath_requests_per_chain,
+            // ATH is scheduled independently in the daemon loop.
+            ath_requests: 0,
             solana_max_pages: s.solana_max_pages,
             solana_settle_secs: 60,
             solana_via_fallback: false,
@@ -640,6 +647,7 @@ impl Alerts<'_> {
 async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
     let mut cfg = read_config(config)?;
     let mut next_ingest = 0i64;
+    let mut next_ath = 0i64;
     let mut next_derive = 0i64;
     let mut shutdown = Box::pin(shutdown_signal());
     eprintln!("dev-tracker: daemon started ({config})");
@@ -746,14 +754,11 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
                             a.ok(&key).await;
                             // degradations: providers that failed while the
                             // pass itself succeeded
-                            let mut keys = vec![format!("codex:{chain}")];
                             if chain == "solana" {
-                                keys.push("provider:helius".to_string());
-                            }
-                            for key in keys {
+                                let key = "provider:helius";
                                 match degraded.iter().find(|(k, _)| *k == key) {
                                     Some((k, e)) => a.failed(k, e).await,
-                                    None => a.ok(&key).await,
+                                    None => a.ok(key).await,
                                 }
                             }
                         }
@@ -765,6 +770,21 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
                     }
                 }
                 next_ingest = now().saturating_add(minutes(s.ingest_every_minutes));
+            }
+            if ath_pass_due(now(), next_ath, s.ath_requests_per_chain) {
+                for chain in &s.chains {
+                    let incident = format!("codex:{chain}");
+                    match ath_degraded(db, chain, s.ath_requests_per_chain)
+                        .await
+                        .into_iter()
+                        .find(|(key, _)| key == &incident)
+                    {
+                        Some((key, error)) => a.failed(&key, &error).await,
+                        None => a.ok(&incident).await,
+                    }
+                    mark();
+                }
+                next_ath = now().saturating_add(minutes(s.ath_every_minutes));
             }
             if now() >= next_derive {
                 let deliveries = match db.deliveries().await {
@@ -814,7 +834,13 @@ async fn daemon(db: &DevDb, config: &str) -> Result<(), String> {
             () = cycle => {}
             () = &mut shutdown => break "stop requested during a pass",
         }
-        let wait = next_ingest.min(next_derive).saturating_sub(now()).max(1);
+        let wait = next_wake_seconds(
+            now(),
+            next_ingest,
+            next_derive,
+            next_ath,
+            s.ath_requests_per_chain,
+        );
         tokio::select! {
             () = tokio::time::sleep(Duration::from_secs(u64::try_from(wait).unwrap_or(60))) => {}
             () = &mut shutdown => break "stop requested",
@@ -844,6 +870,25 @@ fn stall_after(cfg: &DevTrackerConfig) -> i64 {
         .ingest_every_minutes
         .max(cfg.schedule.derive_every_minutes);
     minutes(cfg.alerts.stall_minutes.max(longest.saturating_add(15)))
+}
+
+fn ath_pass_due(now: i64, next_ath: i64, requests_per_chain: usize) -> bool {
+    requests_per_chain > 0 && now >= next_ath
+}
+
+fn next_wake_seconds(
+    now: i64,
+    next_ingest: i64,
+    next_derive: i64,
+    next_ath: i64,
+    ath_requests_per_chain: usize,
+) -> i64 {
+    let next = if ath_requests_per_chain > 0 {
+        next_ingest.min(next_derive).min(next_ath)
+    } else {
+        next_ingest.min(next_derive)
+    };
+    next.saturating_sub(now).max(1)
 }
 
 fn minutes(m: u64) -> i64 {
@@ -886,6 +931,14 @@ async fn run(args: Args) -> Result<(), String> {
         Cmd::Migrate => {
             db.migrate().await.map_err(|e| e.to_string())?;
             eprintln!("dev-tracker: schema up to date");
+        }
+        Cmd::BirdeyePrices(a) => {
+            db.migrate().await.map_err(|e| e.to_string())?;
+            birdeye_backfill::run(&db, a).await?;
+        }
+        Cmd::SolanaTrackerAth(a) => {
+            db.migrate().await.map_err(|e| e.to_string())?;
+            solana_tracker_backfill::run(&db, a).await?;
         }
         Cmd::Ingest {
             chains,
@@ -1023,10 +1076,35 @@ mod tests {
 
     #[test]
     fn stall_threshold_never_undercuts_an_idle_wait() {
-        // default: 90 min (cadences 30 / 60)
+        // Default 90 min still applies: facts/derivation wake after 30/60 min,
+        // even though ATH is requested only every four hours.
         assert_eq!(stall_after(&cfg("stall_minutes = 90")), 90 * 60);
-        // too short for a 60-minute derivation cadence: raised to 75 min
         assert_eq!(stall_after(&cfg("stall_minutes = 5")), 75 * 60);
+    }
+
+    #[test]
+    fn ath_deadline_is_independent_and_can_wake_the_daemon() {
+        // A 30-minute facts cycle does not trigger a four-hour ATH cycle.
+        assert!(!ath_pass_due(30 * 60, 4 * 60 * 60, 1));
+        // ATH can become due while both facts and derivation remain scheduled later.
+        assert!(ath_pass_due(4 * 60 * 60, 4 * 60 * 60, 1));
+        assert_eq!(
+            next_wake_seconds(4 * 60 * 60, 5 * 60 * 60, 6 * 60 * 60, 4 * 60 * 60, 1),
+            1
+        );
+        assert_eq!(
+            next_wake_seconds(30 * 60, 60 * 60, 2 * 60 * 60, 40 * 60, 1),
+            10 * 60
+        );
+    }
+
+    #[test]
+    fn zero_ath_budget_disables_pass_and_wake_deadline() {
+        assert!(!ath_pass_due(4 * 60 * 60, 4 * 60 * 60, 0));
+        assert_eq!(
+            next_wake_seconds(30 * 60, 60 * 60, 2 * 60 * 60, 40 * 60, 0),
+            30 * 60
+        );
     }
 
     #[test]

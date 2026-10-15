@@ -1,0 +1,72 @@
+{
+  "chain": "robinhood",
+  "network_id": 4663,
+  "quote": "WETH",
+  "quote_decimals": 18,
+  "token_decimals": 18,
+  "fx": "Coinbase ETH-USD closed 1m candle",
+  "implementation": "0xc6b81b429797e0f555440b70cd99e032d7ae947e",
+  "quality": "Provider-observed USD window high with invariant token supply; successful v4 Swap and verified historical 1:1 ETH wrapper corroborate the price. Launch-context/thin-market/venue/lifetime limitations remain.",
+  "cases": [
+    {
+      "token": "0x6f0f78fc461ac6df9b663c71ff8dab8c59b9fee1",
+      "provider_price_usd": "0.000010064078484692887",
+      "supply_tokens": "1000000000",
+      "expected_fdv_cents": 1006407,
+      "weth_token_ratio_numerator": "5622701276381",
+      "weth_token_ratio_denominator": "1380204543159007643389",
+      "eth_usd_low_cents": 247045,
+      "eth_usd_high_cents": 247148,
+      "swap_at": 1787680787,
+      "fx_minute_at": 1787680740
+    },
+    {
+      "token": "0x6fdbbfe8ba5778f46b05480f02d318eb6391fee1",
+      "provider_price_usd": "0.000010121365369902998",
+      "supply_tokens": "1000000000",
+      "expected_fdv_cents": 1012136,
+      "weth_token_ratio_numerator": "66944962685146",
+      "weth_token_ratio_denominator": "15421186073912074900317",
+      "eth_usd_low_cents": 233079,
+      "eth_usd_high_cents": 233286,
+      "swap_at": 1787271066,
+      "fx_minute_at": 1787271060
+    },
+    {
+      "token": "0xa35b32456ffe354ac140deb48c20e65454cafee1",
+      "provider_price_usd": "0.000010032732206030907",
+      "supply_tokens": "1000000000",
+      "expected_fdv_cents": 1003273,
+      "weth_token_ratio_numerator": "5989442053609",
+      "weth_token_ratio_denominator": "1384611580451120065076",
+      "eth_usd_low_cents": 232000,
+      "eth_usd_high_cents": 232199,
+      "swap_at": 1787260428,
+      "fx_minute_at": 1787260380
+    },
+    {
+      "token": "0xbb6ee8de2ae40d6b4f190f3f4caa1dc9eae9fee1",
+      "provider_price_usd": "0.000010058889963219904",
+      "supply_tokens": "1000000000",
+      "expected_fdv_cents": 1005888,
+      "weth_token_ratio_numerator": "5633294731016",
+      "weth_token_ratio_denominator": "1382547223477771073147",
+      "eth_usd_low_cents": 246661,
+      "eth_usd_high_cents": 247022,
+      "swap_at": 1787522333,
+      "fx_minute_at": 1787522280
+    },
+    {
+      "token": "0xfdd89ad1faa305d1fd10c96bddc2a769a680fee1",
+      "provider_price_usd": "0.000010175515385731835",
+      "supply_tokens": "1000000000",
+      "expected_fdv_cents": 1017551,
+      "weth_token_ratio_numerator": "1890556351849",
+      "weth_token_ratio_denominator": "454887830844338680003",
+      "eth_usd_low_cents": 244780,
+      "eth_usd_high_cents": 244960,
+      "swap_at": 1787749778,
+      "fx_minute_at": 1787749740
+    }
+  ]
+}

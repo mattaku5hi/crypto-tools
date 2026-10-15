@@ -1,0 +1,53 @@
+{
+  "scope": "Three real fixed-supply Base cases, Birdeye USD high corroborated by exact on-chain USDC/token pool ratios and Kraken daily FX observations; incomplete market scope",
+  "cases": [
+    {
+      "chain_id": 8453,
+      "token": "0x8e07d62d6c2c899641b60292e10e32e32ca1ab07",
+      "provider_price_usd": "0.0098586356482647",
+      "supply_tokens": "100000000000",
+      "usdc_raw": "9667",
+      "token_raw": "981688326977013622",
+      "usdc_usd_low_1e4": 9997,
+      "usdc_usd_high_1e4": 10000,
+      "expected_fdv_cents": 98586356482,
+      "event_log_index": 543,
+      "event_block": 45190272,
+      "event_timestamp": 1777169891,
+      "quote_semantics": "pool Swap deltas before afterSwap hooks; no trader attribution",
+      "usdc_currency_index": 0
+    },
+    {
+      "chain_id": 8453,
+      "token": "0x6b7c8947cd9c7855e420d3ef8bf4c6f492237b07",
+      "provider_price_usd": "0.009862311592031825",
+      "supply_tokens": "100000000000",
+      "usdc_raw": "5187",
+      "token_raw": "525963839790945712",
+      "usdc_usd_low_1e4": 9997,
+      "usdc_usd_high_1e4": 9999,
+      "expected_fdv_cents": 98623115920,
+      "event_log_index": 579,
+      "event_block": 45250034,
+      "event_timestamp": 1777289415,
+      "quote_semantics": "pool Swap deltas before afterSwap hooks; no trader attribution",
+      "usdc_currency_index": 1
+    },
+    {
+      "chain_id": 8453,
+      "token": "0xe961523fd436e42635a4fce0417cb9f9fe56ab07",
+      "provider_price_usd": "0.0006667596952990955",
+      "supply_tokens": "100000000000",
+      "usdc_raw": "2921696",
+      "token_raw": "4381950796706745348936",
+      "usdc_usd_low_1e4": 9994,
+      "usdc_usd_high_1e4": 9998,
+      "expected_fdv_cents": 6667596952,
+      "event_log_index": 463,
+      "event_block": 45171214,
+      "event_timestamp": 1777131775,
+      "quote_semantics": "pool Swap deltas before afterSwap hooks; no trader attribution",
+      "usdc_currency_index": 0
+    }
+  ]
+}

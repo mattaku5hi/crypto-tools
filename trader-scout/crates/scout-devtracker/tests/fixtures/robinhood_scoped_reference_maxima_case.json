@@ -1,0 +1,427 @@
+{
+  "schema_version": 1,
+  "source_review_sha256": "06e56f774c800cb8e7539159ddc1b6cdc9a2e82d6b33ca495e98a001abed3399",
+  "source_kinds": {
+    "weth": "onchain-pool-window-supply-cex-reference-v1",
+    "aapl": "onchain-pool-window-supply-stock-trade-fx-reference-v1"
+  },
+  "network": "Robinhood Chain mainnet",
+  "chain_id": 4663,
+  "pinned_head": {
+    "block_number": 87790837,
+    "block_hash": "0x2827281fc77f2798b5a6a28650c99f01e667a9dddb2d55d07a3cf7b1dfaad69b"
+  },
+  "scope_note": "Maxima cover only explicitly enumerated successful swaps in each canonical initial pool; no alternate-pool or lifetime-complete claim.",
+  "weth_case": {
+    "token": "0x01193b12f91826c2bf313d4b9620e83280a3fee1",
+    "pool_id": "0x3f7a4a3c424fc50f7c0317d89756a76fe002714b95572917f864f3c1dc377490",
+    "token_decimals": 18,
+    "quote_token": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+    "quote_decimals": 18,
+    "scope": "all 3 post-creation v4 Swap log events in canonical initial pool from Initialize block 46586316 through pinned head; 2 pool-initialization transaction events excluded; no claim for alternate pools/lifetime",
+    "complete_pool_swap_scan": {
+      "post_creation_event_count": 3,
+      "all_creation_tx_events_excluded": true,
+      "response_sha256": "461abd2ba866628e493b6fb83d35ea0ee78a98af4ef5bf3d698e8d91f94723dc"
+    },
+    "fx_candle_source": "Coinbase Exchange ETH-USD 1-minute public candle",
+    "fx_candles": [
+      {
+        "minute_utc": "2026-08-26T12:27:00Z",
+        "close_usd_per_eth": "2470.3",
+        "low": "2467.54",
+        "high": "2470.43",
+        "volume_eth": "128.24108893"
+      },
+      {
+        "minute_utc": "2026-08-26T12:28:00Z",
+        "close_usd_per_eth": "2469.04",
+        "low": "2469.04",
+        "high": "2470.3",
+        "volume_eth": "26.92751003"
+      }
+    ],
+    "events": [
+      {
+        "block": 46586365,
+        "block_hash": "0xa2a69e28d143c4fec64a3eef048f5857d795f901cf37a78b1784415b57c99067",
+        "log_index": 9,
+        "transaction_hash": "0x63b5dc4bb21105fc5afc69835dfb6f5536f2a0a2e807dc94bc128ba84685dcc8",
+        "timestamp_utc": "2026-08-26T12:27:03Z",
+        "raw_token_delta": "245470514383076022008",
+        "raw_quote_delta": "-1000000000000",
+        "quote_per_token_fraction": "125000000000/30683814297884502751",
+        "reference_price_per_token": "0.000010063530466004983318389501211078046477504518584166211351692119811625155447394016",
+        "reference_price_fraction": "308787500000000/30683814297884502751",
+        "uncertainty_low": "0.000010052286753060736160571116794876542446302675702211671925982420483333010594932855",
+        "uncertainty_low_fraction": "308442500000000/30683814297884502751",
+        "uncertainty_high": "0.000010064060061179893510605584535029566594916199589475664295656707098827321690444723",
+        "uncertainty_high_fraction": "308803750000000/30683814297884502751",
+        "coinbase_minute_utc": "2026-08-26T12:27:00Z",
+        "coinbase_close_usd_per_eth": "2470.3",
+        "coinbase_low": "2467.54",
+        "coinbase_high": "2470.43",
+        "coinbase_volume_eth": "128.24108893"
+      },
+      {
+        "block": 46586365,
+        "block_hash": "0xa2a69e28d143c4fec64a3eef048f5857d795f901cf37a78b1784415b57c99067",
+        "log_index": 11,
+        "transaction_hash": "0x63b5dc4bb21105fc5afc69835dfb6f5536f2a0a2e807dc94bc128ba84685dcc8",
+        "timestamp_utc": "2026-08-26T12:27:03Z",
+        "raw_token_delta": "-3497954829958833314",
+        "raw_quote_delta": "14250006252",
+        "quote_per_token_fraction": "7125003126/1748977414979416657",
+        "reference_price_per_token": "0.000010063534881246560402412721962068949348730668528440974730905948169799876936615110",
+        "reference_price_fraction": "12572068015827/1249269582128154755",
+        "uncertainty_low": "0.000010052291163369282133898509472648510414106332761474008334007878940577253101313706",
+        "uncertainty_low_fraction": "439530755338251/43724435374485416425",
+        "uncertainty_high": "0.000010064064476653823509263029072077883066665872749348839090180132590016884581031480",
+        "uncertainty_high_fraction": "880091073628209/87448870748970832850",
+        "coinbase_minute_utc": "2026-08-26T12:27:00Z",
+        "coinbase_close_usd_per_eth": "2470.3",
+        "coinbase_low": "2467.54",
+        "coinbase_high": "2470.43",
+        "coinbase_volume_eth": "128.24108893"
+      },
+      {
+        "block": 46587186,
+        "block_hash": "0x22d233fd501a32b18479de3112542f1745cc79158923fd2d77b052fc729ee8f3",
+        "log_index": 0,
+        "transaction_hash": "0xca24915b9894099176b00010bd1ca29a9a558ab92590cbecc91a54f423919e4b",
+        "timestamp_utc": "2026-08-26T12:28:27Z",
+        "raw_token_delta": "-241788456667329881678",
+        "raw_quote_delta": "984999994081",
+        "quote_per_token_fraction": "984999994081/241788456667329881678",
+        "reference_price_per_token": "0.000010058397406175103285604612231230944619794346801157735390353419720505677389793475",
+        "reference_price_fraction": "30400054817321903/3022355708341623520975",
+        "uncertainty_low": "0.000010058397406175103285604612231230944619794346801157735390353419720505677389793475",
+        "uncertainty_low_fraction": "30400054817321903/3022355708341623520975",
+        "uncertainty_high": "0.000010063530405531849482563698277391132786134681861330700893784650202331746288438754",
+        "uncertainty_high_fraction": "24332454853782943/2417884566673298816780",
+        "coinbase_minute_utc": "2026-08-26T12:28:00Z",
+        "coinbase_close_usd_per_eth": "2469.04",
+        "coinbase_low": "2469.04",
+        "coinbase_high": "2470.3",
+        "coinbase_volume_eth": "26.92751003"
+      }
+    ],
+    "selected_maximum": {
+      "block": 46586365,
+      "log_index": 11,
+      "reference_price_per_token": "0.000010063534881246560402412721962068949348730668528440974730905948169799876936615110",
+      "reference_price_fraction": "12572068015827/1249269582128154755",
+      "reference_fdv_usd_at_1b_supply": "10063.534881246560402412721962068949348730668528440974730905948169799876936615110",
+      "fdv_cents_floor": 1006353,
+      "uncertainty_price_range": [
+        "0.000010052291163369282133898509472648510414106332761474008334007878940577253101313706",
+        "0.000010064064476653823509263029072077883066665872749348839090180132590016884581031480"
+      ],
+      "uncertainty_fdv_usd_range_at_1b_supply": [
+        "10052.29116336928213389850947",
+        "10064.06447665382350926302907"
+      ]
+    },
+    "model_kind": "direct_initial_pool_swap_times_coinbase_ethusd_utc_minute_close",
+    "interpretation": "reference-valued execution maximum; not same-second USD transaction, wallet PnL, all-market or lifetime ATH",
+    "supply": {
+      "total_supply_raw": "1000000000000000000000000000",
+      "decimals": 18,
+      "total_supply_confirmed_at_event": true,
+      "burns_through_head": 0
+    }
+  },
+  "aapl_case": {
+    "token": "0x4016fa67c597bf5e1991c852a6dfbb3eb9801e18",
+    "pool_id": "0x2aec506e206ed4e9d7316f321e5e347717ba38378721a799f44a7014f5aab50e",
+    "token_decimals": 18,
+    "quote_token": "0xaf3d76f1834a1d425780943c99ea8a608f8a93f9",
+    "quote_decimals": 18,
+    "scope": "all 6 successful v4 Swap log events in its canonical initial pool from Initialize block 27216117 through pinned head; no claim for alternate pools/lifetime",
+    "complete_pool_swap_scan": {
+      "event_count": 6,
+      "response_sha256": "461abd2ba866628e493b6fb83d35ea0ee78a98af4ef5bf3d698e8d91f94723dc"
+    },
+    "quote_fx_groups": {
+      "first": {
+        "before_timestamp_utc": "2026-08-04T01:06:23Z",
+        "after_timestamp_utc": "2026-08-04T01:06:41Z",
+        "bracket_seconds": [
+          4,
+          14
+        ],
+        "before_usdg_per_aapl": "305.11201739799943716505503243243380759991264774172205238178069386678742437934839",
+        "before_fraction": "5725475375000000000/18765158527110643",
+        "after_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+        "after_fraction": "1099188000000000000/3602461087052327",
+        "daily_usdg_usd_close": "0.9999",
+        "daily_usdg_usd_low": "0.9997",
+        "daily_usdg_usd_high": "1.0000"
+      },
+      "second": {
+        "before_timestamp_utc": "2026-08-04T01:06:41Z",
+        "after_timestamp_utc": "2026-08-04T01:06:53Z",
+        "bracket_seconds": [
+          3,
+          9
+        ],
+        "before_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+        "before_fraction": "1099188000000000000/3602461087052327",
+        "after_usdg_per_aapl": "305.12841769737296617488565463645690969546014515857835646278777634725722255833011",
+        "after_fraction": "10077683000000000000/33027677579330117",
+        "daily_usdg_usd_close": "0.9999",
+        "daily_usdg_usd_low": "0.9997",
+        "daily_usdg_usd_high": "1.0000"
+      }
+    },
+    "events": [
+      {
+        "block": 27216237,
+        "block_hash": "0xd48cec9e9d9895aa28799dd77c185f6328ce3dafce4278242f8a02b27fcd4d1d",
+        "log_index": 19,
+        "transaction_hash": "0x25fa37b659e6ea5647cca931e55497884f504e1d3389e64b72f9713769cfa48c",
+        "timestamp_utc": "2026-08-04T01:06:27Z",
+        "raw_token_delta": "9074661999851012597275148",
+        "raw_quote_delta": "-601208469017151796",
+        "quote_per_token_fraction": "150302117254287949/2268665499962753149318787",
+        "reference_price_per_token": "0.000020212056963522311646286030164187482576074192084168177376588458803026567765072794",
+        "reference_price_fraction": "860465016042673286332239999412500000/42571867751787787399247919011046827550041",
+        "uncertainty_low": "0.000020208014147848039756767821137251951526454015228065733496725154780863746169360208",
+        "uncertainty_low_fraction": "860292905828443328679208248237500000/42571867751787787399247919011046827550041",
+        "uncertainty_high": "0.000020214700526969394874653407524334784867686597302404132930085907556699446148119257",
+        "uncertainty_high_fraction": "165210283660506262085412000000000000/8172779183153930629424181709585873167349",
+        "fx_bracket_group": "first",
+        "last_trade_before_usdg_per_aapl": "305.11201739799943716505503243243380759991264774172205238178069386678742437934839",
+        "last_trade_before_fraction": "5725475375000000000/18765158527110643",
+        "kraken_usdg_usd_close": "0.9999",
+        "kraken_usdg_usd_low": "0.9997",
+        "kraken_usdg_usd_high": "1.0000",
+        "market_bracket": {
+          "before_timestamp_utc": "2026-08-04T01:06:23Z",
+          "after_timestamp_utc": "2026-08-04T01:06:41Z",
+          "bracket_seconds": [
+            4,
+            14
+          ],
+          "before_usdg_per_aapl": "305.11201739799943716505503243243380759991264774172205238178069386678742437934839",
+          "before_fraction": "5725475375000000000/18765158527110643",
+          "after_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+          "after_fraction": "1099188000000000000/3602461087052327"
+        }
+      },
+      {
+        "block": 27216237,
+        "block_hash": "0xd48cec9e9d9895aa28799dd77c185f6328ce3dafce4278242f8a02b27fcd4d1d",
+        "log_index": 22,
+        "transaction_hash": "0x25fa37b659e6ea5647cca931e55497884f504e1d3389e64b72f9713769cfa48c",
+        "timestamp_utc": "2026-08-04T01:06:27Z",
+        "raw_token_delta": "-86209288998584619708598",
+        "raw_quote_delta": "5752026349655017",
+        "quote_per_token_fraction": "5752026349655017/86209288998584619708598",
+        "reference_price_per_token": "0.000020355542689397851378055577426218474797651941942426912162963920060392785688940234",
+        "reference_price_fraction": "16464895956389404742374252181250000/808865487283967960909260206496782204257",
+        "uncertainty_low": "0.000020351471173708402862928453598350444299642610620906274716786709555330200873320884",
+        "uncertainty_low_fraction": "16461602647867274648416381543750000/808865487283967960909260206496782204257",
+        "uncertainty_high": "0.000020358205019545463273388534832431967448943255606143904091001138815439595626582204",
+        "uncertainty_high_fraction": "3161279169612299413098000000000000/155282804479924682021173255860758903773",
+        "fx_bracket_group": "first",
+        "last_trade_before_usdg_per_aapl": "305.11201739799943716505503243243380759991264774172205238178069386678742437934839",
+        "last_trade_before_fraction": "5725475375000000000/18765158527110643",
+        "kraken_usdg_usd_close": "0.9999",
+        "kraken_usdg_usd_low": "0.9997",
+        "kraken_usdg_usd_high": "1.0000",
+        "market_bracket": {
+          "before_timestamp_utc": "2026-08-04T01:06:23Z",
+          "after_timestamp_utc": "2026-08-04T01:06:41Z",
+          "bracket_seconds": [
+            4,
+            14
+          ],
+          "before_usdg_per_aapl": "305.11201739799943716505503243243380759991264774172205238178069386678742437934839",
+          "before_fraction": "5725475375000000000/18765158527110643",
+          "after_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+          "after_fraction": "1099188000000000000/3602461087052327"
+        }
+      },
+      {
+        "block": 27216237,
+        "block_hash": "0xd48cec9e9d9895aa28799dd77c185f6328ce3dafce4278242f8a02b27fcd4d1d",
+        "log_index": 29,
+        "transaction_hash": "0x25fa37b659e6ea5647cca931e55497884f504e1d3389e64b72f9713769cfa48c",
+        "timestamp_utc": "2026-08-04T01:06:27Z",
+        "raw_token_delta": "-17251329035080537950491",
+        "raw_quote_delta": "1150916550407182",
+        "quote_per_token_fraction": "1150916550407182/17251329035080537950491",
+        "reference_price_per_token": "0.000020353408945503150945440413490470346400871150179005906661139124893958554645868480",
+        "reference_price_fraction": "6588885413599463137466835675000000/323723924146632977651831708447213175713",
+        "uncertainty_low": "0.000020349337856605160516208402206643869683919280762028407729913774533943761455620282",
+        "uncertainty_low_fraction": "6587567504725855884114007025000000/323723924146632977651831708447213175713",
+        "uncertainty_high": "0.000020356070996575388392388763945717408298184091012510742846523715774993099279214047",
+        "uncertainty_high_fraction": "1265073661208969568216000000000000/62147241548813606172089219353052342557",
+        "fx_bracket_group": "first",
+        "last_trade_before_usdg_per_aapl": "305.11201739799943716505503243243380759991264774172205238178069386678742437934839",
+        "last_trade_before_fraction": "5725475375000000000/18765158527110643",
+        "kraken_usdg_usd_close": "0.9999",
+        "kraken_usdg_usd_low": "0.9997",
+        "kraken_usdg_usd_high": "1.0000",
+        "market_bracket": {
+          "before_timestamp_utc": "2026-08-04T01:06:23Z",
+          "after_timestamp_utc": "2026-08-04T01:06:41Z",
+          "bracket_seconds": [
+            4,
+            14
+          ],
+          "before_usdg_per_aapl": "305.11201739799943716505503243243380759991264774172205238178069386678742437934839",
+          "before_fraction": "5725475375000000000/18765158527110643",
+          "after_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+          "after_fraction": "1099188000000000000/3602461087052327"
+        }
+      },
+      {
+        "block": 27216411,
+        "block_hash": "0x51cb06b13b2f535b9e690e45f4a5b81ebbc30a78eb7bdf02550bd6442db2ba2c",
+        "log_index": 14,
+        "transaction_hash": "0x0f20dd03dbb4955d4e326e135c021bbf67cd27dd696d520c1895caf4ba0ac8fe",
+        "timestamp_utc": "2026-08-04T01:06:44Z",
+        "raw_token_delta": "-8947616731853098420913296",
+        "raw_quote_delta": "591564042133954546",
+        "quote_per_token_fraction": "295782021066977273/4473808365926549210456648",
+        "reference_price_per_token": "0.000020170824155929196547488241254289562821435095720227073363292352572322840398152254",
+        "reference_price_fraction": "40635942020968919736606070950000000/2014590068647443900153060807623992627487",
+        "uncertainty_low": "0.000020166789587641181906714666248538129765565221713682373478631227989350078553888197",
+        "uncertainty_low_fraction": "40627814019764605521237212850000000/2014590068647443900153060807623992627487",
+        "uncertainty_high": "0.000020173304864569506871038980233420805469699530883286264656738525400482656181736204",
+        "uncertainty_high_fraction": "372599680676539840687307375000000000/18469937532691474639421720018350438658477",
+        "fx_bracket_group": "second",
+        "last_trade_before_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+        "last_trade_before_fraction": "1099188000000000000/3602461087052327",
+        "kraken_usdg_usd_close": "0.9999",
+        "kraken_usdg_usd_low": "0.9997",
+        "kraken_usdg_usd_high": "1.0000",
+        "market_bracket": {
+          "before_timestamp_utc": "2026-08-04T01:06:41Z",
+          "after_timestamp_utc": "2026-08-04T01:06:53Z",
+          "bracket_seconds": [
+            3,
+            9
+          ],
+          "before_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+          "before_fraction": "1099188000000000000/3602461087052327",
+          "after_usdg_per_aapl": "305.12841769737296617488565463645690969546014515857835646278777634725722255833011",
+          "after_fraction": "10077683000000000000/33027677579330117"
+        }
+      },
+      {
+        "block": 27216411,
+        "block_hash": "0x51cb06b13b2f535b9e690e45f4a5b81ebbc30a78eb7bdf02550bd6442db2ba2c",
+        "log_index": 19,
+        "transaction_hash": "0x0f20dd03dbb4955d4e326e135c021bbf67cd27dd696d520c1895caf4ba0ac8fe",
+        "timestamp_utc": "2026-08-04T01:06:44Z",
+        "raw_token_delta": "17120000324828643694999",
+        "raw_quote_delta": "-1123971680054513",
+        "quote_per_token_fraction": "1123971680054513/17120000324828643694999",
+        "reference_price_per_token": "0.000020029995359118876579150846116290293365591616214935095154704873990702501803558613",
+        "reference_price_fraction": "65017507233550234707392400000000/3246007104237809847958900128554800667",
+        "uncertainty_low": "0.000020025988959407081624339534815936999977579696699740588685026965225027793832400785",
+        "uncertainty_low_fraction": "65004502431623331970177200000000/3246007104237809847958900128554800667",
+        "uncertainty_high": "0.000020032458747930787666222586604051434810056919653169666785295876387105711883755745",
+        "uncertainty_high_fraction": "11327030292566804733379000000000000/565433850886467315529529644098082984883",
+        "fx_bracket_group": "second",
+        "last_trade_before_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+        "last_trade_before_fraction": "1099188000000000000/3602461087052327",
+        "kraken_usdg_usd_close": "0.9999",
+        "kraken_usdg_usd_low": "0.9997",
+        "kraken_usdg_usd_high": "1.0000",
+        "market_bracket": {
+          "before_timestamp_utc": "2026-08-04T01:06:41Z",
+          "after_timestamp_utc": "2026-08-04T01:06:53Z",
+          "bracket_seconds": [
+            3,
+            9
+          ],
+          "before_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+          "before_fraction": "1099188000000000000/3602461087052327",
+          "after_usdg_per_aapl": "305.12841769737296617488565463645690969546014515857835646278777634725722255833011",
+          "after_fraction": "10077683000000000000/33027677579330117"
+        }
+      },
+      {
+        "block": 27216411,
+        "block_hash": "0x51cb06b13b2f535b9e690e45f4a5b81ebbc30a78eb7bdf02550bd6442db2ba2c",
+        "log_index": 25,
+        "transaction_hash": "0x0f20dd03dbb4955d4e326e135c021bbf67cd27dd696d520c1895caf4ba0ac8fe",
+        "timestamp_utc": "2026-08-04T01:06:44Z",
+        "raw_token_delta": "8563958774849338593259",
+        "raw_quote_delta": "-562260247175705",
+        "quote_per_token_fraction": "562260247175705/8563958774849338593259",
+        "reference_price_per_token": "0.000020030512425376410156874191785594709499469170102056366792604577872297737514294107",
+        "reference_price_fraction": "617967913600911570657246000000000/30851328237515062840714409353102463693",
+        "uncertainty_low": "0.000020026505922241021335960725600619092995918921243150064889055702069142962489288747",
+        "uncertainty_low_fraction": "617844307657597056891738000000000/30851328237515062840714409353102463693",
+        "uncertainty_high": "0.000020032975877779710607152657723786245085857187818489981920688199623715525325777050",
+        "uncertainty_high_fraction": "298225291291494752185000000000000/14886719432547311459917716523597467437",
+        "fx_bracket_group": "second",
+        "last_trade_before_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+        "last_trade_before_fraction": "1099188000000000000/3602461087052327",
+        "kraken_usdg_usd_close": "0.9999",
+        "kraken_usdg_usd_low": "0.9997",
+        "kraken_usdg_usd_high": "1.0000",
+        "market_bracket": {
+          "before_timestamp_utc": "2026-08-04T01:06:41Z",
+          "after_timestamp_utc": "2026-08-04T01:06:53Z",
+          "bracket_seconds": [
+            3,
+            9
+          ],
+          "before_usdg_per_aapl": "305.12140823688900322913836629820309193161145360305027701949836166388567273071390",
+          "before_fraction": "1099188000000000000/3602461087052327",
+          "after_usdg_per_aapl": "305.12841769737296617488565463645690969546014515857835646278777634725722255833011",
+          "after_fraction": "10077683000000000000/33027677579330117"
+        }
+      }
+    ],
+    "selected_maximum": {
+      "block": 27216237,
+      "log_index": 22,
+      "reference_price_per_token": "0.000020355542689397851378055577426218474797651941942426912162963920060392785688940234",
+      "reference_price_fraction": "16464895956389404742374252181250000/808865487283967960909260206496782204257",
+      "reference_fdv_usd_at_1b_supply": "20355.542689397851378055577426218474797651941942426912162963920060392785688940234",
+      "fdv_cents_floor": 2035554,
+      "uncertainty_price_range": [
+        "0.000020351471173708402862928453598350444299642610620906274716786709555330200873320884",
+        "0.000020358205019545463273388534832431967448943255606143904091001138815439595626582204"
+      ],
+      "uncertainty_fdv_usd_range_at_1b_supply": [
+        "20351.47117370840286292845360",
+        "20358.20501954546327338853483"
+      ]
+    },
+    "model_kind": "direct_initial_pool_swap_times_last_preceding_usdg_aapl_v3_trade_times_kraken_usdgusd_utc_day_close",
+    "interpretation": "reference-valued execution maximum with both-sided market stability bracket; not same-second USD transaction, wallet PnL, all-market or lifetime ATH",
+    "supply": {
+      "total_supply_raw": "1000000000000000000000000000",
+      "decimals": 18,
+      "total_supply_confirmed_at_event": true,
+      "burns_through_head": 0
+    }
+  },
+  "unbracketed_negative_control": {
+    "token": "0x48c01e934d149b54af69398a3f767b7e399fb4aa",
+    "event_max_block": 22791875,
+    "event_max_utc": "2026-07-29T21:53:17Z",
+    "all_fee_query_sha256": "7d7bdeebd874be8474b15eb88ff38372b22a2b7f007f175ff5b497292d1328da",
+    "status": "not_price_candidate_quote_bracket_incomplete",
+    "source_model_max_claim_allowed": false,
+    "reason": "fee=500 AAPL/USDG query showed one event before the observed token-pool window; fee=3000 and fee=10000 address lookups produced no USDG/AAPL swap before the token max. The all-fee query found only two AAPL/USDG executions after target event (both later, 8s and 45s); no five-minute two-sided bracket. No USD price/FDV proposed.",
+    "post_event_neighbor_headers": [
+      {
+        "block_number": 22791960,
+        "timestamp_utc": "2026-07-29T21:53:25Z"
+      },
+      {
+        "block_number": 22792331,
+        "timestamp_utc": "2026-07-29T21:54:02Z"
+      }
+    ]
+  }
+}

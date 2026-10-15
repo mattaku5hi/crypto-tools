@@ -35,6 +35,31 @@
 
 ## Порядок разработки
 
+- CI Bookworm build с общим Cargo-кэшем запускать под UID/GID runner: root-каталоги блокируют host `cargo metadata`, когда он докачивает зависимости других платформ (`.github/workflows/trader-scout-release.yml`).
+- DB-тесты ATH используют уникальные токены на запуск: прежний `observed_at` может заблокировать seed и скрыть неверное ожидание (`crates/scout-devtracker/src/ath.rs`).
+- Для временного checkout задавать отдельный `CARGO_TARGET_DIR`: переиспользованный test binary может читать фикстуры через `CARGO_MANIFEST_DIR` уже удалённой копии (`bins/buyer-intersect/tests/budget.rs`).
+- Zora `coinSwaps.currencyAmountWithPrice.priceUsdc` относится к quote asset; raw `coinAmount` и quote scale сверять с receipt, иначе получается ложное расхождение цены (`docs/p0/measurements/2026-10-13-ath-year-history-options.md`).
+- Годовая деривация может исчерпать Docker `/dev/shm` 64 MiB; PostgreSQL deploy использует 512 MiB, на старом контейнере временно отключать parallel workers для роли/БД (`deploy/`).
+- После ATH runner-index backfill проверять signer gaps: старые немигрированные кандидаты вне migrated/recent очереди `DevDb::shared_launches_without_signer` (`crates/scout-devdb/src/lib.rs`).
+- A slow independent ATH cadence must not extend the facts progress watchdog: `bins/dev-tracker/src/main.rs` still wakes for 30-minute facts / 60-minute derivation.
+- Codex `createdAt` filter and returned date can disagree: `crates/scout-devtracker/src/ath.rs` retains valid ATH with date-gap provenance; completed index pagination is not verified first-pair membership (ADR-021 amendment 8).
+- GeckoTerminal public OHLCV может вернуть 401 для истории старше 180 дней при успешной pool metadata; не считать это transport failure и не повторять запрос без изменения entitlement (measurement 2026-10-11, Solana cent-bound audit).
+- `backfill --days` в `bins/dev-tracker/src/backfill.rs` переводит дни в приблизительный block span: проверять timestamp нижнего блока и указывать фактический scope; BSC может читать запас истории, `since_days` ограничивает период деривации отдельно.
+- Sourcify source audits: v2 API — `https://sourcify.dev/server/v2/contract/{chain_id}/0x{address}?fields=all`; HTML404 с `repo.sourcify.dev` или адресом без `0x` не означает отсутствие verified source.
+- GeckoTerminal v4/native-ETH audits: `token=quote` в проверенном ответе дал ETH/USD; выбирать точный contract address и сверять priced-token identity/units (`docs/p0/measurements/2026-10-11-base-clanker-prior10-followup.md`).
+- Uniswap v4 `Swap.amount0/1` — caller-perspective BalanceDelta: negative=input, positive=output; не переносить v3 pool-perspective convention в price audits (`crates/scout-dex-evm/src/uniswap.rs`).
+- Solana Tracker Data API: у предоставленного Free key лимит2500 requests/month (owner,2026-10-11), а не рекламные10000; ключ `SCOUT_SOLANA_TRACKER_API_KEY` отделён от Solana RPC (`docs/p0/measurements/2026-10-11-solana-tracker-ath-keyed-probe.md`).
+- PumpSwap spot использует signed real+virtual quote reserves; post-vq меняется при удержании комиссий, а `BoostBuyAndBurn` не является покупкой кошелька (`crates/scout-dex-solana/src/pump_amm_event.rs`, `docs/p0/measurements/2026-10-11-solana-virtual-reserve-source-audit.md`).
+- Исторический PumpSwap `BuyEvent`: проверять `ix_name`; у `buy_exact_quote_in` quote-поля имеют иной gross/net смысл и curve использует net−1 (ADR-021 amendment 28, `solana_tracker_avx_legacy_pool_spot_case.json`).
+- Pump Mayhem curve mark использует virtual quote/token и фактическую эмиссию; Mayhem updates не обязаны равняться trade `sol_amount`, а ST `pool_id == mint` требует curve-specific проверки (ADR-021 amendment 34).
+- PumpSwap vault, созданный перед первой покупкой в той же транзакции, отсутствует в transaction-start preTokenBalances: восстанавливать ordered initialization/funding и проверять trade-CPI scope, не подставлять zero (ADR-021 amendments 41–42; `crates/scout-devtracker/src/birdeye.rs`).
+- PumpSwap 16 нулевых хвостовых байт могут быть двумя `u64` cashback, а не `i128` virtual reserves: декодировать полный датированный IDL, не именовать поле по длине/нулю (ADR-021 amendments 29/32).
+- Solana Tracker chart: сохранять exact wire query и проверять scale/epoch; price-default control без `timezone` дал правильные UTC метки, explicit `timezone=UTC` сдвинул их на−7200s (`docs/p0/measurements/2026-10-11-solana-jc-chart-supply-bounds.md`).
+- Не искать текст по `.env*`/secret files: `rg` ограничивать конкретными source/docs каталогами; credentials читать только внутри процесса по exact variable и никогда не выводить URL/header/exception с ключом.
+- Датированный Pump IDL проверять по SHA до интерпретации: `pump-sdk-source-2026-10-14/package` содержит современный4.1, а не1.31; buy1.31 имеет обязательный `track_volume` (measurement `2026-10-14-solana-pump-curve-wire-tail-source-check.md`).
+- Диагностический proof после передачи SHA другим агентам неизменяем: исправление — новый versioned файл; reader проверяет hash до/после чтения (`docs/p0/measurements/2026-10-14-solana-chronological-fdv-window.md`).
+- Solana Tracker joined probe может иметь NULL raw path при сохранённом ответе: искать исходный keyed-probe capture по response SHA перед новым API-запросом (`docs/p0/measurements/2026-10-14-solana-81kia-cross-quote-window.md`).
+
 Следовать `docs/ROADMAP.md`. Не писать все CLI отдельно. Сначала контракт данных и hand-checked corpus; затем сквозной ограниченный slice, расширение сетей/DEX и оптимизация по профилю. После каждой задачи: перечислить измененные файлы, выполненные проверки, полученные результаты, ограничения и следующий task ID. Фиксировать изменения небольшими законченными коммитами, когда среда действительно дает доступ к git.
 
 Любое изменение определения trader, buy, episode, cost basis, fees, ROI, period или completeness требует ADR в `docs/adr/`, golden fixtures и обновления документации/схем.

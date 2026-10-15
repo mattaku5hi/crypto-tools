@@ -15,7 +15,22 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 pub enum DevDbError {
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
+    #[error("token lookup batch has {0} entries; maximum is 200")]
+    TokenLookupTooLarge(usize),
+    #[error("Codex request budget is exhausted")]
+    CodexRequestBudgetExhausted,
+    #[error("Codex request budget cursor is not a non-negative integer")]
+    InvalidCodexRequestBudget,
+    #[error("provider request budget configuration is invalid")]
+    InvalidProviderRequestBudget,
+    #[error("provider request budget settings differ from the persisted monthly baseline")]
+    ProviderRequestBudgetConfigMismatch,
+    #[error("provider request budget is exhausted")]
+    ProviderRequestBudgetExhausted,
 }
+
+/// Shared opt-in monthly request budget cursor for every Codex call path.
+pub const CODEX_REQUEST_BUDGET_KEY: &str = "quota:codex:remaining";
 
 /// Embedded schema migrations, applied in order and recorded in
 /// `schema_migrations` (sqlx's own migrator is not used: its macro feature
@@ -29,6 +44,12 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, include_str!("../migrations/0005_ath_holders.sql")),
     (6, include_str!("../migrations/0006_ath_liquidity.sql")),
     (7, include_str!("../migrations/0007_alerts.sql")),
+    (8, include_str!("../migrations/0008_launches_by_time.sql")),
+    (9, include_str!("../migrations/0009_ath_price_windows.sql")),
+    (
+        10,
+        include_str!("../migrations/0010_provider_ath_observations.sql"),
+    ),
 ];
 
 /// Rows per `INSERT … SELECT FROM UNNEST` statement.
@@ -74,6 +95,50 @@ pub struct AthObservation {
     /// Pool liquidity in USD cents at observation time (`None` = unknown);
     /// the store keeps the highest seen.
     pub liquidity_cents: Option<i64>,
+}
+
+/// An observed USD/token daily-price maximum, kept separate from ATH FDV.
+/// Empty provider series have null prices, never a fabricated zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AthPriceWindow {
+    pub chain: String,
+    pub token: String,
+    pub source: String,
+    pub window_from: i64,
+    pub window_to: i64,
+    pub max_price_usd: Option<String>,
+    pub high_candle_at: Option<i64>,
+    pub first_candle_at: Option<i64>,
+    pub last_candle_at: Option<i64>,
+    pub returned_candles: i32,
+    pub observed_at: i64,
+}
+
+/// Provider-reported ATH extrema, separate from candle windows and ATH FDV.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AthPriceObservation {
+    pub chain: String,
+    pub token: String,
+    pub source: String,
+    pub highest_price_usd: Option<String>,
+    pub timestamp_ms: Option<i64>,
+    pub pool_id: Option<String>,
+    pub highest_market_cap_usd: Option<String>,
+    pub observed_at: i64,
+    pub response_sha256: String,
+    pub scope: String,
+}
+
+/// Reservation request for an explicit application-level provider allocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRequestBudget {
+    pub provider: String,
+    pub quota_group: String,
+    pub billing_period: String,
+    pub application_limit: i64,
+    pub prior_usage: i64,
+    pub key_fingerprint: String,
+    pub now: i64,
 }
 
 /// What is known about a creator address (ADR-021 amendment 1).
@@ -266,6 +331,8 @@ impl DevDb {
 
     /// Record ATH observations; an observation replaces the stored one only
     /// when it is at least as recent. Returns the rows written.
+    /// A `codex-missing` refresh retains any known value and its source while
+    /// updating refresh time and available metadata.
     ///
     /// # Errors
     /// Database failure (the batch is atomic).
@@ -278,9 +345,18 @@ impl DevDb {
                                   max_liquidity_cents)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                  ON CONFLICT (chain, token) DO UPDATE SET
-                    ath_fdv_cents = EXCLUDED.ath_fdv_cents, ath_at = EXCLUDED.ath_at,
-                    source = EXCLUDED.source, observed_at = EXCLUDED.observed_at,
-                    holders = EXCLUDED.holders,
+                    ath_fdv_cents = CASE
+                        WHEN EXCLUDED.source = 'codex-missing' AND ath.source <> 'codex-missing'
+                        THEN ath.ath_fdv_cents ELSE EXCLUDED.ath_fdv_cents END,
+                    ath_at = CASE
+                        WHEN EXCLUDED.source = 'codex-missing' AND ath.source <> 'codex-missing'
+                        THEN ath.ath_at ELSE EXCLUDED.ath_at END,
+                    source = CASE
+                        WHEN EXCLUDED.source = 'codex-missing' AND ath.source <> 'codex-missing'
+                        THEN ath.source ELSE EXCLUDED.source END,
+                    observed_at = EXCLUDED.observed_at,
+                    holders = CASE WHEN EXCLUDED.source = 'codex-missing'
+                        THEN COALESCE(EXCLUDED.holders, ath.holders) ELSE EXCLUDED.holders END,
                     max_liquidity_cents = GREATEST(ath.max_liquidity_cents, EXCLUDED.max_liquidity_cents)
                  WHERE EXCLUDED.observed_at >= ath.observed_at",
             )
@@ -298,6 +374,310 @@ impl DevDb {
         }
         tx.commit().await?;
         Ok(n)
+    }
+
+    /// Record a validated fallback ATH only when no observation exists or the
+    /// current row is still `codex-missing`. Known Codex values, including
+    /// numeric zero, are never replaced. Older fallback observations are
+    /// ignored; pool liquidity remains a high-water mark.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn upsert_missing_ath(&self, r: &AthObservation) -> Result<u64, DevDbError> {
+        Ok(sqlx::query(
+            "INSERT INTO ath (chain, token, ath_fdv_cents, ath_at, source, observed_at, holders,
+                              max_liquidity_cents)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (chain, token) DO UPDATE SET
+                ath_fdv_cents = EXCLUDED.ath_fdv_cents, ath_at = EXCLUDED.ath_at,
+                source = EXCLUDED.source, observed_at = EXCLUDED.observed_at,
+                holders = COALESCE(EXCLUDED.holders, ath.holders),
+                max_liquidity_cents = GREATEST(ath.max_liquidity_cents, EXCLUDED.max_liquidity_cents)
+             WHERE ath.source = 'codex-missing'
+               AND EXCLUDED.observed_at >= ath.observed_at",
+        )
+        .bind(&r.chain)
+        .bind(&r.token)
+        .bind(r.ath_fdv_cents)
+        .bind(r.ath_at)
+        .bind(&r.source)
+        .bind(r.observed_at)
+        .bind(r.holders)
+        .bind(r.liquidity_cents)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
+    /// Save a provider price window without changing the monetary ATH table.
+    ///
+    /// # Errors
+    /// Database failure or violation of the window's schema constraints.
+    pub async fn upsert_ath_price_window(&self, r: &AthPriceWindow) -> Result<u64, DevDbError> {
+        Ok(sqlx::query(
+            "INSERT INTO ath_price_windows
+                (chain, token, source, window_from, window_to, max_price_usd,
+                 high_candle_at, first_candle_at, last_candle_at, returned_candles, observed_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+             ON CONFLICT (chain,token,source,window_from,window_to) DO UPDATE SET
+                max_price_usd=EXCLUDED.max_price_usd, high_candle_at=EXCLUDED.high_candle_at,
+                first_candle_at=EXCLUDED.first_candle_at, last_candle_at=EXCLUDED.last_candle_at,
+                returned_candles=EXCLUDED.returned_candles, observed_at=EXCLUDED.observed_at
+             WHERE EXCLUDED.observed_at >= ath_price_windows.observed_at",
+        )
+        .bind(&r.chain)
+        .bind(&r.token)
+        .bind(&r.source)
+        .bind(r.window_from)
+        .bind(r.window_to)
+        .bind(&r.max_price_usd)
+        .bind(r.high_candle_at)
+        .bind(r.first_candle_at)
+        .bind(r.last_candle_at)
+        .bind(r.returned_candles)
+        .bind(r.observed_at)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
+    /// Whether an exact provider/window request already has a saved observation.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn has_ath_price_window(
+        &self,
+        chain: &str,
+        token: &str,
+        source: &str,
+        from: i64,
+        to: i64,
+    ) -> Result<bool, DevDbError> {
+        Ok(sqlx::query(
+            "SELECT 1 FROM ath_price_windows WHERE chain=$1 AND token=$2 AND source=$3
+             AND window_from=$4 AND window_to=$5",
+        )
+        .bind(chain)
+        .bind(token)
+        .bind(source)
+        .bind(from)
+        .bind(to)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some())
+    }
+
+    /// Insert or update a provider-reported ATH price observation.
+    ///
+    /// # Errors
+    /// Database failure or schema constraint violation.
+    pub async fn upsert_ath_price_observation(
+        &self,
+        row: &AthPriceObservation,
+    ) -> Result<u64, DevDbError> {
+        Ok(sqlx::query(
+            "INSERT INTO ath_price_observations
+                (chain, token, source, highest_price_usd, timestamp_ms, pool_id,
+                 highest_market_cap_usd, observed_at, response_sha256, scope)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+             ON CONFLICT (chain,token,source) DO UPDATE SET
+                highest_price_usd=EXCLUDED.highest_price_usd,
+                timestamp_ms=EXCLUDED.timestamp_ms, pool_id=EXCLUDED.pool_id,
+                highest_market_cap_usd=EXCLUDED.highest_market_cap_usd,
+                observed_at=EXCLUDED.observed_at, response_sha256=EXCLUDED.response_sha256,
+                scope=EXCLUDED.scope
+             WHERE EXCLUDED.observed_at >= ath_price_observations.observed_at",
+        )
+        .bind(&row.chain)
+        .bind(&row.token)
+        .bind(&row.source)
+        .bind(&row.highest_price_usd)
+        .bind(row.timestamp_ms)
+        .bind(&row.pool_id)
+        .bind(&row.highest_market_cap_usd)
+        .bind(row.observed_at)
+        .bind(&row.response_sha256)
+        .bind(&row.scope)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
+    /// Whether a provider ATH observation is already saved for this asset.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn has_ath_price_observation(
+        &self,
+        chain: &str,
+        token: &str,
+        source: &str,
+    ) -> Result<bool, DevDbError> {
+        Ok(sqlx::query(
+            "SELECT 1 FROM ath_price_observations WHERE chain=$1 AND token=$2 AND source=$3",
+        )
+        .bind(chain)
+        .bind(token)
+        .bind(source)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some())
+    }
+
+    /// Read one provider ATH observation for audit/testing.
+    ///
+    /// # Errors
+    /// Database failure.
+    pub async fn ath_price_observation(
+        &self,
+        chain: &str,
+        token: &str,
+        source: &str,
+    ) -> Result<Option<AthPriceObservation>, DevDbError> {
+        let row = sqlx::query(
+            "SELECT highest_price_usd,timestamp_ms,pool_id,highest_market_cap_usd,observed_at,
+                    response_sha256,scope
+             FROM ath_price_observations WHERE chain=$1 AND token=$2 AND source=$3",
+        )
+        .bind(chain)
+        .bind(token)
+        .bind(source)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| AthPriceObservation {
+            chain: chain.to_owned(),
+            token: token.to_owned(),
+            source: source.to_owned(),
+            highest_price_usd: row.get("highest_price_usd"),
+            timestamp_ms: row.get("timestamp_ms"),
+            pool_id: row.get("pool_id"),
+            highest_market_cap_usd: row.get("highest_market_cap_usd"),
+            observed_at: row.get("observed_at"),
+            response_sha256: row.get("response_sha256"),
+            scope: row.get("scope"),
+        }))
+    }
+
+    /// Atomically reserve one attempt from an explicit application allocation.
+    /// `prior_usage` is a caller-confirmed count already charged to this
+    /// application's budget for the month, not provider-account usage.
+    /// Credential rotation does not create a new quota group.
+    ///
+    /// # Errors
+    /// Database failure, invalid settings, changed baseline, or exhausted cap.
+    pub async fn reserve_provider_request_budget(
+        &self,
+        request: &ProviderRequestBudget,
+    ) -> Result<i64, DevDbError> {
+        let valid_period = request.billing_period.len() == 7
+            && request.billing_period.as_bytes().get(4) == Some(&b'-')
+            && request
+                .billing_period
+                .bytes()
+                .enumerate()
+                .all(|(i, b)| i == 4 || b.is_ascii_digit())
+            && request
+                .billing_period
+                .get(5..)
+                .and_then(|m| m.parse::<u8>().ok())
+                .is_some_and(|m| (1..=12).contains(&m));
+        if request.provider.is_empty()
+            || request.quota_group.is_empty()
+            || !valid_period
+            || request.application_limit <= 0
+            || request.prior_usage < 0
+            || request.prior_usage > request.application_limit
+            || request.key_fingerprint.len() != 64
+            || !request
+                .key_fingerprint
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(DevDbError::InvalidProviderRequestBudget);
+        }
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO provider_request_budgets
+                (provider,quota_group,billing_period,application_limit,
+                 prior_application_usage,reserved_attempts,current_key_fingerprint,updated_at)
+             VALUES ($1,$2,$3,$4,$5,0,$6,$7)
+             ON CONFLICT (provider,quota_group,billing_period) DO NOTHING",
+        )
+        .bind(&request.provider)
+        .bind(&request.quota_group)
+        .bind(&request.billing_period)
+        .bind(request.application_limit)
+        .bind(request.prior_usage)
+        .bind(&request.key_fingerprint)
+        .bind(request.now)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query(
+            "SELECT application_limit,prior_application_usage,reserved_attempts
+             FROM provider_request_budgets
+             WHERE provider=$1 AND quota_group=$2 AND billing_period=$3 FOR UPDATE",
+        )
+        .bind(&request.provider)
+        .bind(&request.quota_group)
+        .bind(&request.billing_period)
+        .fetch_one(&mut *tx)
+        .await?;
+        let saved_limit: i64 = row.get("application_limit");
+        let saved_prior: i64 = row.get("prior_application_usage");
+        let reserved: i64 = row.get("reserved_attempts");
+        if saved_limit != request.application_limit || saved_prior != request.prior_usage {
+            return Err(DevDbError::ProviderRequestBudgetConfigMismatch);
+        }
+        if request
+            .prior_usage
+            .checked_add(reserved)
+            .is_none_or(|used| used >= request.application_limit)
+        {
+            tx.commit().await?;
+            return Err(DevDbError::ProviderRequestBudgetExhausted);
+        }
+        let new_reserved = reserved
+            .checked_add(1)
+            .ok_or(DevDbError::InvalidProviderRequestBudget)?;
+        sqlx::query(
+            "UPDATE provider_request_budgets SET reserved_attempts=$4,
+             current_key_fingerprint=$5, updated_at=$6
+             WHERE provider=$1 AND quota_group=$2 AND billing_period=$3",
+        )
+        .bind(&request.provider)
+        .bind(&request.quota_group)
+        .bind(&request.billing_period)
+        .bind(new_reserved)
+        .bind(&request.key_fingerprint)
+        .bind(request.now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(request.application_limit - request.prior_usage - new_reserved)
+    }
+
+    /// Return the tracked tokens from a provider page (maximum 200).
+    ///
+    /// # Errors
+    /// Database failure or a batch larger than the provider page bound.
+    pub async fn known_launch_tokens(
+        &self,
+        chain: &str,
+        tokens: &[String],
+    ) -> Result<Vec<String>, DevDbError> {
+        if tokens.len() > 200 {
+            return Err(DevDbError::TokenLookupTooLarge(tokens.len()));
+        }
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query("SELECT token FROM launches WHERE chain = $1 AND token = ANY($2)")
+            .bind(chain)
+            .bind(tokens)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get("token")).collect())
     }
 
     /// Last fully ingested position of a source (`None` = never ingested).
@@ -332,6 +712,47 @@ impl DevDb {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Reserve one provider request from an opt-in shared counter.
+    /// Missing counters preserve legacy unlimited behavior.
+    ///
+    /// # Errors
+    /// Database failure, malformed counter, or exhausted budget.
+    pub async fn reserve_request_budget(
+        &self,
+        key: &str,
+        now: i64,
+    ) -> Result<Option<i64>, DevDbError> {
+        let mut tx = self.pool.begin().await?;
+        let current = sqlx::query_scalar::<_, String>(
+            "SELECT position FROM cursors WHERE source = $1 FOR UPDATE",
+        )
+        .bind(key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(current) = current else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let remaining = current
+            .parse::<i64>()
+            .map_err(|_| DevDbError::InvalidCodexRequestBudget)?;
+        if remaining < 0 {
+            return Err(DevDbError::InvalidCodexRequestBudget);
+        }
+        if remaining == 0 {
+            return Err(DevDbError::CodexRequestBudgetExhausted);
+        }
+        let remaining = remaining - 1;
+        sqlx::query("UPDATE cursors SET position = $2, updated_at = $3 WHERE source = $1")
+            .bind(key)
+            .bind(remaining.to_string())
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(remaining))
     }
 
     /// Every launch of every creator on `chain` (all chains when `None`) that
@@ -369,7 +790,10 @@ impl DevDb {
                          THEN COALESCE(l.signer, 'contract:' || l.creator)
                          ELSE l.creator END AS creator,
                     l.token, l.launchpad, l.created_at,
-                    m.migrated_at, a.ath_fdv_cents, a.holders AS ath_holders,
+                    m.migrated_at,
+                    CASE WHEN a.source = 'codex-missing' THEN NULL ELSE a.ath_fdv_cents END
+                        AS ath_fdv_cents,
+                    a.holders AS ath_holders,
                     a.max_liquidity_cents AS ath_max_liquidity_cents
              FROM launches l
              LEFT JOIN address_kinds k ON k.chain = l.chain AND k.address = l.creator
@@ -642,9 +1066,8 @@ impl DevDb {
     /// tokens and the tokens of launchpads without a curve whose creator has
     /// at least [`ATH_MIN_CREATOR_LAUNCHES`] launches,
     /// refreshed by age — < 2 days every 12 h, < 7 days daily, < 30 days
-    /// weekly, older every 90 days (a year of tokens stays within Codex's free
-    /// 10k requests/month: ≈ 4.8k steady, ≈ 3.7k more for the backfill
-    /// month). Missing observations first, newest launches first, at most
+    /// weekly, older every 90 days. Missing observations first, newest launches
+    /// first, at most
     /// `limit`.
     ///
     /// # Errors
@@ -656,24 +1079,56 @@ impl DevDb {
         limit: i64,
     ) -> Result<Vec<String>, DevDbError> {
         let rows = sqlx::query(
-            "SELECT l.token FROM launches l
-             LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
-             LEFT JOIN ath a ON a.chain = l.chain AND a.token = l.token
-             WHERE l.chain = $1
-               AND (m.token IS NOT NULL
-                    OR (l.launchpad = ANY($4)
-                        AND (SELECT count(*) FROM launches x
-                             WHERE x.chain = l.chain AND x.creator = l.creator) >= $5))
-               AND (a.observed_at IS NULL OR a.observed_at < $2 - CASE
+            "WITH missing AS (
+                 SELECT l.token, l.created_at
+                 FROM launches l
+                 LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
+                 WHERE l.chain = $1
+                   AND (m.token IS NOT NULL
+                        OR (l.launchpad = ANY($4)
+                            AND EXISTS (
+                                SELECT 1 FROM launches x
+                                WHERE x.chain = l.chain AND x.creator = l.creator
+                                ORDER BY x.created_at
+                                OFFSET ($5 - 1) LIMIT 1
+                            )))
+                   AND NOT EXISTS (
+                       SELECT 1 FROM ath a WHERE a.chain = l.chain AND a.token = l.token
+                   )
+                 ORDER BY l.created_at DESC, l.token
+                 LIMIT $3
+             ), stale AS (
+                 SELECT l.token, l.created_at
+                 FROM launches l
+                 LEFT JOIN migrations m ON m.chain = l.chain AND m.token = l.token
+                 LEFT JOIN ath a ON a.chain = l.chain AND a.token = l.token
+                 WHERE l.chain = $1
+                   AND (m.token IS NOT NULL
+                        OR (l.launchpad = ANY($4)
+                            AND EXISTS (
+                                SELECT 1 FROM launches x
+                                WHERE x.chain = l.chain AND x.creator = l.creator
+                                ORDER BY x.created_at
+                                OFFSET ($5 - 1) LIMIT 1
+                            )))
+                   AND a.observed_at IS NOT NULL
+                   AND a.observed_at < $2 - CASE
                     -- a token Codex does not know, past its first 2 days:
-                    -- every 90 days only (live Base: 630k tokens, 99 % missing)
-                    WHEN a.source = 'codex-missing' AND $2 - l.created_at >= 172800 THEN 7776000
-                    WHEN $2 - l.created_at < 172800 THEN 43200
-                    WHEN $2 - l.created_at < 604800 THEN 86400
-                    WHEN $2 - l.created_at < 2592000 THEN 604800
-                    ELSE 7776000 END)
-             ORDER BY (a.observed_at IS NULL) DESC, l.created_at DESC
-             LIMIT $3",
+                    -- every 90 days only
+                        WHEN a.source = 'codex-missing' AND $2 - l.created_at >= 172800 THEN 7776000
+                        WHEN $2 - l.created_at < 172800 THEN 43200
+                        WHEN $2 - l.created_at < 604800 THEN 86400
+                        WHEN $2 - l.created_at < 2592000 THEN 604800
+                        ELSE 7776000 END
+                 ORDER BY l.created_at DESC, l.token
+                 LIMIT $3 - (SELECT count(*) FROM missing)
+             )
+             SELECT token FROM (
+                 SELECT token, created_at, 0 AS priority FROM missing
+                 UNION ALL
+                 SELECT token, created_at, 1 AS priority FROM stale
+             ) candidates
+             ORDER BY priority, created_at DESC, token",
         )
         .bind(chain)
         .bind(now)

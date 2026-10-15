@@ -6,12 +6,14 @@
 //! All arithmetic is integer: money in USD cents, rates in basis points.
 
 pub mod ath;
+pub mod birdeye;
 pub mod evm_ingest;
 pub mod export;
 pub mod heartbeat;
 pub mod identity;
 pub mod solana_fallback;
 pub mod solana_ingest;
+pub mod solana_tracker_ath;
 pub mod telegram;
 
 use std::collections::BTreeMap;
@@ -84,8 +86,10 @@ pub struct WinStreakConfig {
 pub struct ScheduleConfig {
     /// Chains ingested by the daemon.
     pub chains: Vec<String>,
-    /// Minutes between ingestion passes (launches, migrations, identities, ATH).
+    /// Minutes between ingestion passes (launches, migrations, identities).
     pub ingest_every_minutes: u64,
+    /// Minutes between separate ATH provider passes.
+    pub ath_every_minutes: u64,
     /// Minutes between category derivations (and deliveries).
     pub derive_every_minutes: u64,
     /// Where a source without a cursor starts.
@@ -111,9 +115,10 @@ impl Default for ScheduleConfig {
                 .map(String::from)
                 .to_vec(),
             ingest_every_minutes: 30,
+            ath_every_minutes: 240,
             derive_every_minutes: 60,
             start_hours_back: 24,
-            ath_requests_per_chain: 20,
+            ath_requests_per_chain: 1,
             solana_max_pages: 200,
             max_new_creators: 2_000,
             max_signer_lookups: 5_000,
@@ -240,7 +245,10 @@ impl DevTrackerConfig {
                 "top_runners.max_plausible_ath_usd must be >= big_runner_ath_usd".into(),
             ));
         }
-        if c.schedule.ingest_every_minutes == 0 || c.schedule.derive_every_minutes == 0 {
+        if c.schedule.ingest_every_minutes == 0
+            || c.schedule.ath_every_minutes == 0
+            || c.schedule.derive_every_minutes == 0
+        {
             return Err(ConfigError::Range(
                 "schedule.*_every_minutes must be >= 1".into(),
             ));
@@ -549,6 +557,26 @@ mod tests {
         let c = cfg();
         assert_eq!(c.pending_window_days, 3);
         assert_eq!(c.top_migr.min_launches, 3);
+        assert_eq!(c.schedule.ath_every_minutes, 240);
+        assert_eq!(c.schedule.ath_requests_per_chain, 1);
+
+        let legacy = include_str!("../../../config/dev-tracker.example.toml")
+            .lines()
+            .filter(|line| !line.starts_with("ath_every_minutes = "))
+            .filter(|line| !line.starts_with("ath_requests_per_chain = "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let legacy = DevTrackerConfig::from_toml(&legacy).unwrap();
+        assert_eq!(legacy.schedule.ath_every_minutes, 240);
+        assert_eq!(legacy.schedule.ath_requests_per_chain, 1);
+
+        let zero_ath_cadence = include_str!("../../../config/dev-tracker.example.toml")
+            .replace("ath_every_minutes = 240", "ath_every_minutes = 0");
+        assert!(matches!(
+            DevTrackerConfig::from_toml(&zero_ath_cadence),
+            Err(ConfigError::Range(_))
+        ));
+
         let bad = include_str!("../../../config/dev-tracker.example.toml").replace(
             "min_migration_rate_pct = 80",
             "min_migration_rate_pct = 180",

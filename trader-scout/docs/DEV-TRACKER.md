@@ -80,11 +80,21 @@ excluded); both raw counts are stored, never only the ratio.
 
 ## 5. Operations
 
-- `dev-tracker run --config <file>` — the daemon: ingestion (launches, migrations, dev identities, ATH) every
+- `dev-tracker run --config <file>` — the daemon: facts ingestion (launches, migrations, dev identities) every
   `schedule.ingest_every_minutes`, derivation + delivery every `schedule.derive_every_minutes`; the config is
   re-read every cycle (a broken edit is reported and the last good config kept); one chain's failure does not
   stop the others; SIGTERM / Ctrl-C stop it between steps.
 - One-shot commands: `migrate`, `ingest --chains …`, `derive`, `export [--send] [--test]`, `backfill`.
+- `birdeye-prices --tokens <json> --time-from <unix> --time-to <unix> --interval <1D|1m|1s> --max-requests <N>` saves
+  bounded USD price-window highs separately from ATH FDV. The default interval is `1D`;
+  `1s` is Solana-only. Interval-specific source keys keep cached windows separate.
+  Input is a JSON array of tracked
+  `{"chain":"base","token":"0x..."}` entries; key is `SCOUT_BIRDEYE_API_KEY`. Saved exact
+  windows resume without calls; empty histories remain null. Failed calls or a spent attempt
+  ceiling produce a partial exit; 401/403/429 stop the pass without automatic retry.
+  Run passes sharing a key sequentially. Intraday candles help reconcile supply changes,
+  but do not establish transaction order within a bucket. This command does not certify
+  lifetime ATH or change lists.
 - Alerts (`[alerts]`, same bot and chat): 🟢 start, ⏹ stop (also when the stop arrives in the middle of a pass —
   the pass is abandoned safely), 🟠 restart after an unclean stop (crash, `kill -9`, OOM, power loss: a liveness
   beat is written every minute and the next start compares), 🔴 an incident — a chain's pass (`ingest:<chain>`),
@@ -118,7 +128,59 @@ excluded); both raw counts are stored, never only the ratio.
 | Disk | ≈ 660 B per launch with indexes; one year ≈ 32M launches (Solana 19.4M, BSC 9.2M, Robinhood 2.1M, Base 1.1M) ≈ 20 GB, +≈ 1.7 GB/month; dump ≈ 100 B/launch (≈ 3–3.5 GB/year) | SSD 80–100 GB |
 | Traffic | gzip on (Helius full tx 16.9 KB → 3.3 KB); Solana ≈ 55k txs/day ≈ 180 MB/day; EVM < 1 GB/month; a one-year Solana backfill ≈ 64 GB | any 100 Mbit/s link |
 
+For a memory-constrained single-host backfill/derive, an optional Compose
+override is available at `deploy/docker-compose.compact.yml`; it caps PostgreSQL
+at 1 GiB / 1 CPU (no swap) and the daemon at 512 MiB / 1 CPU, and configures
+PostgreSQL with 128 MiB `shared_buffers`, 4 MiB `work_mem`, 64 MiB
+`maintenance_work_mem`, no parallel gather workers, and 32 connections. These
+are per-container ceilings, not reserved RAM. The measured clone benchmark
+restored 28M facts and derived one year with PostgreSQL hard-capped at 1 GiB,
+no swap, one CPU, and these PostgreSQL settings. Container start to restore
+completion took about 5m06s (the exact restore start was not recorded); the
+year derivation took 3m05.90s. The derive process peaked at 52,552 KiB (about 51.32 MiB)
+RSS; the cumulative PostgreSQL temp counter was about 21 GB, an upper bound on
+derive-only spill. See the
+[benchmark details](p0/measurements/2026-10-11-devtracker-compact-memory.md).
+This did not benchmark concurrent XGBoost training or the complete shared-host
+load, so keep host and workload headroom. From the `trader-scout` directory:
+
+```sh
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.compact.yml config --quiet
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.compact.yml up -d --build
+```
+
+Omitting the second `-f` uses the unchanged base profile again; keep the named
+database volume to preserve its data.
+
+The Kubernetes examples use the same PostgreSQL settings and 1 GiB database /
+512 MiB daemon memory ceilings. Their database PVC requests 60 GiB for annual
+data, derive temp files and WAL headroom; this is separate from the total host
+disk budget and the storage of other services.
+
 ## 6. Order of work
+
+Planned **B9.1**: GitHub CI generates Linux x86_64 release packages for
+dev-tracker and the three wallet CLIs, using the pinned Rust toolchain and
+lockfile. Offline checks and Debian Bookworm runtime smoke precede versioned
+archives, checksums and manifests. Manual workflow runs produce Actions
+artifacts; `trader-scout/v*` tags generate GitHub Releases. See `docs/TICKETS.md`.
+
+**B9.2 portable package:** B9.1 release archives now include a self-contained
+Bookworm Compose template, relative config/export paths, explicit PostgreSQL
+volume name and a private state-bundle verifier. `deploy/state_bundle.py`
+accepts only explicit config, PostgreSQL custom dump, named exports and JSON
+provenance files; it hashes and bounds the archive, rejects links/traversal,
+and refuses existing extraction targets. Credentials remain separately
+supplied in `deploy/.env` mode 0600. The existing repository-based Compose
+example remains unchanged. A real 39-file private bundle (schema-10 dump,
+config, 36 exports and provenance) passed verification and extraction; its
+dump hash matches the completed isolated full restore. A separate runtime
+directory under `/tmp` built the runtime image, migrated a fresh isolated
+database to schema 10, wrote nine empty export files and stopped cleanly.
+Seven deployment tests and hostile-archive checks pass; no server deployment
+or production restore has been performed. The dump
+contains facts and cursors, including provider budget state. The batch wallet
+CLIs have no wired persistent SQLite/raw-segment state today.
 
 B0 measurements (event volumes per chain and launchpad, ATH source: own swaps vs an external API such
 as Codex) → B1 schema → B2 launch/migration ingestion (Solana pump.fun and Robinhood Pons first, then
@@ -206,3 +268,191 @@ backfill smoke: Base 1,156 requests (Bankr 803, Noice 272, Flaunch 52 launches),
 (941 launches), 33 s wall. A year ≈ 0.77M Alchemy requests ≈ $8 and ≈ 3–4 h (runs alongside Solana); with the
 option-B identity pass (≈ $5) the one-year EVM backfill costs ≈ $13 on Alchemy. Steady state adds ≈ 2.5k receipts/day
 (≈ $0.8/month). ATH for these launchpads is observed only for creators with ≥ 3 launches (Codex budget).
+
+### Bankr / Noice receipt reduction (2026-10-11)
+
+The ingestion query now retrieves `Create` and companion `Lock` events together
+from the same initializer. Locks are grouped by block and transaction index;
+the first same-emitter Lock after each Create uses the existing largest
+non-protocol beneficiary rule. A missing or unusable beneficiary still invokes
+the original receipt attribution. Other creator rules remain as before.
+Source reports count Create events only; the existing 200,000-log accumulation
+cap includes both event types. The 16 MiB response bound and adaptive range
+splitting remain enabled, and failed queries do not advance the cursor.
+`--evm-step-blocks` is the maximum step. Bankr/Noice halve it after more than
+5,000 Create events, down to 2,000 blocks or a smaller requested maximum;
+below 2,500 events they double it back up to that maximum. Each source starts
+with its own requested maximum, so sparse unrelated sources keep wide ranges.
+Base backfill uses RPC concurrency 32 after a bounded Flaunch SDK measurement;
+other chains use 8. Request weighting, pacing, retry limits and input ordering
+remain enforced. The benchmark below is sampled evidence, not sustained quota
+or year-wide throughput: [session measurements](p0/measurements/2026-10-10-backfill-and-bsc-pnl.md).
+
+Eight historical Noice transactions passed exact query/receipt Lock comparison
+and beneficiary comparison. A two-transaction mainnet fixture and synthetic
+multi-launch/fallback tests retain that evidence. This verifies the sampled
+attribution; it is not a year-wide throughput measurement. The earlier
+one-receipt-per-launch cost estimates predate this change.
+
+### Base ATH and shared Codex budget (2026-10-10)
+
+The earlier request estimates above are historical estimates. The live year
+backfill exposed 8.8 million eligible Base tokens without an ATH observation:
+direct 200-address batches alone would require about 44,000 requests. The
+dashboard showed roughly 5.5k of 10k requests used. See
+[measured source coverage](p0/measurements/2026-10-10-base-ath-sources.md) and
+[ADR-021 amendments 6–8](adr/ADR-021-dev-tracker-facts-and-storage.md).
+
+Run facts and identities independently of ATH:
+
+```sh
+target/release/dev-tracker backfill --chains bsc,base,solana \
+  --phases logs,identity,solana --evm-step-blocks 50000 \
+  --identity-batch 2000 --solana-max-pages 2000
+```
+
+Base's optional provider-index pass requests positive ATH in pages of up to
+200, including scam-labelled tokens, and intersects each page with tracked
+launches. It enumerates Codex's `createdAt` filter over the last 365 closed
+UTC days with resumable per-day/interval/offset cursors. Codex's documentation
+conflicts about the date's meaning, and live results can return dates outside
+the requested interval. Valid ATH for these rows is retained with source
+`codex-index-date-mismatch`; cursors retain a mismatch-row count and up to four
+examples per day. Completion proves that enumeration reached natural ends,
+not returned-date membership or ATH for every contract created in that year. Observed ATH is cumulative at fetch time, not a
+historical snapshot at the interval end. Tokens without a provider result remain
+unknown. Run after launch facts are available, so completed days have the final
+tracked-token intersection:
+
+```sh
+target/release/dev-tracker backfill --chains base --phases ath \
+  --ath-from-index --days 365 --ath-requests 2000
+```
+
+`--ath-requests` counts HTTP attempts, including retries. A normal budget stop
+reports `complete=false`; rerunning resumes. Authentication, provider quota,
+malformed response and saturated one-second intervals stop with an explicit
+error and preserve the unfinished cursor. Logs distinguish queried provider
+rows, tracked matches and completed days. This is a mutable provider index,
+without an immutable snapshot guarantee.
+
+The shared Codex account counter is an opt-in row in `cursors`. Every daemon or
+backfill HTTP attempt atomically spends one allowance; a zero counter prevents
+another request, while chain ingestion continues. No counter means legacy
+unlimited behavior. Set a conservative allowance from the dashboard before
+running the new binary; do not reseed it on every restart or concurrent run.
+When the billing period changes, verify the dashboard and explicitly replace
+the allowance. Removing a cursor to reopen an index day requires a fresh pass
+and consumes requests again. There is no automatic monthly reset or purchase.
+
+For this session, the initial application allowance is 4,000 attempts, below
+the roughly 4.5k remaining in the supplied dashboard. Initialize once:
+
+```sql
+INSERT INTO cursors (source, position, updated_at)
+VALUES ('quota:codex:remaining', '4000', extract(epoch FROM now())::bigint)
+ON CONFLICT (source) DO NOTHING;
+SELECT position, updated_at FROM cursors WHERE source = 'quota:codex:remaining';
+```
+
+The counter controls this application's attempts; other clients using the
+account can still consume the provider's quota. Provider quota errors therefore
+remain terminal for the pass even if this counter is positive.
+
+The 2026-10-10 local processes used transient user services
+`trader-scout-dev-tracker.service` and `trader-scout-year-backfill.service`.
+Inspect them with `systemctl --user show <unit> -p ActiveState -p MainPID` and
+read `logs/run.log` / `logs/backfill.log`. They run outside the agent's process
+group and use the existing private `.env`, without embedding keys in command
+arguments. They survive termination of the launching agent; they are not an
+installed reboot deployment. The daemon was replaced by the persistent local
+unit below on 2026-10-13; VPS deployment remains pending under B9.
+
+A stopped transient unit can be garbage-collected; recreate it with `systemd-run --user` when it no longer exists, rather than starting a missing unit.
+
+#### Persistent local user service
+
+Installed and running locally on 2026-10-13, with lingering already enabled.
+Initial Telegram delivery sent 10 non-empty lists (30 documents); an unchanged
+repeat sent zero. Annual ATH coverage remains incomplete. See the
+[deployment and coverage proof](p0/measurements/2026-10-13-local-daemon-and-year-coverage.md).
+
+For a local host deployment, place the runtime at
+`~/.local/share/trader-scout/runtime` (or pass another existing absolute
+runtime directory to `deploy/systemd/install-user-service.sh`). It must contain
+`bin/dev-tracker`, `config/dev-tracker.toml`, and `deploy/.env`. The environment
+file must be private (mode 0600 or stricter) and set
+`SCOUT_DEVTRACKER_DATABASE_URL` to the already-running PostgreSQL database;
+reuse its existing database and delivery records rather than creating a
+second database. Ensure the database accepts connections from the host.
+
+Install and enable the user unit with:
+
+```sh
+bash deploy/systemd/install-user-service.sh
+```
+
+The installer does not start the service. After stopping any other daemon that
+uses the same database, start it with
+`systemctl --user start trader-scout-dev-tracker.service`; inspect it with
+`systemctl --user status trader-scout-dev-tracker.service` and
+`journalctl --user -u trader-scout-dev-tracker.service`. To receive Telegram
+delivery, keep `delivery.telegram = true` and set both Telegram variables in
+`deploy/.env`. A first non-empty list and subsequent membership changes are
+sent based on the persistent PostgreSQL delivery state; empty initial lists
+are skipped. `bin/dev-tracker export --config config/dev-tracker.toml --test`
+sends one test album without changing delivery state. With an empty delivery
+table, `export --config config/dev-tracker.toml --send` sends each non-empty
+list once; it does not force unchanged lists. User services start at boot only
+after the user manager starts; enable lingering with
+`loginctl enable-linger "$USER"` only if boot startup before login is required
+and approved for this host.
+
+### Light Codex usage in the daemon (2026-10-11)
+
+Facts and ATH have independent schedules (ADR-021 amendment 9). Default
+facts cadence is 30 minutes, derivation 60 minutes, and ATH 240 minutes with
+one request (up to 200 candidates) per chain per ATH pass. For four chains
+that is at most 24 scheduled calls/day, 744 over 31 days, plus restarts and
+manual jobs; empty queues use fewer calls. The direct observer has no
+automatic HTTP retries. `ath_requests_per_chain = 0` disables ATH and does
+not clear an existing Codex incident. The shared account counter still
+bounds all jobs. Explicit legacy `ath_requests_per_chain = 20` settings are
+not automatically rewritten: review them before a production start.
+
+This is a request budget with limited coverage/freshness, not full monitoring
+of millions of candidates. Helius (Solana) and Alchemy/Infura (BSC/Base)
+continue chain facts independently. See the
+[free ATH provider research](p0/measurements/2026-10-11-free-ath-providers.md)
+for qualified historical/forward supplements to Codex.
+
+### Targeted EVM runner ATH backfill
+
+`dev-tracker backfill --chains <solana|base|bsc|robinhood> --phases ath
+--ath-runners-from-index`
+uses `config/dev-tracker.toml` (override with `--ath-index-config`) to read
+the current `top_runners` minimum ATH, maximum plausible ATH and minimum
+holders. It enumerates the selected Codex mainnet index with those filters,
+then stores observations only for that chain's launch tokens already in
+PostgreSQL. Chain and network keep identical address strings isolated.
+Solana mints must decode from Base58 to 32 bytes and retain their case-sensitive
+spelling through lookup and storage.
+This mode has a separate cursor for each filter configuration and uses
+`--ath-requests` as its request-attempt budget. It makes no automatic retries.
+For a fixed token-birth floor, add
+`--ath-index-token-created-since <unix-seconds>`; it is valid only with
+`--ath-runners-from-index` and uses Codex `tokenCreatedAt` (token creation),
+not the first-pair `createdAt` used for ranking. The query requests
+`token.createdAt`; missing, malformed, negative, future, or below-floor
+returned values are reported as quality gaps without discarding valid ATH.
+The floor and runner thresholds are recorded in the report and cursor identity.
+
+The mode removes the daily first-pair `createdAt` bound used by
+`--ath-from-index`; it is still a filtered provider enumeration, not a complete
+historical ATH index. `complete=true` means Codex returned a short page for
+that filter. Index changes can affect offset pagination; saturation at 10,000
+results is reported as incomplete. Unknown tokens remain unknown and do not
+receive zero ATH. A token-birth floor narrows provider filter membership only;
+it does not prove complete birth or launch coverage. Category derivation still
+uses its configured `since_days` launch-history scope. See ADR-021 amendment 10
+for cursor and coverage details.

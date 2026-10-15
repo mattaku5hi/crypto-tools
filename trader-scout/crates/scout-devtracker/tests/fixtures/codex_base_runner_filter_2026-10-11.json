@@ -1,0 +1,73 @@
+{
+  "data": {
+    "filterTokens": {
+      "results": [
+        {
+          "createdAt": 1690997881,
+          "token": {
+            "address": "0xd07379a755a8f11b57610154861d694b2a0f615a",
+            "networkId": 8453,
+            "extrema": {
+              "athFdv": "1381711",
+              "athFdvTimestamp": 1778068501
+            }
+          },
+          "holders": 88012,
+          "liquidity": "19626"
+        },
+        {
+          "createdAt": 1691601291,
+          "token": {
+            "address": "0x27d2decb4bfc9c76f0309b8e88dec3a601fe25a8",
+            "networkId": 8453,
+            "extrema": {
+              "athFdv": "15359407",
+              "athFdvTimestamp": 1790126273
+            }
+          },
+          "holders": 89922,
+          "liquidity": "362490"
+        },
+        {
+          "createdAt": 1691601317,
+          "token": {
+            "address": "0xbe3111856e4aca828593274ea6872f27968c8dd6",
+            "networkId": 8453,
+            "extrema": {
+              "athFdv": "23364102",
+              "athFdvTimestamp": 1781198527
+            }
+          },
+          "holders": 14487,
+          "liquidity": "337831"
+        },
+        {
+          "createdAt": 1691601359,
+          "token": {
+            "address": "0x6653dd4b92a0e5bf8ae570a98906d9d6fd2eec09",
+            "networkId": 8453,
+            "extrema": {
+              "athFdv": "826663",
+              "athFdvTimestamp": 1791198679
+            }
+          },
+          "holders": 52902,
+          "liquidity": "141"
+        },
+        {
+          "createdAt": 1691602377,
+          "token": {
+            "address": "0x8fbd0648971d56f1f2c35fa075ff5bc75fb0e39d",
+            "networkId": 8453,
+            "extrema": {
+              "athFdv": "5131933",
+              "athFdvTimestamp": 1778131005
+            }
+          },
+          "holders": 6099,
+          "liquidity": "3"
+        }
+      ]
+    }
+  }
+}

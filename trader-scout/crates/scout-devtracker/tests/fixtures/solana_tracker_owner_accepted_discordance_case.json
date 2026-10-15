@@ -1,0 +1,3757 @@
+{
+  "schema": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+  "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+  "scope": "provider-recording-window-unknown",
+  "ath_at": null,
+  "cohort_size": 15,
+  "owner_authorized_manual_acceptance": true,
+  "provider_onchain_price_corroboration_claimed": false,
+  "all_market_ath_claimed": false,
+  "annual_coverage_claimed": false,
+  "wide_supply_interval_runner_threshold_guard_cents": 50000000,
+  "policy_sha256": "bd26eb6f6177efead535dfe9e44d94e327f939dbe03f3a07bac002797445bf2c",
+  "feasibility_sha256": "487ed489d94c6d9cba2ccc78f20426a108f570b3865d494631053ef4541ec0eb",
+  "raw_supply_independent_audit_sha256": "c62f68ed5f8360f8979d1ec66bf286afa6eb2419397b048eb1378bf7da5dd49a",
+  "source_hashes": {
+    "provider_rows_sha256": "0b456d5770ffec978a536c3483776077093a0b0daef1caceb42526438c0db882",
+    "current_account_snapshot_sha256": "1aa45ad48278eee6ebbea08f2c4340491e47e31629df930b9db53c88f7e946f6",
+    "current_account_request_input_sha256": "bd72a5098375cf929038d4644f4222a23f57e79d3ff46e4c62dc57c6893f492d",
+    "phase2_birth_receipt_join_sha256": "2f260bbd0af32861f15e2eb3d4edc156642feb4e52abe183a41b60f077a396e3",
+    "supply_bound_join_sha256": "68e59f339adf34437c6cb02df283d2f6becb69475a7cbed5cb982ccfd4fe21e1",
+    "supply_preparation_sha256": "aba3985f6c5c15a59e047d88dfc4e4429b9d0270ec9a423a88ab6266087c0d9c",
+    "feasibility_v3_sha256": "487ed489d94c6d9cba2ccc78f20426a108f570b3865d494631053ef4541ec0eb",
+    "owner_policy_v2_sha256": "bd26eb6f6177efead535dfe9e44d94e327f939dbe03f3a07bac002797445bf2c",
+    "independent_raw_supply_audit_v2_sha256": "c62f68ed5f8360f8979d1ec66bf286afa6eb2419397b048eb1378bf7da5dd49a",
+    "current_snapshot_slot": 455686275,
+    "scope": "provider-recording-window-unknown"
+  },
+  "cases": [
+    {
+      "mint": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.00004954469161551159",
+      "provider_peak_timestamp_ms": 1769767666976,
+      "provider_peak_pool_id": "J4iEduCrhpsKmE9rioq9XSZtBxRrZ1sihRpHoVLy3pPq",
+      "provider_reported_market_cap_usd": "48931.18",
+      "provider_response_sha256": "b519d483bab2be30e11a9bc5ba35d29b8acc4e17ec55af624cb1ea031470a048",
+      "provider_response_raw_json": "{\"highest_price\":0.00004954469161551159,\"highest_market_cap\":48931.18,\"timestamp\":1769767666976,\"pool_id\":\"J4iEduCrhpsKmE9rioq9XSZtBxRrZ1sihRpHoVLy3pPq\"}",
+      "onchain_comparison_status": "price_gate_fail_supply_capture_incomplete",
+      "onchain_price_proof_sha256": "e6c03bce1f6b9f45d914d8ce61a54b545d2e376379c282b09a840922a0c46ea1",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "987616970974506",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 0,
+        "current_mint_request_address": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKqW6fjuCAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABB0XEBMD3VFgiJk+4pooK0tszQUPh7w431vEatqkADPEwC6AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEHRcQEwPdUWCImT7imigrS2zNBQ+HvDjfW8Rq2qQAM8PAAAAU3RvbmUgQW5kIFN0aWNrCQAAAEV2b2x1dGlvblIAAABodHRwczovL21ldGFkYXRhLnJhcGlkbGF1bmNoLmlvL21ldGFkYXRhL2VlN2ZhZTU2LTA3ODYtNGYyOS1hNzI1LWVhYWQzOGFlM2EzYS5qc29uAAAAAA==",
+          "raw_account_length": 424,
+          "raw_account_sha256": "b71f1c1b51330d803bafe5205d45a41d8abc1fa5d148c25b5fcf0ed82d27ed1e",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "9e89961a029407cfda03219197fe681f045f8e79db7b90246e7548e1a28176cc"
+            },
+            {
+              "type": 19,
+              "length": 186,
+              "payload_sha256": "b1258cda1b3ada67c788b6271e503a102db9ec35c7a53fc310229e6b857bd25d"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "5w5NGQPKYM1FsN5LhqZ4TF2rEfifwW6fcaqTL7WsicAsRwwpZBAAT6e8Z5ZLJhU7J7LvXxvurtsAHhgudq7sFLnW",
+          "slot": 396890292,
+          "block_time_unix_s": 1769767178,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/02-getTransaction-sample.json",
+          "source_file_sha256": "3c7dc97305336e67a10b61a865e5b0063649b17dff1f8682ce7614750c65946c",
+          "source_actual_object_canonical_sha256": "3c7dc97305336e67a10b61a865e5b0063649b17dff1f8682ce7614750c65946c",
+          "source_expected_object_sha256": "3c7dc97305336e67a10b61a865e5b0063649b17dff1f8682ce7614750c65946c",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "opcode": 20,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "opcode": 7,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 1,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "opcode": 39,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "opcode": 20,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 5,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "opcode": 21,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "FUVimwfZ1VPipMg5dALLshVEmVjH9qSRmN6YV7VPoPWP",
+              "opcode": 22,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "FUVimwfZ1VPipMg5dALLshVEmVjH9qSRmN6YV7VPoPWP",
+              "opcode": 18,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 10,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "opcode": 210,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 126
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "opcode": 215,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "opcode": 7,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "27ES77p62B4edFBnGatr7NfnpudwwAkFC9eM2wQBpump",
+              "opcode": 21,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "EsRH8B54PLh1jpLPbVo6JXxWJNAgGqXuWxuP7THafanJ",
+              "opcode": 22,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "EsRH8B54PLh1jpLPbVo6JXxWJNAgGqXuWxuP7THafanJ",
+              "opcode": 18,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 1,
+              "mint_account": "FUVimwfZ1VPipMg5dALLshVEmVjH9qSRmN6YV7VPoPWP",
+              "opcode": 12,
+              "outer_index": 6,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "5w5NGQPKYM1FsN5LhqZ4TF2rEfifwW6fcaqTL7WsicAsRwwpZBAAT6e8Z5ZLJhU7J7LvXxvurtsAHhgudq7sFLnW",
+        "birth_supply_source_batch_sha256": null,
+        "birth_canonical_response_sha256": null,
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": true,
+        "supply_uncertainty_fraction": "12383029025494/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "2446558913058878038157401876227/500000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "4954469161551159/1000000000",
+        "lower_fdv_floor_cents": 4893117,
+        "upper_fdv_ceil_cents": 4954470,
+        "wide_interval_runner_threshold_guard_cents": null,
+        "wide_interval_upper_below_runner_threshold": null
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.00013242878993078837",
+      "provider_peak_timestamp_ms": 1791669895327,
+      "provider_peak_pool_id": "wc4hQ7k6mZe1hLLfkARE7gDjK6toJDpY2YCPKj8UEr5",
+      "provider_reported_market_cap_usd": "125954.79",
+      "provider_response_sha256": "2a24349f6306bde4d074f16922a2a0848574a430010df7f871231d97608d0356",
+      "provider_response_raw_json": "{\"highest_price\":0.00013242878993078837,\"highest_market_cap\":125954.79,\"timestamp\":1791669895327,\"pool_id\":\"wc4hQ7k6mZe1hLLfkARE7gDjK6toJDpY2YCPKj8UEr5\"}",
+      "onchain_comparison_status": "cross_pool_marginal_price_gate_fail",
+      "onchain_price_proof_sha256": "52e05a25bd2e15fe8a64e4b570ad908cc39a790e7e4c54298b8edcf2a62f04fd",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "951113325932600",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 10,
+        "current_mint_request_address": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOPDuUwhhAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC6awAKq10rkiTX75oBNBojOuAje7T7ptLBEYZWE9MYvEwCtAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALprAAqrXSuSJNfvmgE0GiM64CN7tPum0sERhlYT0xi8JAAAARWxvbiBDb2luBAAAAEVMT05QAAAAaHR0cHM6Ly9pcGZzLmlvL2lwZnMvYmFma3JlaWcycTZydTRtc3c0MndjbWg1cGt1Y3Rsb2NrNmtzaHdreng3ZGM1aG14b2Rjc3czbGI2YXUAAAAA",
+          "raw_account_length": 411,
+          "raw_account_sha256": "9d17b0a923e13057ca277fc91fb1c738dbeb82cf556cc42922fbbb927fa4c54e",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "b5097721221acffbb5d036f16d229f2ddc911b29825845cfe2ba709d0f69eab9"
+            },
+            {
+              "type": 19,
+              "length": 173,
+              "payload_sha256": "a4c3f28b178de864f9639f12fcdfbe65bf13c75f2f8fa700a9d33f1cdba28bc1"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "5qiJMCng9pTaGNC3Dtr4T3899XRYXVNfpzKtpa3YUwCKqzUbUuH6pS3pKw2Pa81fEwi7RpfFXK5MxnfDVRWvxVTi",
+          "slot": 455413417,
+          "block_time_unix_s": 1791669849,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/01-getTransaction-batch.json",
+          "source_file_sha256": "fe9bee5cc4926dd3102780c1229ed04d31f2cff4f6e16f4d3539f39824dd5b70",
+          "source_actual_object_canonical_sha256": "cd146d3e7578992349a373f6a027a8d2d07e7dcda3d6870dc95bb98fdf7a1086",
+          "source_expected_object_sha256": "cd146d3e7578992349a373f6a027a8d2d07e7dcda3d6870dc95bb98fdf7a1086",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 3,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "opcode": 20,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 18,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "opcode": 7,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 19,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 0,
+              "mint_account": "So11111111111111111111111111111111111111112",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "9hvUKS8X7AiuS3jcdkJXNY6BYfuzKYiXmJqF4Bctbxtm",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "9hvUKS8X7AiuS3jcdkJXNY6BYfuzKYiXmJqF4Bctbxtm",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "opcode": 39,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 3,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "opcode": 20,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 6,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "opcode": 21,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "Dib2s5HZnNVQSRYDvKY4A2QyTtzq7d8C2cUNtUB5V4uT",
+              "opcode": 22,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 9,
+              "mint_account": "Dib2s5HZnNVQSRYDvKY4A2QyTtzq7d8C2cUNtUB5V4uT",
+              "opcode": 18,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "BzLqhz2FUciRyv1orWnm24vvSrsNVsjiWWFoyKytpump",
+              "opcode": 21,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 13,
+              "mint_account": "3gDDZCoHuBNGM7ABkt8Kqtr2jKxQowa6UGjpMfrYtY7z",
+              "opcode": 22,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 14,
+              "mint_account": "3gDDZCoHuBNGM7ABkt8Kqtr2jKxQowa6UGjpMfrYtY7z",
+              "opcode": 18,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 16,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "opcode": 210,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 113
+            },
+            {
+              "inner_index": 17,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "opcode": 215,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 18,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "opcode": 7,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 19,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 22,
+              "mint_account": "48vcicPGmTpLVkJPHFeSprEEtuQNvCHJwRfAT997pump",
+              "opcode": 21,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 24,
+              "mint_account": "9VsVhSEKcES44tuGMibMGYyUxJhEDXTd2RXnCBTRJZPS",
+              "opcode": 22,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 25,
+              "mint_account": "9VsVhSEKcES44tuGMibMGYyUxJhEDXTd2RXnCBTRJZPS",
+              "opcode": 18,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 27,
+              "mint_account": "9hvUKS8X7AiuS3jcdkJXNY6BYfuzKYiXmJqF4Bctbxtm",
+              "opcode": 17,
+              "outer_index": 3,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 29,
+              "mint_account": "9hvUKS8X7AiuS3jcdkJXNY6BYfuzKYiXmJqF4Bctbxtm",
+              "opcode": 12,
+              "outer_index": 3,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 10
+            },
+            {
+              "inner_index": 30,
+              "mint_account": "D4zFqabsBPKV4bMyeFE4nmE3gHm8SZ4vbrDMmb48ohwM",
+              "opcode": 12,
+              "outer_index": 3,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 10
+            },
+            {
+              "inner_index": 33,
+              "mint_account": "HGXRuTX3qtjX28tK2u1eJ5JJbXXqJcEm9LRky2mScER6",
+              "opcode": 12,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            },
+            {
+              "inner_index": 34,
+              "mint_account": "Dib2s5HZnNVQSRYDvKY4A2QyTtzq7d8C2cUNtUB5V4uT",
+              "opcode": 12,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            },
+            {
+              "inner_index": 38,
+              "mint_account": "9hvUKS8X7AiuS3jcdkJXNY6BYfuzKYiXmJqF4Bctbxtm",
+              "opcode": 9,
+              "outer_index": 3,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "5qiJMCng9pTaGNC3Dtr4T3899XRYXVNfpzKtpa3YUwCKqzUbUuH6pS3pKw2Pa81fEwi7RpfFXK5MxnfDVRWvxVTi",
+        "birth_supply_source_batch_sha256": "fe9bee5cc4926dd3102780c1229ed04d31f2cff4f6e16f4d3539f39824dd5b70",
+        "birth_canonical_response_sha256": "cd146d3e7578992349a373f6a027a8d2d07e7dcda3d6870dc95bb98fdf7a1086",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": false,
+        "supply_uncertainty_fraction": "48886674067400/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "62977393420150867975741741931/5000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "13242878993078837/1000000000",
+        "lower_fdv_floor_cents": 12595478,
+        "upper_fdv_ceil_cents": 13242879,
+        "wide_interval_runner_threshold_guard_cents": 50000000,
+        "wide_interval_upper_below_runner_threshold": true
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.00006483090206883705",
+      "provider_peak_timestamp_ms": 1768757526734,
+      "provider_peak_pool_id": "FXsGPFaDeeZdQE2EsfitPcjZCmrVBFxv1vA6gUBk71fi",
+      "provider_reported_market_cap_usd": "64810.31",
+      "provider_response_sha256": "04b65352616c337e6c19dce9f7b52ca41755c01191f5d39fe6ca1094915b6bd0",
+      "provider_response_raw_json": "{\"highest_price\":0.00006483090206883705,\"highest_market_cap\":64810.31,\"timestamp\":1768757526734,\"pool_id\":\"FXsGPFaDeeZdQE2EsfitPcjZCmrVBFxv1vA6gUBk71fi\"}",
+      "onchain_comparison_status": "outside_2pct",
+      "onchain_price_proof_sha256": "df02f83cc12a5dc0d87ee60bd6f24743dd05a2936277766ac912ed034d1a9ec2",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "999682364476154",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 11,
+        "current_mint_request_address": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+go5sDSNAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC+GdbsRCM9ukcNxnkaXHYGNavfSme+WrLOWFuLwMzxvEwCwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL4Z1uxEIz26Rw3GeRpcdgY1q99KZ75ass5YW4vAzPG8HAAAATE9ORElVTQcAAABMT05ESVVNUgAAAGh0dHBzOi8vbWV0YWRhdGEucmFwaWRsYXVuY2guaW8vbWV0YWRhdGEvOTU5OTlkOTMtNmJkYi00NTFjLTgwZDEtMTMzODY3MWYyMDJiLmpzb24AAAAA",
+          "raw_account_length": 414,
+          "raw_account_sha256": "4d17dc3e1b07b4ebb32aff1f1a442fe5d5dfa98f1c5c3481f69fe04eb677d696",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "73a1f8a2cb11d0ffefff3a86be7f1f75ff8c2f8ee2f22ffe1e64ec7d5fd781bf"
+            },
+            {
+              "type": 19,
+              "length": 176,
+              "payload_sha256": "1d7a7577d85a18ccefc888420cc7a9bffa5bc220602f73eb0d6cbf30673b7348"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "XbcHA5QDFH3vZfD2mLUhPci5JVc7LfrJwvNHY3ZfSxCe2ypcUeHTs4bpjPbh5ba55bgsw7mXRqm4WKzbBWd11AV",
+          "slot": 394363474,
+          "block_time_unix_s": 1768757405,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/01-getTransaction-batch.json",
+          "source_file_sha256": "fe9bee5cc4926dd3102780c1229ed04d31f2cff4f6e16f4d3539f39824dd5b70",
+          "source_actual_object_canonical_sha256": "395b03b5db3da173461a29130610f1cf1714dabeb36d37a3ced7eb04bd217877",
+          "source_expected_object_sha256": "395b03b5db3da173461a29130610f1cf1714dabeb36d37a3ced7eb04bd217877",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "opcode": 20,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "opcode": 7,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 1,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "opcode": 39,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "opcode": 20,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 5,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "opcode": 21,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "HBkbb7mgVPBXE5yKu36NkABim1zjeSDfFUEFV5xu7RzW",
+              "opcode": 22,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "HBkbb7mgVPBXE5yKu36NkABim1zjeSDfFUEFV5xu7RzW",
+              "opcode": 18,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 10,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "opcode": 210,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 116
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "opcode": 215,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "opcode": 7,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "4CX5a5gn7whdJu2Mz4JGsexfex9TjF5n7jvQiUURpump",
+              "opcode": 21,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "DiJR2omtYQLJ6krLQtZhWqRJMehHKr4DajS9315AisJa",
+              "opcode": 22,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "DiJR2omtYQLJ6krLQtZhWqRJMehHKr4DajS9315AisJa",
+              "opcode": 18,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 1,
+              "mint_account": "HBkbb7mgVPBXE5yKu36NkABim1zjeSDfFUEFV5xu7RzW",
+              "opcode": 12,
+              "outer_index": 6,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "XbcHA5QDFH3vZfD2mLUhPci5JVc7LfrJwvNHY3ZfSxCe2ypcUeHTs4bpjPbh5ba55bgsw7mXRqm4WKzbBWd11AV",
+        "birth_supply_source_batch_sha256": "fe9bee5cc4926dd3102780c1229ed04d31f2cff4f6e16f4d3539f39824dd5b70",
+        "birth_canonical_response_sha256": "395b03b5db3da173461a29130610f1cf1714dabeb36d37a3ced7eb04bd217877",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": true,
+        "supply_uncertainty_fraction": "317635523846/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "648103094712970062184712367057/100000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "1296618041376741/200000000",
+        "lower_fdv_floor_cents": 6481030,
+        "upper_fdv_ceil_cents": 6483091,
+        "wide_interval_runner_threshold_guard_cents": null,
+        "wide_interval_upper_below_runner_threshold": null
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.00008703980566256217",
+      "provider_peak_timestamp_ms": 1764519409855,
+      "provider_peak_pool_id": "CGTc3ECVqtpH2YdMbFpoSqQWLVzVpTNHgCMoVXAt2R7E",
+      "provider_reported_market_cap_usd": "87031.29",
+      "provider_response_sha256": "ab06684a7a868c721986685e2e4ccdf55ab22261bc5ca3d2ee4ece415f3321b8",
+      "provider_response_raw_json": "{\"highest_price\":0.00008703980566256217,\"highest_market_cap\":87031.29,\"timestamp\":1764519409855,\"pool_id\":\"CGTc3ECVqtpH2YdMbFpoSqQWLVzVpTNHgCMoVXAt2R7E\"}",
+      "onchain_comparison_status": "not_independently_comparable",
+      "onchain_price_proof_sha256": null,
+      "supply": {
+        "decimals": 6,
+        "current_raw": "999902161793228",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 14,
+        "current_mint_request_address": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAzPAp3WeNAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADkS+gUkdJfy5IT7X9fF7KBS6t5jH/wgo9FjXaJTeX9DEwCJAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAORL6BSR0l/LkhPtf18XsoFLq3mMf/CCj0WNdolN5f0MKAAAAbGFib3IgY29pbgUAAABMQUJPUioAAABodHRwOi8vOTMuMjA1LjEwLjY3OjQxNDEvbWV0YWRhdGEvQjh1bndkTWgAAAAA",
+          "raw_account_length": 375,
+          "raw_account_sha256": "f768ccc07433c4a62137ac098b25f943279a7c1d61bbe618530a18bdc55aa709",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "2e7203f8b94477be5038199cf25e6ea35170ec87dd2ef94b39385a6a763b2e3e"
+            },
+            {
+              "type": 19,
+              "length": 137,
+              "payload_sha256": "69b946e21ab3d45eb8dbd63521bdc30ca99e272156fee874f7d4402cbbc905a2"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "3uyCg3gqiK9EbwxfQCRK6RiWKufXSdkHX6ojW41mfYjh6BV4TtWGJbFLK36DKh1GjVqm6m7XwNydepWvs3CorYMu",
+          "slot": 383567680,
+          "block_time_unix_s": 1764519371,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/01-getTransaction-batch.json",
+          "source_file_sha256": "fe9bee5cc4926dd3102780c1229ed04d31f2cff4f6e16f4d3539f39824dd5b70",
+          "source_actual_object_canonical_sha256": "667a372bca2cd775e3ded9ed7b77b9ba88a7b5b0112cff7b2e52926f5f86632f",
+          "source_expected_object_sha256": "667a372bca2cd775e3ded9ed7b77b9ba88a7b5b0112cff7b2e52926f5f86632f",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "opcode": 20,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "opcode": 7,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 1,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "opcode": 39,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "opcode": 20,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 5,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "opcode": 21,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "Aqj53YUN6xjbAE4tV1ARPt16wN369dxPezfwUXD38QMw",
+              "opcode": 22,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "Aqj53YUN6xjbAE4tV1ARPt16wN369dxPezfwUXD38QMw",
+              "opcode": 18,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 10,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "opcode": 210,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 77
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "opcode": 215,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "opcode": 7,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "4qo2GNNDZUhzzxdPuXkuBMktf7xM6gMwf3RhJ3x5fXoG",
+              "opcode": 21,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "AJxqrM5UCt4rSveZ9u6fRPo8of8cz9vfpJg37t4U2MNh",
+              "opcode": 22,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "AJxqrM5UCt4rSveZ9u6fRPo8of8cz9vfpJg37t4U2MNh",
+              "opcode": 18,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 1,
+              "mint_account": "Aqj53YUN6xjbAE4tV1ARPt16wN369dxPezfwUXD38QMw",
+              "opcode": 12,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "3uyCg3gqiK9EbwxfQCRK6RiWKufXSdkHX6ojW41mfYjh6BV4TtWGJbFLK36DKh1GjVqm6m7XwNydepWvs3CorYMu",
+        "birth_supply_source_batch_sha256": "fe9bee5cc4926dd3102780c1229ed04d31f2cff4f6e16f4d3539f39824dd5b70",
+        "birth_canonical_response_sha256": "667a372bca2cd775e3ded9ed7b77b9ba88a7b5b0112cff7b2e52926f5f86632f",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": true,
+        "supply_uncertainty_fraction": "97838206772/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "2175782246101459038648805874619/250000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "8703980566256217/1000000000",
+        "lower_fdv_floor_cents": 8703128,
+        "upper_fdv_ceil_cents": 8703981,
+        "wide_interval_runner_threshold_guard_cents": null,
+        "wide_interval_upper_below_runner_threshold": null
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.000007790249380883858",
+      "provider_peak_timestamp_ms": 1768572417175,
+      "provider_peak_pool_id": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+      "provider_reported_market_cap_usd": "7790.25",
+      "provider_response_sha256": "d0443b306555ee5058982ba393b3fff276b5317cde40272a530707316acaa134",
+      "provider_response_raw_json": "{\"highest_price\":0.000007790249380883858,\"highest_market_cap\":7790.25,\"timestamp\":1768572417175,\"pool_id\":\"5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump\"}",
+      "onchain_comparison_status": "outside_2pct",
+      "onchain_price_proof_sha256": "ca8d824289721c882909b6d032d420d0ae94448933a8f7dd89e457adb0344962",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "1643104648972699",
+        "birth_raw_upper": "2000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 21,
+        "current_mint_request_address": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAm0nuHGXWBQAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEYjzD/zZgFif8Jq96z4Y9MQQBQRtgpcwUxAm+UnrSsfEwC4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARiPMP/NmAWJ/wmr3rPhj0xBAFBG2ClzBTECb5SetKx8QAAAAQUkgR3JhbmRtYSBXaGFsZQgAAABBSUdXSEFMRVAAAABodHRwczovL2lwZnMuaW8vaXBmcy9iYWZrcmVpYm9oeWlqcGd5bjRnbmdkdzVpYWx5emxzdnpxY2I1NGFwNGR4dG13a2NkMjVhd2F5Y3YyaQAAAAA=",
+          "raw_account_length": 422,
+          "raw_account_sha256": "651a5aad98d48ad597282a0ce25401a55b46856d4d1b2b5caed71b6098bc872e",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "53dd6189bdcd8bb1dc4ba1fa8c2f437e83c9a16a6b29183f7db820cf0fc9dc5b"
+            },
+            {
+              "type": 19,
+              "length": 184,
+              "payload_sha256": "4db632837af6cb78b006a13214f80fb1430ed1473d52d591c6b9d874c74943e4"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "2WCsL5Ea6VQWh3vYh9gNQ4dtr9aU2wc1jHiXvKRYRabZ8XmdTmkjKnNRU17GjqkKU2HYo3ioigisKtSCrFvVGDYR",
+          "slot": 393895898,
+          "block_time_unix_s": 1768572415,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/08-getTransaction-sample.json",
+          "source_file_sha256": "fd6361ae59fe55f1f50e40328167b856c9fb5e82aeae9c3661b7b58ede48bbb4",
+          "source_actual_object_canonical_sha256": "fd6361ae59fe55f1f50e40328167b856c9fb5e82aeae9c3661b7b58ede48bbb4",
+          "source_expected_object_sha256": "fd6361ae59fe55f1f50e40328167b856c9fb5e82aeae9c3661b7b58ede48bbb4",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "2000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 19,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 20,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 21,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 1,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 39,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 5,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "E1LqeYfyNedjhco7tFVmdSY87pL65LYhKE7phdjfFtfQ",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "E1LqeYfyNedjhco7tFVmdSY87pL65LYhKE7phdjfFtfQ",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 10,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 210,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 124
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 215,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "inner_index": 14,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 16,
+              "mint_account": "8LN4iB4nCv2dVoePo8Nv53PRdbRxqrij1wREuFEpHGwD",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 17,
+              "mint_account": "8LN4iB4nCv2dVoePo8Nv53PRdbRxqrij1wREuFEpHGwD",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 19,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 20,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 21,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "5ioCXEqEZ9K1XuVr2kejRspx6oC9HshkevMmvQz8pump",
+              "opcode": 21,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "7mAyCbqk9wWZbLsDZfSNuaKPYsqVmbAnhMFeCTcNZTBx",
+              "opcode": 22,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "7mAyCbqk9wWZbLsDZfSNuaKPYsqVmbAnhMFeCTcNZTBx",
+              "opcode": 18,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "E1LqeYfyNedjhco7tFVmdSY87pL65LYhKE7phdjfFtfQ",
+              "opcode": 12,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "2WCsL5Ea6VQWh3vYh9gNQ4dtr9aU2wc1jHiXvKRYRabZ8XmdTmkjKnNRU17GjqkKU2HYo3ioigisKtSCrFvVGDYR",
+        "birth_supply_source_batch_sha256": null,
+        "birth_canonical_response_sha256": null,
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": false,
+        "supply_uncertainty_fraction": "356895351027301/2000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "6400097487193478605254165896371/5000000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "3895124690441929/2500000000",
+        "lower_fdv_floor_cents": 1280019,
+        "upper_fdv_ceil_cents": 1558050,
+        "wide_interval_runner_threshold_guard_cents": 50000000,
+        "wide_interval_upper_below_runner_threshold": true
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.00007963237455131668",
+      "provider_peak_timestamp_ms": 1764223714643,
+      "provider_peak_pool_id": "5sYNThxN1xtiDKr343f8tP14nEAXwD2hC5MBAHPSqY4n",
+      "provider_reported_market_cap_usd": "79632.21",
+      "provider_response_sha256": "ed09fe61f54ba8722a86c1c0e2de6e498bacbed695b76b22362aac29014da5ce",
+      "provider_response_raw_json": "{\"highest_price\":0.00007963237455131668,\"highest_market_cap\":79632.21,\"timestamp\":1764223714643,\"pool_id\":\"5sYNThxN1xtiDKr343f8tP14nEAXwD2hC5MBAHPSqY4n\"}",
+      "onchain_comparison_status": "price_gate_fail_after_prestate_recovery",
+      "onchain_price_proof_sha256": "f0cd5bd5541b063c18a714402fda4c64db3c5a914fc409a7e39cda00dee5bdce",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "999997981790170",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 22,
+        "current_mint_request_address": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+        "current_mint_account": {
+          "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "raw_account_base64": "AAAAAAbFwc5jjSVn0mRosF65UdGijcxuEjSCtcZ1FJdw5ivy2g97LH6NAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+          "raw_account_length": 82,
+          "raw_account_sha256": "322d6874e49892ae64b6131267fa6d3efe160989b6b47f96e322bc1e36912d74",
+          "extensions": [],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "4nYgq7vUqCnZmvKbmHsFYMDoBuHdv4WA6gPt4MYSiVUPUYCng2jNPJDG4XzJShZGCf28LKnziD7ybYysm2st5HVb",
+          "slot": 382805527,
+          "block_time_unix_s": 1764223713,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/01-getTransaction-batch.json",
+          "source_file_sha256": "fe9bee5cc4926dd3102780c1229ed04d31f2cff4f6e16f4d3539f39824dd5b70",
+          "source_actual_object_canonical_sha256": "ae9d2cc1cff57baa27e6d6df0a63fdd5877e60f8013828a649b4f1cf97794e19",
+          "source_expected_object_sha256": "ae9d2cc1cff57baa27e6d6df0a63fdd5877e60f8013828a649b4f1cf97794e19",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 3,
+              "mint_account": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+              "opcode": 20,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 14,
+              "mint_account": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+              "opcode": 7,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 15,
+              "mint_account": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 3,
+              "mint_account": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+              "opcode": 20,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 6,
+              "mint_account": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+              "opcode": 21,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "BcWWMj5Ay1RPMGTikdMQZU6LEkoxs9Bw7VhhM4AyeWyR",
+              "opcode": 22,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 9,
+              "mint_account": "BcWWMj5Ay1RPMGTikdMQZU6LEkoxs9Bw7VhhM4AyeWyR",
+              "opcode": 18,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 14,
+              "mint_account": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+              "opcode": 7,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 15,
+              "mint_account": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 18,
+              "mint_account": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+              "opcode": 21,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 20,
+              "mint_account": "Ch3mSrjAMmYPxDo6KfSLhmGtceqWzVcXUZuAUgK4mxGZ",
+              "opcode": 22,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 21,
+              "mint_account": "Ch3mSrjAMmYPxDo6KfSLhmGtceqWzVcXUZuAUgK4mxGZ",
+              "opcode": 18,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 23,
+              "mint_account": "So11111111111111111111111111111111111111112",
+              "opcode": 21,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 25,
+              "mint_account": "4GPnbMPUGvkacsBd4UWUn12mZ3rU3U1UxZgf3iEo7xQm",
+              "opcode": 22,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 26,
+              "mint_account": "4GPnbMPUGvkacsBd4UWUn12mZ3rU3U1UxZgf3iEo7xQm",
+              "opcode": 18,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 27,
+              "mint_account": "yJbwTMy4Wi1zzUMDcu25iBz2UY5dssqWwn7K5BAZEVt",
+              "opcode": 3,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 9
+            },
+            {
+              "inner_index": 28,
+              "mint_account": "4GPnbMPUGvkacsBd4UWUn12mZ3rU3U1UxZgf3iEo7xQm",
+              "opcode": 9,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 30,
+              "mint_account": "69KXHdb73SUV963HJx3PxQ9aABWJapoGyPpKecA5Nv8E",
+              "opcode": 21,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 32,
+              "mint_account": "8eBmtR8SdfnoW44fcNCnFzKseNVpoeqMrbqit4TMM9uM",
+              "opcode": 22,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 33,
+              "mint_account": "8eBmtR8SdfnoW44fcNCnFzKseNVpoeqMrbqit4TMM9uM",
+              "opcode": 18,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 37,
+              "mint_account": "BcWWMj5Ay1RPMGTikdMQZU6LEkoxs9Bw7VhhM4AyeWyR",
+              "opcode": 12,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 10
+            },
+            {
+              "inner_index": 44,
+              "mint_account": "8eBmtR8SdfnoW44fcNCnFzKseNVpoeqMrbqit4TMM9uM",
+              "opcode": 3,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 9
+            },
+            {
+              "inner_index": 46,
+              "mint_account": "yJbwTMy4Wi1zzUMDcu25iBz2UY5dssqWwn7K5BAZEVt",
+              "opcode": 17,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "4nYgq7vUqCnZmvKbmHsFYMDoBuHdv4WA6gPt4MYSiVUPUYCng2jNPJDG4XzJShZGCf28LKnziD7ybYysm2st5HVb",
+        "birth_supply_source_batch_sha256": "fe9bee5cc4926dd3102780c1229ed04d31f2cff4f6e16f4d3539f39824dd5b70",
+        "birth_canonical_response_sha256": "ae9d2cc1cff57baa27e6d6df0a63fdd5877e60f8013828a649b4f1cf97794e19",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": true,
+        "supply_uncertainty_fraction": "2018209830/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "199080534591188935727092452589/25000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "1990809363782917/250000000",
+        "lower_fdv_floor_cents": 7963221,
+        "upper_fdv_ceil_cents": 7963238,
+        "wide_interval_runner_threshold_guard_cents": null,
+        "wide_interval_upper_below_runner_threshold": null
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "6nV9kzU4cDm8rCtG9hqE5VTGHfSsCFcogmMGedQcpump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.00009072632534942912",
+      "provider_peak_timestamp_ms": 1769258745357,
+      "provider_peak_pool_id": "13LexNihoVAwSSUg3Yus63NYgNQD3Yw3x8JJeMdcH21Z",
+      "provider_reported_market_cap_usd": "90726.29",
+      "provider_response_sha256": "08bbf2029af324b640757ee0019b8437991609168b93d678ea8761fdc33a1348",
+      "provider_response_raw_json": "{\"highest_price\":0.00009072632534942912,\"highest_market_cap\":90726.29,\"timestamp\":1769258745357,\"pool_id\":\"13LexNihoVAwSSUg3Yus63NYgNQD3Yw3x8JJeMdcH21Z\"}",
+      "onchain_comparison_status": "outside_2pct",
+      "onchain_price_proof_sha256": "df02f83cc12a5dc0d87ee60bd6f24743dd05a2936277766ac912ed034d1a9ec2",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "999999597376482",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 27,
+        "current_mint_request_address": "6nV9kzU4cDm8rCtG9hqE5VTGHfSsCFcogmMGedQcpump",
+        "current_mint_account": {
+          "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "raw_account_base64": "AAAAAAbFwc5jjSVn0mRosF65UdGijcxuEjSCtcZ1FJdw5ivy4vPGjH6NAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+          "raw_account_length": 82,
+          "raw_account_sha256": "1c53fe7e8e6f1da18dea8173d97b4593a5cc9d92c01a3c32045104620ced9756",
+          "extensions": [],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "5yRwQNe8bS5XtMT2pcxWFKM8K2zaFwQXCDdbvrE7kQAxDHPHJBm3JHrG4rRFGHprwp9kn97CTe6K3yVxbGHvgwFU",
+          "slot": 395622288,
+          "block_time_unix_s": 1769258725,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/01-getTransaction-batch.json",
+          "source_file_sha256": "fe9bee5cc4926dd3102780c1229ed04d31f2cff4f6e16f4d3539f39824dd5b70",
+          "source_actual_object_canonical_sha256": "bd4de2b9b19df1a4e88c330ecda4e6953cc68ebce87cfe1180d34c651b60223c",
+          "source_expected_object_sha256": "bd4de2b9b19df1a4e88c330ecda4e6953cc68ebce87cfe1180d34c651b60223c",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 1,
+              "mint_account": "6nV9kzU4cDm8rCtG9hqE5VTGHfSsCFcogmMGedQcpump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "6nV9kzU4cDm8rCtG9hqE5VTGHfSsCFcogmMGedQcpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "6nV9kzU4cDm8rCtG9hqE5VTGHfSsCFcogmMGedQcpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 1,
+              "mint_account": "6nV9kzU4cDm8rCtG9hqE5VTGHfSsCFcogmMGedQcpump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 4,
+              "mint_account": "6nV9kzU4cDm8rCtG9hqE5VTGHfSsCFcogmMGedQcpump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 6,
+              "mint_account": "9osJndVK6Ntwk1Lo5HMkYFkfUdKbTH3bRU2z9JDuh3WV",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "9osJndVK6Ntwk1Lo5HMkYFkfUdKbTH3bRU2z9JDuh3WV",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "6nV9kzU4cDm8rCtG9hqE5VTGHfSsCFcogmMGedQcpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "6nV9kzU4cDm8rCtG9hqE5VTGHfSsCFcogmMGedQcpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "6nV9kzU4cDm8rCtG9hqE5VTGHfSsCFcogmMGedQcpump",
+              "opcode": 21,
+              "outer_index": 3,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "1RFda94kJtzqsAavSfHBXvCFGnc9xWCNLGYrmRNAFvM",
+              "opcode": 22,
+              "outer_index": 3,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "1RFda94kJtzqsAavSfHBXvCFGnc9xWCNLGYrmRNAFvM",
+              "opcode": 18,
+              "outer_index": 3,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "9osJndVK6Ntwk1Lo5HMkYFkfUdKbTH3bRU2z9JDuh3WV",
+              "opcode": 12,
+              "outer_index": 4,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "5yRwQNe8bS5XtMT2pcxWFKM8K2zaFwQXCDdbvrE7kQAxDHPHJBm3JHrG4rRFGHprwp9kn97CTe6K3yVxbGHvgwFU",
+        "birth_supply_source_batch_sha256": "fe9bee5cc4926dd3102780c1229ed04d31f2cff4f6e16f4d3539f39824dd5b70",
+        "birth_canonical_response_sha256": "bd4de2b9b19df1a4e88c330ecda4e6953cc68ebce87cfe1180d34c651b60223c",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": true,
+        "supply_uncertainty_fraction": "402623518/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "70879913141310025468959698403/7812500000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "141759883358483/15625000",
+        "lower_fdv_floor_cents": 9072628,
+        "upper_fdv_ceil_cents": 9072633,
+        "wide_interval_runner_threshold_guard_cents": null,
+        "wide_interval_upper_below_runner_threshold": null
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.00006021540025747795",
+      "provider_peak_timestamp_ms": 1764230511975,
+      "provider_peak_pool_id": "DtD3Ew7kTwF7hBiRod5oa41He2DUbJQpAZbmVMyDr2bG",
+      "provider_reported_market_cap_usd": "60201.29",
+      "provider_response_sha256": "6ba2727ddc47e8d52af7f527d5201380152f66f2a79601e7297b4cfbdd2f220e",
+      "provider_response_raw_json": "{\"highest_price\":0.00006021540025747795,\"highest_market_cap\":60201.29,\"timestamp\":1764230511975,\"pool_id\":\"DtD3Ew7kTwF7hBiRod5oa41He2DUbJQpAZbmVMyDr2bG\"}",
+      "onchain_comparison_status": "price_gate_fail_after_correct_amm_redecode",
+      "onchain_price_proof_sha256": "27c4d855b3c80cf9275867a2d6d4d6c10cdadfaf8529a5e332a92844e229d1ff",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "999765592073856",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 38,
+        "current_mint_request_address": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+        "current_mint_account": {
+          "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "raw_account_base64": "AAAAAAbFwc5jjSVn0mRosF65UdGijcxuEjSCtcZ1FJdw5ivygGb5EEiNAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+          "raw_account_length": 82,
+          "raw_account_sha256": "116db66e740526c9541864726e3f03d0d67a4be3cb0bdaa73b9931fa22c49af2",
+          "extensions": [],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "2QixGc2yAo4qyeXeUu1ujB1yKr5HFrQKMUsauKWFTsTByi6E5cjos27e8HGmSVSEtWXCQ8u3Sz2i4i4YHvy6sfdk",
+          "slot": 382822963,
+          "block_time_unix_s": 1764230510,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/02-getTransaction-batch.json",
+          "source_file_sha256": "e69e175c1d3ebfb54abf268f5f07c370c2a85c4219eb3b12f8620a8abbf7ad6c",
+          "source_actual_object_canonical_sha256": "39bb711d87572ebaacede4569126c527f40578f563313d7535342f22c234ad15",
+          "source_expected_object_sha256": "39bb711d87572ebaacede4569126c527f40578f563313d7535342f22c234ad15",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 3,
+              "mint_account": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+              "opcode": 20,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 14,
+              "mint_account": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+              "opcode": 7,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 15,
+              "mint_account": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 3,
+              "mint_account": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+              "opcode": 20,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 6,
+              "mint_account": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+              "opcode": 21,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "CQFiQCsnYgAk9DKtmZk31fr8KfERpjKe5GV1GGRdDH7n",
+              "opcode": 22,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 9,
+              "mint_account": "CQFiQCsnYgAk9DKtmZk31fr8KfERpjKe5GV1GGRdDH7n",
+              "opcode": 18,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 14,
+              "mint_account": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+              "opcode": 7,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 15,
+              "mint_account": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 18,
+              "mint_account": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+              "opcode": 21,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 20,
+              "mint_account": "2e78Nw9FuJKthNoLeswLq1uUgSeEmEJQmEpv3sSGVJqG",
+              "opcode": 22,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 21,
+              "mint_account": "2e78Nw9FuJKthNoLeswLq1uUgSeEmEJQmEpv3sSGVJqG",
+              "opcode": 18,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 23,
+              "mint_account": "So11111111111111111111111111111111111111112",
+              "opcode": 21,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 25,
+              "mint_account": "4GPnbMPUGvkacsBd4UWUn12mZ3rU3U1UxZgf3iEo7xQm",
+              "opcode": 22,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 26,
+              "mint_account": "4GPnbMPUGvkacsBd4UWUn12mZ3rU3U1UxZgf3iEo7xQm",
+              "opcode": 18,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 27,
+              "mint_account": "7MpwpRPjw5UDrfXkJpd2BNeQWEqVHZbmbPzFaSni5EZz",
+              "opcode": 3,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 9
+            },
+            {
+              "inner_index": 28,
+              "mint_account": "4GPnbMPUGvkacsBd4UWUn12mZ3rU3U1UxZgf3iEo7xQm",
+              "opcode": 9,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 30,
+              "mint_account": "9Jek81nwnUfawGKyNVEaqUEnNKfq7AzTa4Xx5mdQ8R9b",
+              "opcode": 21,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 32,
+              "mint_account": "Fh5C647GzLB1znbp6UtQwCT3AA5SeVnNwP3gb1diJfqW",
+              "opcode": 22,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 33,
+              "mint_account": "Fh5C647GzLB1znbp6UtQwCT3AA5SeVnNwP3gb1diJfqW",
+              "opcode": 18,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 36,
+              "mint_account": "CQFiQCsnYgAk9DKtmZk31fr8KfERpjKe5GV1GGRdDH7n",
+              "opcode": 12,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 10
+            },
+            {
+              "inner_index": 42,
+              "mint_account": "Fh5C647GzLB1znbp6UtQwCT3AA5SeVnNwP3gb1diJfqW",
+              "opcode": 3,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 9
+            },
+            {
+              "inner_index": 44,
+              "mint_account": "7MpwpRPjw5UDrfXkJpd2BNeQWEqVHZbmbPzFaSni5EZz",
+              "opcode": 17,
+              "outer_index": 1,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "2QixGc2yAo4qyeXeUu1ujB1yKr5HFrQKMUsauKWFTsTByi6E5cjos27e8HGmSVSEtWXCQ8u3Sz2i4i4YHvy6sfdk",
+        "birth_supply_source_batch_sha256": "e69e175c1d3ebfb54abf268f5f07c370c2a85c4219eb3b12f8620a8abbf7ad6c",
+        "birth_canonical_response_sha256": "39bb711d87572ebaacede4569126c527f40578f563313d7535342f22c234ad15",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": true,
+        "supply_uncertainty_fraction": "234407926144/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "9406450826622134954705108043/1562500000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "1204308005149559/200000000",
+        "lower_fdv_floor_cents": 6020128,
+        "upper_fdv_ceil_cents": 6021541,
+        "wide_interval_runner_threshold_guard_cents": null,
+        "wide_interval_upper_below_runner_threshold": null
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.0000031585311996908605",
+      "provider_peak_timestamp_ms": 1773707308452,
+      "provider_peak_pool_id": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+      "provider_reported_market_cap_usd": "3158.53",
+      "provider_response_sha256": "bbe8ad156423655441861708f4c6b7800c32bd2fbfbcd64854911409c535c3bc",
+      "provider_response_raw_json": "{\"highest_price\":0.0000031585311996908605,\"highest_market_cap\":3158.53,\"timestamp\":1773707308452,\"pool_id\":\"AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump\"}",
+      "onchain_comparison_status": "outside_2pct",
+      "onchain_price_proof_sha256": "25be858f6306b51dfb8f3ae53982a888c47d07d015afacb849c8e920df12185d",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "1010921613617676",
+        "birth_raw_upper": "2000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 47,
+        "current_mint_request_address": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADOqsh22XAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJBJoRJblwfMNHamT0xhNvf3E9MR2Ze0xRqDmcipAQXvEwCcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAkEmhEluXB8w0dqZPTGE29/cT0xHZl7TFGoOZyKkBBe8FAAAAbmV3YnkEAAAAU29sIEMAAABodHRwczovL2lwZnMuaW8vaXBmcy9RbVRMZXQ0TEVRWFZFbXpXVEhpMk5lVWt3bXB5dXM2dnQ0RWFNeFZiTEh4enhjAAAAAA==",
+          "raw_account_length": 394,
+          "raw_account_sha256": "04bfbac5900c5210697a4fc4287356b33eb3cc53bcf791f1e078c114f37c8afa",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "851234370fd56785b0452f3970673a87507258735ed7fff89047b15a01395b49"
+            },
+            {
+              "type": 19,
+              "length": 156,
+              "payload_sha256": "db784fa84913d04b99c81c2f6175a824965b25b1cdb60da9b184851ebbe09d46"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "2WviAT9vUSeU44DHH8szEfo42xajMbyjEVFy7h7TGQJz53WddV1xCp7DyFDeVr6c38BBpudunfbc8Qr7RezrdFC8",
+          "slot": 406903534,
+          "block_time_unix_s": 1773707301,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/02-getTransaction-batch.json",
+          "source_file_sha256": "e69e175c1d3ebfb54abf268f5f07c370c2a85c4219eb3b12f8620a8abbf7ad6c",
+          "source_actual_object_canonical_sha256": "0dd86015eda38912dbf4a7f84af9c05599130729666b51e35e1edaca4f1a8e95",
+          "source_expected_object_sha256": "0dd86015eda38912dbf4a7f84af9c05599130729666b51e35e1edaca4f1a8e95",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "2000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 19,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 20,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 21,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 1,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 39,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 5,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "6hYeZt5QZ5EDmHUVpqyDvNXjFAJZF92avwNoB4RtB4Ny",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "6hYeZt5QZ5EDmHUVpqyDvNXjFAJZF92avwNoB4RtB4Ny",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 10,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 210,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 96
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 215,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "inner_index": 14,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 16,
+              "mint_account": "2RoR1fE6W2cqG4vRBsxH1tzWo8Q9jJgaES4Ts2ixfUMk",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 17,
+              "mint_account": "2RoR1fE6W2cqG4vRBsxH1tzWo8Q9jJgaES4Ts2ixfUMk",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 19,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 20,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 21,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "AiEpwMiG1cQ5Pu7FKdRyCzX2hK22q8ZdHym4DVzhpump",
+              "opcode": 21,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "76WV61cbHo2bA92o2wMx3dDry5tBQfuy9SBERmdWMGki",
+              "opcode": 22,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "76WV61cbHo2bA92o2wMx3dDry5tBQfuy9SBERmdWMGki",
+              "opcode": 18,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 1,
+              "mint_account": "6hYeZt5QZ5EDmHUVpqyDvNXjFAJZF92avwNoB4RtB4Ny",
+              "opcode": 12,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "2WviAT9vUSeU44DHH8szEfo42xajMbyjEVFy7h7TGQJz53WddV1xCp7DyFDeVr6c38BBpudunfbc8Qr7RezrdFC8",
+        "birth_supply_source_batch_sha256": "e69e175c1d3ebfb54abf268f5f07c370c2a85c4219eb3b12f8620a8abbf7ad6c",
+        "birth_canonical_response_sha256": "0dd86015eda38912dbf4a7f84af9c05599130729666b51e35e1edaca4f1a8e95",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": false,
+        "supply_uncertainty_fraction": "989078386382324/2000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "1596513728526629357659119225099/5000000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "6317062399381721/10000000000",
+        "lower_fdv_floor_cents": 319302,
+        "upper_fdv_ceil_cents": 631707,
+        "wide_interval_runner_threshold_guard_cents": 50000000,
+        "wide_interval_upper_below_runner_threshold": true
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.0000034094147716350844",
+      "provider_peak_timestamp_ms": 1773406203566,
+      "provider_peak_pool_id": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+      "provider_reported_market_cap_usd": "3409.41",
+      "provider_response_sha256": "f358928c6226785a9cca2db289a29d5b2e53c49eac714eaff77fb1a2545e5bfc",
+      "provider_response_raw_json": "{\"highest_price\":0.0000034094147716350844,\"highest_market_cap\":3409.41,\"timestamp\":1773406203566,\"pool_id\":\"ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump\"}",
+      "onchain_comparison_status": "outside_2pct",
+      "onchain_price_proof_sha256": "d037e37306bac71c38f626b2b7a4f672c28096ed37aa7f048d4ab69b81b8ba15",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "1771557506495066",
+        "birth_raw_upper": "2000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 49,
+        "current_mint_request_address": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWrLf3zhLBgAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJHfedIEvAD162I5iBFSZ1MBNdLklBOVRhWht4thBhWPEwC8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAkd950gS8APXrYjmIEVJnUwE10uSUE5VGFaG3i2EGFY8aAAAAVGhleSB3aWxsIGNhbGwgdXMgbHVja3kgMSUCAAAAMSVQAAAAaHR0cHM6Ly9pcGZzLmlvL2lwZnMvYmFma3JlaWQ1YXd2eWgycTJpcXF4N3FtbW1ieGxreGNvd2xudXUzb3NwYm40dnBxa3o2eWZwZXlyNG0AAAAA",
+          "raw_account_length": 426,
+          "raw_account_sha256": "a34686150c51bab742f3ed849148eabf7b149f3852383cf61560db74a3da106a",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "0369edb5507c5bd59354cf616c699876ba550be2a9f77e02ab57d2d644c30b96"
+            },
+            {
+              "type": 19,
+              "length": 188,
+              "payload_sha256": "cfe24a037817f9e3043bdf596cb27add868bd5d358bddfbfbec71d0d623be3f8"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "3fzhiuGTeNpQNKHXxVKvbqcvYhWBbhxvAhzw3yipyNGhDmvw1qrA41LhdrH9R9Eki8a3UnpteFnF4XNb4WvJ9DPf",
+          "slot": 406138790,
+          "block_time_unix_s": 1773406171,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/02-getTransaction-batch.json",
+          "source_file_sha256": "e69e175c1d3ebfb54abf268f5f07c370c2a85c4219eb3b12f8620a8abbf7ad6c",
+          "source_actual_object_canonical_sha256": "585ae5240bcb4490fcc5afea88400664748180ee0bd511e406872fbd95d0d1b6",
+          "source_expected_object_sha256": "585ae5240bcb4490fcc5afea88400664748180ee0bd511e406872fbd95d0d1b6",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "2000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 19,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 20,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 21,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 1,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 39,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 5,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "BbbhdMqRr6CEUUMvNbvrD7mzbALRCrNo1cxzef4ADa1R",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "BbbhdMqRr6CEUUMvNbvrD7mzbALRCrNo1cxzef4ADa1R",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 10,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 210,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 128
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 215,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "inner_index": 14,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 16,
+              "mint_account": "54mF1ZSMb1mXVatKgwVijwpdBUreqXJ8Di12gHXcZ336",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 17,
+              "mint_account": "54mF1ZSMb1mXVatKgwVijwpdBUreqXJ8Di12gHXcZ336",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 19,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 20,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 21,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "ApRm3VBAW3bvdSoVrgB6KSWTvTZMXw98Li2QMoXypump",
+              "opcode": 21,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "Dn3uJsuP7zSGNTgexwUqLTXJdBB8jKvm94EFjYaaE5ut",
+              "opcode": 22,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "Dn3uJsuP7zSGNTgexwUqLTXJdBB8jKvm94EFjYaaE5ut",
+              "opcode": 18,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 1,
+              "mint_account": "BbbhdMqRr6CEUUMvNbvrD7mzbALRCrNo1cxzef4ADa1R",
+              "opcode": 12,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "3fzhiuGTeNpQNKHXxVKvbqcvYhWBbhxvAhzw3yipyNGhDmvw1qrA41LhdrH9R9Eki8a3UnpteFnF4XNb4WvJ9DPf",
+        "birth_supply_source_batch_sha256": "e69e175c1d3ebfb54abf268f5f07c370c2a85c4219eb3b12f8620a8abbf7ad6c",
+        "birth_canonical_response_sha256": "585ae5240bcb4490fcc5afea88400664748180ee0bd511e406872fbd95d0d1b6",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": false,
+        "supply_uncertainty_fraction": "228442493504934/2000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "7549967914306618743872251366963/12500000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "8523536929087711/12500000000",
+        "lower_fdv_floor_cents": 603997,
+        "upper_fdv_ceil_cents": 681883,
+        "wide_interval_runner_threshold_guard_cents": 50000000,
+        "wide_interval_upper_below_runner_threshold": true
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "BNrJcMqhqoHyw3ubQMAt6en6ynSebVTBp5AFC7Kupump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.00010948774507437546",
+      "provider_peak_timestamp_ms": 1769292324701,
+      "provider_peak_pool_id": "FghT72wMroMUQGCxTusYdHG8MB79dQ9szKTrvnT7741e",
+      "provider_reported_market_cap_usd": "109464.78",
+      "provider_response_sha256": "e580d322a843ab51c68598146e42d304cbc9c646e76d49f5b139aa99c14a23d3",
+      "provider_response_raw_json": "{\"highest_price\":0.00010948774507437546,\"highest_market_cap\":109464.78,\"timestamp\":1769292324701,\"pool_id\":\"FghT72wMroMUQGCxTusYdHG8MB79dQ9szKTrvnT7741e\"}",
+      "onchain_comparison_status": "outside_2pct",
+      "onchain_price_proof_sha256": "df02f83cc12a5dc0d87ee60bd6f24743dd05a2936277766ac912ed034d1a9ec2",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "999790291384929",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 51,
+        "current_mint_request_address": "BNrJcMqhqoHyw3ubQMAt6en6ynSebVTBp5AFC7Kupump",
+        "current_mint_account": {
+          "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "raw_account_base64": "AAAAAAbFwc5jjSVn0mRosF65UdGijcxuEjSCtcZ1FJdw5ivyYfoq0U2NAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+          "raw_account_length": 82,
+          "raw_account_sha256": "c3186ba184a119fc2dfc0bc4c2477a2073238af502a35c303cb68cac75a2fcf7",
+          "extensions": [],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "4rqWJxn4ekJevYrUGtbsPogrvbgszgV1Jo1fEdNTPBByETJ9aViC6WNUU9L1JzR3ZNHVr5rk6y1aPQ4vwhfKZEry",
+          "slot": 395706043,
+          "block_time_unix_s": 1769292294,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/02-getTransaction-batch.json",
+          "source_file_sha256": "e69e175c1d3ebfb54abf268f5f07c370c2a85c4219eb3b12f8620a8abbf7ad6c",
+          "source_actual_object_canonical_sha256": "42591dc68d1e894679cd659f2e6520a87dbf40e0d336f861cdeed7d7f042f4f7",
+          "source_expected_object_sha256": "42591dc68d1e894679cd659f2e6520a87dbf40e0d336f861cdeed7d7f042f4f7",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 1,
+              "mint_account": "BNrJcMqhqoHyw3ubQMAt6en6ynSebVTBp5AFC7Kupump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "BNrJcMqhqoHyw3ubQMAt6en6ynSebVTBp5AFC7Kupump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "BNrJcMqhqoHyw3ubQMAt6en6ynSebVTBp5AFC7Kupump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 1,
+              "mint_account": "BNrJcMqhqoHyw3ubQMAt6en6ynSebVTBp5AFC7Kupump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 4,
+              "mint_account": "BNrJcMqhqoHyw3ubQMAt6en6ynSebVTBp5AFC7Kupump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 6,
+              "mint_account": "5KD2r4oc1ZPooHPSo9ptSa6cs6UDa9Cs23Vt6oUUi1qS",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "5KD2r4oc1ZPooHPSo9ptSa6cs6UDa9Cs23Vt6oUUi1qS",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "BNrJcMqhqoHyw3ubQMAt6en6ynSebVTBp5AFC7Kupump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "BNrJcMqhqoHyw3ubQMAt6en6ynSebVTBp5AFC7Kupump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "BNrJcMqhqoHyw3ubQMAt6en6ynSebVTBp5AFC7Kupump",
+              "opcode": 21,
+              "outer_index": 3,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "Hivi6ZR4URxHpzVC78PDFMXCFJkf2gR6VJ3d14kmkCZA",
+              "opcode": 22,
+              "outer_index": 3,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "Hivi6ZR4URxHpzVC78PDFMXCFJkf2gR6VJ3d14kmkCZA",
+              "opcode": 18,
+              "outer_index": 3,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 1,
+              "mint_account": "5KD2r4oc1ZPooHPSo9ptSa6cs6UDa9Cs23Vt6oUUi1qS",
+              "opcode": 12,
+              "outer_index": 4,
+              "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "4rqWJxn4ekJevYrUGtbsPogrvbgszgV1Jo1fEdNTPBByETJ9aViC6WNUU9L1JzR3ZNHVr5rk6y1aPQ4vwhfKZEry",
+        "birth_supply_source_batch_sha256": "e69e175c1d3ebfb54abf268f5f07c370c2a85c4219eb3b12f8620a8abbf7ad6c",
+        "birth_canonical_response_sha256": "42591dc68d1e894679cd659f2e6520a87dbf40e0d336f861cdeed7d7f042f4f7",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": true,
+        "supply_uncertainty_fraction": "209708615071/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "5473239227549433301019656572117/500000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "5474387253718773/500000000",
+        "lower_fdv_floor_cents": 10946478,
+        "upper_fdv_ceil_cents": 10948775,
+        "wide_interval_runner_threshold_guard_cents": null,
+        "wide_interval_upper_below_runner_threshold": null
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.000058893311848874035",
+      "provider_peak_timestamp_ms": 1774878323962,
+      "provider_peak_pool_id": "GC2y1d3kGNuGwtNoLo6opHWWCi9Fur6MKEFiYxLQV2vU",
+      "provider_reported_market_cap_usd": "50422.59",
+      "provider_response_sha256": "e2672eeb1e4c6a63011e73b31ca9c610bd7850dc54a952489fdfdf045bdf258d",
+      "provider_response_raw_json": "{\"highest_price\":0.000058893311848874035,\"highest_market_cap\":50422.59,\"timestamp\":1774878323962,\"pool_id\":\"GC2y1d3kGNuGwtNoLo6opHWWCi9Fur6MKEFiYxLQV2vU\"}",
+      "onchain_comparison_status": "price_gate_fail_after_amm_decode",
+      "onchain_price_proof_sha256": "ac0b94031f902f046680d96f23b488665610e9b0171e1e47d4c3c70267417907",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "856168423577761",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 53,
+        "current_mint_request_address": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAoVjBPq4KAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJqlHRS+NDtWFiNPNNQuqKN/sGp8zPB7hsdNofj3sydvEwCjAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAmqUdFL40O1YWI0801C6oo3+wanzM8HuGx02h+PezJ28NAAAAVGhlIFNpbXVsYXRvcgkAAABTSU1VTEFUT1I9AAAAaHR0cHM6Ly9tZXRhZGF0YS5qN3RyYWNrZXIuY29tL21ldGFkYXRhLzU0MTk1NTJjNTUwMzRlOGIuanNvbgAAAAA=",
+          "raw_account_length": 401,
+          "raw_account_sha256": "7921b66ea31d82664ccc3778e0de34390992b5a510116b3eb768d49a2d93254a",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "4e5d94a4577ccb5292c6dc3b68a1aea18e5f9860b693a6c544c6e35c5ac47a5f"
+            },
+            {
+              "type": 19,
+              "length": 163,
+              "payload_sha256": "9298ff59e1b9ae4d86d314fd44c7bad6d0012b9017fb34ff2d330409acd52782"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "5d8hHUiLXWEFqSG1iT164diRz13cS1Q9bHx91oX1QBsrVafY1HEWFaFoW1wQaevF3HDVqPavZR2nNWrfVikZF8y9",
+          "slot": 409881309,
+          "block_time_unix_s": 1774878310,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/02-getTransaction-batch.json",
+          "source_file_sha256": "e69e175c1d3ebfb54abf268f5f07c370c2a85c4219eb3b12f8620a8abbf7ad6c",
+          "source_actual_object_canonical_sha256": "ba06d9d8e359881000b62504a1591be37e2fd5f941d403caead21730cbb25a8c",
+          "source_expected_object_sha256": "ba06d9d8e359881000b62504a1591be37e2fd5f941d403caead21730cbb25a8c",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 1,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "opcode": 39,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 5,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "EQQozhTBaEKCVoNTrDrpmmMNM4D91MnQ2Z4AoZzZpp11",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "EQQozhTBaEKCVoNTrDrpmmMNM4D91MnQ2Z4AoZzZpp11",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 10,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "opcode": 210,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 103
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "opcode": 215,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "BQfp97ryz6HBCQ8DsjmYCy1AQzW76JmTwjKqX88hpump",
+              "opcode": 21,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "HTR1ShzUrtXcq72NpJFaXJ3Mu5JN8gGLGx4w6MFeT46N",
+              "opcode": 22,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "HTR1ShzUrtXcq72NpJFaXJ3Mu5JN8gGLGx4w6MFeT46N",
+              "opcode": 18,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 1,
+              "mint_account": "EQQozhTBaEKCVoNTrDrpmmMNM4D91MnQ2Z4AoZzZpp11",
+              "opcode": 12,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "5d8hHUiLXWEFqSG1iT164diRz13cS1Q9bHx91oX1QBsrVafY1HEWFaFoW1wQaevF3HDVqPavZR2nNWrfVikZF8y9",
+        "birth_supply_source_batch_sha256": "e69e175c1d3ebfb54abf268f5f07c370c2a85c4219eb3b12f8620a8abbf7ad6c",
+        "birth_canonical_response_sha256": "ba06d9d8e359881000b62504a1591be37e2fd5f941d403caead21730cbb25a8c",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": false,
+        "supply_uncertainty_fraction": "143831576422239/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "10084518792984791123742823267127/2000000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "11778662369774807/2000000000",
+        "lower_fdv_floor_cents": 5042259,
+        "upper_fdv_ceil_cents": 5889332,
+        "wide_interval_runner_threshold_guard_cents": 50000000,
+        "wide_interval_upper_below_runner_threshold": true
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.00005646525449258058",
+      "provider_peak_timestamp_ms": 1769552600656,
+      "provider_peak_pool_id": "EFXo4S1LFCVSG4MR8vXTNkzbnKPUMwnTDqxpmLE62svc",
+      "provider_reported_market_cap_usd": "56402.52",
+      "provider_response_sha256": "eb69ab6dc23a551c9c9301ac8645cd599e3d3fce97fb4a328f1aa4fd667165d8",
+      "provider_response_raw_json": "{\"highest_price\":0.00005646525449258058,\"highest_market_cap\":56402.52,\"timestamp\":1769552600656,\"pool_id\":\"EFXo4S1LFCVSG4MR8vXTNkzbnKPUMwnTDqxpmLE62svc\"}",
+      "onchain_comparison_status": "known_nontrade_resolved_price_gate_fail",
+      "onchain_price_proof_sha256": "f085c0da08ec681c1da3969343d4a522a4558584f1eec3d94bbbaa36bec7ebe9",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "998888971063855",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 56,
+        "current_mint_request_address": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL1JK9nuMAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJ3SYZF6qIhhueGvry+bHCHovQy20Mnl0Jd3bXZ1jHmSEwCEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAndJhkXqoiGG54a+vL5scIei9DLbQyeXQl3dtdnWMeZIFAAAASEVOUlkFAAAASEVOUlkqAAAAaHR0cDovLzkzLjIwNS4xMC42Nzo0MTQxL21ldGFkYXRhL05YcTB0ZVVjAAAAAA==",
+          "raw_account_length": 370,
+          "raw_account_sha256": "7b19d3f1a63e63346ce39970047a078ba5eae7153d82b9115ce04ce850ee0efe",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "c8b271daf9f752c5d3ba5d8c4ac17ef44076e737314ae2b1aa92e85733d68912"
+            },
+            {
+              "type": 19,
+              "length": 132,
+              "payload_sha256": "99d35116793c1b58a7cc957f00b81960bc01615d8d44a041df8977376f310e9b"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "4JW7fs4jWYyxDZDCGrzBuKUfM2FocUhzqhePhyzLH7NWhj5sJpHdT7S7XuVDJwtfxFngRNAjtPReenNamSmpZAqt",
+          "slot": 396353603,
+          "block_time_unix_s": 1769552319,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/03-getTransaction-batch.json",
+          "source_file_sha256": "64b4336a4f8efcbe0ed5605fe7eb01e393ebcc31afce4596f31e1cb33324405b",
+          "source_actual_object_canonical_sha256": "7cac55bcfc1f7fce32504d61a5403445e4a333608016de3e1f2ba2570dceba6e",
+          "source_expected_object_sha256": "7cac55bcfc1f7fce32504d61a5403445e4a333608016de3e1f2ba2570dceba6e",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "opcode": 20,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "opcode": 7,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 1,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "opcode": 39,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "opcode": 20,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 5,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "opcode": 21,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "DoiGHVfDKhqhTFVnM8rHJZZz6bor6kRUheeTvvPPaKYu",
+              "opcode": 22,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "DoiGHVfDKhqhTFVnM8rHJZZz6bor6kRUheeTvvPPaKYu",
+              "opcode": 18,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 10,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "opcode": 210,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 72
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "opcode": 215,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "opcode": 7,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "Bd556n652CtD5JXkFAjsi5aPLiQjdy25a2vG63wXatWD",
+              "opcode": 21,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "HygC8p7KWSPSPUK61mrcS96yGfJjSvRsNQ3Rxez3Uc8T",
+              "opcode": 22,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "HygC8p7KWSPSPUK61mrcS96yGfJjSvRsNQ3Rxez3Uc8T",
+              "opcode": 18,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 1,
+              "mint_account": "DoiGHVfDKhqhTFVnM8rHJZZz6bor6kRUheeTvvPPaKYu",
+              "opcode": 12,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "4JW7fs4jWYyxDZDCGrzBuKUfM2FocUhzqhePhyzLH7NWhj5sJpHdT7S7XuVDJwtfxFngRNAjtPReenNamSmpZAqt",
+        "birth_supply_source_batch_sha256": "64b4336a4f8efcbe0ed5605fe7eb01e393ebcc31afce4596f31e1cb33324405b",
+        "birth_canonical_response_sha256": "7cac55bcfc1f7fce32504d61a5403445e4a333608016de3e1f2ba2570dceba6e",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": true,
+        "supply_uncertainty_fraction": "1111028936145/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "564025199609525315164069129359/100000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "2823262724629029/500000000",
+        "lower_fdv_floor_cents": 5640251,
+        "upper_fdv_ceil_cents": 5646526,
+        "wide_interval_runner_threshold_guard_cents": null,
+        "wide_interval_upper_below_runner_threshold": null
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.000002426362536363873",
+      "provider_peak_timestamp_ms": 1773348972080,
+      "provider_peak_pool_id": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+      "provider_reported_market_cap_usd": "2426.36",
+      "provider_response_sha256": "ea85d2e567c196b9d635bb112b777ef2645326425e2edadca31d3a3c9d50e4a2",
+      "provider_response_raw_json": "{\"highest_price\":0.000002426362536363873,\"highest_market_cap\":2426.36,\"timestamp\":1773348972080,\"pool_id\":\"EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump\"}",
+      "onchain_comparison_status": "outside_2pct",
+      "onchain_price_proof_sha256": "ca8d824289721c882909b6d032d420d0ae94448933a8f7dd89e457adb0344962",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "1696779744378854",
+        "birth_raw_upper": "2000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 70,
+        "current_mint_request_address": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA5v/sUTYHBgAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMSwZQQoOrqaz5ArvhmFyuPcU8ag7Pxz7tQs5tqwbT1PEwCmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAxLBlBCg6uprPkCu+GYXK49xTxqDs/HPu1Czm2rBtPU8DAAAAWFRDAwAAAFhUQ1AAAABodHRwczovL2lwZnMuaW8vaXBmcy9iYWZrcmVpYWd4dDc2cm1kd2w2eGo1Z3p5ajRvZWFveWR3a2o1ZjdwZ29vcGhkc3psbDZ6MmxsY3U0bQAAAAA=",
+          "raw_account_length": 404,
+          "raw_account_sha256": "29c7eef9e50e1e6ed7595a4c993374d38807766cf17625a031b7ef61e9617a6f",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "6e9774d515cfea8a3e4455c69ea98bb50b84c093bf727d5fefdf5cfd4eded456"
+            },
+            {
+              "type": 19,
+              "length": 166,
+              "payload_sha256": "83e7e278e991297fc6b16a2cbe43b2dcd5442ccf976159d5f37107307389eaa0"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "2DJbGRKQYZePjrRuz2gjy5AJSBTb4qcLVTuRjXG17zFfRSURYoLLd82zJqmdGVRiSBpoLLFB1cUfRit1JGxNvwYq",
+          "slot": 405992821,
+          "block_time_unix_s": 1773348970,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/03-getTransaction-batch.json",
+          "source_file_sha256": "64b4336a4f8efcbe0ed5605fe7eb01e393ebcc31afce4596f31e1cb33324405b",
+          "source_actual_object_canonical_sha256": "692a483ed5c69797957e471a570e904fc6725ee07e15f99f7855c4bf0d19ddb3",
+          "source_expected_object_sha256": "692a483ed5c69797957e471a570e904fc6725ee07e15f99f7855c4bf0d19ddb3",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "2000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 19,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 20,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 21,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 1,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 39,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 5,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "8ggqcVxQ8jAHXx84BiMeB1Ru9Z47t9X1dg1noKDG7JAh",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "8ggqcVxQ8jAHXx84BiMeB1Ru9Z47t9X1dg1noKDG7JAh",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 10,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 210,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 106
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 215,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "inner_index": 14,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 16,
+              "mint_account": "GvZbdkFKRPNTPLrb6NzuUWcXCR6zwXjbf5ephEAqAqtx",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 17,
+              "mint_account": "GvZbdkFKRPNTPLrb6NzuUWcXCR6zwXjbf5ephEAqAqtx",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 19,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 20,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 21,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "EEnuxT5QAYE3fp7UPvXCwfBii6THPF5SHinDUPpKpump",
+              "opcode": 21,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "AdeubgtJwaoA8ofofTQhuRevuNTfd3FuNCVRUBDKmx1r",
+              "opcode": 22,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "AdeubgtJwaoA8ofofTQhuRevuNTfd3FuNCVRUBDKmx1r",
+              "opcode": 18,
+              "outer_index": 3,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 1,
+              "mint_account": "8ggqcVxQ8jAHXx84BiMeB1Ru9Z47t9X1dg1noKDG7JAh",
+              "opcode": 12,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "2DJbGRKQYZePjrRuz2gjy5AJSBTb4qcLVTuRjXG17zFfRSURYoLLd82zJqmdGVRiSBpoLLFB1cUfRit1JGxNvwYq",
+        "birth_supply_source_batch_sha256": "64b4336a4f8efcbe0ed5605fe7eb01e393ebcc31afce4596f31e1cb33324405b",
+        "birth_canonical_response_sha256": "692a483ed5c69797957e471a570e904fc6725ee07e15f99f7855c4bf0d19ddb3",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": false,
+        "supply_uncertainty_fraction": "303220255621146/2000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "2058501402110960136070055370771/5000000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "2426362536363873/5000000000",
+        "lower_fdv_floor_cents": 411700,
+        "upper_fdv_ceil_cents": 485273,
+        "wide_interval_runner_threshold_guard_cents": 50000000,
+        "wide_interval_upper_below_runner_threshold": true
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    },
+    {
+      "mint": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+      "source": "solana-tracker-owner-accepted-discordance-supply-bound-v1",
+      "scope": "provider-recording-window-unknown",
+      "ath_at": null,
+      "owner_accepted_provider_onchain_discordance": true,
+      "provider_price_usd": "0.000037142556825626716",
+      "provider_peak_timestamp_ms": 1771703357014,
+      "provider_peak_pool_id": "DSwfLARtjSnihXJjyoudqZNqMkUrGkN1WMoTmvuSkdUM",
+      "provider_reported_market_cap_usd": "37140.31",
+      "provider_response_sha256": "534ff1097108bbade965bec90f93e27ab2f827ff6a85357b63c98a51bd12535e",
+      "provider_response_raw_json": "{\"highest_price\":0.000037142556825626716,\"highest_market_cap\":37140.31,\"timestamp\":1771703357014,\"pool_id\":\"DSwfLARtjSnihXJjyoudqZNqMkUrGkN1WMoTmvuSkdUM\"}",
+      "onchain_comparison_status": "outside_2pct",
+      "onchain_price_proof_sha256": "df02f83cc12a5dc0d87ee60bd6f24743dd05a2936277766ac912ed034d1a9ec2",
+      "supply": {
+        "decimals": 6,
+        "current_raw": "999939626643041",
+        "birth_raw_upper": "1000000000000000",
+        "current_snapshot_slot": 455686275,
+        "current_snapshot_finalized": true,
+        "current_mint_request_index": 78,
+        "current_mint_request_address": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+        "current_mint_account": {
+          "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "raw_account_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYS4+lnCNAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARIAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANBhZkP+MsYsuAzDKZNzyp90Py5tZONUdBFy/0YYCj3fEwC8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0GFmQ/4yxiy4DMMpk3PKn3Q/Lm1k41R0EXL/RhgKPd8TAAAAZWdnZGloc29iIEZSRUUgVkFNUAkAAABlZ2dkaWhzb2JQAAAAaHR0cHM6Ly9pcGZzLmlvL2lwZnMvYmFma3JlaWZkd2VpcHNyNzdvbGl0bXZseG5uNnhtdjNrcHFhN2ZpMjVnZTRuMnRobGFzYnk0eXJyanEAAAAA",
+          "raw_account_length": 426,
+          "raw_account_sha256": "86af1ce92429c9efa66edf676fe87ee87933f10cf2e21622caf487063737bb1d",
+          "extensions": [
+            {
+              "type": 18,
+              "length": 64,
+              "payload_sha256": "ba7c174d0a56b10d58f54102933df825842359517e876bb98a09de273d946d9f"
+            },
+            {
+              "type": 19,
+              "length": 188,
+              "payload_sha256": "11964626eb03477ffe0c050546c30f12294f4066ef4c0e1f6204350f6c06468a"
+            }
+          ],
+          "mint_authority_option_tag": 0,
+          "freeze_authority_option_tag": 0,
+          "initialized": true
+        },
+        "birth_receipt": {
+          "signature": "4nTmZ9RUVNe62M4WCYmJJvPp7Mf5Mc3svu5fxVLKyrNgwUQyT1zM7Fzf3CwdWXL3rXsfXomVpy4tAUpNtqbdV9Ga",
+          "slot": 401815048,
+          "block_time_unix_s": 1771703332,
+          "source_path": ".scout-data/diagnostics/solana-current-mint-audit-2026-10-11/raw/03-getTransaction-batch.json",
+          "source_file_sha256": "64b4336a4f8efcbe0ed5605fe7eb01e393ebcc31afce4596f31e1cb33324405b",
+          "source_actual_object_canonical_sha256": "efc9e3aa54a7b28075f0b29f77903df7f57dc49205185b0c3b31518eec1a8c35",
+          "source_expected_object_sha256": "efc9e3aa54a7b28075f0b29f77903df7f57dc49205185b0c3b31518eec1a8c35",
+          "source_object_hash_match": true,
+          "mintto_sum_raw": "1000000000000000",
+          "mintto_sum_matches_join": true,
+          "initialize_mint_instructions": [
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            }
+          ],
+          "mintto_instructions": [
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            }
+          ],
+          "mint_authority_revocations": [
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            }
+          ],
+          "supply_instructions_decoded": [
+            {
+              "inner_index": 1,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "opcode": 39,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 66
+            },
+            {
+              "initialize_mint_target_match": true,
+              "initialized_decimals": 6,
+              "inner_index": 2,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "opcode": 20,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 35
+            },
+            {
+              "inner_index": 5,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "opcode": 21,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 7,
+              "mint_account": "6Cwv31JK9R6jjoDjfSvxHZzG4QP3trcCYx1BgCYDXwU7",
+              "opcode": 22,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 8,
+              "mint_account": "6Cwv31JK9R6jjoDjfSvxHZzG4QP3trcCYx1BgCYDXwU7",
+              "opcode": 18,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 10,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "opcode": 210,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 128
+            },
+            {
+              "inner_index": 11,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "opcode": 215,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 40
+            },
+            {
+              "amount_raw": "1000000000000000",
+              "decimals": null,
+              "inner_index": 12,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "opcode": 7,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 9
+            },
+            {
+              "authority_type": 0,
+              "inner_index": 13,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "new_authority_option": 0,
+              "opcode": 6,
+              "outer_index": 2,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "target_mint_match": true,
+              "wire_len": 3
+            },
+            {
+              "inner_index": 0,
+              "mint_account": "F2RwcxcLwaKpnFbNu8RNdN8cPUvs8tEt5JkQSvXipump",
+              "opcode": 21,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 3
+            },
+            {
+              "inner_index": 2,
+              "mint_account": "DzXtAmEPe87NRq63SP7o7KKbcweLYPFWF4kbb1YkkgZ1",
+              "opcode": 22,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 1
+            },
+            {
+              "inner_index": 3,
+              "mint_account": "DzXtAmEPe87NRq63SP7o7KKbcweLYPFWF4kbb1YkkgZ1",
+              "opcode": 18,
+              "outer_index": 4,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 33
+            },
+            {
+              "inner_index": 1,
+              "mint_account": "6Cwv31JK9R6jjoDjfSvxHZzG4QP3trcCYx1BgCYDXwU7",
+              "opcode": 12,
+              "outer_index": 5,
+              "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+              "wire_len": 10
+            }
+          ],
+          "all_target_mintto_valid_amounts": true,
+          "initialize_decimals_match": true,
+          "revocation_present": true
+        },
+        "birth_receipt_signature": "4nTmZ9RUVNe62M4WCYmJJvPp7Mf5Mc3svu5fxVLKyrNgwUQyT1zM7Fzf3CwdWXL3rXsfXomVpy4tAUpNtqbdV9Ga",
+        "birth_supply_source_batch_sha256": "64b4336a4f8efcbe0ed5605fe7eb01e393ebcc31afce4596f31e1cb33324405b",
+        "birth_canonical_response_sha256": "efc9e3aa54a7b28075f0b29f77903df7f57dc49205185b0c3b31518eec1a8c35",
+        "monotone_nonincreasing_supply_observed": true,
+        "interval_width_under_two_percent": true,
+        "supply_uncertainty_fraction": "60373356959/1000000000000000",
+        "lower_fdv_exact_usd_cents_fraction": "9285078601196278124089011270839/2500000000000000000000000",
+        "upper_fdv_exact_usd_cents_fraction": "9285639206406679/2500000000",
+        "lower_fdv_floor_cents": 3714031,
+        "upper_fdv_ceil_cents": 3714256,
+        "wide_interval_runner_threshold_guard_cents": null,
+        "wide_interval_upper_below_runner_threshold": null
+      },
+      "quality_preserved": {
+        "holders": true,
+        "liquidity": true,
+        "runner_gates_unchanged": true
+      }
+    }
+  ]
+}

@@ -294,30 +294,48 @@ pub fn creator_from_lock(
     emitter: Address,
     log_index: u64,
 ) -> Option<Address> {
-    let lock = receipt
-        .logs
-        .iter()
+    let best = creator_from_lock_logs(receipt.logs.iter(), emitter, log_index);
+    best.or_else(|| creator_from_receipt(receipt, log_index))
+}
+
+fn creator_from_lock_logs<'a>(
+    logs: impl Iterator<Item = &'a RawEvmLog>,
+    emitter: Address,
+    log_index: u64,
+) -> Option<Address> {
+    let lock = logs
         .filter(|l| {
             l.address == emitter
                 && l.topics.first() == Some(&DOPPLER_LOCK_TOPIC0)
                 && l.log_index > log_index
         })
-        .min_by_key(|l| l.log_index);
-    let best = lock.and_then(|l| {
-        let start = word_usize(l, 0)?.checked_div(32)?;
-        let n = word_usize(l, start)?;
-        (0..n.min(64))
-            .filter_map(|i| {
-                let at = start.checked_add(1)?.checked_add(i.checked_mul(2)?)?;
-                let who = data_address(l, at)?;
-                let shares: [u8; 16] = word(l, at.checked_add(1)?)?.get(16..)?.try_into().ok()?;
-                Some((u128::from_be_bytes(shares), who))
-            })
-            .filter(|(_, who)| *who != DOPPLER_PROTOCOL_BENEFICIARY)
-            .max()
-            .map(|(_, who)| who)
-    });
-    best.or_else(|| creator_from_receipt(receipt, log_index))
+        .min_by_key(|l| l.log_index)?;
+    let start = word_usize(lock, 0)?.checked_div(32)?;
+    let n = word_usize(lock, start)?;
+    (0..n.min(64))
+        .filter_map(|i| {
+            let at = start.checked_add(1)?.checked_add(i.checked_mul(2)?)?;
+            let who = data_address(lock, at)?;
+            let shares: [u8; 16] = word(lock, at.checked_add(1)?)?.get(16..)?.try_into().ok()?;
+            Some((u128::from_be_bytes(shares), who))
+        })
+        .filter(|(_, who)| *who != DOPPLER_PROTOCOL_BENEFICIARY)
+        .max()
+        .map(|(_, who)| who)
+}
+
+fn companion_locks_by_transaction(logs: &[RawEvmLog]) -> BTreeMap<(u64, u64), Vec<&RawEvmLog>> {
+    let mut by_transaction = BTreeMap::new();
+    for log in logs
+        .iter()
+        .filter(|l| l.topics.first() == Some(&DOPPLER_LOCK_TOPIC0))
+    {
+        by_transaction
+            .entry((log.block_number, log.transaction_index))
+            .or_insert_with(Vec::new)
+            .push(log);
+    }
+    by_transaction
 }
 
 /// The final recipient of the Flaunch position NFT (`tokenId`, word 2 of the
@@ -754,15 +772,31 @@ pub async fn ingest_range(
     if from > to {
         return Ok(report);
     }
+    let lock_fast_path = src.creator == CreatorRule::LockBeneficiary;
     let filter = LogFilter {
         addresses: src.emitters.to_vec(),
-        topics: [Some(vec![src.topic0]), None, None, None],
+        topics: [
+            Some(if lock_fast_path {
+                vec![src.topic0, DOPPLER_LOCK_TOPIC0]
+            } else {
+                vec![src.topic0]
+            }),
+            None,
+            None,
+            None,
+        ],
     };
     let out = rpc.get_logs(&filter, from, to).await?;
-    report.logs = out.logs.len();
+    report.logs = out
+        .logs
+        .iter()
+        .filter(|l| l.topics.first() == Some(&src.topic0))
+        .count();
+    let companion_locks = lock_fast_path.then(|| companion_locks_by_transaction(&out.logs));
     let decoded: Vec<(&RawEvmLog, DecodedFact)> = out
         .logs
         .iter()
+        .filter(|l| l.topics.first() == Some(&src.topic0))
         .filter_map(|l| (src.decode)(l).map(|f| (l, f)))
         .collect();
     report.undecodable = report.logs - decoded.len();
@@ -797,7 +831,7 @@ pub async fn ingest_range(
     let block_i64 = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
     report.inserted = match src.kind {
         FactKind::Launch => {
-            // creators named only by the transaction (Doppler): one receipt each
+            // Companion Locks resolve Doppler creators; unresolved rows use receipts.
             let mut from_tx: BTreeMap<(u64, u64), Address> = BTreeMap::new();
             if src.creator != CreatorRule::Event {
                 // the NFT rule always looks (the event may name the zap)
@@ -805,23 +839,36 @@ pub async fn ingest_range(
                     |f: &DecodedFact| f.party.is_none() || src.creator == CreatorRule::PositionNft;
                 let mut wanted: Vec<(&RawEvmLog, B256)> = Vec::new();
                 for (l, _) in decoded.iter().filter(|(_, f)| needs(f)) {
-                    if let Some(h) = out.tx_hashes.get(&(l.block_number, l.transaction_index)) {
-                        wanted.push((l, *h));
+                    let Some(h) = out.tx_hashes.get(&(l.block_number, l.transaction_index)) else {
+                        continue;
+                    };
+                    if let Some(c) = companion_locks
+                        .as_ref()
+                        .and_then(|by_tx| by_tx.get(&(l.block_number, l.transaction_index)))
+                        .and_then(|locks| {
+                            creator_from_lock_logs(locks.iter().copied(), l.address, l.log_index)
+                        })
+                    {
+                        from_tx.insert((l.block_number, l.log_index), c);
+                        continue;
                     }
+                    wanted.push((l, *h));
                 }
                 let hashes: Vec<B256> = wanted.iter().map(|(_, h)| *h).collect();
-                let receipts = rpc.receipts_by_hashes(&hashes).await?;
-                for ((l, _), r) in wanted.iter().zip(&receipts) {
-                    let c = match src.creator {
-                        CreatorRule::Event => None,
-                        CreatorRule::Sender => creator_from_receipt(r, l.log_index),
-                        CreatorRule::LockBeneficiary => {
-                            creator_from_lock(r, l.address, l.log_index)
+                if !hashes.is_empty() {
+                    let receipts = rpc.receipts_by_hashes(&hashes).await?;
+                    for ((l, _), r) in wanted.iter().zip(&receipts) {
+                        let c = match src.creator {
+                            CreatorRule::LockBeneficiary => {
+                                creator_from_lock(r, l.address, l.log_index)
+                            }
+                            CreatorRule::Sender => creator_from_receipt(r, l.log_index),
+                            CreatorRule::PositionNft => creator_from_position_nft(r, l),
+                            CreatorRule::Event => None,
+                        };
+                        if let Some(c) = c {
+                            from_tx.insert((l.block_number, l.log_index), c);
                         }
-                        CreatorRule::PositionNft => creator_from_position_nft(r, l),
-                    };
-                    if let Some(c) = c {
-                        from_tx.insert((l.block_number, l.log_index), c);
                     }
                 }
             }
@@ -982,6 +1029,14 @@ mod tests {
             creator_from_lock(&r, BANKR_INITIALIZER_BASE, 2),
             Some(sender)
         );
+        let malformed = mk(BANKR_INITIALIZER_BASE, vec![DOPPLER_LOCK_TOPIC0], vec![], 3);
+        let valid_later = lock(&[(user, 100)], 4);
+        let r = receipt(vec![valid_later, malformed]);
+        assert_eq!(
+            creator_from_lock(&r, BANKR_INITIALIZER_BASE, 2),
+            Some(sender),
+            "a malformed first Lock retains receipt-sender fallback"
+        );
         // a Lock of another emitter does not count
         assert_eq!(
             creator_from_lock(&r, NOICE_INITIALIZER_BASE, 2),
@@ -1020,6 +1075,421 @@ mod tests {
             None,
             "placeholder = no dev"
         );
+    }
+
+    #[test]
+    fn companion_lock_matching_is_transaction_scoped_and_ordered() {
+        let word = |v: u128| B256::from(alloy_primitives::U256::from(v)).0;
+        let (user_a, user_b) = (
+            address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        let log =
+            |tx: u64, index: u64, emitter: Address, topics: Vec<B256>, data: Vec<[u8; 32]>| {
+                RawEvmLog {
+                    address: emitter,
+                    topics,
+                    data: data.concat().into(),
+                    block_number: 10,
+                    transaction_index: tx,
+                    log_index: index,
+                }
+            };
+        let lock = |tx: u64, index: u64, emitter: Address, beneficiary: Address| {
+            log(
+                tx,
+                index,
+                emitter,
+                vec![DOPPLER_LOCK_TOPIC0],
+                vec![
+                    word(32),
+                    word(1),
+                    B256::left_padding_from(beneficiary.as_slice()).0,
+                    word(7),
+                ],
+            )
+        };
+        let create_first = log(
+            0,
+            2,
+            BANKR_INITIALIZER_BASE,
+            vec![DOPPLER_V4_CREATE_TOPIC0],
+            vec![],
+        );
+        let create_second = log(
+            0,
+            5,
+            BANKR_INITIALIZER_BASE,
+            vec![DOPPLER_V4_CREATE_TOPIC0],
+            vec![],
+        );
+        // Deliberately out of log order; another transaction and another
+        // emitter have tempting earlier locks but cannot be attributed.
+        let logs = vec![
+            lock(0, 8, BANKR_INITIALIZER_BASE, user_a),
+            lock(1, 3, BANKR_INITIALIZER_BASE, user_a),
+            lock(0, 4, BANKR_INITIALIZER_BASE, user_b),
+            lock(0, 3, NOICE_INITIALIZER_BASE, user_a),
+        ];
+        let by_transaction = companion_locks_by_transaction(&logs);
+        assert_eq!(
+            creator_from_lock_logs(
+                by_transaction.get(&(10, 0)).unwrap().iter().copied(),
+                create_first.address,
+                create_first.log_index
+            ),
+            Some(user_b)
+        );
+        assert_eq!(
+            creator_from_lock_logs(
+                by_transaction.get(&(10, 0)).unwrap().iter().copied(),
+                create_second.address,
+                create_second.log_index
+            ),
+            Some(user_a)
+        );
+
+        let sender = address!("cccccccccccccccccccccccccccccccccccccccc");
+        let receipt = EvmReceiptInfo {
+            tx_hash: B256::ZERO,
+            block_number: 10,
+            transaction_index: 0,
+            status: scout_core::EvmTxStatus::Success,
+            gas_used: 0,
+            effective_gas_price: None,
+            l1_fee: None,
+            logs: vec![lock(0, 4, BANKR_INITIALIZER_BASE, user_a)],
+            from: Some(sender),
+            to: Some(BANKR_INITIALIZER_BASE),
+        };
+        let missing_query_locks = companion_locks_by_transaction(&[]);
+        assert!(!missing_query_locks.contains_key(&(10, 0)));
+        assert_eq!(
+            creator_from_lock(&receipt, BANKR_INITIALIZER_BASE, create_first.log_index),
+            Some(user_a),
+            "receipt fallback can still find a Lock missing from getLogs"
+        );
+        assert_eq!(
+            creator_from_receipt(&receipt, create_first.log_index),
+            Some(sender),
+            "the sender alone would lose the receipt's valid Lock attribution"
+        );
+    }
+
+    #[test]
+    fn noice_companion_fixture_matches_receipt_lock_bytes_and_creator() {
+        fn raw_log(value: &serde_json::Value) -> RawEvmLog {
+            let hex_u64 = |field: &str| {
+                u64::from_str_radix(value[field].as_str().unwrap().trim_start_matches("0x"), 16)
+                    .unwrap()
+            };
+            RawEvmLog {
+                address: value["address"].as_str().unwrap().parse().unwrap(),
+                topics: value["topics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|topic| topic.as_str().unwrap().parse().unwrap())
+                    .collect(),
+                data: alloy_primitives::hex::decode(value["data"].as_str().unwrap())
+                    .unwrap()
+                    .into(),
+                block_number: hex_u64("blockNumber"),
+                transaction_index: hex_u64("transactionIndex"),
+                log_index: hex_u64("logIndex"),
+            }
+        }
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/noice-lock-companions-2026-10-11.json"
+        ))
+        .unwrap();
+        let emitter: Address = fixture
+            .get("initializer")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        for tx in fixture.get("transactions").unwrap().as_array().unwrap() {
+            let create = tx
+                .get("query_logs")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(raw_log)
+                .find(|l| l.topics.first() == Some(&DOPPLER_V4_CREATE_TOPIC0))
+                .unwrap();
+            for companion in tx.get("create_companions").unwrap().as_array().unwrap() {
+                let query_lock = raw_log(companion.get("query_first_lock").unwrap());
+                let receipt_lock = raw_log(companion.get("receipt_first_lock").unwrap());
+                assert_eq!(query_lock, receipt_lock);
+                assert_eq!(
+                    creator_from_lock_logs([&query_lock].into_iter(), emitter, create.log_index),
+                    Some(
+                        companion
+                            .get("query_beneficiary")
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .parse()
+                            .unwrap()
+                    )
+                );
+                assert_eq!(
+                    creator_from_lock_logs([&receipt_lock].into_iter(), emitter, create.log_index),
+                    Some(
+                        companion
+                            .get("receipt_beneficiary")
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .parse()
+                            .unwrap()
+                    )
+                );
+            }
+        }
+    }
+
+    fn fixture_doppler_launch(log: &RawEvmLog) -> Option<DecodedFact> {
+        let mut fact = doppler_v4_launch(log)?;
+        fact.timestamp = Some(1);
+        Some(fact)
+    }
+
+    #[tokio::test]
+    async fn ingest_uses_companions_without_receipts_and_keeps_receipt_fallback() {
+        use scout_evm::BASE;
+        use scout_rpc::{RpcClient, RpcEndpoint};
+        use serde_json::json;
+        use wiremock::matchers::{body_partial_json, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let Ok(url) = std::env::var("SCOUT_TEST_DATABASE_URL") else {
+            eprintln!("SCOUT_TEST_DATABASE_URL not set: LockBeneficiary ingest test skipped");
+            return;
+        };
+        assert!(
+            url.split('?')
+                .next()
+                .is_some_and(|path| path.ends_with("/scout_test")),
+            "SCOUT_TEST_DATABASE_URL must use /scout_test"
+        );
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/noice-lock-companions-2026-10-11.json"
+        ))
+        .unwrap();
+        let transactions = fixture.get("transactions").unwrap().as_array().unwrap();
+        let query_logs: Vec<_> = transactions
+            .iter()
+            .flat_map(|tx| {
+                tx.get("query_logs")
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned()
+            })
+            .collect();
+        let first_tx = transactions.first().unwrap();
+        let first_create = first_tx
+            .get("query_logs")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|log| {
+                log.get("topics")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|topics| topics.first())
+                    .and_then(serde_json::Value::as_str)
+                    == Some(format!("{DOPPLER_V4_CREATE_TOPIC0:#x}").as_str())
+            })
+            .unwrap()
+            .clone();
+        let expected_creator = first_tx
+            .get("create_companions")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .first()
+            .unwrap()
+            .get("query_beneficiary")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let db = DevDb::connect(&url, 2).await.unwrap();
+        db.migrate().await.unwrap();
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let source_key = "test:noice-lock-fastpath:ingest";
+        sqlx::query("DELETE FROM launches WHERE source = $1")
+            .bind(source_key)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let src = EvmSource {
+            key: source_key,
+            chain: "test-noice-lock-fastpath",
+            launchpad: "noice-test",
+            kind: FactKind::Launch,
+            emitters: &[NOICE_INITIALIZER_BASE],
+            topic0: DOPPLER_V4_CREATE_TOPIC0,
+            decode: fixture_doppler_launch,
+            creator: CreatorRule::LockBeneficiary,
+        };
+
+        let valid_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method":"eth_getLogs"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc":"2.0", "id":1, "result":query_logs
+            })))
+            .mount(&valid_server)
+            .await;
+        let valid_rpc = EvmRpcClient::new(
+            RpcClient::new(RpcEndpoint::new(valid_server.uri()), 5_000, 1).unwrap(),
+            BASE,
+        );
+        let valid_report = ingest_range(&db, &valid_rpc, &src, 43_428_000, 43_429_000)
+            .await
+            .unwrap();
+        assert_eq!((valid_report.logs, valid_report.decoded), (2, 2));
+        assert_eq!(valid_report.inserted, 2);
+        let valid_calls = valid_server.received_requests().await.unwrap();
+        assert_eq!(valid_calls.len(), 1, "valid companions require no receipts");
+        let rows = sqlx::query("SELECT creator FROM launches WHERE source = $1")
+            .bind(source_key)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| {
+            use sqlx::Row;
+            row.get::<String, _>("creator") == expected_creator
+        }));
+
+        sqlx::query("DELETE FROM launches WHERE source = $1")
+            .bind(source_key)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let fallback_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method":"eth_getLogs"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc":"2.0", "id":1, "result":[first_create]
+            })))
+            .mount(&fallback_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method":"eth_getTransactionReceipt"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc":"2.0", "id":1,
+                "result":first_tx.get("receipt").unwrap()
+            })))
+            .mount(&fallback_server)
+            .await;
+        let fallback_rpc = EvmRpcClient::new(
+            RpcClient::new(RpcEndpoint::new(fallback_server.uri()), 5_000, 1).unwrap(),
+            BASE,
+        );
+        let fallback_report = ingest_range(&db, &fallback_rpc, &src, 43_428_000, 43_429_000)
+            .await
+            .unwrap();
+        assert_eq!((fallback_report.logs, fallback_report.decoded), (1, 1));
+        assert_eq!(fallback_report.inserted, 1);
+        let fallback_calls = fallback_server.received_requests().await.unwrap();
+        assert_eq!(fallback_calls.len(), 2, "one missing Lock uses one receipt");
+        let fallback_creator: String =
+            sqlx::query_scalar("SELECT creator FROM launches WHERE source = $1")
+                .bind(source_key)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(fallback_creator, expected_creator);
+        sqlx::query("DELETE FROM launches WHERE source = $1")
+            .bind(source_key)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn capped_lock_query_does_not_advance_its_test_database_cursor() {
+        use scout_evm::BASE;
+        use scout_rpc::RpcEndpoint;
+        use serde_json::json;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let Ok(url) = std::env::var("SCOUT_TEST_DATABASE_URL") else {
+            eprintln!("SCOUT_TEST_DATABASE_URL not set: cursor failure test skipped");
+            return;
+        };
+        assert!(
+            url.split('?')
+                .next()
+                .is_some_and(|path| path.ends_with("/scout_test")),
+            "SCOUT_TEST_DATABASE_URL must use /scout_test"
+        );
+
+        let db = DevDb::connect(&url, 2).await.unwrap();
+        db.migrate().await.unwrap();
+        let key = "test:lock-fastpath:query-cap";
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        sqlx::query("DELETE FROM cursors WHERE source = $1")
+            .bind(key)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"method":"eth_getLogs"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc":"2.0", "id":1,
+                "error":{"code":-32005,"message":"limit exceeded"}
+            })))
+            .mount(&server)
+            .await;
+        let rpc = EvmRpcClient::with_config(
+            scout_rpc::RpcClient::new(RpcEndpoint::new(server.uri()), 5_000, 1).unwrap(),
+            BASE,
+            scout_providers::EvmRpcConfig {
+                max_log_requests: Some(1),
+                ..Default::default()
+            },
+        );
+        let src = EvmSource {
+            key,
+            chain: "base",
+            launchpad: "bankr-test",
+            kind: FactKind::Launch,
+            emitters: &[BANKR_INITIALIZER_BASE],
+            topic0: DOPPLER_V4_CREATE_TOPIC0,
+            decode: doppler_v4_launch,
+            creator: CreatorRule::LockBeneficiary,
+        };
+        let result = ingest_source(&db, &rpc, &src, 2, 0, 1, 1).await;
+        assert!(matches!(
+            result,
+            Err(IngestError::Rpc(EvmSourceError::TooManyLogRequests {
+                limit: 1
+            }))
+        ));
+        assert_eq!(db.cursor(key).await.unwrap(), None);
+        sqlx::query("DELETE FROM cursors WHERE source = $1")
+            .bind(key)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     #[test]

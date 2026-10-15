@@ -8,7 +8,498 @@
     clippy::indexing_slicing
 )]
 
-use scout_devdb::{AthObservation, DevDb, Launch, Migration};
+use scout_devdb::{
+    AthObservation, AthPriceObservation, AthPriceWindow, DevDb, Launch, Migration,
+    ProviderRequestBudget,
+};
+use sqlx::Row;
+
+#[tokio::test]
+async fn price_windows_preserve_unknown_fdv_and_replay_without_network_identity_collisions() {
+    let Some(db) = db().await else { return };
+    let chain = format!("price-window-{}", std::process::id());
+    db.insert_launches(&[
+        launch(&chain, "missing", "dev", 100),
+        launch(&chain, "known", "dev", 200),
+    ])
+    .await
+    .unwrap();
+    db.upsert_ath(&[
+        AthObservation {
+            chain: chain.clone(),
+            token: "missing".into(),
+            ath_fdv_cents: 0,
+            ath_at: None,
+            source: "codex-missing".into(),
+            observed_at: 20,
+            holders: None,
+            liquidity_cents: None,
+        },
+        AthObservation {
+            chain: chain.clone(),
+            token: "known".into(),
+            ath_fdv_cents: 123_456,
+            ath_at: Some(200),
+            source: "codex".into(),
+            observed_at: 20,
+            holders: Some(100),
+            liquidity_cents: None,
+        },
+    ])
+    .await
+    .unwrap();
+    let window = AthPriceWindow {
+        chain: chain.clone(),
+        token: "missing".into(),
+        source: "birdeye-test".into(),
+        window_from: 0,
+        window_to: 86_400,
+        max_price_usd: Some("0.00000000000000000008200605879384362".into()),
+        high_candle_at: Some(0),
+        first_candle_at: Some(0),
+        last_candle_at: Some(0),
+        returned_candles: 1,
+        observed_at: 30,
+    };
+    assert_eq!(db.upsert_ath_price_window(&window).await.unwrap(), 1);
+    assert_eq!(db.upsert_ath_price_window(&window).await.unwrap(), 1);
+    assert!(
+        db.has_ath_price_window(&chain, "missing", "birdeye-test", 0, 86_400)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !db.has_ath_price_window("different-chain", "missing", "birdeye-test", 0, 86_400)
+            .await
+            .unwrap()
+    );
+    let mut old = window.clone();
+    old.observed_at = 29;
+    assert_eq!(db.upsert_ath_price_window(&old).await.unwrap(), 0);
+    let mut empty = window;
+    empty.token = "known".into();
+    empty.max_price_usd = None;
+    empty.high_candle_at = None;
+    empty.first_candle_at = None;
+    empty.last_candle_at = None;
+    empty.returned_candles = 0;
+    db.upsert_ath_price_window(&empty).await.unwrap();
+    let rows = db.dev_launches(Some(&chain), 0).await.unwrap();
+    assert_eq!(
+        rows.iter()
+            .find(|r| r.token == "missing")
+            .unwrap()
+            .ath_fdv_cents,
+        None
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|r| r.token == "known")
+            .unwrap()
+            .ath_fdv_cents,
+        Some(123_456)
+    );
+}
+
+#[tokio::test]
+async fn provider_ath_price_observations_preserve_nulls_and_never_touch_ath() {
+    let Some(db) = db().await else { return };
+    let chain = format!("tracker-price-{}", std::process::id());
+    let row = AthPriceObservation {
+        chain: chain.clone(),
+        token: "mint-a".into(),
+        source: "solana-tracker-ath-test".into(),
+        highest_price_usd: Some("0.00000000000000000012345678901234567890".into()),
+        timestamp_ms: Some(1_791_672_254_212),
+        pool_id: Some("4QnxqajHAqiKuTZjfsfkBA8qSxb7AY4p8axVZeNmVNuq".into()),
+        highest_market_cap_usd: None,
+        observed_at: 100,
+        response_sha256: "a".repeat(64),
+        scope: "provider-recording-window-unknown".into(),
+    };
+    db.insert_launches(&[launch(&chain, "mint-a", "dev", 1)])
+        .await
+        .unwrap();
+    db.insert_migrations(&[Migration {
+        chain: chain.clone(),
+        token: "mint-a".into(),
+        launchpad: "test".into(),
+        migrated_block: 1,
+        migrated_at: 1,
+        tx_hash: "migration".into(),
+        pool: None,
+        source: "test".into(),
+    }])
+    .await
+    .unwrap();
+    assert_eq!(
+        db.ath_candidates(&chain, 100, 10).await.unwrap(),
+        ["mint-a"]
+    );
+    assert_eq!(db.upsert_ath_price_observation(&row).await.unwrap(), 1);
+    assert!(
+        db.has_ath_price_observation(&chain, "mint-a", "solana-tracker-ath-test")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !db.has_ath_price_observation("different-chain", "mint-a", "solana-tracker-ath-test")
+            .await
+            .unwrap()
+    );
+
+    let saved = db
+        .ath_price_observation(&chain, "mint-a", "solana-tracker-ath-test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.highest_price_usd, row.highest_price_usd);
+    assert_eq!(saved.highest_market_cap_usd, None);
+    assert_eq!(saved.timestamp_ms, row.timestamp_ms);
+    assert_eq!(saved.pool_id, row.pool_id);
+    assert_eq!(saved.scope, "provider-recording-window-unknown");
+    assert_eq!(
+        db.ath_candidates(&chain, 100, 10).await.unwrap(),
+        ["mint-a"]
+    );
+}
+
+#[tokio::test]
+async fn application_quota_is_atomic_persistent_and_shared_across_key_rotation() {
+    let Some(db) = db().await else { return };
+    let group = format!("test-owner-group-{}", std::process::id());
+    let provider = "solana-tracker-test";
+    let period = "2026-10";
+    let fingerprints = ["a".repeat(64), "b".repeat(64)];
+    let calls = (0..4).map(|i| {
+        let db = db.clone();
+        let group = group.clone();
+        let fingerprint = fingerprints[i % fingerprints.len()].clone();
+        async move {
+            db.reserve_provider_request_budget(&ProviderRequestBudget {
+                provider: provider.into(),
+                quota_group: group,
+                billing_period: period.into(),
+                application_limit: 4,
+                prior_usage: 1,
+                key_fingerprint: fingerprint,
+                now: 100,
+            })
+            .await
+        }
+    });
+    let results = futures::future::join_all(calls).await;
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 3);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(
+                result,
+                Err(scout_devdb::DevDbError::ProviderRequestBudgetExhausted)
+            ))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        db.reserve_provider_request_budget(&ProviderRequestBudget {
+            provider: provider.into(),
+            quota_group: group.clone(),
+            billing_period: period.into(),
+            application_limit: 4,
+            prior_usage: 1,
+            key_fingerprint: "a".into(),
+            now: 100,
+        })
+        .await,
+        Err(scout_devdb::DevDbError::InvalidProviderRequestBudget)
+    ));
+    assert!(matches!(
+        db.reserve_provider_request_budget(&ProviderRequestBudget {
+            provider: provider.into(),
+            quota_group: group,
+            billing_period: period.into(),
+            application_limit: 5,
+            prior_usage: 1,
+            key_fingerprint: fingerprints[0].clone(),
+            now: 101,
+        })
+        .await,
+        Err(scout_devdb::DevDbError::ProviderRequestBudgetConfigMismatch)
+    ));
+}
+
+#[tokio::test]
+async fn validated_fallback_ath_only_fills_absent_or_unknown_rows() {
+    let Some(db) = db().await else { return };
+    let chain = format!("fallback-{}", std::process::id());
+    let other_chain = format!("fallback-other-{}", std::process::id());
+    db.insert_launches(&[
+        launch(&chain, "absent", "absent-dev", 1),
+        launch(&chain, "unknown", "unknown-dev", 2),
+        launch(&chain, "zero", "zero-dev", 3),
+        launch(&chain, "positive", "positive-dev", 4),
+        launch(&chain, "same-token", "base-dev", 5),
+        launch(&other_chain, "same-token", "other-dev", 5),
+    ])
+    .await
+    .unwrap();
+    db.upsert_ath(&[
+        AthObservation {
+            chain: chain.clone(),
+            token: "unknown".into(),
+            ath_fdv_cents: 0,
+            ath_at: None,
+            source: "codex-missing".into(),
+            observed_at: 20,
+            holders: Some(50),
+            liquidity_cents: Some(90_000),
+        },
+        AthObservation {
+            chain: chain.clone(),
+            token: "zero".into(),
+            ath_fdv_cents: 0,
+            ath_at: Some(10),
+            source: "codex".into(),
+            observed_at: 20,
+            holders: Some(100),
+            liquidity_cents: None,
+        },
+        AthObservation {
+            chain: chain.clone(),
+            token: "positive".into(),
+            ath_fdv_cents: 12_345,
+            ath_at: Some(10),
+            source: "codex".into(),
+            observed_at: 20,
+            holders: Some(100),
+            liquidity_cents: None,
+        },
+    ])
+    .await
+    .unwrap();
+    let fallback = |chain: &str, token: &str, cents: i64, observed_at: i64| AthObservation {
+        chain: chain.into(),
+        token: token.into(),
+        ath_fdv_cents: cents,
+        ath_at: None,
+        source: "birdeye-window-supply-validated-v1".into(),
+        observed_at,
+        holders: None,
+        liquidity_cents: Some(1_000),
+    };
+
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "absent", 51_104_374_107, 21))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "unknown", 777, 21))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "unknown", 999, 19))
+            .await
+            .unwrap(),
+        0,
+        "an older fallback cannot replace a newer observation"
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "zero", 888, 21))
+            .await
+            .unwrap(),
+        0,
+        "a known Codex zero is protected"
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "positive", 888, 21))
+            .await
+            .unwrap(),
+        0,
+        "a known positive Codex value is protected"
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&chain, "same-token", 111, 21))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.upsert_missing_ath(&fallback(&other_chain, "same-token", 222, 21))
+            .await
+            .unwrap(),
+        1,
+        "the same token key on another chain has independent state"
+    );
+
+    let rows = db.dev_launches(None, 0).await.unwrap();
+    let row = |chain: &str, token: &str| {
+        rows.iter()
+            .find(|row| row.chain == chain && row.token == token)
+            .unwrap()
+    };
+    assert_eq!(row(&chain, "absent").ath_fdv_cents, Some(51_104_374_107));
+    assert_eq!(row(&chain, "unknown").ath_fdv_cents, Some(777));
+    assert_eq!(row(&chain, "unknown").ath_holders, Some(50));
+    assert_eq!(row(&chain, "unknown").ath_max_liquidity_cents, Some(90_000));
+    assert_eq!(row(&chain, "zero").ath_fdv_cents, Some(0));
+    assert_eq!(row(&chain, "positive").ath_fdv_cents, Some(12_345));
+    assert_eq!(row(&chain, "same-token").ath_fdv_cents, Some(111));
+    assert_eq!(row(&other_chain, "same-token").ath_fdv_cents, Some(222));
+}
+
+#[tokio::test]
+async fn null_ath_refresh_preserves_known_values_and_original_provenance() {
+    let Some(db) = db().await else { return };
+    let chain = format!("ath-null-refresh-{}", std::process::id());
+    let observation = |token: &str,
+                       ath_fdv_cents: i64,
+                       ath_at: Option<i64>,
+                       source: &str,
+                       observed_at: i64,
+                       holders: Option<i64>,
+                       liquidity_cents: Option<i64>| AthObservation {
+        chain: chain.clone(),
+        token: token.into(),
+        ath_fdv_cents,
+        ath_at,
+        source: source.into(),
+        observed_at,
+        holders,
+        liquidity_cents,
+    };
+    db.upsert_ath(&[
+        observation("zero", 0, Some(110), "codex", 100, Some(10), Some(9_000)),
+        observation(
+            "positive",
+            12_345,
+            Some(120),
+            "codex",
+            100,
+            Some(20),
+            Some(1_000),
+        ),
+        observation(
+            "missing",
+            0,
+            None,
+            "codex-missing",
+            100,
+            Some(40),
+            Some(2_000),
+        ),
+    ])
+    .await
+    .unwrap();
+    db.upsert_missing_ath(&observation(
+        "validated",
+        51_104_374_107,
+        None,
+        "birdeye-window-supply-validated-v1",
+        100,
+        Some(30),
+        Some(3_000),
+    ))
+    .await
+    .unwrap();
+
+    let refreshes = [
+        observation("zero", 0, None, "codex-missing", 200, None, Some(500)),
+        observation(
+            "positive",
+            0,
+            None,
+            "codex-missing",
+            200,
+            Some(21),
+            Some(4_000),
+        ),
+        observation(
+            "validated",
+            0,
+            None,
+            "codex-missing",
+            200,
+            None,
+            Some(1_000),
+        ),
+        observation("missing", 0, None, "codex-missing", 200, None, None),
+    ];
+    assert_eq!(
+        db.upsert_ath(&refreshes).await.unwrap(),
+        u64::try_from(refreshes.len()).unwrap()
+    );
+    let stale: Vec<AthObservation> = refreshes
+        .iter()
+        .map(|row| {
+            let mut older = row.clone();
+            older.observed_at = 199;
+            older
+        })
+        .collect();
+    assert_eq!(db.upsert_ath(&stale).await.unwrap(), 0);
+
+    let url = std::env::var("SCOUT_TEST_DATABASE_URL").unwrap();
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    let rows = sqlx::query(
+        "SELECT token, ath_fdv_cents, ath_at, source, observed_at, holders, max_liquidity_cents
+         FROM ath WHERE chain = $1",
+    )
+    .bind(&chain)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let get = |token: &str| {
+        rows.iter()
+            .find(|row| row.get::<String, _>("token") == token)
+            .unwrap()
+    };
+    let zero = get("zero");
+    assert_eq!(zero.get::<i64, _>("ath_fdv_cents"), 0);
+    assert_eq!(zero.get::<Option<i64>, _>("ath_at"), Some(110));
+    assert_eq!(zero.get::<String, _>("source"), "codex");
+    assert_eq!(zero.get::<i64, _>("observed_at"), 200);
+    assert_eq!(zero.get::<Option<i64>, _>("holders"), Some(10));
+    assert_eq!(
+        zero.get::<Option<i64>, _>("max_liquidity_cents"),
+        Some(9_000)
+    );
+
+    let positive = get("positive");
+    assert_eq!(positive.get::<i64, _>("ath_fdv_cents"), 12_345);
+    assert_eq!(positive.get::<Option<i64>, _>("ath_at"), Some(120));
+    assert_eq!(positive.get::<String, _>("source"), "codex");
+    assert_eq!(positive.get::<i64, _>("observed_at"), 200);
+    assert_eq!(positive.get::<Option<i64>, _>("holders"), Some(21));
+    assert_eq!(
+        positive.get::<Option<i64>, _>("max_liquidity_cents"),
+        Some(4_000)
+    );
+
+    let validated = get("validated");
+    assert_eq!(validated.get::<i64, _>("ath_fdv_cents"), 51_104_374_107);
+    assert_eq!(validated.get::<Option<i64>, _>("ath_at"), None);
+    assert_eq!(
+        validated.get::<String, _>("source"),
+        "birdeye-window-supply-validated-v1"
+    );
+    assert_eq!(validated.get::<i64, _>("observed_at"), 200);
+    assert_eq!(validated.get::<Option<i64>, _>("holders"), Some(30));
+    assert_eq!(
+        validated.get::<Option<i64>, _>("max_liquidity_cents"),
+        Some(3_000)
+    );
+
+    let missing = get("missing");
+    assert_eq!(missing.get::<i64, _>("ath_fdv_cents"), 0);
+    assert_eq!(missing.get::<String, _>("source"), "codex-missing");
+    assert_eq!(missing.get::<i64, _>("observed_at"), 200);
+    assert_eq!(missing.get::<Option<i64>, _>("holders"), Some(40));
+    pool.close().await;
+}
 
 async fn db() -> Option<DevDb> {
     let Ok(url) = std::env::var("SCOUT_TEST_DATABASE_URL") else {
@@ -80,6 +571,30 @@ async fn facts_are_idempotent_and_joined_for_the_derivation() {
     // an older observation never overwrites a newer one
     assert_eq!(db.upsert_ath(&[ath(1, 5)]).await.unwrap(), 0);
     db.upsert_ath(&[ath(20_000_000, 20)]).await.unwrap();
+    db.upsert_ath(&[
+        AthObservation {
+            chain: chain.clone(),
+            token: "t2".into(),
+            ath_fdv_cents: 0,
+            ath_at: None,
+            source: "codex-missing".into(),
+            observed_at: 20,
+            holders: None,
+            liquidity_cents: None,
+        },
+        AthObservation {
+            chain: chain.clone(),
+            token: "t3".into(),
+            ath_fdv_cents: 0,
+            ath_at: None,
+            source: "codex".into(),
+            observed_at: 20,
+            holders: Some(0),
+            liquidity_cents: Some(0),
+        },
+    ])
+    .await
+    .unwrap();
 
     let got = db.dev_launches(Some(&chain), 0).await.unwrap();
     assert_eq!(got.len(), 3);
@@ -90,6 +605,10 @@ async fn facts_are_idempotent_and_joined_for_the_derivation() {
     );
     let t2 = got.iter().find(|r| r.token == "t2").unwrap();
     assert_eq!((t2.migrated_at, t2.ath_fdv_cents), (None, None));
+    assert_eq!(
+        got.iter().find(|r| r.token == "t3").unwrap().ath_fdv_cents,
+        Some(0)
+    );
     assert_eq!(
         db.dev_launches(Some(&chain), 250).await.unwrap().len(),
         1,
@@ -312,6 +831,101 @@ async fn ath_candidates_skip_one_off_creators_without_a_curve() {
         ["a", "b", "c"],
         "a one-off creator cannot have 3 runners"
     );
+}
+
+#[tokio::test]
+async fn ath_candidates_fill_stale_after_missing_and_keep_creator_threshold() {
+    let Some(db) = db().await else { return };
+    let chain = format!("ath-queue-{}", std::process::id());
+    let now = 1_000_000_000;
+    let day = 86_400;
+    let zora = |token: &str, creator: &str, at: i64| Launch {
+        launchpad: "zora".into(),
+        ..launch(&chain, token, creator, at)
+    };
+    let launches = [
+        zora("missing-old", "missing", now - 200 * day),
+        zora("missing-fresh-a", "missing", now - day),
+        zora("missing-fresh-b", "missing", now - 2 * day),
+        zora("stale-new", "stale", now - day),
+        zora("stale-old", "stale", now - 20 * day),
+        zora("stale-fresh", "stale", now - 40 * day),
+        zora("below-threshold-a", "two-launches", now),
+        zora("below-threshold-b", "two-launches", now),
+    ];
+    db.insert_launches(&launches).await.unwrap();
+    assert_eq!(
+        db.known_launch_tokens(&chain, &["missing-old".into(), "not-tracked".into()])
+            .await
+            .unwrap(),
+        ["missing-old"]
+    );
+    assert!(
+        db.known_launch_tokens(&chain, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        db.known_launch_tokens(&chain, &vec![String::new(); 201])
+            .await,
+        Err(scout_devdb::DevDbError::TokenLookupTooLarge(201))
+    ));
+    let observation = |token: &str, observed_at: i64| AthObservation {
+        chain: chain.clone(),
+        token: token.into(),
+        ath_fdv_cents: 1,
+        ath_at: Some(observed_at),
+        source: "test".into(),
+        observed_at,
+        holders: None,
+        liquidity_cents: None,
+    };
+    db.upsert_ath(&[
+        observation("missing-fresh-a", now),
+        observation("missing-fresh-b", now),
+        observation("stale-new", now - 2 * day),
+        observation("stale-old", now - 10 * day),
+        observation("stale-fresh", now),
+    ])
+    .await
+    .unwrap();
+
+    assert_eq!(
+        db.ath_candidates(&chain, now, 3).await.unwrap(),
+        ["missing-old", "stale-new", "stale-old"]
+    );
+}
+
+#[tokio::test]
+async fn shared_request_budget_reserves_atomically_and_is_opt_in() {
+    let Some(db) = db().await else { return };
+    let key = format!("codex-budget-test:{}", std::process::id());
+    assert_eq!(db.reserve_request_budget(&key, 10).await.unwrap(), None);
+    db.set_cursor(&key, "2", 11).await.unwrap();
+    let results = futures::future::join_all((0..4).map(|_| {
+        let db = db.clone();
+        let key = key.clone();
+        async move { db.reserve_request_budget(&key, 12).await }
+    }))
+    .await;
+    assert_eq!(
+        results.iter().filter(|r| matches!(r, Ok(Some(_)))).count(),
+        2
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, Err(scout_devdb::DevDbError::CodexRequestBudgetExhausted)))
+            .count(),
+        2
+    );
+    let remaining: std::collections::BTreeSet<i64> = results
+        .iter()
+        .filter_map(|result| result.as_ref().ok().and_then(|remaining| *remaining))
+        .collect();
+    assert_eq!(remaining, [0, 1].into_iter().collect());
+    assert_eq!(db.cursor(&key).await.unwrap().as_deref(), Some("0"));
 }
 
 #[tokio::test]

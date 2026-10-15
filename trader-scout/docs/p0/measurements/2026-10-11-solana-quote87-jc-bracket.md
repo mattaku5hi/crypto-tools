@@ -1,0 +1,11 @@
+# 87ea/WSOL quote bracket for JC ATH time (2026-10-11)
+
+This addendum version-decodes the saved PumpSwap events against the current official IDL pinned at `2293f9a66c654e9fe82dc5e8f4618538f24bb35f`; it leaves the earlier RPC manifest and report unchanged. One authorized Helius `getTransaction` request added the finalized 22:44:07Z trade (7.212s before the Tracker JC timestamp). The existing successful multi-hop trade at 22:44:16Z is 1.788s after it. Both include a Pump AMM `SellEvent` from 87ea/WSOL pool `CF3…`, with event reserves matching the pre-transaction vault balances.
+
+The 22:44:07 trade’s net execution is `$0.00203341–$0.00203470` per 87ea; the effective-reserve marginal ratio gives `$0.00205197–$0.00205327`. At 22:44:16, the multi-hop’s 87ea→WSOL leg returns `82,398,829` lamports for `4,432,874,524` raw 87ea, giving `$0.00205046–$0.00205176` per 87ea. Its preceding JC→87ea leg outputs exactly the same 87ea amount that the next leg consumes. The full JC→87ea→WSOL route therefore realizes `$0.000234338–$0.000234486` per JC in that successful transaction.
+
+The event fields reconcile fees: `quote_amount_out_without_lp_fee - protocol_fee - coin_creator_fee = user_quote_amount_out`. For v2 pool events, the quote-vault decrease equals user proceeds plus `buyback_fee`; protocol and creator fees remain in the pool under the pinned v2 docs. The earlier note’s vault-delta ratios included the paid buyback amount, so use the event `user_quote_amount_out` intervals above for trader execution proceeds.
+
+At 22:45:54Z, 6.967s after the cited 81kia Tracker time, a `sell_v2` event sells 793.1 million 87ea against roughly 30.845 million pre-trade pool base tokens. Its `$0.000075703–$0.000075806` average execution differs sharply from the approximately `$0.00204058–$0.00204336` pre-trade effective-reserve marginal ratio because of the trade’s size. This is not a time-aligned spot mark for the earlier ATH. The cached Kraken SOL/USD candle supplies only the dated minute high/low interval, not an exact tick.
+
+Raw receipts, event fields, exact reserve and fee arithmetic, the one-request supplement, and source-file hashes are preserved in `.scout-data/diagnostics/solana-quote87-pool-discovery-2026-10-11/quote87-jc-event-audit.json`. No Tracker, FX, or database request/write was added in this follow-up.

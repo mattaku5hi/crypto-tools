@@ -22,10 +22,16 @@ scout-providers.workspace = true
 scout-rpc.workspace = true
 alloy-primitives.workspace = true
 futures.workspace = true
-serde_json.workspace = true
-reqwest.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+reqwest = { workspace = true, features = ["stream"] }
 tokio = { workspace = true, features = ["time"] }
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+scout-evm.workspace = true
+scout-rpc.workspace = true
+sqlx.workspace = true
+wiremock.workspace = true

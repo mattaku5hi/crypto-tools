@@ -1,0 +1,170 @@
+{
+  "schema": "robinhood-amd-oracle-reference-followup-v1",
+  "candidate_sha256": "332df5d9d53f05722a2f899c9a6be3e97effbf9a060a4608aa16b281151c7f2b",
+  "brackets_sidecar_sha256": "0e98414594d9ece1bde4bc8b08d3e8b6d1e480e1af302a8f4c50baaf7cf0e9d2",
+  "historical_ui_multiplier_manifest_sha256": "e842608793f64047ad121a99b5fa42a1add6dc58b5ef4d2e75b5cfcb72607c12",
+  "source": "onchain-pool-window-supply-stock-oracle-reference-v1",
+  "network": "robinhood-mainnet",
+  "chain_id": 4663,
+  "token": "0x52df349d941a790762a7474244a276ac1f371e18",
+  "pool_id": "0x5cb4bc8716e93893aedf094095ab3b179f6bd8cf6c10da21513fb10919ba5815",
+  "target_decimals": 18,
+  "quote": {
+    "symbol": "AMD",
+    "address": "0x86923f96303d656e4aa86d9d42d1e57ad2023fdc",
+    "decimals": 18
+  },
+  "oracle": {
+    "feed_name": "Robinhood AMD / USD",
+    "feed_address": "0x943a29e7ae51a4798823ca9eed2ed533b2a22c72",
+    "feed_decimals": 8,
+    "answer_is_already_multiplier_adjusted": true,
+    "apply_ui_multiplier_again": false,
+    "historical_ui_multiplier_raw": "1000000000000000000",
+    "historical_ui_multiplier_blocks": [
+      17438576,
+      17438776
+    ],
+    "ui_multiplier_raw_evidence_sha256": [
+      "48b1849d5af7b3b4ae1f095e76bdbcb43a7eca89922c3e16500cac933c6e6555",
+      "28ece839123e587ae57ef94ac8e22c40ae7b10b538e178291784a387d1d44310"
+    ],
+    "official_docs": "https://docs.robinhood.com/chain/oracles-and-price-feeds/"
+  },
+  "events": [
+    {
+      "block": 17438576,
+      "block_hash": "0x69b8ecd44cebb8d776744cf76501881b10bb5ed931f68f716cf86020f657329e",
+      "tx": "0xa64e8a7b892b4752fda4321964908200d0f65c3c68a43fe35077ca7601614a1e",
+      "log_index": 28,
+      "timestamp_unix": 1784824854,
+      "target_delta_raw": "7343169872062837308696718",
+      "amd_delta_raw": "-271598531957549561",
+      "receipt_status": "0x1",
+      "receipt_log_match": true,
+      "receipt_sha256": "190a59f23fff1dead14d3de1266d5da415f27205a8aae560927773dc8a2b1ea8",
+      "oracle_round_before": {
+        "round_id": "18446744073709552912",
+        "answer_raw": "54871805000",
+        "updated_at": 1784824705,
+        "answered_in_round": "18446744073709552912",
+        "age_seconds": 149
+      },
+      "oracle_round_after": {
+        "round_id": "18446744073709552913",
+        "answer_raw": "54487500000",
+        "updated_at": 1784824885,
+        "answered_in_round": "18446744073709552913",
+        "age_seconds": 31
+      },
+      "expected_price_fraction": [
+        "2980620336772185557805521",
+        "146863397441256746173934360000"
+      ],
+      "expected_fdv_cents": 2029518
+    },
+    {
+      "block": 17438576,
+      "block_hash": "0x69b8ecd44cebb8d776744cf76501881b10bb5ed931f68f716cf86020f657329e",
+      "tx": "0xa64e8a7b892b4752fda4321964908200d0f65c3c68a43fe35077ca7601614a1e",
+      "log_index": 31,
+      "timestamp_unix": 1784824854,
+      "target_delta_raw": "-69760113784596954432619",
+      "amd_delta_raw": "2562926391870117",
+      "receipt_status": "0x1",
+      "receipt_log_match": true,
+      "receipt_sha256": "190a59f23fff1dead14d3de1266d5da415f27205a8aae560927773dc8a2b1ea8",
+      "oracle_round_before": {
+        "round_id": "18446744073709552912",
+        "answer_raw": "54871805000",
+        "updated_at": 1784824705,
+        "answered_in_round": "18446744073709552912",
+        "age_seconds": 149
+      },
+      "oracle_round_after": {
+        "round_id": "18446744073709552913",
+        "answer_raw": "54487500000",
+        "updated_at": 1784824885,
+        "answered_in_round": "18446744073709552913",
+        "age_seconds": 31
+      },
+      "expected_price_fraction": [
+        "28126479440810129070237",
+        "1395202275691939088652380000"
+      ],
+      "expected_fdv_cents": 2015942
+    },
+    {
+      "block": 17438776,
+      "block_hash": "0xe420b87a62939dc12f4fe6175582db1313721fd9565d5cb782a0335998736df9",
+      "tx": "0x2ed29e0377ce5b0d644008ab445d7ded5e657f5bc767aff1c1207c5988a2934e",
+      "log_index": 9,
+      "timestamp_unix": 1784824874,
+      "target_delta_raw": "-7269738173342208935609751",
+      "amd_delta_raw": "265127439894911938",
+      "receipt_status": "0x1",
+      "receipt_log_match": true,
+      "receipt_sha256": "323aac748a4adfd05b225bb76af6e4ae797d5e34d1a56174a624fe0a5e464be6",
+      "oracle_round_before": {
+        "round_id": "18446744073709552912",
+        "answer_raw": "54871805000",
+        "updated_at": 1784824705,
+        "answered_in_round": "18446744073709552912",
+        "age_seconds": 169
+      },
+      "oracle_round_after": {
+        "round_id": "18446744073709552913",
+        "answer_raw": "54487500000",
+        "updated_at": 1784824885,
+        "answered_in_round": "18446744073709552913",
+        "age_seconds": 11
+      },
+      "expected_price_fraction": [
+        "1454802118206282835410809",
+        "72697381733422089356097510000"
+      ],
+      "expected_fdv_cents": 2001175
+    }
+  ],
+  "expected_maximum": {
+    "block": 17438576,
+    "log_index": 28,
+    "price_fraction": [
+      "2980620336772185557805521",
+      "146863397441256746173934360000"
+    ],
+    "fdv_cents_floor": 2029518
+  },
+  "feed_range": {
+    "low_usd": "544.875",
+    "high_usd": "548.71805",
+    "spread_percent_of_low_fraction": "76861/108975",
+    "all_target_event_round_updates_within_300s": true,
+    "round_ids_nonzero_and_answered_in_round_matches": true
+  },
+  "stale_negative_control": {
+    "feed": "TSLA/USD",
+    "target_timestamp": 1785187746,
+    "target_round_age_seconds": 7054,
+    "within_300_seconds": false
+  },
+  "supply": {
+    "raw": "1000000000000000000000000000",
+    "tokens": "1000000000",
+    "decimals": 18,
+    "birth_mint_count_through_last_event": 1,
+    "burn_count_through_last_event": 0,
+    "last_event_block": 17438776,
+    "observation_block": 17438576,
+    "raw_observation_sha256": "b668aa619b7ccd2cf0e6ebc7d97ff415b76510414919900c4e101696fdac6e5d",
+    "decimals_observation_block": 17438576,
+    "decimals_raw_observation_sha256": "7288d5779b6c717e467a9f275b21a89f79d1db6e6685bb51a104ea2d821c27eb"
+  },
+  "limitations": {
+    "all_market_or_lifetime_ath": false,
+    "ath_at": null,
+    "direct_amd_usdg_execution_price": false,
+    "standard_fee_tier_probe_exhaustive": false,
+    "automatic_adapter_or_promotion": false
+  }
+}

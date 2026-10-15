@@ -1,0 +1,41 @@
+{
+  "source": "geckoterminal-window-supply-swap-fx-validated-v2",
+  "analysis_sha256": "a018509e9cff9cdf9b5aa24eadf7253534a7e7660714400c18d8bdd5e5f2c206",
+  "chain_id": 8453,
+  "token": "0x92d95883e79a695ca4afa40d4885b4ef4ac38b07",
+  "utc_day": "2026-05-03",
+  "provider_price_usd": "0.0000100542474772537",
+  "supply_tokens": "100000000000",
+  "expected_fdv_cents": 100542474,
+  "ath_at": null,
+  "scope_note": "all eight returned PoolManager pools scanned from creation through anchor; not all markets or lifetime candle completeness",
+  "pool_scan": {
+    "initialized": 8,
+    "scanned": 8,
+    "usdc_empty_history_pools": 4,
+    "max_pool": "0x23d7f47e23cdefd66f8c61abf399e4be7fa2678f2bd9308a53757544d135e736",
+    "max_day": "2026-05-03"
+  },
+  "execution": {
+    "pool": "0x23d7f47e23cdefd66f8c61abf399e4be7fa2678f2bd9308a53757544d135e736",
+    "quote_token": "USDC",
+    "quote_raw": "45",
+    "quote_notional_usdc": "0.000045",
+    "token_raw": "4397783988515533135",
+    "onchain_execution_max_day": "2026-05-03",
+    "event_day": "2026-05-03",
+    "transaction_hash": "0x83e23bf6f4715ae70c5c3fad2f7f0536c4d7c6b2b02a0e673df56ce306f66e83",
+    "block": 45500972,
+    "log_index": 365,
+    "swap_log_sha256": "72660b2613d000cb76df45ea10e403120130c1c9cbc5c8da20c507e93018d4c4",
+    "usdc_usd_low_1e4": 9997,
+    "usdc_usd_high_1e4": 9999,
+    "converted_low_usd_per_token": ["692100000000", "67658215207931279"],
+    "converted_high_usd_per_token": ["8999100000000", "879556797703106627"]
+  },
+  "different_price_kind": {
+    "kind": "post_swap_marginal_spot",
+    "usd_per_token": ["13693701727942362279", "1000000000000000000000000"],
+    "use_for_execution_corroboration": false
+  }
+}

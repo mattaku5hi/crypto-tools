@@ -14,8 +14,8 @@ use scout_core::{ChainKey, InternalTransfer, NativeSource, RawEvmTransaction};
 use scout_evm::TRANSFER_TOPIC0;
 
 use crate::evm_alchemy::{
-    ALCHEMY_COVERAGE_NOTE, ALCHEMY_LISTING_KIND, AlchemyCategory, AlchemyListing, AlchemyTransfer,
-    AlchemyTransfersSource,
+    ALCHEMY_CONFLICT_COVERAGE_NOTE, ALCHEMY_COVERAGE_NOTE, ALCHEMY_LISTING_KIND, AlchemyCategory,
+    AlchemyListing, AlchemyTransfer, AlchemyTransfersSource,
 };
 use crate::evm_blockscout::{BlockscoutEvmSource, BlockscoutInternal, Listing};
 use crate::evm_rpc::{EvmRpcClient, EvmSourceError, LogFilter};
@@ -321,7 +321,11 @@ impl WalletIndexer {
                     transfers_complete: l.transfers_complete,
                     internal_complete: l.internal_complete,
                     signer_known: false,
-                    coverage_note: Some(ALCHEMY_COVERAGE_NOTE),
+                    coverage_note: Some(if l.resolved_block_conflicts > 0 {
+                        ALCHEMY_CONFLICT_COVERAGE_NOTE
+                    } else {
+                        ALCHEMY_COVERAGE_NOTE
+                    }),
                 })
             }
         }

@@ -1,0 +1,57 @@
+{
+  "chain": "bsc",
+  "network_id": 56,
+  "price_source": "GeckoTerminal known-pools daily USD window high",
+  "quote": "WBNB",
+  "quote_decimals": 18,
+  "token_decimals": 18,
+  "fx": "KuCoin BNB-USDT closed 1m candle \u00d7 Kraken USDT-USD closed1D candle low/high; no assumed USDT peg",
+  "quality": "Fixed1B supply; successful gated V2 peak Swap corroborates GT high while Birdeye differs. Known pools/thin markets/unindexed venues/lifetime coverage remain partial.",
+  "cases": [
+    {
+      "token": "0x7fca431f8a3b946f29e40f88cd29b9382530ffff",
+      "provider_price_usd": "0.000110028041110788",
+      "supply_tokens": "1000000000",
+      "expected_fdv_cents": 11002804,
+      "bnb_raw": "288392506050013373",
+      "token_raw": "1701239412127170045390412",
+      "bnb_usdt_low_milli": 649110,
+      "bnb_usdt_high_milli": 649316,
+      "usdt_usd_low_1e5": 99890,
+      "usdt_usd_high_1e5": 99988,
+      "fx_minute_at": 1774445280,
+      "best_block": 88659020,
+      "pool": "0xcffc5d780a83a75d4144f128bb1a55f74967b14e"
+    },
+    {
+      "token": "0x8ce61d628a14f558e0eef44486ef7fd616bcffff",
+      "provider_price_usd": "0.00011347688748849",
+      "supply_tokens": "1000000000",
+      "expected_fdv_cents": 11347688,
+      "bnb_raw": "9900000000000000",
+      "token_raw": "56661344369814100881579",
+      "bnb_usdt_low_milli": 648854,
+      "bnb_usdt_high_milli": 649848,
+      "usdt_usd_low_1e5": 99890,
+      "usdt_usd_high_1e5": 99988,
+      "fx_minute_at": 1774447380,
+      "best_block": 88663650,
+      "pool": "0xffd00fee0b993625025e57030d0a3f0a379818ab"
+    },
+    {
+      "token": "0x930eeed71881738ecf972168d293891ac708ffff",
+      "provider_price_usd": "0.000358583090943082",
+      "supply_tokens": "1000000000",
+      "expected_fdv_cents": 35858309,
+      "bnb_raw": "1000000000000000",
+      "token_raw": "1809120442053893276194",
+      "bnb_usdt_low_milli": 647710,
+      "bnb_usdt_high_milli": 648660,
+      "usdt_usd_low_1e5": 99907,
+      "usdt_usd_high_1e5": 99945,
+      "fx_minute_at": 1770541860,
+      "best_block": 79991790,
+      "pool": "0x254839e0809f6a7559633b9a857611b47f05a6d2"
+    }
+  ]
+}

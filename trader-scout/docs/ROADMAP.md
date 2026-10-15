@@ -112,6 +112,27 @@
 
 **P8.3.** CI feature matrix, reproducible fixture tests, dependency/security/license checks, release builds, opt-in live smoke workflow. Ни одного ключа/секрета в git history или logs.
 
+Dev-tracker deployment follow-up **B9.1** (owner request 2026-10-11): GitHub CI
+builds the four Linux x86_64 binaries with the pinned Rust toolchain and
+`Cargo.lock`, runs offline checks, packages tar.gz/SHA-256/version manifests,
+and checks the binaries in Debian Bookworm. Pushes to
+`ci/trader-scout-release` produce versioned preview Actions artifacts; manual
+runs also produce artifacts. Project-scoped `trader-scout/v*` tags generate
+GitHub Releases.
+Verified preview: [run 38648161675](https://github.com/mattaku5hi/crypto-tools/actions/runs/38648161675)
+passed all gates, Bookworm packaging and four CLI smoke checks on source
+`7a4d34e`; the generated artifact expires on 2026-11-13. Tagged publication has
+not been exercised; default-branch merge/manual dispatch registration remain
+pending. Acceptance details and server-installation dependency: `docs/TICKETS.md`.
+
+**B9.2 — portable deployment/state transfer.** Assemble a runtime directory
+independent of the repository checkout and workstation paths; configure its
+paths and PostgreSQL volume. Transfer config, database dump and required
+exports/provenance in a separate private bundle with relative paths,
+SHA-256/version/scope manifest and validation before restore. Supply
+`deploy/.env` separately with restrictive permissions. Verify a round-trip
+in a clean directory; see `docs/TICKETS.md` for the acceptance criteria.
+
 **Gate:** новый пользователь с настроенными источниками может воспроизвести три CLI сценария; downstream проект компилируется с одними scanner features. Все ограничения показаны до принятия решения по рейтингу.
 
 ## Что не нужно делать первым

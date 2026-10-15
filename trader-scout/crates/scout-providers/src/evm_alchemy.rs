@@ -23,6 +23,7 @@
 //!   incomplete: reports name `listing_kind = alchemy_transfers` and carry
 //!   [`ALCHEMY_COVERAGE_NOTE`].
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -41,6 +42,13 @@ pub const ALCHEMY_LISTING_KIND: &str = "alchemy_transfers";
 pub const ALCHEMY_COVERAGE_NOTE: &str = "listing via alchemy_getAssetTransfers: a transaction \
     signed by the wallet that moved neither ETH nor tokens to/from it (a failed swap, an approve) \
     does not appear, so failed-transaction fee overhead may be incomplete; trades are unaffected";
+
+/// Coverage note when one or more rows needed canonical RPC location repair.
+pub const ALCHEMY_CONFLICT_COVERAGE_NOTE: &str = "listing via alchemy_getAssetTransfers: a transaction \
+    signed by the wallet that moved neither ETH nor tokens to/from it (a failed swap, an approve) \
+    does not appear, so failed-transaction fee overhead may be incomplete; trades are unaffected; \
+    rows with conflicting block locations in this listing were normalized using canonical RPC \
+    transaction and block timestamps";
 
 /// Largest page the API serves for these categories.
 const MAX_COUNT_HEX: &str = "0x3e8";
@@ -96,8 +104,12 @@ pub struct AlchemyListing {
     pub transfers_complete: bool,
     /// `true` only when the category is supported AND its pagination finished.
     pub internal_complete: bool,
-    /// Provider requests spent on this listing.
+    /// Enhanced API listing requests; reconciliation RPC calls are counted by
+    /// the shared RPC client.
     pub requests: u32,
+    /// Transaction hashes whose listing block locations conflicted and were
+    /// resolved against canonical RPC transactions.
+    pub resolved_block_conflicts: usize,
 }
 
 const CAP_UNKNOWN: u8 = 0;
@@ -299,7 +311,8 @@ impl AlchemyTransfersSource {
             all.extend(rows);
         }
         all.retain(|t| t.category != AlchemyCategory::Erc20 || !t.value.is_zero());
-        let transfers = dedup_sorted(all);
+        let (transfers, mut resolved_block_conflicts) =
+            dedup_sorted(&self.rpc, all, from_block, to_block).await?;
 
         let mut internal: Option<Vec<AlchemyTransfer>> = None;
         let mut internal_complete = false;
@@ -336,7 +349,10 @@ impl AlchemyTransfersSource {
                 }
             }
             if !unsupported {
-                internal = Some(dedup_sorted(rows_all));
+                let (rows, conflicts) =
+                    dedup_sorted(&self.rpc, rows_all, from_block, to_block).await?;
+                internal = Some(rows);
+                resolved_block_conflicts = resolved_block_conflicts.saturating_add(conflicts);
                 internal_complete = done_all;
             }
         }
@@ -346,6 +362,7 @@ impl AlchemyTransfersSource {
             transfers_complete: complete,
             internal_complete,
             requests,
+            resolved_block_conflicts,
         })
     }
 }
@@ -389,12 +406,88 @@ impl AlchemyTransfersSource {
     }
 }
 
-fn dedup_sorted(mut rows: Vec<AlchemyTransfer>) -> Vec<AlchemyTransfer> {
+async fn dedup_sorted(
+    rpc: &EvmRpcClient,
+    mut rows: Vec<AlchemyTransfer>,
+    from_block: u64,
+    to_block: u64,
+) -> Result<(Vec<AlchemyTransfer>, usize), EvmSourceError> {
+    let mut by_id = BTreeMap::new();
+    let mut blocks_by_hash: BTreeMap<B256, BTreeSet<u64>> = BTreeMap::new();
+    for row in &rows {
+        if let Some(existing) = by_id.insert(row.unique_id.as_str(), row)
+            && (existing.hash != row.hash
+                || existing.category != row.category
+                || existing.from != row.from
+                || existing.to != row.to
+                || existing.contract != row.contract
+                || existing.value != row.value)
+        {
+            return Err(malformed(
+                "alchemy_getAssetTransfers",
+                "duplicate uniqueId has conflicting transfer fields",
+            ));
+        }
+        blocks_by_hash
+            .entry(row.hash)
+            .or_default()
+            .insert(row.block_number);
+    }
+    let conflicts: Vec<B256> = blocks_by_hash
+        .iter()
+        .filter_map(|(hash, blocks)| (blocks.len() > 1).then_some(*hash))
+        .collect();
+    if !conflicts.is_empty() {
+        let transactions = rpc.transactions_by_hashes(&conflicts).await?;
+        let mut canonical_blocks = BTreeMap::new();
+        for (requested, transaction) in conflicts.iter().zip(transactions) {
+            if transaction.hash != *requested {
+                return Err(malformed(
+                    "eth_getTransactionByHash",
+                    format!(
+                        "returned hash {:#x} for requested {requested:#x}",
+                        transaction.hash
+                    ),
+                ));
+            }
+            if transaction.block_number < from_block
+                || transaction.block_number > to_block
+                || !blocks_by_hash
+                    .get(requested)
+                    .is_some_and(|blocks| blocks.contains(&transaction.block_number))
+            {
+                return Err(malformed(
+                    "eth_getTransactionByHash",
+                    format!(
+                        "canonical block {} for {requested:#x} is outside the listing locations or requested range",
+                        transaction.block_number
+                    ),
+                ));
+            }
+            canonical_blocks.insert(*requested, transaction.block_number);
+        }
+        let blocks: Vec<u64> = canonical_blocks
+            .values()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let timestamps = rpc.block_timestamps_fresh(&blocks).await?;
+        for row in &mut rows {
+            if let Some(block) = canonical_blocks.get(&row.hash) {
+                row.block_number = *block;
+                row.time_stamp = Some(*timestamps.get(block).ok_or_else(|| {
+                    malformed("eth_getBlockByNumber", "missing canonical block timestamp")
+                })?);
+            }
+        }
+    }
     rows.sort_by(|a, b| {
         (a.block_number, a.hash, &a.unique_id).cmp(&(b.block_number, b.hash, &b.unique_id))
     });
-    rows.dedup_by(|a, b| a.unique_id == b.unique_id);
-    rows
+    let mut seen = BTreeSet::new();
+    rows.retain(|row| seen.insert(row.unique_id.clone()));
+    Ok((rows, conflicts.len()))
 }
 
 /// Seconds since 1970-01-01 of `YYYY-MM-DDTHH:MM:SS[.fff]Z` (UTC).
@@ -569,6 +662,187 @@ mod tests {
     fn source(server: &MockServer, max_pages: u32) -> AlchemyTransfersSource {
         let rpc = RpcClient::new(RpcEndpoint::new(server.uri()), 5_000, 1).unwrap();
         AlchemyTransfersSource::new(EvmRpcClient::new(rpc, BASE), AlchemyConfig { max_pages })
+    }
+
+    struct ConflictReplay {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        transfers: Value,
+        transaction: Value,
+        first_transfer_call: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Respond for ConflictReplay {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            let method = body["method"].as_str().unwrap().to_owned();
+            self.calls.lock().unwrap().push(method.clone());
+            let result = match method.as_str() {
+                ALCHEMY_TRANSFERS_METHOD => {
+                    let first = self
+                        .first_transfer_call
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        == 0;
+                    if first {
+                        self.transfers.clone()
+                    } else {
+                        json!({"transfers": []})
+                    }
+                }
+                "eth_getTransactionByHash" => {
+                    let requested = body["params"][0].as_str().unwrap();
+                    let mut transaction = self.transaction.clone();
+                    transaction["hash"] = json!(requested);
+                    transaction
+                }
+                "eth_getBlockByNumber" => json!({"timestamp": "0x6aa666c6"}),
+                _ => panic!("unexpected RPC method: {method}"),
+            };
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": result
+            }))
+        }
+    }
+
+    struct WrongCanonicalBlock;
+
+    impl Respond for WrongCanonicalBlock {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            let hash = body["params"][0].as_str().unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {
+                    "hash": hash,
+                    "from": W,
+                    "to": OTHER,
+                    "value": "0x5",
+                    "blockNumber": "0xf",
+                    "transactionIndex": "0x0"
+                }
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_unique_id_at_conflicting_blocks_uses_canonical_rpc_location() {
+        const FIXTURE: &str =
+            include_str!("../tests/fixtures/bsc_alchemy_conflicting_block_2026-10-10.json");
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        let queries = fixture["queries"].as_array().unwrap();
+        let transfers = queries
+            .iter()
+            .find(|query| query["method"] == ALCHEMY_TRANSFERS_METHOD)
+            .unwrap()["response"]["result"]
+            .clone();
+        let transaction = queries
+            .iter()
+            .find(|query| query["method"] == "eth_getTransactionByHash")
+            .unwrap()["response"]["result"]
+            .clone();
+        let server = MockServer::start().await;
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        Mock::given(method("POST"))
+            .respond_with(ConflictReplay {
+                calls: calls.clone(),
+                transfers,
+                transaction,
+                first_transfer_call: std::sync::Arc::default(),
+            })
+            .mount(&server)
+            .await;
+
+        let src = source(&server, 5);
+        src.rpc.seed_block_timestamps([(0x73fc00b, 1)]);
+        let listing = src
+            .list(
+                fixture["target"]["wallet"]
+                    .as_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+                0x73fc00b,
+                0x73fc00e,
+            )
+            .await
+            .unwrap();
+        let target_hash: B256 = fixture["target"]["transaction_hash"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let target_rows: Vec<_> = listing
+            .transfers
+            .iter()
+            .filter(|transfer| transfer.hash == target_hash)
+            .collect();
+        assert_eq!(target_rows.len(), 1);
+        assert_eq!(target_rows[0].block_number, 0x73fc00b);
+        assert_eq!(
+            target_rows[0].time_stamp,
+            parse_iso_utc("2026-09-13T09:03:02.000Z")
+        );
+        assert_eq!(
+            src.rpc.block_timestamp(0x73fc00b).await.unwrap(),
+            parse_iso_utc("2026-09-13T09:03:02.000Z").unwrap()
+        );
+        assert_eq!(listing.resolved_block_conflicts, 2);
+        let methods = calls.lock().unwrap();
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| method.as_str() == "eth_getTransactionByHash")
+                .count(),
+            2
+        );
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| method.as_str() == "eth_getBlockByNumber")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_unique_id_with_conflicting_transfer_fields_is_rejected() {
+        let server = MockServer::start().await;
+        let src = source(&server, 1);
+        let first = parse_transfer(&row("external", 1, 10, W, OTHER, "0x5", "same"))
+            .unwrap()
+            .unwrap();
+        let conflicting = parse_transfer(&row("external", 1, 10, W, W, "0x5", "same"))
+            .unwrap()
+            .unwrap();
+
+        let error = dedup_sorted(&src.rpc, vec![first, conflicting], 0, 20)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EvmSourceError::Malformed { .. }));
+    }
+
+    #[tokio::test]
+    async fn canonical_block_not_in_listing_locations_is_rejected() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(WrongCanonicalBlock)
+            .mount(&server)
+            .await;
+        let src = source(&server, 1);
+        let first = parse_transfer(&row("external", 1, 10, W, OTHER, "0x5", "same"))
+            .unwrap()
+            .unwrap();
+        let second = parse_transfer(&row("external", 1, 20, W, OTHER, "0x5", "same"))
+            .unwrap()
+            .unwrap();
+
+        let error = dedup_sorted(&src.rpc, vec![first, second], 0, 30)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EvmSourceError::Malformed { .. }));
+        assert_eq!(src.rpc.total_requests_made(), 1);
     }
 
     /// Scripted node: `handler(params) -> Result<result, (code, message)>`.

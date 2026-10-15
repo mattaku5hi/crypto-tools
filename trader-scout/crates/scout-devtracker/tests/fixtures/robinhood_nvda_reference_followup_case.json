@@ -1,0 +1,124 @@
+{
+  "schema": "robinhood-nvda-pool-window-stock-traded-reference-v1",
+  "candidate_sha256": "77d19011f3c103ae03c90bde88264cb5744f2fb64ee8aaead04a82c600bf7e97",
+  "source": "onchain-pool-window-supply-stock-trade-fx-reference-v1",
+  "token": "0x1e6489ef6d75c6f785843669b01262a7562b1e18",
+  "target_pool": "0x7cdf69ad42307d838ca0e5e4a02b582267941dd223c845b2fcb733b14dd55acc",
+  "target_creation_block": 17403260,
+  "target_and_quote_decimals": 18,
+  "quote_token": "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec",
+  "quote_identity": "Robinhood NVDA",
+  "events": [
+    {
+      "block": 17403416,
+      "timestamp_unix": 1784821330,
+      "log_index": 12,
+      "tx": "0x43baf9761365ab29b2c77b776ef8a5c9a0b2207d53887a4f9ac1b7d56eec5c57",
+      "raw_target_delta": "2595450871115675691697002",
+      "raw_quote_delta": "-252919262788927982",
+      "raw_swap_sha256": "36dd663554130eb63dba1e72825e0dc1c2c7bb80ce4a61e0ed1a9538a9b439a8",
+      "receipt_header_verified": true,
+      "quote_reference": {
+        "tx": "0x43baf9761365ab29b2c77b776ef8a5c9a0b2207d53887a4f9ac1b7d56eec5c57",
+        "block": 17403416,
+        "timestamp_unix": 1784821330,
+        "log_index": 9,
+        "raw_usdg_delta": "52442961",
+        "raw_nvda_delta": "-252919262788927982",
+        "receipt_exact_match": true,
+        "quote_pool": "0xd4eb21209c4d6093f80b5b84f5c45cc093ea14a3",
+        "quote_per_nvda_fraction": "26221480500000000000/126459631394463991"
+      }
+    },
+    {
+      "block": 17403416,
+      "timestamp_unix": 1784821330,
+      "log_index": 15,
+      "tx": "0x43baf9761365ab29b2c77b776ef8a5c9a0b2207d53887a4f9ac1b7d56eec5c57",
+      "raw_target_delta": "-24656783275598919071122",
+      "raw_quote_delta": "2375350223414174",
+      "raw_swap_sha256": "3e0dff53f48e32320ec6a4ab1e0f1dfba55331f8e742ec4060d7707e9e24bcf1",
+      "receipt_header_verified": true,
+      "quote_reference": {
+        "tx": "0x43baf9761365ab29b2c77b776ef8a5c9a0b2207d53887a4f9ac1b7d56eec5c57",
+        "block": 17403416,
+        "timestamp_unix": 1784821330,
+        "log_index": 9,
+        "raw_usdg_delta": "52442961",
+        "raw_nvda_delta": "-252919262788927982",
+        "receipt_exact_match": true,
+        "quote_pool": "0xd4eb21209c4d6093f80b5b84f5c45cc093ea14a3",
+        "quote_per_nvda_fraction": "26221480500000000000/126459631394463991"
+      }
+    },
+    {
+      "block": 17404579,
+      "timestamp_unix": 1784821447,
+      "log_index": 50,
+      "tx": "0x8b73cd47c904da5d720e9c3c3da0d2f5a51a009755f11a5fbddbe41bee927de6",
+      "raw_target_delta": "-2569496362404518934780032",
+      "raw_quote_delta": "246895615019575257",
+      "raw_swap_sha256": "e3d941d6f402925afee74b67f56f3b2351c31629cd5c452e1d58cf57ef98c54f",
+      "receipt_header_verified": true,
+      "quote_reference": {
+        "tx": "0xfdc61e8324ec05f8d15c05ec944a1f0d68c6e4aede9ae5de548a3f186fd18086",
+        "block": 17404520,
+        "timestamp_unix": 1784821441,
+        "log_index": 34,
+        "raw_usdg_delta": "-462754106",
+        "raw_nvda_delta": "2233980962001522453",
+        "receipt_exact_match": true,
+        "quote_pool": "0xd4eb21209c4d6093f80b5b84f5c45cc093ea14a3",
+        "quote_per_nvda_fraction": "462754106000000000000/2233980962001522453"
+      }
+    }
+  ],
+  "fx": {
+    "date": "2026-07-23",
+    "pair": "USDG/USD",
+    "low": "0.9998",
+    "close": "0.9999",
+    "high": "1.0000",
+    "sha256": "ed81dd2a05a92a744a1c6d1da01d65fdcdb8dd795ea50ecca401577a40db1ce7"
+  },
+  "supply": {
+    "birth_block": 17403260,
+    "through_block": 17404579,
+    "raw": "1000000000000000000000000000",
+    "tokens": "1000000000",
+    "decimals": 18,
+    "mints": 1,
+    "mint_sha256": "3a9501c12599717d16f4b05c74e54c20ed52c2c506bb8af185bd5e29dfe1b54c",
+    "burns": 0,
+    "burn_sha256": "925600f4bd6f91ca25b4b78328bfdb7a47a420e7cba791c09e856089d71dcb48",
+    "manifest_sha256": "870cfbf0d02cd39788e4e15229782ff9dbd70131d89bfaa8a735f0664994a65c"
+  },
+  "expected_maximum": {
+    "block": 17403416,
+    "log_index": 12,
+    "tx": "0x43baf9761365ab29b2c77b776ef8a5c9a0b2207d53887a4f9ac1b7d56eec5c57",
+    "price_fraction": "8739619450650000000/432575145185945948616167",
+    "fdv_cents_floor": 2020370
+  },
+  "same_transaction_quote_route": {
+    "target_tx": "0x43baf9761365ab29b2c77b776ef8a5c9a0b2207d53887a4f9ac1b7d56eec5c57",
+    "quote_log_index": 9,
+    "target_log_index": 12,
+    "quote_raw_nvda_output": "252919262788927982",
+    "target_raw_nvda_input": "252919262788927982",
+    "quote_raw_usdg_input": "52442961",
+    "exact_native_amount_match": true,
+    "receipt_sha256": "71192a742a9a76357ed4d7949d1255ad95c3e9456697f309f4e8a4382fbb3f3b"
+  },
+  "limits": {
+    "all_market_or_lifetime": false,
+    "ath_at": null,
+    "wallet_acquisition_cost_or_pnl": false,
+    "automatic_promotion": false
+  },
+  "candidate_input_hashes": {
+    "target_receipt": "71192a742a9a76357ed4d7949d1255ad95c3e9456697f309f4e8a4382fbb3f3b",
+    "second_target_receipt": "9f9f3692123e513c1db853bab5af5f7ee6776bb67ad76a0556e8dc6edc307e65",
+    "kraken_candle": "ed81dd2a05a92a744a1c6d1da01d65fdcdb8dd795ea50ecca401577a40db1ce7"
+  }
+}

@@ -151,3 +151,27 @@ Evidence: `docs/p0/measurements/2026-10-04-alchemy-free-tier.md`, owner's live c
 2. **Source.** Portal `0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0` from Flap's published "Deployed Contract Addresses" (BNB Chain). Event names from Flap's docs; layouts confirmed live and each topic0 equals the keccak of the signature: `TokenBought/TokenSold(uint256 ts, address token, address account, uint256 amount, uint256 quoteAmount, uint256 fee, uint256 postPrice)` (no indexed field, 7 words), `TokenCreated(uint256 ts, address creator, uint256 nonce, address token, string, string, string)`, `LaunchedToDEX(address token, address pool, uint256 amount, uint256 eth)` (`scout-dex-evm::flap`).
 3. **Venue.** `SwapVenue::FlapPortal`, emitter-anchored to the Portal (like the four.meme managers): a trade event is evidence of a curve swap on `token`; trader and amounts come from the transaction (amendment 8). The event `account` is the Portal's counterparty, usually router `0x1de460f3…`, not the wallet. The quote asset (BNB or a BEP20 such as `NVDAB`) is not in the event.
 4. **Verification (FixtureVerified).** `crates/scout-engine/tests/evm_bsc_flap_portal.rs` over `flap_portal_trades_bsc_2026-10-07.json` (receipts of every Portal trade in BSC blocks 123,161,810..=123,161,903, logs trimmed to the Portal's logs and the named tokens' Transfers; sha256 `d5a2fb07b1d71b7fc470c7223b6acd6977bcff3e2efc74e11a4f3aeaa75efdc9`): event token amount = the Portal's own token transfer (out on a buy, in on a sell) in 470/470 events (261 buys, 209 sells, 38 tokens); every event classified `FixtureVerified` with evidence naming its token.
+
+## Amendment 13 (2026-10-10) — conflicting Alchemy transaction locations
+
+The BSC listing for `0x9980a8aa98f104dafe9e16b07217a5e8d898a3cf`
+returned transaction `0x4833f07e358357c151a31fb670704fc1d6a18c3fa4b35e9de9d100c001df465c`
+twice with the same `uniqueId`, at blocks `0x73fc00b` and `0x73fc00e`.
+The canonical transaction and receipt identify `0x73fc00b`. Sorting by block
+before adjacent-only deduplication left both rows; the wallet listing then
+overwrote the correct block and requested the wrong block's receipts.
+
+`AlchemyTransfersSource::list` checks conflicting locations before global
+deduplication. Only affected hashes incur bounded canonical transaction lookups.
+The returned hash and block must match a listed location inside the requested
+range. Fresh RPC block timestamps replace indexer-seeded timestamps for those
+hashes. Conflicting transfer identity, sender, recipient, asset or amount is an
+explicit malformed-input error, rather than a choice of one duplicate.
+
+The existing report coverage note records that canonical reconciliation occurred;
+every reconciliation request uses the shared request budget and limiter. Amount,
+trader, fee, episode and pricing definitions are unchanged. The captured fixture
+is `crates/scout-providers/tests/fixtures/bsc_alchemy_conflicting_block_2026-10-10.json`
+(SHA256 `88d4259375be3f3ddfb3853de9a787acbfd833e312058a701096600c87fca2e2`).
+Tests replay its non-adjacent duplicates, a stale seeded timestamp, rejected
+immutable-field conflicts and a canonical location outside the listing.

@@ -1,0 +1,25 @@
+# Optional compact profile for a single PostgreSQL backfill/derive workload.
+# These are container ceilings, not reserved host memory; shared-host
+# concurrency with other services still needs operational headroom.
+services:
+  db:
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1.0
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_parallel_workers_per_gather=0
+      - -c
+      - max_connections=32
+
+  dev-tracker:
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0

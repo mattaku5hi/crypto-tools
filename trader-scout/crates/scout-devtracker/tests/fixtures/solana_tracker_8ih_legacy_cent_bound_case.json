@@ -1,0 +1,114 @@
+{
+  "schema": "solana-8ih-legacy-scoped-max-fdv-cent-bound-v1",
+  "independent_proof_sha256": "33a7a7a8cab70395ea09d15508b11c12375cd1488e2cff993ceb1eaf8deb2463",
+  "provider": {
+    "mint": "8ihYkBBPHu86isqxU4CnNQdbixqtbRcMcicxTxYYpump",
+    "pool": "5AkfpdRxrZU2wxazMnCGquhj5PjaWE3fmUhyMcrPZy2p",
+    "price_usd": "0.00010435468782714595",
+    "timestamp_ms": 1769843855703
+  },
+  "supply": {
+    "decimals": 6,
+    "birth_raw": "1000000000000000",
+    "peak_raw": "999999907265672",
+    "burns": [
+      {
+        "kind": "burn",
+        "opcode": 8,
+        "amount_raw": 7,
+        "decimals_checked": null,
+        "signature": "3tBwf59m74zR39B8vpLSBtZXhwKvFmRBDre4LDTt8YNz15BCRYiQqbrys5bGu1XGDmGbGW1zG3MAH82P6LsUdwaY",
+        "slot": 396722963,
+        "transaction_index": 1456,
+        "block_time_unix_s": 1769700154,
+        "outer_index": 11,
+        "inner_index": -1,
+        "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      {
+        "kind": "burn",
+        "opcode": 8,
+        "amount_raw": 1,
+        "decimals_checked": null,
+        "signature": "nz95xNNDMEbKFFRF2xAu2Bpz1mgJZP6E4pt4cA8wLnRpp28WuUYiGVzRQjgob1jTn6CkC8Nt7AGZu8PKmMMyzxD",
+        "slot": 396751976,
+        "transaction_index": 242,
+        "block_time_unix_s": 1769711790,
+        "outer_index": 15,
+        "inner_index": -1,
+        "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      {
+        "kind": "burn",
+        "opcode": 8,
+        "amount_raw": 1,
+        "decimals_checked": null,
+        "signature": "3R87RiLY1c3wnYHyVtt6gRAyYnuZoMduLyFN2CrJDyVnePJ5aY7D3gfn56VnjyYJPY3iWugGd9Qro1gB9GLj8dWJ",
+        "slot": 396878964,
+        "transaction_index": 925,
+        "block_time_unix_s": 1769762669,
+        "outer_index": 3,
+        "inner_index": -1,
+        "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      {
+        "kind": "burn",
+        "opcode": 8,
+        "amount_raw": 1,
+        "decimals_checked": null,
+        "signature": "gncemiGTyYqbnxS1aRUn5W75RT5xxck2eBGvHK1KKm6AaajmNJupqD5WKT4HqfdSJZL76UAU5pviz8ByhkhS758",
+        "slot": 396900264,
+        "transaction_index": 1053,
+        "block_time_unix_s": 1769771176,
+        "outer_index": 2,
+        "inner_index": -1,
+        "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      {
+        "kind": "burn",
+        "opcode": 8,
+        "amount_raw": 92734318,
+        "decimals_checked": null,
+        "signature": "Xr9cgGKg1poAb11MgmhPiyu1XUSrdJJbV8TqRBRmQzSEhU8bjyuY7LTnvu542mASyqTCAsks41dg9w1fNQHq7h2",
+        "slot": 396957185,
+        "transaction_index": 1701,
+        "block_time_unix_s": 1769793880,
+        "outer_index": 0,
+        "inner_index": -1,
+        "program_id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      }
+    ],
+    "successful_history_transactions": 838,
+    "successful_signatures_without_birth": 837,
+    "mint_authority_revoked_at_birth": true,
+    "mint_close_authority_absent": true
+  },
+  "source": "solana-tracker-window-peak-supply-cent-tolerance-legacy-pool-fx-validated-v1",
+  "fdv_lower_cents": 10435467,
+  "fdv_upper_cents": 10435468,
+  "maximum_cent_uncertainty": 1,
+  "source_scope": "provider recording window, exact initial pool; no all-market or lifetime claim",
+  "ath_at": null,
+  "events": [
+    {
+      "event": "BuyEvent",
+      "signature": "64geUHT93pEmwebFV8DPSwQGCVbtcUnNPok5mFQqzsSPeexDVHeRKtueNtH8dYi3kC6eTpzR9b4hqJiunaeuNyWg",
+      "timestamp": 1769843854,
+      "event_cpi_data_hex": "e445a52e51cb9a1d67f4521f2cf577778eac7d6900000000c60b8852170000004ef055050000000000000000000000004ef0550500000000db9a42568a800000a1fac5091d0000004ef0550500000000140000000000000012b30200000000000500000000000000c5ac000000000000f670480500000000e4bd4505000000003dee5a2061a5db873d08ffc152236268f9c7de193954c36492d8b585717ca9095466e9c34408b33ca9eedfae2ac7049879e67ec2d53213988cfbb7d5006880f06c15b81b1dccb280b5ca1cf6b5585d5838b50167734f79dbee7c0183bc1e48470a817293c1ae6c6d1543e83e58dd3a2c894cc84bcdd825498427f2c426ddd45f8d181a0c849fa937a6f34aded3081ef95700aacb0c9bb3d909a4b9147527a4ebd4117b96463aea6b0dbc831a1e079d81da72bdaa8cb2e6c87ec2524a88ad5a55a07211c55f5be538fd6df5f76e042850796ac4ddbcd7b80ab2430534b0192a1f5f0000000000000093d20c00000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000120000006275795f65786163745f71756f74655f696e",
+      "base_raw": "141331641047771",
+      "quote_raw": "124718021281",
+      "fx_low_usd": "118.04",
+      "fx_high_usd": "118.09"
+    },
+    {
+      "event": "SellEvent",
+      "signature": "cFaUbGA9D83D8k6ue8yBevRUg7Lr3e2E33nfJW674QFLLtuEnkBJKQxSnMaV1zUKibLm3pTgXGvrvQqfoHQDCMV",
+      "timestamp": 1769843856,
+      "event_cpi_data_hex": "e445a52e51cb9a1d3e2f370aa503dc2a90ac7d690000000038e867f041140000701533d50300000038084d15cf8702000000000000000000158fba0373800000976b0e0f1d000000ea7762f50300000014000000000000005bda060200000000050000000000000097b68100000000008f9d5bf303000000cc5939e9030000003dee5a2061a5db873d08ffc152236268f9c7de193954c36492d8b585717ca9090921b33d0757968185db8049fa0076e29512e1cf3ea9d09bf16c29f136b52bb51cbff6c759689969a92e087c93a41ff42a9d9fe54e4c811d8ed90f25e61c28b4ecbb72ca7e1f3f0be8c5f7bfefb277499a8e1c68f45e937100191a4e26397a114ac2f8d0dd5cbc97e3289c197cb5062a54f3d956b9ce6e5115f96567aa5cb3e677d915955f8880731ceb4a75a0cc96c174fa4095c4e1d9967acfc42845ae67aea07211c55f5be538fd6df5f76e042850796ac4ddbcd7b80ab2430534b0192a1f5f000000000000002c8da00900000000",
+      "base_raw": "141231472152341",
+      "quote_raw": "124806654871",
+      "fx_low_usd": "118.04",
+      "fx_high_usd": "118.09"
+    }
+  ]
+}

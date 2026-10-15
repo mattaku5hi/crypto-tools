@@ -1,0 +1,229 @@
+{
+  "scope": "Five real Base Clanker fixed-supply cases; execution ratios use exact raw pool deltas (USDC decimals 6, token decimals 18), converted with cached same-day Kraken USDC/USD low/high. GeckoTerminal daily candle highs are a separate provider cross-check over the scanned page-1 pool set, not proof of global market coverage.",
+  "supply_provenance": "Verified Clanker source: fixed 100,000,000,000 token supply, 18 decimals.",
+  "notional_quality_note": "All five quote notionals are small observations (maximum 3.120288 USDC); FX agreement is corroboration, not a liquidity/market-quality guarantee.",
+  "cases": [
+    {
+      "chain_id": 8453,
+      "token": "0x6bb636e4f64775d6c7b176961740e3db608b8b07",
+      "supply_tokens": "100000000000",
+      "token_decimals": 18,
+      "usdc_decimals": 6,
+      "expected_fdv_cents": 1417152334,
+      "event_timestamp": 1777042005,
+      "event_utc_day": "2026-04-24",
+      "event_utc_day_timestamp": 1776988800,
+      "usdc_raw": "3120288",
+      "token_raw": "21998181657822187797881",
+      "usdc_usd_low_1e4": 9997,
+      "usdc_usd_high_1e4": 9999,
+      "quote_notional_quality": "small_quote_notional_observation",
+      "known_page1_pool_count": 2,
+      "all_listed_page1_pools_scanned": true,
+      "gt_scanned_pool_count": 2,
+      "gt_event_day_pool_highs": [
+        {
+          "pool_id": "0x8dad26ce9f7652ef654a93d0f22a3db68d037620a0ccf7e18a9769bbd487d065",
+          "timestamp": 1776988800,
+          "high_usd": "0.000141715233417595"
+        },
+        {
+          "pool_id": "0x98ad05cc114f0e3cb91aa94fa208fe1e5a804341e65e7bfecf7ac1b4c8970e7a",
+          "timestamp": 1776988800,
+          "high_usd": "2.01141111882926e-06"
+        }
+      ],
+      "gt_event_day_pools_without_candle": [],
+      "gt_event_day_high_usd": "0.000141715233417595",
+      "gt_window_max_tie_rows": [
+        {
+          "pool_id": "0x8dad26ce9f7652ef654a93d0f22a3db68d037620a0ccf7e18a9769bbd487d065",
+          "timestamp": 1776988800,
+          "high_usd": "0.000141715233417595"
+        }
+      ],
+      "birdeye_peak_day": "2026-04-24",
+      "birdeye_reference_price_usd": "0.0000020027143121297546",
+      "quote_notional_usdc": "3.120288"
+    },
+    {
+      "chain_id": 8453,
+      "token": "0xcddbce412a15d1fcc65814dc14b046e167a5bb07",
+      "supply_tokens": "100000000000",
+      "token_decimals": 18,
+      "usdc_decimals": 6,
+      "expected_fdv_cents": 15039338,
+      "event_timestamp": 1777369505,
+      "event_utc_day": "2026-04-28",
+      "event_utc_day_timestamp": 1777334400,
+      "usdc_raw": "3",
+      "token_raw": "1998991743889043345",
+      "usdc_usd_low_1e4": 9997,
+      "usdc_usd_high_1e4": 9999,
+      "quote_notional_quality": "small_quote_notional_observation",
+      "known_page1_pool_count": 2,
+      "all_listed_page1_pools_scanned": true,
+      "gt_scanned_pool_count": 2,
+      "gt_event_day_pool_highs": [
+        {
+          "pool_id": "0x2239602b09da4273f03282f3b02d06fce662ea6705361b3d919cf0cc610de26a",
+          "timestamp": 1777334400,
+          "high_usd": "1.50393385920915e-06"
+        },
+        {
+          "pool_id": "0x055a4169219750e0eebc246b2ccff4a97a91bcba029c91fb7bc646d64bd8bb1c",
+          "timestamp": 1777334400,
+          "high_usd": "7.44138705902701e-07"
+        }
+      ],
+      "gt_event_day_pools_without_candle": [],
+      "gt_event_day_high_usd": "1.50393385920915e-06",
+      "gt_window_max_tie_rows": [
+        {
+          "pool_id": "0x2239602b09da4273f03282f3b02d06fce662ea6705361b3d919cf0cc610de26a",
+          "timestamp": 1777334400,
+          "high_usd": "1.50393385920915e-06"
+        }
+      ],
+      "birdeye_peak_day": "2026-04-28",
+      "birdeye_reference_price_usd": "0.0000010047807019640055",
+      "quote_notional_usdc": "0.000003"
+    },
+    {
+      "chain_id": 8453,
+      "token": "0x374d6984bd1a81d23d7be284a783129e1c24ab07",
+      "supply_tokens": "100000000000",
+      "token_decimals": 18,
+      "usdc_decimals": 6,
+      "expected_fdv_cents": 13814610,
+      "event_timestamp": 1777473751,
+      "event_utc_day": "2026-04-29",
+      "event_utc_day_timestamp": 1777420800,
+      "usdc_raw": "29704",
+      "token_raw": "21569657144276850661720",
+      "usdc_usd_low_1e4": 9992,
+      "usdc_usd_high_1e4": 9999,
+      "quote_notional_quality": "small_quote_notional_observation",
+      "known_page1_pool_count": 2,
+      "all_listed_page1_pools_scanned": true,
+      "gt_scanned_pool_count": 2,
+      "gt_event_day_pool_highs": [
+        {
+          "pool_id": "0xcbda52dce4a463bf0ce94060d06cb8ec2f06bdafcbd220f9cf0534838c2a9fb9",
+          "timestamp": 1777420800,
+          "high_usd": "1.00503257738683e-06"
+        },
+        {
+          "pool_id": "0x6b6c89379edfc7b646a80c04c18acdcff2572c43892e0733e3df777f7d378a3c",
+          "timestamp": 1777420800,
+          "high_usd": "1.38146107632705e-06"
+        }
+      ],
+      "gt_event_day_pools_without_candle": [],
+      "gt_event_day_high_usd": "1.38146107632705e-06",
+      "gt_window_max_tie_rows": [
+        {
+          "pool_id": "0x6b6c89379edfc7b646a80c04c18acdcff2572c43892e0733e3df777f7d378a3c",
+          "timestamp": 1777507200,
+          "high_usd": "1.38146107632705e-06"
+        },
+        {
+          "pool_id": "0x6b6c89379edfc7b646a80c04c18acdcff2572c43892e0733e3df777f7d378a3c",
+          "timestamp": 1777420800,
+          "high_usd": "1.38146107632705e-06"
+        }
+      ],
+      "birdeye_peak_day": "2026-04-29",
+      "birdeye_reference_price_usd": "0.00000100056748276286",
+      "quote_notional_usdc": "0.029704"
+    },
+    {
+      "chain_id": 8453,
+      "token": "0xf3ad70951949ce317144c699fbc3f3dd6af68b07",
+      "supply_tokens": "100000000000",
+      "token_decimals": 18,
+      "usdc_decimals": 6,
+      "expected_fdv_cents": 29474133,
+      "event_timestamp": 1777147931,
+      "event_utc_day": "2026-04-25",
+      "event_utc_day_timestamp": 1777075200,
+      "usdc_raw": "219423",
+      "token_raw": "74734483110006572322110",
+      "usdc_usd_low_1e4": 9994,
+      "usdc_usd_high_1e4": 9998,
+      "quote_notional_quality": "small_quote_notional_observation",
+      "known_page1_pool_count": 2,
+      "all_listed_page1_pools_scanned": true,
+      "gt_scanned_pool_count": 2,
+      "gt_event_day_pool_highs": [
+        {
+          "pool_id": "0xeb4835cc25e8b60c7068304d5ea5d006d44dd2ee9f1caf2bf632dc4ceaeb7f6e",
+          "timestamp": 1777075200,
+          "high_usd": "2.94741332890429e-06"
+        }
+      ],
+      "gt_event_day_pools_without_candle": [
+        "0xb1f12aee81b9446c721de66d2192280330bbdfd9c7cb94a2ddcfe61b66566a17"
+      ],
+      "gt_event_day_high_usd": "2.94741332890429e-06",
+      "gt_window_max_tie_rows": [
+        {
+          "pool_id": "0xeb4835cc25e8b60c7068304d5ea5d006d44dd2ee9f1caf2bf632dc4ceaeb7f6e",
+          "timestamp": 1777161600,
+          "high_usd": "2.94741332890429e-06"
+        },
+        {
+          "pool_id": "0xeb4835cc25e8b60c7068304d5ea5d006d44dd2ee9f1caf2bf632dc4ceaeb7f6e",
+          "timestamp": 1777075200,
+          "high_usd": "2.94741332890429e-06"
+        }
+      ],
+      "birdeye_peak_day": "2026-04-26",
+      "birdeye_reference_price_usd": "0.0000029070754006398675",
+      "quote_notional_usdc": "0.219423"
+    },
+    {
+      "chain_id": 8453,
+      "token": "0x021b78f6ecd4844e3057ff9621bc4018224eeb07",
+      "supply_tokens": "100000000000",
+      "token_decimals": 18,
+      "usdc_decimals": 6,
+      "expected_fdv_cents": 12829678,
+      "event_timestamp": 1777560589,
+      "event_utc_day": "2026-04-30",
+      "event_utc_day_timestamp": 1777507200,
+      "usdc_raw": "9891",
+      "token_raw": "7692536996278160519912",
+      "usdc_usd_low_1e4": 9997,
+      "usdc_usd_high_1e4": 9999,
+      "quote_notional_quality": "small_quote_notional_observation",
+      "known_page1_pool_count": 2,
+      "all_listed_page1_pools_scanned": true,
+      "gt_scanned_pool_count": 2,
+      "gt_event_day_pool_highs": [
+        {
+          "pool_id": "0x0c15b2a1a903620d1d1d9e046316c1f1ca31ef9cf05aa9400005aadf1ac14287",
+          "timestamp": 1777507200,
+          "high_usd": "1.00465072992825e-06"
+        },
+        {
+          "pool_id": "0x0ef8e40d2dae81b77af66df6986c58a550f48483e16b47e480c64b8ac42fac76",
+          "timestamp": 1777507200,
+          "high_usd": "1.28296789681228e-06"
+        }
+      ],
+      "gt_event_day_pools_without_candle": [],
+      "gt_event_day_high_usd": "1.28296789681228e-06",
+      "gt_window_max_tie_rows": [
+        {
+          "pool_id": "0x0ef8e40d2dae81b77af66df6986c58a550f48483e16b47e480c64b8ac42fac76",
+          "timestamp": 1777507200,
+          "high_usd": "1.28296789681228e-06"
+        }
+      ],
+      "birdeye_peak_day": "2026-04-30",
+      "birdeye_reference_price_usd": "0.0000010011706245924763",
+      "quote_notional_usdc": "0.009891"
+    }
+  ]
+}

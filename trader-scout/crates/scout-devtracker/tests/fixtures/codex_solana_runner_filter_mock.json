@@ -1,0 +1,21 @@
+{
+  "data": {
+    "filterTokens": {
+      "results": [
+        {
+          "createdAt": 1690997881,
+          "token": {
+            "address": "So11111111111111111111111111111111111111112",
+            "networkId": 1399811149,
+            "extrema": {
+              "athFdv": "1381711",
+              "athFdvTimestamp": 1778068501
+            }
+          },
+          "holders": 88012,
+          "liquidity": "19626"
+        }
+      ]
+    }
+  }
+}

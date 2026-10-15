@@ -15,7 +15,7 @@
 //! is idempotent.
 
 use futures::stream::{self, StreamExt};
-use scout_devtracker::evm_ingest::{EVM_SOURCES, backfill_step};
+use scout_devtracker::evm_ingest::{CreatorRule, EVM_SOURCES, backfill_step};
 use scout_devtracker::identity::enrich_identities;
 use scout_devtracker::solana_ingest::{SOLANA_SOURCES, backfill_days, backfill_solana_day};
 
@@ -33,7 +33,7 @@ pub struct BackfillArgs {
     /// How far back.
     #[arg(long, default_value_t = 365)]
     days: i64,
-    /// EVM blocks per `eth_getLogs` step (the cursor moves after each).
+    /// Maximum EVM blocks per step (dense LockBeneficiary sources adapt down).
     #[arg(long, default_value_t = 200_000)]
     evm_step_blocks: u64,
     /// Resolve identities on the free fallback endpoint (dRPC) instead of the
@@ -59,6 +59,18 @@ pub struct BackfillArgs {
     /// Codex requests (200 tokens each) per chain.
     #[arg(long, default_value_t = 3_000)]
     ath_requests: usize,
+    /// Enumerate positive Base ATH from Codex's first-pair index by closed UTC day.
+    #[arg(long)]
+    ath_from_index: bool,
+    /// Enumerate one supported chain's tokens matching runner ATH/holder gates.
+    #[arg(long)]
+    ath_runners_from_index: bool,
+    /// Config whose top_runners thresholds define the provider index filter.
+    #[arg(long, default_value = "config/dev-tracker.toml")]
+    ath_index_config: String,
+    /// Include Codex tokens born at or after this Unix timestamp in runner-index mode.
+    #[arg(long)]
+    ath_index_token_created_since: Option<i64>,
 }
 
 impl BackfillArgs {
@@ -83,12 +95,42 @@ impl BackfillArgs {
 /// continues (rerun to retry what is left).
 pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
     let chains = a.chains();
+    if a.ath_from_index && (chains != ["base"] || !a.has("ath")) {
+        return Err("--ath-from-index requires --chains base and the ath phase".into());
+    }
+    if a.ath_runners_from_index
+        && (!a.has("ath")
+            || chains.len() != 1
+            || !matches!(
+                chains.first().map(String::as_str),
+                Some("solana" | "base" | "bsc" | "robinhood")
+            ))
+    {
+        return Err(
+            "--ath-runners-from-index requires exactly one supported chain: solana, base, bsc, or robinhood, and the ath phase".into(),
+        );
+    }
+    if a.ath_from_index && a.ath_runners_from_index {
+        return Err("--ath-from-index and --ath-runners-from-index are separate modes".into());
+    }
+    if a.ath_index_token_created_since.is_some() && !a.ath_runners_from_index {
+        return Err("--ath-index-token-created-since requires --ath-runners-from-index".into());
+    }
+    if a.ath_index_token_created_since
+        .is_some_and(|timestamp| timestamp < 0)
+    {
+        return Err("--ath-index-token-created-since must be a nonnegative Unix timestamp".into());
+    }
     // every chain is its own task (and every Solana day, below): the
     // multi-threaded runtime spreads the JSON decoding over the cores; one
     // `join!` would run them all on one thread (measured: Solana's page
     // decoding starved the EVM steps to one per two minutes)
     let mut tasks = Vec::new();
-    for chain in chains.iter().filter(|c| c.as_str() != "solana") {
+    for chain in chains
+        .iter()
+        .filter(|c| c.as_str() != "solana")
+        .filter(|_| a.has("logs") || a.has("identity"))
+    {
         let (db, a, chain) = (db.clone(), a.clone(), chain.clone());
         tasks.push((
             chain.clone(),
@@ -111,8 +153,94 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
         }
     }
     if a.has("ath") {
-        for chain in &chains {
-            backfill_ath(db, chain, a.ath_requests).await?;
+        if a.ath_runners_from_index {
+            let cfg = read_config(&a.ath_index_config)?;
+            let thresholds = &cfg.top_runners;
+            let filter = scout_devtracker::ath::RunnerAthIndexFilter {
+                min_ath_usd: thresholds.runner_ath_usd,
+                max_ath_usd: thresholds.max_plausible_ath_usd,
+                min_holders: thresholds.min_holders,
+                min_token_created_at: a.ath_index_token_created_since,
+            };
+            let key = std::env::var(CODEX_ENV)
+                .map_err(|_| format!("--ath-runners-from-index requires {CODEX_ENV}"))?;
+            let as_of = now();
+            let chain = chains.first().map(String::as_str).ok_or_else(|| {
+                "--ath-runners-from-index requires one supported chain".to_string()
+            })?;
+            let report = scout_devtracker::ath::backfill_runner_ath_from_index(
+                db,
+                key.trim(),
+                chain,
+                filter,
+                a.ath_requests,
+                as_of,
+            )
+            .await
+            .map_err(|error| format!("{chain} runner ATH index: {error}"))?;
+            eprintln!(
+                "dev-tracker: backfill {} (Codex network {}) runner filter ATH ${}..${}, holders >= {}, tokenCreatedAt >= {:?} (as-of {}): complete={}, {} requests, {} provider rows, {} tracked observations, {} token-createdAt quality gaps, next offset {}, quality=provider-filtered-index-only/full-lifetime-ATH-unproven/mutable-offset-order, annual derivation scope remains since_days, {} budget remaining",
+                report.chain,
+                report.network_id,
+                report.min_ath_usd,
+                report.max_ath_usd,
+                report.min_holders,
+                report.min_token_created_at,
+                as_of,
+                report.complete,
+                report.requests,
+                report.provider_rows,
+                report.tracked_rows,
+                report.token_created_at_gap_rows,
+                report.next_offset,
+                a.ath_requests.saturating_sub(report.requests)
+            );
+            if !report.complete {
+                return Err(
+                    "runner ATH index pass stopped at its request budget; rerun to resume".into(),
+                );
+            }
+        } else if a.ath_from_index {
+            let key = std::env::var(CODEX_ENV)
+                .map_err(|_| format!("--ath-from-index requires {CODEX_ENV}"))?;
+            let as_of = now();
+            let report = scout_devtracker::ath::backfill_base_ath_from_index(
+                db,
+                key.trim(),
+                a.days,
+                a.ath_requests,
+                as_of,
+            )
+            .await
+            .map_err(|error| format!("base ATH index: {error}"))?;
+            let date_membership = if report.date_mismatch_rows > 0 {
+                "returned-date-membership=unverified"
+            } else {
+                "returned-date-mismatch-rows=0"
+            };
+            eprintln!(
+                "dev-tracker: backfill Base ATH provider createdAt-filter closed UTC days {}..{} (as-of {}): complete={}, {} requests, {} provider rows, {} tracked observations, {} date-mismatch rows ({date_membership}), {}/{} days complete in request window, {} budget remaining",
+                report.window_start,
+                report.window_end,
+                as_of,
+                report.complete,
+                report.requests,
+                report.provider_rows,
+                report.tracked_rows,
+                report.date_mismatch_rows,
+                report.completed_days,
+                a.days,
+                a.ath_requests.saturating_sub(report.requests)
+            );
+            if !report.complete {
+                return Err(
+                    "Base ATH index pass stopped at its request budget; rerun to resume".into(),
+                );
+            }
+        } else {
+            for chain in &chains {
+                backfill_ath(db, chain, a.ath_requests).await?;
+            }
         }
     }
     if !failed.is_empty() {
@@ -127,6 +255,28 @@ pub async fn run_backfill(db: &DevDb, a: &BackfillArgs) -> Result<(), String> {
 
 /// Smallest EVM step the backfill splits down to.
 const MIN_STEP_BLOCKS: u64 = 2_000;
+const DENSE_LOG_THRESHOLD: usize = 5_000;
+const SPARSE_LOG_THRESHOLD: usize = 2_500;
+
+fn adjusted_step_blocks(
+    current: u64,
+    requested_cap: u64,
+    creates: usize,
+    creator_rule: CreatorRule,
+) -> u64 {
+    if creator_rule != CreatorRule::LockBeneficiary {
+        return current;
+    }
+    let ceiling = requested_cap.max(1);
+    let floor = MIN_STEP_BLOCKS.min(ceiling);
+    if creates > DENSE_LOG_THRESHOLD {
+        current.div_euclid(2).max(floor).min(ceiling)
+    } else if creates < SPARSE_LOG_THRESHOLD {
+        current.saturating_mul(2).min(ceiling)
+    } else {
+        current.min(ceiling)
+    }
+}
 
 fn profile_of(chain: &str) -> Result<scout_sdk::evm::EvmChainProfile, String> {
     match chain {
@@ -162,7 +312,7 @@ async fn backfill_evm_chain(db: &DevDb, chain: &str, a: &BackfillArgs) -> Result
         &profile.verified_chain_key(),
         false,
         None,
-        8,
+        if chain == "base" { 32 } else { 8 },
         &scout_app::EvmNetOptions::default(),
         &notice,
         true,
@@ -213,6 +363,8 @@ async fn backfill_evm_chain(db: &DevDb, chain: &str, a: &BackfillArgs) -> Result
                 let Some(r) = step else {
                     break;
                 };
+                step_blocks =
+                    adjusted_step_blocks(step_blocks, a.evm_step_blocks, r.logs, src.creator);
                 logs += r.logs;
                 new += r.inserted;
                 let left = r.from_block.saturating_sub(floor);
@@ -417,4 +569,109 @@ async fn backfill_ath(db: &DevDb, chain: &str, budget: usize) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dense_lock_steps_halve_to_the_configured_floor() {
+        assert_eq!(
+            adjusted_step_blocks(
+                20_000,
+                30_000,
+                DENSE_LOG_THRESHOLD + 1,
+                CreatorRule::LockBeneficiary
+            ),
+            10_000
+        );
+        assert_eq!(
+            adjusted_step_blocks(
+                3_000,
+                30_000,
+                DENSE_LOG_THRESHOLD + 1,
+                CreatorRule::LockBeneficiary
+            ),
+            MIN_STEP_BLOCKS
+        );
+    }
+
+    #[test]
+    fn step_bounds_respect_requested_caps_below_minimum() {
+        assert_eq!(
+            adjusted_step_blocks(
+                1_000,
+                1_000,
+                DENSE_LOG_THRESHOLD + 1,
+                CreatorRule::LockBeneficiary
+            ),
+            1_000
+        );
+        assert_eq!(
+            adjusted_step_blocks(
+                2_000,
+                1_000,
+                SPARSE_LOG_THRESHOLD - 1,
+                CreatorRule::LockBeneficiary
+            ),
+            1_000
+        );
+    }
+
+    #[test]
+    fn sparse_lock_steps_grow_only_to_the_requested_cap() {
+        assert_eq!(
+            adjusted_step_blocks(
+                1_000,
+                10_000,
+                SPARSE_LOG_THRESHOLD - 1,
+                CreatorRule::LockBeneficiary
+            ),
+            2_000
+        );
+        assert_eq!(
+            adjusted_step_blocks(
+                2_000,
+                2_500,
+                SPARSE_LOG_THRESHOLD - 1,
+                CreatorRule::LockBeneficiary
+            ),
+            2_500
+        );
+    }
+
+    #[test]
+    fn middle_density_and_other_creator_rules_keep_the_current_step() {
+        assert_eq!(
+            adjusted_step_blocks(
+                6_000,
+                20_000,
+                SPARSE_LOG_THRESHOLD,
+                CreatorRule::LockBeneficiary
+            ),
+            6_000
+        );
+        assert_eq!(
+            adjusted_step_blocks(
+                6_000,
+                20_000,
+                DENSE_LOG_THRESHOLD,
+                CreatorRule::LockBeneficiary
+            ),
+            6_000
+        );
+        assert_eq!(
+            adjusted_step_blocks(6_000, 20_000, DENSE_LOG_THRESHOLD + 1, CreatorRule::Sender),
+            6_000
+        );
+    }
+
+    #[test]
+    fn sparse_growth_saturates_near_u64_max() {
+        assert_eq!(
+            adjusted_step_blocks(u64::MAX - 1, u64::MAX, 0, CreatorRule::LockBeneficiary),
+            u64::MAX
+        );
+    }
 }

@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    shm_size: 512mb
+    environment:
+      POSTGRES_USER: scout
+      POSTGRES_PASSWORD: ${SCOUT_DEVTRACKER_DB_PASSWORD:?set a hex database password in deploy/.env}
+      POSTGRES_DB: scout
+    volumes:
+      - devtracker-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scout -d scout"]
+      interval: 10s
+      retries: 6
+
+  dev-tracker:
+    build:
+      context: .
+      dockerfile: deploy/portable/runtime.Dockerfile
+    restart: unless-stopped
+    user: "${SCOUT_CONTAINER_USER:?run deploy/portable/prepare-runtime.sh first}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./deploy/.env
+    environment:
+      SCOUT_DEVTRACKER_DATABASE_URL: postgres://scout:${SCOUT_DEVTRACKER_DB_PASSWORD:?set a hex database password in deploy/.env}@db:5432/scout
+    volumes:
+      - ${SCOUT_RUNTIME_CONFIG_PATH:-./config/dev-tracker.toml}:/app/config/dev-tracker.toml:ro
+      - ${SCOUT_RUNTIME_EXPORTS_PATH:-./exports}:/app/exports
+    stop_grace_period: 60s
+
+volumes:
+  devtracker-pg:
+    name: ${SCOUT_POSTGRES_VOLUME:?set a unique explicit volume name in deploy/.env}

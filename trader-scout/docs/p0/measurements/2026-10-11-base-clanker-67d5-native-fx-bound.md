@@ -1,0 +1,11 @@
+# Base Clanker 67d5 native-pool FX bound
+
+As of 2026-10-11, all six native-ETH PoolManager Swap events from Initialize through the pinned Base anchor have block headers whose hashes match the log block hashes. Every event date is covered by a populated Kraken ETH/USD daily candle. The maximum exact execution ratio is `7.099583001682673571719306146E-10` ETH/token; multiplying it by the highest ETH/USD daily high across all six event dates (`$2742.42`) gives a conservative upper bound of **$0.000001947003841547459765655445956 per token** for every event. The event-specific dated intervals are retained in `.scout-data/diagnostics/base-67d5-native-fx-bound-2026-10-11/assessment.json`.
+
+The previously receipt-verified all-time USDC maximum has a dated USDC/USD lower bound of **$0.00014429922938464652702374306721370 per token**. The conservative native upper bound is lower, so none of the six native events displaces the USDC execution maximum.
+
+The corrected exact-address GeckoTerminal response identifies `0x67d5ab989378bfb2070954989a2f09ca6b19ab07` as base and native ETH as quote. The corrected native pool target-USD history peaks at `$0.00000816440733742597` on 2026-05-03, 2026-05-31. Across the **four** returned/initialized pools, applying the corrected exact-address selector to the native pool and the cached target-address selectors to the three USDC pools gives a recomputed target-USD global high of `$0.000144069791573811` on 2026-05-01.
+
+This candidate remains **not eligible for FDV recording** under the unchanged all-known-pool-history gate. The cached listing and PoolManager Initialize scope contain four pools, not five. One known USDC pool (`0x218492c713cd10484093bf261b85c65702627dbb54a01c57ac3dc60dbe92da7a`) has zero target-USD OHLC rows. Its complete Initialize-to-anchor Swap scan returned zero logs, but that does not satisfy the required nonempty-history condition. No eligibility sidecar is emitted.
+
+Five additional block-header RPCs were made; no new GeckoTerminal, Birdeye, or Codex calls and no database writes occurred. The prior source, USDC receipt/header/decimals proof, and earlier manifests remain unchanged. Full evidence and hashes are preserved in `.scout-data/diagnostics/base-67d5-native-fx-bound-2026-10-11/`.

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "source": "solana-tracker-recorded-price-times-verified-supply-bounds",
+  "provider_scope": "provider-recording-window-unknown",
+  "supply_decimals": 6,
+  "source_evidence_sha256": "68e59f339adf34437c6cb02df283d2f6becb69475a7cbed5cb982ccfd4fe21e1",
+  "supply_snapshot_at_unix_seconds": 1791729346,
+  "cases": [
+    {
+      "case": "8Cc",
+      "price_usd": "0.000047952524582282125",
+      "provider_maximum_timestamp_ms": 1771704112806,
+      "initial_raw_supply": "1000000000000000",
+      "current_raw_supply": "999999927688911",
+      "lower_cents": 4795252,
+      "upper_cents": 4795252,
+      "same_cent": true
+    },
+    {
+      "case": "PEC",
+      "price_usd": "0.00006565114747464346",
+      "provider_maximum_timestamp_ms": 1762660115868,
+      "initial_raw_supply": "1000000000000000",
+      "current_raw_supply": "999999940322002",
+      "lower_cents": 6565114,
+      "upper_cents": 6565114,
+      "same_cent": true
+    },
+    {
+      "case": "JC variable-supply negative control",
+      "price_usd": "0.00023536979981208752",
+      "provider_maximum_timestamp_ms": 1791672254212,
+      "initial_raw_supply": "1000000000000000",
+      "current_raw_supply": "965761089271256",
+      "lower_cents": 22731099,
+      "upper_cents": 23536979,
+      "same_cent": false
+    }
+  ]
+}

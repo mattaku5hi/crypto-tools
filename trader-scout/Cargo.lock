@@ -1413,6 +1413,7 @@ dependencies = [
 name = "dev-tracker"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "clap",
  "futures",
  "scout-app",
@@ -1423,6 +1424,7 @@ dependencies = [
  "scout-rpc",
  "scout-sdk",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 
@@ -3212,12 +3214,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots 1.0.9",
 ]
@@ -3361,9 +3365,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",
@@ -3546,15 +3550,18 @@ dependencies = [
  "scout-devdb",
  "scout-dex-evm",
  "scout-dex-solana",
+ "scout-evm",
  "scout-providers",
  "scout-rpc",
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "thiserror",
  "tokio",
  "tokio-util",
  "toml",
+ "wiremock",
 ]
 
 [[package]]
@@ -4837,6 +4844,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

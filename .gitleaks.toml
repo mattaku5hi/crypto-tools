@@ -11,8 +11,9 @@ title = "crypto-tools gitleaks config"
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Public Solana chain data in fixtures/measurements and base58 pubkeys in test bodies"
+condition = "OR"
 paths = [
   '''^trader-scout/docs/p0/measurements/fixtures/[^/]+\.json$''',
   '''^trader-scout/docs/p0/measurements/p0\.7-[0-9-]+/''',
@@ -23,4 +24,76 @@ regexes = [
   '''(accountKey|token)["']?\s*[:=]\s*["']?[1-9A-HJ-NP-Za-km-z]{32,44}["']''',
   # Markdown table cell naming a public chain id, e.g. `chain_id=8453`.
   '''API, `chain_id=[0-9]+`''',
+]
+
+[[allowlists]]
+description = "Public account addresses and transaction hashes in scout golden fixtures"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''(?:^|/)trader-scout/crates/scout-devtracker/tests/fixtures/[^/]+\.json$''']
+regexTarget = "match"
+regexes = [
+  '''^(user_base_token_account|user_quote_token_account|pool_base_token_account|pool_quote_token_account|protocol_fee_recipient_token_account|user_pool_token_account)"?\s*:\s*"?[1-9A-HJ-NP-Za-km-z]{32,44}"?$''',
+  '''^(user_base_token_account|user_quote_token_account|pool_base_token_account|pool_quote_token_account|protocol_fee_recipient_token_account|user_pool_token_account)"?\s*:\s*"?(0x[0-9a-fA-F]{64}|[0-9a-fA-F]{64})"?$''',
+  '''^(token|quote_token|base_token|target_token|weth_case|aapl_case|pool_identity)"?\s*:\s*"?0x[0-9a-fA-F]{40}"?$''',
+  '''^root_curve_token_transfers_v1_sha256"?\s*:\s*"?[0-9a-fA-F]{64}"?$''',
+]
+
+[[allowlists]]
+description = "Public storage proof keys in the classified Polymarket RPC fixtures"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''(?:^|/)polymarket-data/(tests/fixtures/[^/]+-rpc|src/chain_log_audit/artifacts/[^/]+)\.json$''']
+regexTarget = "match"
+regexes = [
+  '''^(key|module_pusd_balance_key|roles_storage_key|module_registry_key|module_pusd_role_key)"?\s*:\s*"?0x[0-9a-fA-F]{64}"?$''',
+]
+
+[[allowlists]]
+description = "SHA-256 metadata for captured Coinbase responses"
+condition = "AND"
+targetRules = ["coinbase-access-token"]
+paths = [
+  '''(?:^|/)trader-scout/(crates/scout-devtracker/tests/fixtures/[^/]+\.json|docs/p0/measurements/2026-10-11-solana-(pec-migration-spot-corroboration|8cc-migration-pool-spot-corroboration)\.md)$''',
+]
+regexTarget = "match"
+regexes = [
+  '''(?i)^(?:[^" ]*coinbase[^" ]*\.json|coinbase_[a-z0-9_]*sha256|coinbase_evidence_sha256|coinbase_response|six_sfb_coinbase|seven_rwy_coinbase)"?\s*:\s*"?[0-9a-f]{64}"?$''',
+  '''(?i)^Coinbase (raw body|minute body) SHA-256: `?[0-9a-f]{64}`?$''',
+  '''^fx_allocation_sha256"?\s*:\s*"?[0-9a-fA-F]{64}"?$''',
+]
+
+[[allowlists]]
+description = "Placeholder database password in the sample environment file"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''(?:^|/)trader-scout/deploy/\.env\.example$''']
+regexTarget = "match"
+regexes = [
+  '''^SCOUT_DEVTRACKER_DB_PASSWORD=replace_with_64_hex_characters$''',
+]
+
+[[allowlists]]
+description = "Exact public address comparisons in the scout source history"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^(?:.*/)?trader-scout/crates/scout-devtracker/src/birdeye\.rs$''']
+regexTarget = "match"
+regexes = [
+  '''^key == "CF3ML9g28j2bdcKZ4jDqtffomELUhcxPCSTtbcmpQ7JX"$''',
+  '''^token == "0xaa539cf78ff43e4b9fd9db2715435ff57d09fee1"$''',
+]
+
+[[allowlists]]
+description = "Exact public on-chain identifiers in measurement prose"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^(?:trader\-scout/docs/p0/measurements/2026\-10\-14\-solana\-chronological\-fdv\-window\.md|trader\-scout/docs/p0/measurements/2026\-10\-13\-robinhood\-ath\-gap\-closure\.md|trader\-scout/docs/p0/measurements/2026\-10\-11\-base\-e465\-gt\-crosscheck\.md|trader\-scout/docs/p0/measurements/2026\-10\-11\-solana\-tracker\-history\-contract\.md)$''']
+regexTarget = "match"
+regexes = [
+  '''^token-transfer proof:
+`fc16c015c3b9d2bdf9c1218eef8d30fa849f2636251ea2386dc08c8b6463a323`$''',
+  '''^token, `0x48c01e934d149b54af69398a3f767b7e399fb4aa`$''',
+  '''^token, `0x107fb51dbea200ae8e8d69ecf9afe13bfb6d3479`$''',
+  '''^token=JCd8kQpU6RpSNASnxwF8i8vGdf8FNVtAVCiCi1uUpump$''',
 ]

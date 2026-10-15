@@ -41,10 +41,11 @@ max_inactive_days = 365
 [schedule]
 # Daemon (`dev-tracker run`) cadence and per-pass budgets.
 chains = ["solana", "bsc", "base", "robinhood"]
-ingest_every_minutes = 30        # launches, migrations, dev identities, ATH
+ingest_every_minutes = 30        # launches, migrations, dev identities
+ath_every_minutes = 240          # ATH observations (Codex)
 derive_every_minutes = 60        # categories + delivery
 start_hours_back = 24            # where a source without a cursor starts
-ath_requests_per_chain = 20      # Codex, 200 tokens each (free tier: 10k/month)
+ath_requests_per_chain = 1       # Codex requests per chain on each ATH pass (0 disables)
 solana_max_pages = 200           # Helius pages of ≤ 1000 txs per source and pass
 max_new_creators = 2000          # EVM creators classified per chain and pass
 max_signer_lookups = 5000        # launch signers resolved per chain and pass

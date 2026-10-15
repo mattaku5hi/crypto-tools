@@ -1407,6 +1407,12 @@ impl EvmRpcClient {
         if let Some(ts) = self.cached_timestamp(block) {
             return Ok(ts);
         }
+        self.block_timestamp_fresh(block).await
+    }
+
+    /// Fetch a block timestamp from RPC even when the cache has an entry.
+    /// The fetched value replaces that entry.
+    pub(crate) async fn block_timestamp_fresh(&self, block: u64) -> Result<u64, EvmSourceError> {
         let v = self
             .call_json(
                 "eth_getBlockByNumber",
@@ -1425,6 +1431,21 @@ impl EvmRpcClient {
         )?;
         self.cache_timestamp(block, ts);
         Ok(ts)
+    }
+
+    /// Fetch timestamps for distinct blocks from RPC (bounded concurrency).
+    pub(crate) async fn block_timestamps_fresh(
+        &self,
+        blocks: &[u64],
+    ) -> Result<BTreeMap<u64, u64>, EvmSourceError> {
+        let pairs: Vec<(u64, u64)> = stream::iter(blocks.iter().copied())
+            .map(|b| async move { self.block_timestamp_fresh(b).await.map(|t| (b, t)) })
+            .buffered(self.cfg.concurrency)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<_, _>>()?;
+        Ok(pairs.into_iter().collect())
     }
 
     /// Timestamps of distinct blocks (bounded concurrency).
@@ -1748,6 +1769,51 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(e, EvmSourceError::RangeUnresolvable { block: 5, .. }),
+            "{e:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_log_response_splits_and_single_block_stays_typed() {
+        use wiremock::{Request, Respond};
+
+        struct Oversized;
+        impl Respond for Oversized {
+            fn respond(&self, req: &Request) -> ResponseTemplate {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                let f = &body["params"][0];
+                let hex = |k: &str| {
+                    u64::from_str_radix(f[k].as_str().unwrap().trim_start_matches("0x"), 16)
+                        .unwrap()
+                };
+                let (from, to) = (hex("fromBlock"), hex("toBlock"));
+                let logs = if from == to && from != 3 {
+                    json!([])
+                } else {
+                    json!((0..8).map(|i| log_json(from, i)).collect::<Vec<_>>())
+                };
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc":"2.0", "id":body["id"], "result":logs
+                }))
+            }
+        }
+
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(Oversized)
+            .mount(&s)
+            .await;
+        let rpc = RpcClient::new(RpcEndpoint::new(s.uri()), 5_000, 1)
+            .unwrap()
+            .with_max_response_bytes(256);
+        let c = EvmRpcClient::new(rpc, ROBINHOOD);
+        let out = c.get_logs(&LogFilter::default(), 1, 2).await.unwrap();
+        assert_eq!((out.splits, out.requests), (1, 2));
+        assert!(out.logs.is_empty());
+
+        let e = c.get_logs(&LogFilter::default(), 3, 3).await.unwrap_err();
+        assert!(
+            matches!(e, EvmSourceError::RangeUnresolvable { block: 3, .. }),
             "{e:?}"
         );
     }

@@ -1,0 +1,51 @@
+{
+  "source": "zora-window-supply-route-fx-validated-v1",
+  "certificate_sha256": "941113c79a66900a52f079de7cdbcbd3638f2d4fba60c36858e24d8626778b56",
+  "chain_id": 8453,
+  "token": "0x058e72b9e99561844582b019ab91cdab6c9ac738",
+  "ath_at": null,
+  "canonical_window_price_usd_floor_24dp": "0.001506582619089042126709",
+  "expected_fdv_cents": 150658261,
+  "supply": {
+    "verified": true,
+    "decimals": 18,
+    "total_supply_raw": "1000000000000000000000000000",
+    "tokens": "1000000000"
+  },
+  "api_edge": {
+    "transaction_hash": "0x5de8c05554f6c146f9e542587e2c125c8c4d666a1874dc354d34ca47c0d213dc",
+    "timestamp_utc": "2026-09-27T16:58:43Z",
+    "coin_amount_raw": "204088445592385538139",
+    "coin_decimals": 18,
+    "quote_address": "0x364863eece7fd2e6c5f3dc13a3f043521f77ec49",
+    "quote_decimals": 18,
+    "api_quote_amount_decimal": "276.84873973895264",
+    "onchain_quote_amount_raw": "276848739738952660574",
+    "api_amount_rounding_difference_quote_units": "0.000000000000020574",
+    "api_price_usdc_per_quote_unit": "0.0011106285156880768135356199916471751730",
+    "price_usdc_semantics": "The provider field units and exact timestamp meaning are undocumented; this selected window edge is independently corroborated, with no automatic API parser integration."
+  },
+  "same_transaction_route": {
+    "price_kind_note": "Pool-core route execution-average cross-check with dated quote/USD conversion; hook transfers and other route legs are not reconciled into final wallet-net cost or PnL.",
+    "transaction_hash": "0x5de8c05554f6c146f9e542587e2c125c8c4d666a1874dc354d34ca47c0d213dc",
+    "target_amount_out_raw": "204088445592385538139",
+    "weth_amount_in_raw": "115455870985401",
+    "weth_address": "0x4200000000000000000000000000000000000006",
+    "weth_decimals": 18,
+    "coinbase_eth_usd_min": "2686.29",
+    "coinbase_eth_usd_max": "2686.84",
+    "coinbase_minute_start_utc": "2026-09-27T16:58:00Z",
+    "both_fx_endpoints_within_two_percent": true
+  },
+  "birdeye_disagreement": {
+    "same_day_high_usd": "0.0014819050096223831",
+    "status": "retained as a separate greater-than-two-percent source disagreement; do not average"
+  },
+  "coverage": {
+    "api_cursor_exhausted": true,
+    "api_reported_edges": 92,
+    "api_observed_price_values": 91,
+    "same_pool_chain_swaps_through_anchor": 326,
+    "status": "partial provider history; no all-market or lifetime completeness, ath_at remains unknown"
+  }
+}

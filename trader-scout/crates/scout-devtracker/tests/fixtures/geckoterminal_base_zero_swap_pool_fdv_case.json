@@ -1,0 +1,114 @@
+{
+  "source": "geckoterminal-window-supply-swap-fx-validated-v1",
+  "analysis_sha256": "a586689bc26758a2faec06bf66d1b9ce0a118a01c46f0470b0015813404840c5",
+  "chain_id": 8453,
+  "token": "0x67d5ab989378bfb2070954989a2f09ca6b19ab07",
+  "supply_raw": "100000000000000000000000000000",
+  "supply_decimals": 18,
+  "token_created_block": 45407792,
+  "anchor_block": 52456236,
+  "geckoterminal_request": {
+    "interval": "day",
+    "aggregate": 1,
+    "limit": 1000,
+    "before_timestamp": 1791676799,
+    "currency": "usd",
+    "include_empty_intervals": false,
+    "token_selector_for_native_pool": "0x67d5ab989378bfb2070954989a2f09ca6b19ab07",
+    "explicit_after_timestamp": null
+  },
+  "ath_at": null,
+  "source_scope": "four observed PoolManager Initialize pools and their returned GeckoTerminal target-USD histories; not all Base venues or lifetime history",
+  "pool_manager_initialize_sha256": "c83f010456102151ccb08dbf09974c191b08a3a267627be847ef946249b865a9",
+  "pools": [
+    {
+      "pool_id": "0x077721753d0c396d300e223dd86d69a7bdc05f23e68b27e566335dd76f641333",
+      "token_side": "currency0",
+      "quote": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "selector": "base",
+      "metadata_base": "0x67d5ab989378bfb2070954989a2f09ca6b19ab07",
+      "metadata_quote": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "ohlc_rows": 3,
+      "window_max_usd": "0.000144069791573811",
+      "response_sha256": "7c8ad2054c8a7e97c9ea1d9675481560f30791b94ad6987fb19120866f739f48"
+    },
+    {
+      "pool_id": "0x379f3e8f364b101490e01dec8c4a1d98e1483c906c0417ed89a6a0e3ba460389",
+      "token_side": "currency0",
+      "quote": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "selector": "base",
+      "metadata_base": "0x67d5ab989378bfb2070954989a2f09ca6b19ab07",
+      "metadata_quote": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "ohlc_rows": 1,
+      "window_max_usd": "0.000010029291172387",
+      "response_sha256": "11cbcb1ac98253e5ea38b1d93e2255c065a31b802e7f469feb83ada04fb55c77"
+    },
+    {
+      "pool_id": "0x218492c713cd10484093bf261b85c65702627dbb54a01c57ac3dc60dbe92da7a",
+      "token_side": "currency0",
+      "quote": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "selector": "base",
+      "metadata_base": "0x67d5ab989378bfb2070954989a2f09ca6b19ab07",
+      "metadata_quote": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "ohlc_rows": 0,
+      "window_max_usd": null,
+      "response_sha256": "35617452221b37e81cc910245b305de0f0981e5a34e3414342e304d409f37425",
+      "zero_swap_scan": {
+        "from_block": 45407792,
+        "initialize_block": 45408454,
+        "to_block": 52456236,
+        "complete": true,
+        "swap_logs": 0,
+        "raw_sha256": "2c8d689e37498970918392ae8f68252b1c3f0f3738d79f337f604259c19bc02d"
+      }
+    },
+    {
+      "pool_id": "0x256fb38587335b84ecabb8a79986cebd5d7134bbb538fa8be4af9858d48276d4",
+      "token_side": "currency1",
+      "quote": "0x0000000000000000000000000000000000000000",
+      "selector": "0x67d5ab989378bfb2070954989a2f09ca6b19ab07",
+      "metadata_base": "0x67d5ab989378bfb2070954989a2f09ca6b19ab07",
+      "metadata_quote": "0x0000000000000000000000000000000000000000",
+      "ohlc_rows": 5,
+      "window_max_usd": "0.00000816440733742597",
+      "response_sha256": "7cb2b7c2747a90b2b6076b45fa13fc2c18940ae7cf93e4bee5540306dbc0e4b0"
+    }
+  ],
+  "provider_max": {
+    "pool_id": "0x077721753d0c396d300e223dd86d69a7bdc05f23e68b27e566335dd76f641333",
+    "day_start_utc": 1777593600,
+    "price_usd": "0.000144069791573811",
+    "fdv_cents_floor": 1440697915,
+    "fdv_scope": "provider-recorded-window only"
+  },
+  "independent_swap": {
+    "pool_id": "0x077721753d0c396d300e223dd86d69a7bdc05f23e68b27e566335dd76f641333",
+    "block_number": 45408098,
+    "log_index": 399,
+    "timestamp": 1777605543,
+    "quote_raw": "1602521",
+    "token_raw": "11099988172704845840614",
+    "ratio_price_fraction": ["801260500000000000", "5549994086352422920307"],
+    "quote_decimals": 6,
+    "token_decimals": 18,
+    "fx_day_start_utc": 1777593600,
+    "fx_low_1e4": 9995,
+    "fx_high_1e4": 9999,
+    "fx_response_sha256": "e84624b906803de0f4f8bf9344d88314f6af34ab150b470ee02893caee343465",
+    "both_fx_endpoints_within_one_percent": true,
+    "swap_response_sha256": "4b7e736b511bb20078b44bb4057f06ef094fd16fb6b3bb2156dbbc496dedee60"
+  },
+  "unresolved_other_source": {
+    "provider": "Birdeye",
+    "same_day_high_usd": "0.000010011587280260146",
+    "status": "unresolved source discrepancy; retained as a gap"
+  },
+  "excluded_wrong_token_selector": {
+    "selector": "quote",
+    "metadata_base": "0x0000000000000000000000000000000000000000",
+    "metadata_quote": "0x67d5ab989378bfb2070954989a2f09ca6b19ab07",
+    "high_usd": "2698.95",
+    "response_sha256": "46d8b35ad10612fa4304fe27d8900088a47e8a87e88edb1da051d8a6495227b8"
+  },
+  "recording_policy": "No database write or promotion in this fixture; ath_at remains unknown. An empty history is admissible only for a known pool whose complete creation-through-anchor Swap scan has zero swaps. Initialize sqrt price is not a trade observation."
+}
